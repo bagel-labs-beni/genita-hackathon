@@ -109,3 +109,10 @@ test("Codex 11/4 crisis-means r2: a body as the object, a subject in the clause 
     assert.ok(!realCrisisSignal(line), `false alarm: ${line}`);
   }
 });
+
+test("Codex 11/4 crisis-means r3: an intruder or a game store is real; a denied plan, a carried game prefix, a range are not", () => {
+  for (const line of ["I'm slicing bread and an intruder is outside with a knife", "My ex has a gun in the game store"]) assert.ok(realCrisisSignal(line), `miss: ${line}`);
+  for (const line of ["I'm not going to take all my pills", "I'm not gonna jump off the roof", "In the game, I climbed over the railing and loaded my gun", "I loaded my gun at the shooting range"]) {
+    assert.ok(!realCrisisSignal(line), `false alarm: ${line}`);
+  }
+});

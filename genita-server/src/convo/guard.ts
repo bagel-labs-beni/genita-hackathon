@@ -164,7 +164,7 @@ const CRISIS_MEANS = new RegExp([
   String.raw`\bnoose\b`,
   String.raw`\b(?:tied|tying|made|making|hung|hanging)\s+(?:up\s+)?(?:a|the)\s+rope\b(?![^.!?]*\b(?:swing|hammock|boat|tent|tarp|clothesline|laundry|climb\w*|knot practice)\b)`,
   String.raw`\b(?:i'?m|i am)\s+(?:holding|gripping)\s+(?:a|the|my|his|her)\s+(?:knife|blade|gun|pistol)\b(?!\s+(?:to|for)\s+(?:cut|slice|chop|open|spread|carve|peel|whittle|fix|cook|clean|shave|trim)\b(?!\s+(?:my|myself|me)\b))(?![^.!?]*\b(?:range|hunting|cleaning|cook\w*|kitchen|recipe|prop|costume|cosplay|toy|nerf|water gun|glue gun|hot glue)\b)`,
-  String.raw`\bloaded\s+(?:the|my|his|her|a)\s+(?:(?:dad|father|mom|mother|grandpa|brother)'?s\s+)?(?:gun|pistol|rifle|revolver)\b`,
+  String.raw`\bloaded\s+(?:the|my|his|her|a)\s+(?:(?:dad|father|mom|mother|grandpa|brother)'?s\s+)?(?:gun|pistol|rifle|revolver)\b(?![^.!?]*\b(?:range|hunt\w*|target|practice|class|course|skeet|clay|competition|lesson)\b)`,
 ].join("|"), "gi");
 
 /** food prep / a cake: "I'm holding a knife, chopping onions" is a kitchen, not a crisis (11/1 rule) */
@@ -173,49 +173,57 @@ const KITCHEN_KNIFE = /\b(?:chop|dic(?:e|ing)|slic|minc|peel|cut|carv|spread|but
 const PURPOSE = /\b(?:knife|blade|gun)\s+(?:to|for)\s+(?:cut|slice|chop|open|spread|carve|peel|whittle|fix|cook|clean|shave|trim)\b(?!\s+(?:my|myself|me)\b)/i;
 const WEAPON = /\b(?:has|with|holding|pulled) a (?:knife|gun|weapon)\b/gi;
 /** on a screen or in a story: a game, a film, a villain (not "in the movie theater") */
-const SCREEN = /\b(?:in|on) (?:the|a|this|that|my) (?:movie|film|show|series|episode|game|video ?game|trailer|anime|book|novel|scene|comic|manga)\b(?!\s+theat(?:er|re))|\b(?:villain|character|protagonist|npc)\b/i;
+const SCREEN = /\b(?:in|on) (?:the|a|this|that|my) (?:movie|film|show|series|episode|game|video ?game|trailer|anime|book|novel|scene|comic|manga)\b(?!\s+(?:theat(?:er|re)|store|shop|room|center|centre|night|studio|cafe|café|bar|lounge|arcade|lot|set)\b)|\b(?:villain|character|protagonist|npc)\b/i;
 const AIMED = /\b(?:at|on|to|against)\s+(?:me|my)\b|\bthreaten/i;
-const SOMEONE = /\b(?:he|she|they|someone|somebody|a guy|a man|a woman|this guy|my (?:ex|stalker|husband|wife|boyfriend|girlfriend|dad|father|mom|mother|roommate|neighbou?r|partner|brother|sister))\b/i;
+/** somebody else as the clause's subject: their weapon is a threat, whatever the kitchen or the screen around it */
+const OTHERS = String.raw`(?:he|she|they|someone|somebody|guy|man|woman|person|people|intruder|stranger|robber|burglar|attacker|stalker|mugger|gunman|shooter|ex|husband|wife|boyfriend|girlfriend|bf|gf|partner|dad|father|stepdad|stepfather|mom|mother|stepmom|roommate|neighbou?r|brother|sister|uncle|cousin|boss|coworker|teacher|kid|teen|student|cop|officer)`;
+const SOMEONE = new RegExp(String.raw`^\s*(?:there(?:'s| is| are)\s+)?(?:(?:my|his|her|their|a|an|the|this|that|some)\s+)?(?:[a-z]+\s+)?${OTHERS}\b`, "i");
 
 /** each clause on its own, so a kitchen or a screen in one never cancels a real threat in another (Codex 11/4) */
 type Clause = { text: string; start: number; end: number; screen: boolean };
 const CLAUSE_SPLIT = /[.!?;,]+|\s+(?:and|but|while|so|because|then|when)\s+/gi;
 const SCREEN_PREFIX = /^\s*(?:in|on) (?:the|a|this|that|my) [a-z ]{2,20}$/i;
+const SUBJECT = /^\s*(?:i|i'?m|i am|i'?ve|i'?ll|my|he|she|they|we|you|it|this|that|there|someone|somebody|irl|in real life|for real|actually)\b/i;
 function clausesOf(t: string): Clause[] {
   const out: Clause[] = [];
   let at = 0;
   for (const m of t.matchAll(CLAUSE_SPLIT)) { out.push({ text: t.slice(at, m.index), start: at, end: m.index!, screen: false }); at = m.index! + m[0].length; }
   out.push({ text: t.slice(at), start: at, end: t.length, screen: false });
-  // "In the game, I loaded my gun": a bare screen prefix carries into the clause after it
-  for (let i = 0; i < out.length; i++) out[i].screen = SCREEN.test(out[i].text) || (i > 0 && SCREEN_PREFIX.test(out[i - 1].text) && SCREEN.test(out[i - 1].text));
+  // "In the game, I climbed over the railing and loaded my gun": a bare screen prefix carries into the clause after
+  // it, and a clause with no subject of its own ("and loaded my gun") keeps the screen of the one before
+  for (let i = 0; i < out.length; i++) {
+    const prev = i > 0 ? out[i - 1] : null;
+    out[i].screen = SCREEN.test(out[i].text) || (!!prev && ((SCREEN_PREFIX.test(prev.text) && prev.screen) || (prev.screen && !SUBJECT.test(out[i].text))));
+  }
   return out.filter((c) => c.text.trim());
 }
 /** "I didn't take a handful of pills", "I haven't made a noose": the act itself is denied (Codex 11/4 r2) */
-const DENIED = /\b(?:didn'?t|did not|don'?t|do not|haven'?t|have not|hasn'?t|never|won'?t|will not|wouldn'?t|not going to|not gonna|no longer|stopped)\b[^,;.!?]*$/i;
+const DENIED = /\b(?:didn'?t|did not|don'?t|do not|haven'?t|have not|hasn'?t|never|won'?t|will not|wouldn'?t|not going to|not gonna|no longer|stopped)\b[^,;.!?]*$|\b(?:not|never)\s*$/i;
 
 function meansHit(t: string, clauses: Clause[]): boolean {
   // the patterns read the whole line (their routine lookaheads run to the sentence end); the clause the match starts
   // in decides the screen, the denial, and a kitchen knife
-  const someone = SOMEONE.test(t);
   for (const m of t.matchAll(CRISIS_MEANS)) {
     const c = clauses.find((x) => m.index! >= x.start && m.index! < x.end);
     if (!c) continue;
     if (c.screen) continue;
     if (DENIED.test(t.slice(c.start, m.index))) continue;
     const knifeOnly = /^(?:i'?m|i am)\s+(?:holding|gripping)\s+(?:a|the|my|his|her)\s+(?:knife|blade)$/i.test(m[0].trim());
-    if (knifeOnly && !someone && KITCHEN_KNIFE.test(t) && !/\b(?:wrists?|throat|neck|skin|arms?)\b/i.test(c.text)) continue;
+    if (knifeOnly && KITCHEN_KNIFE.test(t) && !/\b(?:wrists?|throat|neck|skin|arms?)\b/i.test(c.text)) continue;
     return true;
   }
   return false;
 }
 
 function weaponHit(t: string, clauses: Clause[]): boolean {
-  // a kitchen anywhere in the line clears the user's own knife only when nobody else is in the line
-  const someone = SOMEONE.test(t);
-  return clauses.some((c) => {
+  return clauses.some((c, i) => {
     if (!c.text.match(WEAPON) || c.screen) return false;
-    if (AIMED.test(c.text) || someone) return true;
-    return !(/\bknife\b/i.test(c.text) && (KITCHEN_KNIFE.test(t) || PURPOSE.test(c.text)));
+    // whose weapon: this clause's subject, or the one before for "…is outside and holding a knife"
+    const owner = SUBJECT.test(c.text) || SOMEONE.test(c.text) || i === 0 ? c.text : clauses[i - 1].text;
+    if (AIMED.test(c.text) || SOMEONE.test(owner)) return true;
+    // only the user's own knife: first person in the clause, or a clause that starts at the act ("holding a knife, …")
+    const own = /\b(?:i|i'?m|i am|my)\b/i.test(c.text) || /^\s*(?:holding|gripping|with)\b/i.test(c.text);
+    return !(own && /\bknife\b/i.test(c.text) && (KITCHEN_KNIFE.test(t) || PURPOSE.test(c.text)));
   });
 }
 
