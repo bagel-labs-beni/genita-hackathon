@@ -1421,6 +1421,8 @@ test("Codex #506 gate: cooking amounts, oven temperatures, minutes and a shoppin
   assert.equal(c("Bake it at 180 degrees.", "Can I make this at 180 degrees?"), null);
   assert.equal(c("Simmer it for twenty minutes.", "Can we make soup in 20 minutes?"), null);
   assert.equal(c("These boots are $150.", "I can pay $150 for boots."), null);
+  assert.equal(c("Twenty cookies need 100 grams of sugar.", "Can I make 20 cookies with 100 grams of sugar?"), null);
+  assert.equal(c("Yes, raise it to 180 degrees.", "Should I raise the oven to 180 degrees?"), null);
   assert.equal(c("No way, eighty five k is huge!", "guess what, I got a raise, I make 85k now"), "sensitive");
   assert.equal(c("That one fifty over ninety five is scary.", "my blood pressure was 150 over 95 today"), "sensitive");
   assert.equal(c("Fourteen twenty three Maple, nice!", "the new place is 1423 Maple Street"), "sensitive");
