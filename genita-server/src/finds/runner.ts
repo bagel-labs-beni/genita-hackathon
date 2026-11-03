@@ -631,10 +631,18 @@ export class FindsRunner {
     if (this.cards.has(findId)) this.focusId = findId;
   }
 
+  /** "Forget all of this" (AU-92): cards made before it keep their products, but their taste chips and style line
+   * (made from the old profile) never go to the prompt again */
+  private tasteForgottenAt: string | null = null;
+  /** searches already running then: their cards were made from the old taste too */
+  private tasteForgottenIds = new Set<string>();
+  forgetTaste(): void { this.tasteForgottenAt = new Date().toISOString(); for (const id of this.running.keys()) this.tasteForgottenIds.add(id); }
+
   /** One line for the system prompt about the card on screen, or undefined. Data only. */
   onScreen(): string | undefined {
     const c = this.focusId ? this.cards.get(this.focusId) : undefined;
     if (!c) return undefined;
+    const old = this.tasteForgottenAt !== null && ((c.createdAt ?? "") <= this.tasteForgottenAt || this.tasteForgottenIds.has(c.id));
     const parts = [`${c.title}${c.subtitle ? ` (${c.subtitle})` : ""}`];
     if (c.kind === "recipe") {
       const by = (t: string) => c.items.filter((i) => i.tier === t).map((i) => i.name).join(", ");
@@ -643,8 +651,8 @@ export class FindsRunner {
       if (by("buy")) parts.push(`not seen: ${by("buy")}`);
     }
     if (c.products?.length) {
-      parts.push(`products: ${c.products.map((p, i) => `${i + 1}. ${p.name} (${p.store}, ${p.price ?? "price on the site"}; ${[p.taste, p.situation].filter(Boolean).join(", ")})`).join(" ")}`);
-      if (c.evidence?.style) parts.push(`their style line: ${c.evidence.style}`);
+      parts.push(`products: ${c.products.map((p, i) => `${i + 1}. ${p.name} (${p.store}, ${p.price ?? "price on the site"}; ${[old ? "" : p.taste, p.situation].filter(Boolean).join(", ")})`).join(" ")}`);
+      if (c.evidence?.style && !old) parts.push(`their style line: ${c.evidence.style}`);
       if (c.products.length < PRODUCT_COUNT) parts.push("only one product page opened");
     }
     if (c.options.length) parts.push(`options: ${c.options.map((o) => `${o.label}${o.picked ? " (your pick)" : ""}`).join(", ")}`);

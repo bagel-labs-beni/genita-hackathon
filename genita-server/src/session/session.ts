@@ -595,6 +595,7 @@ export class Session {
     this.ask = null;
     this.nod = null;
     if (this.started) this.finds?.configure({ owner: this.deps.userId, memories: this.memories, profile: undefined, userName: this.user.name, timeZone: this.timeZone, taste: [] });
+    this.finds?.forgetTaste();   // the card on screen stops quoting the old taste (Codex #583 r5)
     this.log("profile.forgotten_in_call", {});
   }
 
@@ -884,7 +885,10 @@ export class Session {
             if (this.started) this.finds?.configure({ owner: this.deps.userId, memories: this.memories, profile: this.user.profile, userName: this.user.name, timeZone: this.timeZone, taste: this.taste });
           }).catch(() => {});
         }
-        const got = p === TIMED_OUT ? null : p;
+        // read before "Forget all of this" landed (answered in time, but from the old profile): not used (Codex #583 r5)
+        const stale = p !== TIMED_OUT && !!p && !!this.deps.userId && this.deps.personalize.generation?.(this.deps.userId) !== genAtStart;
+        if (stale) { this.user = { ...this.user, profile: undefined }; this.taste = []; }
+        const got = p === TIMED_OUT || stale ? null : p;
         // a stored profile always wins, even an empty one (a deleted preference must not come back from the app's copy)
         if (got) this.user = { ...this.user, profile: got.profile || undefined };
         if (got?.nod) this.nod = got.nod;
