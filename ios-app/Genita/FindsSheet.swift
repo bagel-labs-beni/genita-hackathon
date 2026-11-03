@@ -490,10 +490,16 @@ struct FindCardPage: View {
     }
 
     /// A saved recipe describes the camera result as a completed observation (Figma F2 138:2).
+    /// "15 min · Have 6 · Need soy sauce" → "15 min · Had 6 · Needed soy sauce" (#215 short line; the older
+    /// "You have 4, need rice" form is still read for saved cards).
     static func reopenedSubtitle(_ subtitle: String) -> String {
-        subtitle
-            .replacingOccurrences(of: "You have ", with: "You had ")
-            .replacingOccurrences(of: ", need ", with: ", needed ")
+        subtitle.components(separatedBy: " · ").map { part in
+            if part.hasPrefix("Have ") { return "Had " + part.dropFirst(5) }
+            if part.hasPrefix("Need ") { return "Needed " + part.dropFirst(5) }
+            return part
+                .replacingOccurrences(of: "You have ", with: "You had ")
+                .replacingOccurrences(of: ", need ", with: ", needed ")
+        }.joined(separator: " · ")
     }
 
     // MARK: recipe
