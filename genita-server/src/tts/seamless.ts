@@ -23,7 +23,23 @@ import { g2pOn, relabelPhonemes } from "../lips/g2p.ts";
 export const SEAMLESS_MODEL = "seamless-m4t-v2";
 export const FILLERS = ["Hmm,", "Oh!", "Yeah.", "Oh wow,", "Okay,", "Right,", "Mm-hm.", "Aw,", "Haha,", "Well,", "So,", "Oh no,"];
 const CACHE_MAX_CHARS = 14;
-const CACHE_MAX = 400;
+const CACHE_MAX = 1200; // fillers x (neutral + VOICE_EMOTIONS) x the 4 V04 speakers fits
+
+/** Labels the voice GPU moves (deploy/modal-voice/post.py SHIFT_ST). neutral / curious / unknown send no emotion. */
+export const VOICE_EMOTIONS = ["excited", "happy", "surprised", "teasing", "warm", "sad", "whisper"] as const;
+/**
+ * "filler|emotion" pairs that stay neutral (Chelsea 11/3 23:42: emotion everywhere, a pure filler only goes without
+ * it when its UTMOS falls more than 0.1 below the raw filler; numbers in the PR).
+ */
+// 11/3 measurement (UTMOS22, 4 V04 voices per cell, shipped render path): 26 of 84 filler x emotion pairs fell more
+// than 0.1 below the raw filler (worst "Well," excited -0.61); the other 58 carry the emotion.
+export const NEUTRAL_FILLERS = new Set<string>([
+  "Oh wow,|excited", "Right,|excited", "Well,|excited", "Oh no,|excited", "Right,|happy", "Haha,|happy",
+  "Well,|happy", "Oh no,|happy", "Oh wow,|surprised", "Right,|surprised", "Well,|surprised", "Oh no,|surprised",
+  "Oh wow,|teasing", "Okay,|teasing", "Right,|teasing", "Haha,|teasing", "Well,|teasing", "Oh no,|teasing",
+  "Oh!|warm", "Oh wow,|warm", "Haha,|warm", "Oh!|sad", "Oh wow,|sad", "Haha,|sad",
+  "Oh!|whisper", "Oh wow,|whisper",
+]);
 const DOWN_MS = 30_000;
 /** D27: the GPU's queue was full (503 {"error":"busy"}): park briefly so the next sentences go straight to the device */
 const BUSY_DOWN_MS = 2_000;
@@ -177,13 +193,18 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
     }
   }
 
-  const key = (lang: string, speaker: number, text: string, tail: number, speed: number) => `${lang}|${speaker}|${tail}|${speed}|${text}`;
+  const key = (lang: string, speaker: number, text: string, tail: number, speed: number, emo: string) => `${lang}|${speaker}|${tail}|${speed}|${emo}|${text}`;
+  const emotionFor = (raw: string | null | undefined, text: string): string => {
+    if (cfg.post === false || cfg.emotion === false) return "";
+    const e = (raw ?? "").toLowerCase();
+    return (VOICE_EMOTIONS as readonly string[]).includes(e) && !NEUTRAL_FILLERS.has(`${text}|${e}`) ? e : "";
+  };
   const remember = (k: string, chunks: TtsChunk[]) => {
     if (cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value as string);
     cache.set(k, chunks);
   };
 
-  async function* speak(req: SeamlessRequest): AsyncGenerator<TtsChunk> {
+  async function* speak(req: SeamlessRequest, quiet = false): AsyncGenerator<TtsChunk> {
     const lang = seamlessLang(req.lang, req.text);
     const text = spokenText(req.text, lang);
     if (!text || !/[\p{L}\p{N}]/u.test(text)) return; // nothing to say (emoji-only, punctuation)
@@ -191,11 +212,12 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
     const spk = Number.isFinite(speaker) ? speaker : 0;
     const tail = pauseAfterMs(text);
     const speed = speedFor(cfg.speed, req.emotion, text);
-    // 11/3 post chain: the reply's emotion also shapes pitch/brightness on the voice GPU (deploy/modal-voice/post.py).
-    // Short clauses (the cached fillers, the first sound) go without it, like the rate. GENITA_VOICE_POST=0 = raw voice.
-    const emo = text.length > CACHE_MAX_CHARS ? (req.emotion ?? "").toLowerCase() : "";
-    const extra: Record<string, unknown> = { ...(emo && emo !== "neutral" ? { emotion: emo } : {}), ...(cfg.post === false ? { post: false } : {}) };
-    const k = key(lang, spk, text, tail, speed);
+    // 11/3 post chain: the reply's emotion shapes pitch/brightness on the voice GPU (deploy/modal-voice/post.py), on
+    // every clause incl. the first sound (Chelsea 23:42); the fillers are cached and prefetched per emotion.
+    // GENITA_VOICE_POST=0 = raw voice; GENITA_VOICE_EMOTION=0 = polish without emotion moves.
+    const emo = emotionFor(req.emotion, text);
+    const extra: Record<string, unknown> = { ...(emo ? { emotion: emo } : {}), ...(cfg.post === false ? { post: false } : {}) };
+    const k = key(lang, spk, text, tail, speed, emo);
     const hit = cache.get(k);
     if (hit) {
       yield* hit;
@@ -225,7 +247,7 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
       // bad input (4xx other than 429) is this sentence's problem, not an outage: don't stop the voice for everyone
       const status = err instanceof UpstreamError ? err.status : null;
       const outage = status === null || status >= 500 || status === 429 || status === 401 || status === 403;
-      if (!req.signal?.aborted && outage) {
+      if (!req.signal?.aborted && outage && !quiet) {
         const busy = status === 503 && err instanceof Error && /"busy"/.test(err.message);
         const forMs = busy ? BUSY_DOWN_MS : DOWN_MS;
         downUntil = Math.max(downUntil, now() + forMs); // a busy answer never shortens a running 30 s outage (Codex P2)
@@ -247,6 +269,18 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
         } catch {
           prefetched.delete(p);
           return;
+        }
+      }
+      // then the emotional fillers, one at a time, so an emotional first sound is a cache hit too. A failure here
+      // just stops (it never parks the voice for live calls: quiet); the live request fetches and caches it instead.
+      for (const e of VOICE_EMOTIONS) {
+        for (const f of FILLERS) {
+          if (!emotionFor(e, spokenText(f, "eng"))) continue;
+          try {
+            for await (const _ of speak({ voiceId: `seamless:${speaker}`, text: f, emotion: e, model: SEAMLESS_MODEL, lang: "en" }, true)) void _;
+          } catch {
+            return;
+          }
         }
       }
     })();
