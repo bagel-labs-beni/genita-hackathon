@@ -198,3 +198,163 @@ test("2D blink assets (character2d): BLINK.jpg / BLINKMASK.png are store-safe an
   const m = faceManifest({ ...state(), flow: f }, (k) => `/f/${k}`, (a) => `/f/${a}`);
   assert.equal(m.flow!.blink!.image, "/f/flow_blink");
 });
+
+test("makeFaceFlow passes the animal species to faceflow.py (--species, non-human rules)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ff-species-"));
+  try {
+    const argsFile = join(dir, "args.txt");
+    const sh = join(dir, "spy.sh");
+    writeFileSync(sh, `#!/bin/sh\necho "$@" > ${argsFile}\nexit 3\n`);
+    chmodSync(sh, 0o755);
+    await makeFaceFlow({ python: "/bin/sh", script: sh, scene: pngOf(8, 8), state: state(), kind: "animal", profile: "animal", species: "parrot",
+      image: async () => pngOf(8, 8), put: async () => {} });
+    const argv = readFileSync(argsFile, "utf8");
+    assert.match(argv, /--species parrot/);
+    assert.match(argv, /--kind animal/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+const pyFaceflow = (expr: string) => {
+  const py = pythonWithCv2()!;
+  return JSON.parse(execFileSync(py, ["-c", `import sys, json; sys.path.insert(0, ${JSON.stringify(FACEFLOW_SCRIPT.replace(/\/faceflow\.py$/, ""))}); import faceflow as F; print(json.dumps(${expr}))`]).toString());
+};
+
+test("faceflow.py animal rules (non-human port): bird beak split, small muzzle by box or species, long-snout dog", { skip: pythonWithCv2() ? false : "no python with OpenCV here" }, () => {
+  const face = "[0.2,0.25,0.8,0.62]";
+  const wide = "[0.40,0.50,0.60,0.53]", tiny = "[0.47,0.50,0.53,0.53]";
+  const rule = (kind: string, sp: string, mouth: string) => pyFaceflow(`(lambda r: r and r[0])(F.animal_rule('${kind}', F.profile_of('${kind}'), '${sp}', ${face}, ${mouth}))`);
+  assert.equal(rule("animal", "parrot", wide), "bird");
+  assert.equal(rule("animal", "dog", wide), "mildMuzzle", "a wide dog mouth gets the mild dog rule (f8)");
+  assert.equal(rule("animal", "cow", wide), null, "a wide non-dog mouth gets no exaggeration");
+  assert.equal(rule("animal", "dog", tiny), "smallMuzzle", "mouth box < 12 % of the face width");
+  assert.equal(rule("animal", "hamster", wide), "smallMuzzle");
+  assert.equal(rule("cat", "cat", wide), "smallMuzzle");
+  assert.equal(rule("animal", "golden retriever", wide), "longSnoutDog");
+  assert.equal(rule("character3d", "parrot", wide), null, "characters never take animal rules");
+  const sm = pyFaceflow("F.profile_of('animal')['smallMuzzle']['prep']");
+  assert.deepEqual([sm.squash, sm.widen, sm.shade], [1.6, 1.3, 0.5]);
+});
+
+test("faceflow.py end to end (non-human port): toy derives AH2 from AH; small-muzzle animal shades + widens the opening", { skip: pythonWithCv2() ? false : "no python with OpenCV here" }, () => {
+  const py = pythonWithCv2()!;
+  const W = 256, H = 456, mouthY = 0.515 * H, mouthX = W / 2;
+  const tex = (x: number, y: number): [number, number, number] => [150 + ((x * 7 + y * 3) % 40), 120 + ((x * 3 + y * 5) % 30), 110 + ((x + y) % 25)];
+  const neutral = pngOf(W, H, (x, y) => (Math.abs(y - mouthY) < 1.5 && Math.abs(x - mouthX) < 18 ? [90, 40, 40] : tex(x, y)));
+  const open = pngOf(W, H, (x, y) => (((x - mouthX) / 14) ** 2 + ((y - mouthY - 3) / 6) ** 2 < 1 ? [150, 90, 170] : tex(x, y)));
+  const dir = mkdtempSync(join(tmpdir(), "ff-nh-"));
+  try {
+    writeFileSync(join(dir, "n.png"), neutral); writeFileSync(join(dir, "ah.png"), open);
+    const run = (kind: string, keys: string, species = "") => {
+      const out = join(dir, `out-${kind}`);
+      const args = [FACEFLOW_SCRIPT, "--neutral", join(dir, "n.png"), "--keys", keys, "--face", "0.2,0.25,0.8,0.62", "--mouth", "0.47,0.50,0.53,0.53", "--kind", kind, "--out", out];
+      if (species) args.push("--species", species);
+      const res = JSON.parse(execFileSync(py, args).toString().trim().split("\n").pop()!);
+      return { res, flow: JSON.parse(readFileSync(join(out, "flow.json"), "utf8")) };
+    };
+    const toy = run("toy", `AH=${join(dir, "ah.png")}`);
+    assert.deepEqual(toy.flow.keys.sort(), ["AH", "AH2"], "AH2 derived from the single felt key");
+    assert.equal(toy.res.diag.AH2.derivedFrom, "AH");
+    const bird = run("animal", `AH=${join(dir, "ah.png")}`, "parrot");
+    assert.equal(bird.flow.lockSource, "bird-split", "codex P2: the beak split line is the lock line");
+    assert.ok(Math.abs(bird.flow.lockY - (0.50 + 0.4 * 0.03)) < 1e-4, `upper half of the beak locked (${bird.flow.lockY})`);
+    assert.deepEqual(toy.flow.map.jaw.steps.map((s: [string, number]) => s[0]), ["AH", "AH2"], "codex P2: the open drive reaches the derived AH2");
+    assert.equal(toy.flow.map.cheek.cheekW, 1.0, "codex P2: toy cheek weight, not character3d's");
+    const ham = run("animal", `AH=${join(dir, "ah.png")}`, "hamster");
+    assert.ok(ham.flow.keys.includes("AH"));
+    assert.equal(ham.flow.map.profile, "animal");
+    assert.equal(ham.flow.map.fallback.EH, "AH", "animal shapes fall back to the jaw ladder");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("faceflow.py 2D (codex P2): white teeth on light skin survive pasteDrawnOnly (filled mouth kept, only outside skin dropped)", { skip: pythonWithCv2() ? false : "no python with OpenCV here" }, () => {
+  const py = pythonWithCv2()!;
+  const W = 256, H = 456, cy = 0.515 * H, cx = W / 2;
+  const skin: [number, number, number] = [235, 240, 250];
+  const neutral = pngOf(W, H, (x, y) => (Math.abs(y - cy) < 1.2 && Math.abs(x - cx) < 14 ? [60, 40, 40] : skin));
+  const wd = pngOf(W, H, (x, y) => {
+    const r = ((x - cx) / 28) ** 2 + ((y - cy - 4) / 18) ** 2;
+    if (r < 0.8 && y < cy) return [250, 250, 250];           // white upper teeth, close to the skin colour
+    if (r < 0.8) return [70, 30, 40];                         // cavity
+    if (r < 1) return [40, 25, 25];                           // outline
+    return skin;
+  });
+  const dir = mkdtempSync(join(tmpdir(), "ff-2d-"));
+  try {
+    writeFileSync(join(dir, "n.png"), neutral); writeFileSync(join(dir, "wd.png"), wd);
+    const out = join(dir, "out");
+    execFileSync(py, [FACEFLOW_SCRIPT, "--neutral", join(dir, "n.png"), "--keys", `WD=${join(dir, "wd.png")}`, "--face", "0.2,0.25,0.8,0.62",
+      "--mouth", "0.44,0.505,0.56,0.525", "--kind", "character2d", "--out", out]);
+    const flow = JSON.parse(readFileSync(join(out, "flow.json"), "utf8"));
+    // white teeth are ~250 in every channel; the skin they would be wiped to has a 235 channel
+    const white = Number(execFileSync(py, ["-c", `import cv2; im = cv2.imread(${JSON.stringify(join(out, "WD.jpg"))}); print(int((im.min(2) >= 244).sum()))`]).toString());
+    assert.ok(flow.keys.includes("WD"));
+    assert.ok(white > 120, `teeth stay white (${white} white px; ~88 when the teeth are wiped to skin)`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("faceflow.py species add-ons (f7/f8): dog mild muzzle, rabbit chin fur + Y, horse lower-lip hinge; values reach the flow map", { skip: pythonWithCv2() ? false : "no python with OpenCV here" }, () => {
+  const face = "[0.2,0.25,0.8,0.62]", wide = "[0.40,0.50,0.60,0.53]";
+  const names = (sp: string) => pyFaceflow(`[r[0] for r in F.animal_rules('animal', F.profile_of('animal'), '${sp}', ${face}, ${wide})]`);
+  assert.deepEqual(names("dog"), ["mildMuzzle"]);
+  assert.deepEqual(names("rabbit"), ["smallMuzzle", "rabbitLike"]);
+  assert.deepEqual(names("horse"), ["horseLike"]);
+  assert.deepEqual(names("golden retriever"), ["longSnoutDog"]);
+  assert.deepEqual(names("parrot"), ["bird"]);
+  const ls = pyFaceflow("F.profile_of('animal')['smallMuzzle']['longSnoutDog']['prep']");
+  assert.equal(ls.widen, undefined, "retriever: no horizontal widen (it smeared the lip corners)");
+});
+
+test("faceflow.py end to end: species runtime values land in flow.map (dog lip / unstressed, rabbit chinWarp); 2D dot mouth SM = small open WD", { skip: pythonWithCv2() ? false : "no python with OpenCV here" }, () => {
+  const py = pythonWithCv2()!;
+  const W = 256, H = 456, mouthY = 0.515 * H, mouthX = W / 2;
+  const tex = (x: number, y: number): [number, number, number] => [150 + ((x * 7 + y * 3) % 40), 120 + ((x * 3 + y * 5) % 30), 110 + ((x + y) % 25)];
+  const neutral = pngOf(W, H, (x, y) => (Math.abs(y - mouthY) < 1.5 && Math.abs(x - mouthX) < 18 ? [90, 40, 40] : tex(x, y)));
+  const open = pngOf(W, H, (x, y) => (((x - mouthX) / 14) ** 2 + ((y - mouthY - 3) / 6) ** 2 < 1 ? [150, 90, 170] : tex(x, y)));
+  const dir = mkdtempSync(join(tmpdir(), "ff-sp-"));
+  try {
+    writeFileSync(join(dir, "n.png"), neutral); writeFileSync(join(dir, "ah.png"), open);
+    const run = (species: string, mouth = "0.40,0.50,0.60,0.53") => {
+      const out = join(dir, `out-${species}`);
+      execFileSync(py, [FACEFLOW_SCRIPT, "--neutral", join(dir, "n.png"), "--keys", `AH=${join(dir, "ah.png")}`, "--face", "0.2,0.25,0.8,0.62", "--mouth", mouth, "--kind", "animal", "--out", out, "--species", species]);
+      return JSON.parse(readFileSync(join(out, "flow.json"), "utf8"));
+    };
+    const dog = run("dog");
+    assert.deepEqual(dog.rules, ["mildMuzzle"]);
+    assert.equal(dog.map.motionV2.lip, 1.84); assert.equal(dog.map.motionV2.unstressed, 0.35);
+    assert.equal(typeof dog.map.motionV2.springHz, "number", "the kind's other motionV2 fields stay");
+    const rab = run("rabbit");
+    assert.equal(rab.map.chinWarp.px, 14); assert.equal(rab.map.lipPart.px, 6); assert.equal(rab.map.motionV2.lip, 1.2);
+    const horse = run("horse");
+    assert.equal(horse.map.chinWarp.from, "top");
+    assert.equal(run("cow").rules, undefined, "no rule, no extra block");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  assert.deepEqual(pyFaceflow("F.profile_of('character2d')['prep']['fitDotMouth']['replace']"), { SM: "WD" });
+});
+
+test("faceflow.py 2D dot mouth (codex P2): SM rejected upstream, WD kept → SM derived from WD, no crash", { skip: pythonWithCv2() ? false : "no python with OpenCV here" }, () => {
+  const py = pythonWithCv2()!;
+  const W = 256, H = 456, cy = 0.515 * H, cx = W / 2;
+  const skin: [number, number, number] = [235, 225, 215];
+  const neutral = pngOf(W, H, (x, y) => (Math.abs(y - cy) < 1 && Math.abs(x - cx) < 4 ? [60, 40, 40] : skin));
+  const wd = pngOf(W, H, (x, y) => { const r = ((x - cx) / 12) ** 2 + ((y - cy - 3) / 9) ** 2; return r < 0.8 ? [80, 30, 40] : r < 1 ? [40, 25, 25] : skin; });
+  const dir = mkdtempSync(join(tmpdir(), "ff-dot-"));
+  try {
+    writeFileSync(join(dir, "n.png"), neutral); writeFileSync(join(dir, "wd.png"), wd);
+    const out = join(dir, "out");
+    const res = JSON.parse(execFileSync(py, [FACEFLOW_SCRIPT, "--neutral", join(dir, "n.png"), "--keys", `WD=${join(dir, "wd.png")}`, "--face", "0.1,0.2,0.9,0.6",
+      "--mouth", "0.49,0.512,0.51,0.518", "--kind", "character2d", "--out", out]).toString().trim().split("\n").pop()!);
+    assert.ok(res.ok);
+    assert.deepEqual(res.diag.SM.derivedFrom, "WD");
+    assert.ok(JSON.parse(readFileSync(join(out, "flow.json"), "utf8")).keys.includes("SM"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

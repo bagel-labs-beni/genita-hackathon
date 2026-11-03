@@ -212,6 +212,8 @@ test("routes (Meta-only): device voices, no previews, face images served per use
   assert.equal((await call("GET", "/v1/companion/face/neutral")).status, 200);
   assert.equal((await call("GET", "/v1/companion/face/O", undefined, "u2")).status, 404, "another user has no companion");
   assert.equal((await call("GET", "/v1/companion/face/nope")).status, 404);
+  assert.equal(prep.face.images.person, undefined, "fake SAM sends no masks: no subject matte listed");
+  assert.equal((await call("GET", "/v1/companion/face/person")).status, 404, "an unlisted matte is never served");
   assert.equal((await call("GET", "/v1/companion/face/..%2Fcompanions%2Fu1")).status, 404);
 
   const comp = (await (await call("POST", "/v1/companion/prefs", { depth: "quick", answers: { help: "Be there", relationship: "Close companion", presence: ["Calm"] } })).json()) as Record<string, any>;

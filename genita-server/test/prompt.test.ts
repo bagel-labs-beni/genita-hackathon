@@ -14,7 +14,7 @@ const mina: PersonaCard = {
 
 test("chat and memory tools require silent calls and only the answer aloud", () => {
   const s = buildInstructions({ persona: mina, mode: "chat" });
-  assert.match(s, /Call tools silently; never announce, describe or promise a tool call\. Speak only the answer\./);
+  assert.match(s, /Call tools silently; never announce, describe or promise a tool call or a lookup .*never about them as "she" or "he"\./);
   for (const tool of MEMORY_TOOLS) {
     assert.ok("description" in tool);
     assert.match(String(tool.description), /Call silently; never announce, describe or promise this call\./);
