@@ -179,7 +179,12 @@ export async function startServer(
       for (const [id, u] of sessionUsers) if (u === userId) sessions.get(id)?.close(4410, "companion_reset");
       dropLastTurns(userId);
       forgetOpenerTopics(userId);
-      await deps.memory?.forget(userId);   // after the close: its revision bump refuses a late extraction or turn cache from that call
+      // after the close: its revision bump refuses a late extraction or turn cache from that call; the new companion
+      // never met them (AU-90): when they last talked and the carried mood go too
+      await deps.memory?.forget(userId, undefined, { relationship: true });
+      // ...and it is call 1 with them again (first-call nod and question), what Genita knows about them stays (AU-90)
+      const style = await prep.deps.store.getStyle(userId);
+      if (style?.growth) await prep.deps.store.putStyle(userId, { ...style, growth: { calls: 0, asked: [] } });
     },
   });
   // F6-L7: who holds the sound. conversations.active_device/epoch with accounts, memory without.
