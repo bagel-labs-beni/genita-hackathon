@@ -69,6 +69,7 @@ func parse() -> Options {
         case "--expr-warp": o.expr = v(); FaceRenderer.expressionLayer = true   // + the v29 warp layer (off in the app)
         case "--no-stills": FaceRenderer.expressionStills = false
         case "--tail": o.tailMs = Double(v()) ?? 300
+        case "--expr-profile": if !FaceRenderer.useExpressionProfile(v()) { fail("--expr-profile A|B|C") }
         case "--frames-dir": o.framesDir = v()
         case "--frames-prefix": o.framesPrefix = v()
         case "--bitrate": o.bitrate = Int(v()) ?? o.bitrate
