@@ -138,7 +138,7 @@ test("runner.topUpFace (face load): in the background, once per account per 10 m
     const logs: string[] = [];
     const { media, calls } = fakeMedia({ keyOf, delayMs: 20 });
     const runner = new PrepRunner({ metaKey: "k", store, voices: [], media, log: (e) => logs.push(e) });
-    const wait = () => (runner as unknown as { running: Map<string, Promise<void>> }).running.get("u1");
+    const wait = () => (runner as unknown as { topUpJobs: Map<string, { p: Promise<void> }> }).topUpJobs.get("u1")?.p;
     assert.equal(runner.topUpFace("u1", (await store.getCompanion("u1"))!, { GENITA_FACE_TOPUP: "0" }), false, "switch off");
     assert.equal(runner.topUpFace("u1", (await store.getCompanion("u1"))!, {}), true);
     assert.equal(runner.topUpFace("u1", (await store.getCompanion("u1"))!, {}), false, "one at a time");
@@ -158,6 +158,13 @@ test("runner.topUpFace (face load): in the background, once per account per 10 m
     await runner.forgetUser("u2");
     for (const k of ["surprised", "concerned", "neutral"]) assert.equal(await store.getAsset("u2", "c2", k), null, `${k} erased`);
     assert.equal(runner.topUpFace("u2", c2, {}), false, "no top-up while the account is being deleted");
+
+    // a new prep for an account never waits on its top-up: it cancels it (Codex review: run() returned the top-up)
+    const c3 = { ...prepped(), id: "c3", userId: "u3" };
+    await store.putCompanion(c3);
+    await store.putAsset("u3", "c3", "neutral", fakePng(1000, 2000, "scene"));
+    assert.equal(runner.topUpFace("u3", c3, {}), true);
+    assert.equal(runner.isRunning("u3"), false, "a top-up is not a prep");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

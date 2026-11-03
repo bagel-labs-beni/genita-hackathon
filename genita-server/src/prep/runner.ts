@@ -113,6 +113,7 @@ export class PrepRunner {
     const existing = this.running.get(userId);
     if (existing) return existing;
     if (this.deleting.has(userId)) return Promise.resolve();
+    this.topUpJobs.get(userId)?.ac.abort(new Error("prep started"));   // a new prep supersedes a face top-up
     const ac = new AbortController();
     this.aborts.set(userId, ac);
     const p = this.loop(userId, ac).catch((err) => {
@@ -136,13 +137,15 @@ export class PrepRunner {
   cancel(userId: string): boolean {
     const ac = this.aborts.get(userId);
     ac?.abort(new Error("prep cancelled"));
+    this.topUpJobs.get(userId)?.ac.abort(new Error("prep cancelled"));
     return !!ac;
   }
 
-  /** Cancels a running prep and waits until it has stopped (no more saves). Used before a demo companion is replaced. */
+  /** Cancels a running prep (and a face top-up) and waits until they have stopped (no more saves). Used before a demo companion is replaced. */
   async stop(userId: string): Promise<void> {
     this.cancel(userId);
     await this.running.get(userId)?.catch(() => {});
+    await this.topUpJobs.get(userId)?.p;
   }
 
   /**
@@ -154,6 +157,7 @@ export class PrepRunner {
     this.deleting.add(userId);
     this.cancel(userId);
     await this.running.get(userId)?.catch(() => {});
+    await this.topUpJobs.get(userId)?.p;   // its in-flight image writes land before the erase below
     await this.d.store.deleteAssets(userId);
   }
 
@@ -165,14 +169,13 @@ export class PrepRunner {
    * logs (the face keeps working with the keys it has). At most `TOPUP_MAX` at once.
    */
   topUpFace(userId: string, c: CompanionRecord, env: Record<string, string | undefined> = process.env): boolean {
-    if (!topUpOn(env) || this.running.has(userId) || this.deleting.has(userId) || this.topUps >= TOPUP_MAX) return false;
+    if (!topUpOn(env) || this.running.has(userId) || this.topUpJobs.has(userId) || this.deleting.has(userId) || this.topUps >= TOPUP_MAX) return false;
     const f = c.prep.steps.face;
     if (f?.status !== "done" || !f.face || !missingFaceKeys(c, env).length) return false;
     const last = this.topUpAt.get(userId);
     if (last !== undefined && Date.now() - last < TOPUP_RETRY_MS) return false;
     this.topUpAt.set(userId, Date.now());
     const ac = new AbortController();
-    this.aborts.set(userId, ac);
     this.topUps++;
     const t0 = performance.now();
     const p = topUpFaceKeys({ store: this.d.store, media: mediaOf(this.d), metaKey: this.d.metaKey, companion: c, env, signal: ac.signal, settleMs: 0, log: this.d.log })
@@ -180,12 +183,13 @@ export class PrepRunner {
       .catch((err) => this.d.log("face.topup_failed", { companion: c.id, message: String(err).slice(0, 200) }))
       .finally(() => {
         this.topUps--;
-        this.running.delete(userId);
-        this.aborts.delete(userId);
+        this.topUpJobs.delete(userId);
       });
-    this.running.set(userId, p);
+    this.topUpJobs.set(userId, { p, ac });
     return true;
   }
+  /** Background face top-ups by account: kept apart from `running`, so a new prep never waits on one (it cancels it). */
+  private topUpJobs = new Map<string, { p: Promise<void>; ac: AbortController }>();
   private topUps = 0;
   private topUpAt = new Map<string, number>();
 
