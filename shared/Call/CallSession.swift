@@ -80,6 +80,7 @@ enum CallStop: Equatable {
     case signIn      // 4401: no, bad, expired or revoked token, or the account was deleted → A02
     case consent     // 4403: signed in, no AI-data consent yet → CS01
     case timeLimit   // 4001: max call length
+    case companionReset   // 4410: the companion was reset (POST /v1/companion/reset) → iPhone V01, Mac "Set up on iPhone"
 }
 
 /// F4-L10 + F4-U-S09 · One live call: WebSocket session, mic uplink, reply playback, camera frames,
@@ -195,6 +196,12 @@ enum CallStop: Equatable {
     @ObservationIgnored private var faceAnimates = true
     @ObservationIgnored private var faceReduceMotion = false
     @ObservationIgnored private var faceLoad: Task<Void, Never>?
+    /// a face set download is in flight (from prepareFace or showFace)
+    @ObservationIgnored private var faceLoading = false
+    /// which load `faceLoading` belongs to (AU-25 × #524)
+    @ObservationIgnored private var faceLoadGeneration = 0
+    /// the account the load in flight is for
+    @ObservationIgnored private var faceLoadOwner: String?
     /// The account the face set belongs to (JWT `sub`); another account never sees it.
     @ObservationIgnored private var faceOwner: String?
     /// Utterance ids restart with each session; the face sees `faceIdBase + id` so they only grow.
@@ -626,7 +633,7 @@ enum CallStop: Equatable {
         playing = false
         awaitingFirstAudio = false
         guard !userEnded else { return }
-        if case let .server(code, _) = closure, let stop: CallStop = code == 4401 ? .signIn : code == 4403 ? .consent : code == 4001 ? .timeLimit : nil {
+        if case let .server(code, _) = closure, let stop: CallStop = code == 4401 ? .signIn : code == 4403 ? .consent : code == 4001 ? .timeLimit : code == 4410 ? .companionReset : nil {
             // Reconnecting can't fix these; hand them to the router.
             stopped = stop
             link = .idle
@@ -987,9 +994,8 @@ enum CallStop: Equatable {
         face = driver
         if faceOnScreen && faceAnimates { driver.start() }
         if !faceAnimates { renderFaceStill(set, size: size, for: driver) }
-        #if os(macOS)
+        // iPhone too since build 8: the generated face's rest frame shows before it moves (no upload-photo flash)
         renderFacePoster(set, size: size, seed: seed, reduceMotion: reduceMotion, for: driver)
-        #endif
     }
 
     /// The live renderer's settings (seed, reduce motion → same overscan and motion), at rest, off the main thread.
@@ -1010,7 +1016,7 @@ enum CallStop: Equatable {
     func prepareFace(reduceMotion: Bool) {
         guard !CompanionFace.clipLoopFace, !faceOnScreen else { return }
         faceReduceMotion = reduceMotion
-        faceLoad?.cancel()
+        cancelFaceLoad()
         faceLoad = Task { [weak self] in await self?.loadFace() }
     }
 
@@ -1096,15 +1102,28 @@ enum CallStop: Equatable {
         refreshFacePoster()
         if animate { face?.start() }
         guard !CompanionFace.clipLoopFace else { return }
-        faceLoad?.cancel()
+        // a load started while connecting (prepareFace) keeps going: restarting it was what left the upload photo
+        // on screen for the first ~4 s of the call (build 6 device)
+        // … unless it's for the account before (a sign-in meanwhile): that one never lands here
+        if faceLoading, faceLoadOwner == Self.tokenSubject(currentEndpoint.token) { return }
+        cancelFaceLoad()
         faceLoad = Task { [weak self] in await self?.loadFace() }
     }
 
     /// The call screen went away: no more frames.
     func hideFace() {
         faceOnScreen = false
-        faceLoad?.cancel()
+        cancelFaceLoad()
         face?.stop()
+    }
+
+    /// Stops the load in flight and says so at once: a hide → show right after must start a new load, not wait for a
+    /// cancelled one (AU-25 × #524 `faceLoading`).
+    private func cancelFaceLoad() {
+        faceLoad?.cancel()
+        faceLoad = nil
+        faceLoading = false
+        faceLoadGeneration += 1
     }
 
     func setFaceReduceMotion(_ on: Bool) {
@@ -1115,10 +1134,8 @@ enum CallStop: Equatable {
 
     /// Reduce motion changed since the poster was drawn (it sets the overscan): draw it again to match (Codex P2).
     private func refreshFacePoster() {
-        #if os(macOS)
         guard let face, let set = faceSetForPoster, let drawn = posterReduceMotion, drawn != faceReduceMotion else { return }
         renderFacePoster(set, size: CompanionFace.outputSize(for: set), seed: faceSeed, reduceMotion: faceReduceMotion, for: face)
-        #endif
     }
 
     /// AU-25 · S09-P (D28): a call that starts before the face set is made checks again this often while the call
@@ -1132,6 +1149,13 @@ enum CallStop: Equatable {
     /// Loads the face set; while it isn't made yet (or the request failed) and the call screen is up, tries again
     /// every `faceRetryInterval` until it loads. `hideFace` (and a newer load) cancels the wait.
     private func loadFace() async {
+        // #524: a load in flight makes showFace wait for it instead of restarting it. Only the newest load may say
+        // it's over (a cancelled one finishing late must not clear a newer one's flag); cancels clear it at once.
+        faceLoadGeneration += 1
+        let generation = faceLoadGeneration
+        faceLoading = true
+        faceLoadOwner = Self.tokenSubject(currentEndpoint.token)
+        defer { if faceLoadGeneration == generation { faceLoading = false } }
         while await loadFaceOnce() {
             try? await Task.sleep(for: faceRetryInterval)
             guard !Task.isCancelled, faceOnScreen, face == nil else { return }

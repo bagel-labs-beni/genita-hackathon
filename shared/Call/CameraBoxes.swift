@@ -54,11 +54,19 @@ struct LiveBox: Identifiable, Equatable {
     }
     // MARK: mask labels (demo S3 option c)
 
-    /// CameraStage space: the menu button (ConversationView: 47 pt at (47.5, 86.5 + top)), padded 6 pt.
-    static func menuRect(top: CGFloat) -> CGRect { CGRect(x: 24 - 6, y: 63 + top - 6, width: 47 + 12, height: 47 + 12) }
-    /// The status line pill ("Listening", "Jin is talking": 36 pt tall, centred at y 142 + top, up to ~240 pt wide), padded 4 pt.
+    /// CameraStage space: the menu button (CallHUDGrid: 44 pt at (38, safe top + 30)), padded 6 pt.
+    static func menuRect(grid: CallHUDGrid) -> CGRect {
+        let c = grid.menuCenter, r = CallHUDGrid.button / 2 + 6
+        return CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r)
+    }
+    /// The status line pill, centred, 32 pt tall, on the grid's menu row or the line under it, `width` wide (measured;
+    /// at least 240 so a changing line never uncovers a label), padded 4 pt.
     /// A box label under it read as one pill over another ("Green onion" behind "Listening", UI sweep 11/3).
-    static func statusRect(view: CGSize, top: CGFloat) -> CGRect { CGRect(x: view.width / 2 - 120 - 4, y: 142 + top - 18 - 4, width: 240 + 8, height: 36 + 8) }
+    static func statusRect(grid: CallHUDGrid, line: CallHUDGrid.StatusLine = .row, width: CGFloat = 240) -> CGRect {
+        let y = grid.statusY(line), h = CallPillMetrics.height
+        let w = min(max(width, 240), grid.size.width - 2 * CallHUDGrid.margin), c = grid.size.width / 2
+        return CGRect(x: c - w / 2 - 4, y: y - h / 2 - 4, width: w + 8, height: h + 8)
+    }
     /// How far the right-hand control rail (camera, mic, more) moves up with the Finds sheet (ConversationView reads it too).
     static func railShift(_ s: SheetState) -> CGFloat {
         switch s {
@@ -67,11 +75,12 @@ struct LiveBox: Identifiable, Equatable {
         default: 0
         }
     }
-    /// The control rail: three 50 pt glass buttons centred at x = width − 56, y 665 / 724 / 783 (+ the screen's extra
-    /// height below 844, + the sheet shift), padded 4 pt. A label under it can't be read ("Whole milk", UI sweep 11/3).
-    static func railRect(view: CGSize, sheet: SheetState) -> CGRect {
-        let y = 665 + (view.height - 844) + railShift(sheet)
-        return CGRect(x: view.width - 56 - 25 - 4, y: y - 25 - 4, width: 50 + 8, height: 783 - 665 + 50 + 8)
+    /// The control rail: three 44 pt glass buttons (CallHUDGrid: x = width − 38, ending on the baseline, + the sheet
+    /// shift), padded 4 pt. A label under it can't be read ("Whole milk", UI sweep 11/3).
+    static func railRect(grid: CallHUDGrid, sheet: SheetState) -> CGRect {
+        let up = CallHUDGrid.sheetUp(sheet), half = CallHUDGrid.button / 2
+        let top = grid.railY(.camera, sheetUp: up) - half + railShift(sheet), bottom = grid.railY(.more, sheetUp: up) + half + railShift(sheet)
+        return CGRect(x: grid.railX - half - 4, y: top - 4, width: CallHUDGrid.button + 8, height: bottom - top + 8)
     }
     /// The self-view PiP (96 × 128 at y 184 + top; right edge 20 pt, or left while the sheet is half up), padded 6 pt.
     static func pipRect(view: CGSize, top: CGFloat, sheetHalf: Bool) -> CGRect {
@@ -80,10 +89,10 @@ struct LiveBox: Identifiable, Equatable {
     }
 
     /// Where a label pill goes (absolute origin), keeping clear of `obstacles` (menu button, PiP). Tried in order:
-    /// above the box at its left edge (where boxes put it), below it, inside its top, then each of those slid beside
-    /// the obstacle it hits. Never above `topInset`, never off screen. Nothing fits: the box rule (above / below).
+    /// above the box at its left edge (where boxes put it), inside its top (6 pt), below it (6 pt), then each of those
+    /// slid beside the obstacle it hits. Never above `topInset` (the HUD row band), never off screen. Nothing fits: the box rule.
     static func labelOrigin(_ rect: CGRect, label: CGSize, view: CGSize, topInset: CGFloat, obstacles: [CGRect]) -> CGPoint {
-        let ys = [rect.minY - label.height - 4, rect.maxY + 4, rect.minY + 4]
+        let ys = [rect.minY - label.height - 4, rect.minY + 6, rect.maxY + 6]
         var xs = [max(0, rect.minX)]
         for o in obstacles { xs += [o.maxX + 4, o.minX - label.width - 4] }
         for y in ys {
@@ -193,11 +202,13 @@ struct LiveBox: Identifiable, Equatable {
     /// Label height 28 + 4 gap above the box; below it when the box is too near the top of the view.
     static func labelAbove(_ rect: CGRect, topInset: CGFloat) -> Bool { rect.minY - 32 >= topInset }
 
-    /// Label offset from the box top. Never lets the label sit above `topInset` (status bar, menu button): a box that
-    /// starts off the top edge gets its label pushed down instead of onto the clock.
+    /// Label offset from the box top. Never lets the label sit above `topInset` (HUD r01 A: the menu row band, safe top
+    /// + 60, where the status pill and menu button are): no room above → inside the box's top (6 pt); the box itself
+    /// reaches into the band → under the box (6 pt). The pill never moves for a label.
     static func labelOffsetY(_ rect: CGRect, topInset: CGFloat) -> CGFloat {
-        let y = labelAbove(rect, topInset: topInset) ? -32 : rect.height + 4
-        return max(y, topInset - rect.minY)
+        if labelAbove(rect, topInset: topInset) { return -32 }
+        if rect.minY >= topInset { return 6 }
+        return max(rect.height + 6, topInset - rect.minY)
     }
 
     /// A box that ends above the status/menu area has nothing to show (its label would float over the menu button).

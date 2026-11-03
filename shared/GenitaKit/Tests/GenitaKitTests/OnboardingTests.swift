@@ -54,6 +54,16 @@ final class OnbStub: URLProtocol, @unchecked Sendable {
         #expect(s.displayText.contains("Interests\n• Not enough information yet."))
     }
 
+    @Test func resetCompanionPostsAndSurfacesTheDailyLimit() async throws {
+        OnbStub.handler = { _ in (200, Data(#"{"ok":true,"removed":true}"#.utf8)) }
+        let r = try await client.resetCompanion()
+        let req = try #require(OnbStub.seen.last)
+        #expect(req.url?.path == "/v1/companion/reset" && req.httpMethod == "POST" && req.value(forHTTPHeaderField: "authorization") == "Bearer tok")
+        #expect(r.ok && r.removed)
+        OnbStub.handler = { _ in (429, Data(#"{"error":"rate_limited"}"#.utf8)) }
+        await #expect(throws: GenitaAuthError.server(status: 429, code: "rate_limited")) { try await client.resetCompanion() }
+    }
+
     @Test func skipSendsNullRepliesWhenUnanswered() async throws {
         OnbStub.handler = { _ in (200, Data(styleJSON.utf8)) }
         _ = try await client.importSkip(interests: ["Food"], replies: nil, avoid: [])

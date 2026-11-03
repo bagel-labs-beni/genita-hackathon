@@ -56,19 +56,26 @@ export type VoiceConfig = {
   speakers: { human: number; animal: number; character: number };
   /** speaking rate (1 = model default) */
   speed: number;
-  /** give up on a sentence if its first audio takes longer than this (then the app speaks it) */
+  /** give up on a sentence if its first audio takes longer than this (then it is retried once, else captions only) */
   timeoutMs: number;
   /** "seamless" (default) or "mms" (Meta MMS-TTS backup on the same service, no timing) */
   model: "seamless" | "mms";
   /** GENITA_VOICE_ALIGN=1: ask the service for word + phoneme timing (Meta MMS forced aligner), sent to the app
    * as `audio.timing` after each clause's audio. Off: requests are unchanged. */
   align?: boolean;
-  /** GENITA_VOICE_POST=0: ask the voice GPU for the raw vocoder voice (no post chain, no emotion moves). Unset: unchanged requests. */
+  /** false (default since 11/4): the raw vocoder voice, no post chain, no emotion pitch/tone. GENITA_VOICE_POST=1 turns post.py on. */
   post?: boolean;
   /** GENITA_VOICE_EMOTION=0: keep the post chain but send no reply emotion (no pitch/tone moves). Unset: emotion on. */
   emotion?: boolean;
   /** `expression` events per reply clause (face expression layer, 11/3). Default on; GENITA_EXPRESSION=0 turns them off. */
   expressions?: boolean;
+  /**
+   * GENITA_VOICE_DEVICE_FALLBACK=1: the old fallback (a full GPU or a failed clause → the app's system voice via `say`).
+   * Off by default since 11/4 (Chelsea, build 7: "왜 여자 + 기계식"): the phone's voice is another person (iOS picks a
+   * female en-US voice) and robotic, so a call keeps the companion's own voice and retries; captions cover a clause
+   * the voice service could not voice.
+   */
+  deviceFallback?: boolean;
 };
 
 /** "human:12,animal:7,character:33" → per-kind Seamless speaker ids */
@@ -109,9 +116,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
           timeoutMs: num(env.GENITA_VOICE_TIMEOUT_MS, 4000),
           model: env.GENITA_VOICE_MODEL === "mms" ? "mms" : "seamless",
           align: env.GENITA_VOICE_ALIGN === "1",
-          ...(env.GENITA_VOICE_POST === "0" ? { post: false } : {}),
+          // 11/4: the raw Seamless voice by default. The GPU post chain (post.py: emotion pitch by varispeed, tone/gain,
+          // 3 kHz cut) is opt-in with GENITA_VOICE_POST=1; it moved the speaker's pitch per reply (Chelsea build 7:
+          // "여자 + 기계식"). Speed per emotion (seamless.ts EMOTION_SPEED) stays.
+          ...(env.GENITA_VOICE_POST === "1" ? {} : { post: false }),
           ...(env.GENITA_VOICE_EMOTION === "0" ? { emotion: false } : {}),
           expressions: env.GENITA_EXPRESSION !== "0",
+          ...(env.GENITA_VOICE_DEVICE_FALLBACK === "1" ? { deviceFallback: true } : {}),
         }
       : null;
   if (voiceUrl && !voice) throw new Error("GENITA_VOICE_URL needs GENITA_VOICE_TOKEN");

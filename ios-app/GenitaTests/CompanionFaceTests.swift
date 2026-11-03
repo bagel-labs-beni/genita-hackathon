@@ -315,6 +315,35 @@ import XCTest
         call.hideFace()
     }
 
+    /// AU-25 × #524: hide → show while a load is in flight (app backgrounded and back, handoff) starts a new load
+    /// at once; the cancelled one must not leave `faceLoading` set and the screen with no load at all.
+    func testHideThenShowDuringALoadStartsANewLoad() async throws {
+        let saved = CallEndpoint.userToken
+        defer { CallEndpoint.userToken = saved }
+        CallEndpoint.userToken = { "tok" }
+        let running = Data(#"{"status":"running","face":null}"#.utf8)
+        let (runningFetch, _) = stubServer(prep: running)
+        let prepCalls = Box(0)
+        let fetch: CompanionFaceLoader.Fetch = { req in
+            if req.url?.path == "/v1/companion/prep" {
+                prepCalls.value += 1
+                if prepCalls.value == 1 { try await Task.sleep(for: .seconds(3)) }   // the first load is slow
+            }
+            return try await runningFetch(req)
+        }
+        let cache = tempDir()
+        let call = CallController()
+        call.faceRetryInterval = .seconds(30)
+        call.faceLoaderOverride = { CompanionFaceLoader(endpoint: $0, cacheRoot: cache, fetch: fetch) }
+        call.showFace(reduceMotion: true, animate: false)
+        for _ in 0..<100 where prepCalls.value == 0 { try await Task.sleep(for: .milliseconds(10)) }
+        call.hideFace()
+        call.showFace(reduceMotion: true, animate: false)
+        for _ in 0..<100 where prepCalls.value < 2 { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(prepCalls.value, 2, "shown again: a new load starts right away")
+        call.hideFace()
+    }
+
     func testLoaderSaysPendingWhileTheFaceIsBeingMade() async throws {
         let running = Data(#"{"status":"running","face":null,"sceneUrl":null}"#.utf8)
         let (fetch, _) = stubServer(prep: running)
