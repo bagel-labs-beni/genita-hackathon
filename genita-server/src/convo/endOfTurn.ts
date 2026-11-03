@@ -15,11 +15,12 @@ export type EotKind = "complete" | "unpunctuated" | "incomplete";
 export type EotVerdict = { kind: EotKind; holdMs: number; why: string };
 
 /**
- * holdMs is counted from the Transcribe final (≈0.7 s after the voice stopped). The user's resumed speech reaches us
- * ≈0.45 s after they start again, so a 1.6 s hold keeps the turn open for pauses up to ≈1.85 s.
- * cueAfterMs: the backchannel goes ≈1.05 s after the voice stopped.
+ * holdMs is counted from the Transcribe final (0.3–0.7 s after the voice stopped). The user's resumed speech reaches us
+ * 0.45–0.7 s after they start again (CA-14 harness 11/4: 1.6 s missed 1/20 when the final came early and the resume
+ * late), so a 2.0 s hold keeps the turn open for pauses up to ≈1.7–2.2 s.
+ * cueAfterMs: the backchannel goes ≈0.7–1.05 s after the voice stopped.
  */
-export const EOT = { incompleteMs: 1600, unpunctuatedMs: 700, cueAfterMs: 350 } as const;
+export const EOT = { incompleteMs: 2000, unpunctuatedMs: 700, cueAfterMs: 350 } as const;
 
 const w = (s: string) => new Set(s.split(/\s+/).filter(Boolean));
 /** words a finished sentence never ends on */
