@@ -257,7 +257,8 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
         onHandoffAccountChange?(userId)
         storage.removeObject(forKey: Self.signedOutKey)
         if let userId {
-            if let previous = storage.string(forKey: Self.userKey), previous != userId { resetLocalProfile() }
+            // N1–N3 picks not sent to any account yet (picked signed out, QA build 5 h14) go on to this account
+            if let previous = storage.string(forKey: Self.userKey), previous != userId { resetLocalProfile(keepUnsentSkipPicks: true) }
             storage.set(userId, forKey: Self.userKey)
         }
         if !consented { storage.set(true, forKey: Self.needsConsentKey); go(.consent); return }
@@ -280,6 +281,11 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
         guard setup.accountId != id else { return }
         if setup.accountId != nil || setup.companionCreated == true || setup.styleRows != nil {
             var fresh = SavedSetup(); fresh.stage = setup.stage == .consent ? .consent : .name
+            // unsent N1–N3 picks stay (same rule as resetLocalProfile)
+            if setup.styleRows == nil && setup.companionCreated != true {
+                fresh.skipInterests = setup.skipInterests; fresh.skipReplies = setup.skipReplies
+                fresh.skipAvoid = setup.skipAvoid; fresh.skipLikes = setup.skipLikes
+            }
             setup = fresh
             history = []
             story = nil; storyChanged = [:]; storyFailed = false; hisyPage = 0
@@ -299,11 +305,20 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
         storage.removeObject(forKey: Self.userKey)
         signedOut()
     }
-    func resetLocalProfile() {
+    /// `keepUnsentSkipPicks`: N1–N3 answers that no account has received yet (no imported style, no companion) are
+    /// this person's, picked before signing in — they stay for the new account (QA build 5 device171: the skip sent
+    /// only N3 after a sign-in wiped N1·N2). An account delete drops everything.
+    func resetLocalProfile(keepUnsentSkipPicks: Bool = false) {
+        let old = setup
+        let carry = keepUnsentSkipPicks && old.styleRows == nil && old.companionCreated != true
         storage.removeObject(forKey: Self.storageKey)
         try? FileManager.default.removeItem(at: imageURL)
         history = []
         setup = SavedSetup()
+        if carry {
+            setup.skipInterests = old.skipInterests; setup.skipReplies = old.skipReplies
+            setup.skipAvoid = old.skipAvoid; setup.skipLikes = old.skipLikes
+        }
         story = nil; storyChanged = [:]; storyFailed = false; hisyPage = 0
         prep = nil; sceneImage = nil
     }

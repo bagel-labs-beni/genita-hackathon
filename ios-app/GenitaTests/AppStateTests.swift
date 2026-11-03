@@ -71,6 +71,24 @@ import UIKit
         XCTAssertFalse(model.setup.hasOnboarded)
         XCTAssertEqual(model.stage, .consent)
     }
+    /// QA build 5 (device171 h14): N1·N2 picked before signing in must reach the new account's skip request;
+    /// an account whose answers were already sent (imported style) never hands them on.
+    func testUnsentSkipPicksSurviveSigningInAsAnotherAccount() {
+        let model = AppState(storage: store)
+        model.signedIn(userId: "user-a", consented: true)
+        model.signedOut()
+        model.setup.skipInterests = ["Food", "Style"]; model.setup.skipReplies = "Show me options"
+        model.signedIn(userId: "user-b", consented: true)
+        XCTAssertEqual(model.setup.skipInterests, ["Food", "Style"])
+        XCTAssertEqual(model.setup.skipReplies, "Show me options")
+        XCTAssertEqual(AppState.skipAnswers(model.setup).interests, ["Food", "Style"], "the skip request carries them")
+        // B sent them (style imported), then C signs in: C starts clean
+        model.setup.styleRows = []
+        model.signedOut()
+        model.signedIn(userId: "user-c", consented: true)
+        XCTAssertNil(model.setup.skipInterests)
+        XCTAssertNil(model.setup.skipReplies)
+    }
     func testVerifiedIdentityAndLogoutNotifyHandoffEvenWhenSavedAccountIsUnchanged() {
         var accounts: [String?] = []
         let model = AppState(storage: store, onHandoffAccountChange: { accounts.append($0) })
