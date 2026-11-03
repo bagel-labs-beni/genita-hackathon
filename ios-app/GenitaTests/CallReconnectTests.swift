@@ -6,6 +6,8 @@ import XCTest
         let audio = ReconnectAudio(), voice = ReconnectVoice(), sockets = ReconnectSockets()
         let call = begin(audio, voice, sockets)
         defer { call.end() }
+        var connections = 0
+        call.onConnected = { connections += 1 }
         let old = sockets.connections[0]
         old.onMessage?(.text(ready("old")))
         old.onMessage?(.text(timing(id: 1, seq: 1)))
@@ -21,6 +23,7 @@ import XCTest
         old.onMessage?(.text(timing(id: 99, seq: 7)))
         let current = try await reconnect(old, sockets)
         current.onMessage?(.text(ready("new")))
+        XCTAssertEqual(connections, 2, "Initial and recovered calls both retry handoff identity")
 
         // Queued callbacks from the replaced socket cannot cancel the new session or replace its ready.
         old.onMessage?(.text(cancelled(1)))
@@ -28,6 +31,7 @@ import XCTest
         old.onMessage?(.binary(frame(seq: 7)))
         old.onOpen?()
         old.onClose?(.failed("late close"))
+        XCTAssertEqual(connections, 2, "A replaced socket cannot trigger identity resolution")
         XCTAssertEqual(call.sessionId, "new")
         XCTAssertEqual(old.sent.count, 1, "late open cannot restart the old socket")
         XCTAssertEqual(current.sent.count, 1, "only the new socket's start")

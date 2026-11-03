@@ -40,6 +40,24 @@ const positives = [
   "잠시만요; 검색해 볼게요.",
   "잠시만요: 검색해 볼게요.",
   "잠시만요 — 검색해 볼게요.",
+  // #354: real Spark lines on main after #269 (smoke + finds:e2e outfit, 11/3)
+  "Trying to map your route to City Hall — give me just a moment.",
+  "I'll quickly recall what you shared about your sister.",
+  "I'll note that win.",
+  "Let me check what I've got on you so I can keep up.",
+  "I'll pull what I remember to pick one.",
+  "I'll pull up what I remember about your style to help pick tonight's outfit.",
+  "She's holding up the trench and denim — I'll pull what I remember to pick one.",
+  "She's asking me to pick a jacket — I'll check what I remember to choose one.",
+  "She's holding up the trench and denim —",
+  "She's asking me to pick a jacket,",
+  "Give me just a moment while I look that up.",
+  "I'll pull up the best route to City Hall for you.",
+  // second smoke round (11/3)
+  "Let me try to remember what you told me about her.",
+  "I'll pull up what I've got on your style to decide between the trench and denim.",
+  "I'll pull what I remember about your style and choose tonight.",
+  "Now I'm pulling your favorites for dinner ideas.",
 ];
 const negatives = [
   "Let me think — tofu works.",
@@ -66,6 +84,23 @@ const negatives = [
   "Hmm, I remember you love tofu.",
   "Well, I'll check the oven.",
   "One sec; the tofu is burning.",
+  // #354 neighbours that are real content
+  "Your presentation went well — I'll note that win.",
+  "Your day sounded long — let me check what I've got on you so I can keep up.",
+  "She's lucky to have you.",
+  "She's asking for help with her move?",
+  "I'll pull a chair up and listen.",
+  "Let me see what you've got in there.",
+  "Trying to make it work is all you can do.",
+  "I'll note the time and we can talk later.",
+  // Codex review (#354): content that must stay
+  "Trying to find a job is exhausting.",
+  "She is wondering whether you can help her move.",
+  "She is asking me to choose, but the blue jacket looks best.",
+  "I'll note that the blue jacket fits better — go with that one.",
+  "She's holding up your ring for you.",
+  "I'll find the best route is the bus, honestly.",
+  "The best route is the 2 line.",
   ...["，", "、", "；", "："].flatMap((separator) => [
     `One sec${separator} the tofu is burning.`,
     `Let me check my memory${separator} tofu works.`,
@@ -141,6 +176,28 @@ const judgeCases = [
   { name: "keep real content after eager wait", input: ["One sec;", "the tofu is burning.", TOOL], speak: ["One sec; the tofu is burning."], answer: true },
   { name: "keep real content after eager filler", input: ["Hmm,", realSentence, TOOL], speak: [`Hmm, ${realSentence}`], answer: true },
   { name: "preserve raw tags", input: ["<curious> Hmm,", "[whispers] I'll look that up.", TOOL, "<warm> [whispers] Tofu works."], speak: ["<warm> [whispers] Tofu works."], answer: true },
+  // #354: the demo S4 outfit line and its neighbours (real Spark, 11/3)
+  { name: "#354 third-person plan + memory announcement before the pick", input: ["She's holding up the trench and denim — I'll pull what I remember to pick one.", TOOL, "Go with the trench, Chelsea."], speak: ["Go with the trench, Chelsea."], answer: true },
+  { name: "#354 eager first clause in third person", input: ["<warm> She's holding up the trench and denim —", "I'll pull what I remember to pick one.", "Go with the trench."], speak: ["Go with the trench."], answer: true },
+  { name: "#354 mixed sentence keeps its real clause", input: ["<warm> Your day sounded long — let me check what I've got on you so I can keep up.", TOOL, "Tell me the worst part."], speak: ["<warm> Your day sounded long.", "Tell me the worst part."], answer: true },
+  { name: "#354 note-the-win clause", input: ["Your presentation went well — I'll note that win.", "Proud of you."], speak: ["Your presentation went well.", "Proud of you."], answer: true },
+  { name: "#354 route lookup wait", input: ["Trying to map your route to City Hall — give me just a moment.", TOOL, "Take the 2 line, it's 20 minutes."], speak: ["Take the 2 line, it's 20 minutes."], answer: true },
+  { name: "#354 lone third-person line with no tool and nothing after stays", input: ["She's asking me to pick a jacket."], speak: ["She's asking me to pick a jacket."], answer: true },
+  { name: "#354 a dropped first clause takes its face tag with it", input: ["<warm> [smile] I'll check my memory — [concerned] That sounds painful."], speak: ["<warm> [concerned] That sounds painful."], answer: true },
+  { name: "#354 deliberation before the outfit pick (finds e2e 11/3)", input: ["Love both options — let me think which one fits tonight best.", TOOL, "Go with the trench, Chelsea."], speak: ["Love both options.", "Go with the trench, Chelsea."], answer: true },
+  { name: "#354 bare 'Let me think' before the answer stays", input: ["Let me think — tofu works."], speak: ["Let me think — tofu works."], answer: true },
+  { name: "#354 route promise after an acknowledgement (smoke turn 1)", input: ["Got it — I'll pull up the best route to City Hall for you.", "Where are you starting from?"], speak: ["Got it.", "Where are you starting from?"], answer: true },
+  { name: "#354 progress clause after real praise (smoke round 2)", input: ["You crushed that presentation — now I'm pulling your favorites for dinner ideas.", "Creamy pasta or tacos?"], speak: ["You crushed that presentation.", "Creamy pasta or tacos?"], answer: true },
+  { name: "#354 restated choice keeps, the memory promise goes (outfit round 2)", input: ["You're picking between the trench and the denim — I'll pull what I remember about your style and choose tonight.", "I'd do the trench."], speak: ["You're picking between the trench and the denim.", "I'd do the trench."], answer: true },
+  // structural hold (probe 11/3: pre-tool text → [tool recall] → answer)
+  { name: "#354 any first-person plan right before a tool is its preamble", input: ["City Hall from here — I'll get you pointed the right way.", TOOL, "Where are you starting from?"], speak: ["Where are you starting from?"], answer: true },
+  { name: "#354 eager dash clause waits for its sentence", input: ["City Hall from here —", "I'll get you pointed the right way.", TOOL, "Where are you starting from?"], speak: ["Where are you starting from?"], answer: true },
+  { name: "#354 'I'm on it — deciding' before a tool", input: ["I'm on it — deciding between the trench and the jacket for tonight.", TOOL, "Go with the trench, Chelsea."], speak: ["Go with the trench, Chelsea."], answer: true },
+  { name: "#354 third-person 'I'll help her pick' before a tool", input: ["I'll help her pick one for tonight.", TOOL, "Go with the trench."], speak: ["Go with the trench."], answer: true },
+  { name: "#354 a held plan with no tool is spoken with the next sentence", input: ["I'll be right here.", "Tell me more."], speak: ["I'll be right here.", "Tell me more."], answer: true },
+  { name: "#354 a held plan before a tool with nothing after is spoken at the end", input: ["I'll remember you love tofu.", TOOL], speak: ["I'll remember you love tofu."], answer: true },
+  { name: "#354 a plan after the tool is the answer, never held", input: [TOOL, "I'll go with the trench for you."], speak: ["I'll go with the trench for you."], answer: true },
+  { name: "#354 'Trying to find a job' after a tool is the answer", input: [TOOL, "Trying to find a job is exhausting."], speak: ["Trying to find a job is exhausting."], answer: true },
 ] as const;
 
 for (const scenario of judgeCases) test(`NarrationJudge sequence: ${scenario.name}`, () => {
@@ -465,7 +522,10 @@ for (const voice of ["server", "device"] as const) {
         },
         async *tts(req) { yield { audio: Buffer.alloc(960), alignment: null, model: req.model }; },
       });
-      assert.equal(events.find((e) => e.type === "reply")?.text, text);
+      // conversation engine v1 (prod smoke 11/3): a lookup announcement is never spoken, even with no tool call
+      const v1Drops: Record<string, string> = { "Hmm. I'll search my memory for that.": "Hmm.", "Hmm, I'll search my memory for that.": "Hmm, not sure off the top of my head.", "One sec; looking that up.": "Hmm, not sure off the top of my head.", "One sec， looking that up.": "Hmm, not sure off the top of my head." };
+      const expected = process.env.GENITA_CONVO_V1 !== "0" && v1Drops[text] ? v1Drops[text] : text;
+      assert.equal(events.find((e) => e.type === "reply")?.text, expected);
     });
   }
 }

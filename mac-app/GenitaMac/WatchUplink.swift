@@ -53,11 +53,11 @@ final class WatchUplink: NSObject, URLSessionWebSocketDelegate, @unchecked Senda
     }
 
     func connect(source: String?, title: String? = nil) {
-        guard let url = config.watchURL else { return }
+        guard let url = config.watchURL else { onEvent(.closed); return }
         let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
         let task = session.webSocketTask(with: url)
         task.maximumMessageSize = 2 * 1024 * 1024
-        lock.withLock { self.session = session; self.task = task; pending = [] }
+        lock.withLock { self.session = session; self.task = task; open = false; pending = [] }
         task.resume()
         var start: [String: Any] = ["type": "start"]
         if let source { start["source"] = source }
@@ -80,9 +80,16 @@ final class WatchUplink: NSObject, URLSessionWebSocketDelegate, @unchecked Senda
 
     func stop() {
         sendJSON(["type": "stop"])
-        let t = lock.withLock { () -> URLSessionWebSocketTask? in let t = task; task = nil; open = false; pending = []; return t }
+        let (t, s) = lock.withLock { () -> (URLSessionWebSocketTask?, URLSession?) in
+            let old = (task, session)
+            task = nil; session = nil; open = false; pending = []
+            return old
+        }
         // let the stop message go out before closing
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) { t?.cancel(with: .normalClosure, reason: nil) }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) {
+            t?.cancel(with: .normalClosure, reason: nil)
+            s?.invalidateAndCancel()
+        }
     }
 
     /// JPEG ≤ 1024 px, only when the picture changed. `blank`: the frame is (almost) black.
@@ -106,12 +113,33 @@ final class WatchUplink: NSObject, URLSessionWebSocketDelegate, @unchecked Senda
             return (self.task, self.open)
         }
         guard let current, ready else { return }
-        current.send(message) { _ in }
+        send(message, on: current)
+    }
+
+    private func send(_ message: URLSessionWebSocketTask.Message, on task: URLSessionWebSocketTask) {
+        guard lock.withLock({ self.task === task }) else { return }
+        task.send(message) { [weak self] error in
+            if error != nil { self?.closed(task) }
+        }
+    }
+
+    /// Receive, send and delegate failures can race: only the current task closes once.
+    private func closed(_ closing: URLSessionWebSocketTask) {
+        let oldSession = lock.withLock { () -> URLSession? in
+            guard task === closing else { return nil }
+            let old = session
+            task = nil; session = nil; open = false; pending = []
+            return old
+        }
+        guard let oldSession else { return }
+        closing.cancel(with: .goingAway, reason: nil)
+        oldSession.invalidateAndCancel()
+        onEvent(.closed)
     }
 
     private func receive(_ task: URLSessionWebSocketTask) {
         task.receive { [weak self] result in
-            guard let self else { return }
+            guard let self, self.lock.withLock({ self.task === task }) else { return }
             switch result {
             case .success(.string(let text)):
                 if let data = text.data(using: .utf8), let event = Self.decode(data) { self.onEvent(event) }
@@ -119,7 +147,7 @@ final class WatchUplink: NSObject, URLSessionWebSocketDelegate, @unchecked Senda
             case .success:
                 self.receive(task)
             case .failure:
-                if self.lock.withLock({ self.task === task }) { self.onEvent(.closed) }
+                self.closed(task)
             }
         }
     }
@@ -140,10 +168,10 @@ final class WatchUplink: NSObject, URLSessionWebSocketDelegate, @unchecked Senda
             open = true
             let q = pending; pending = []; return q
         }
-        for m in queued { webSocketTask.send(m) { _ in } }
+        for m in queued { send(m, on: webSocketTask) }
     }
 
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
-        if lock.withLock({ task === webSocketTask }) { onEvent(.closed) }
+        closed(webSocketTask)
     }
 }

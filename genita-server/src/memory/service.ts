@@ -1,6 +1,8 @@
 import { type CallStateRepository, type MemoryRepository, type Memory, type MemoryKind, type MemorySettings, memoryId } from "./repository.ts";
-import { safeMemoryText, type Extractor, type Turn } from "./extract.ts";
+import { cleanKeys, safeMemoryText, type Extractor, type KeyMaker, type Turn } from "./extract.ts";
 import { validSeen, type SeenCandidate, type SeenContext } from "./seen.ts";
+import { within } from "../util/within.ts";
+import { RERANK_BUDGET_MS, RERANK_CANDIDATES, stableFacts, type Reranker } from "./rerank.ts";
 import { SUMMARY_KEEP, type CallSummary, type Summarizer, type SummaryRepository } from "./summaries.ts";
 
 type Log = (event: string, data: Record<string, unknown>) => void;
@@ -19,12 +21,19 @@ export type MemoryOptions = {
   /** Session memory (per-thread call summaries). Off when unset or sessionMemory=false (GENITA_SESSION_MEMORY=0). */
   summarize?: Summarizer;
   sessionMemory?: boolean;
+  /** recall keys for an explicitly remembered line (extraction brings its own); background only */
+  keys?: KeyMaker;
+  /** Spark re-rank for the recall TOOL (GENITA_MEMORY_RERANK=0 turns it off); unset = overlap order */
+  rerank?: Reranker;
   /** createMemory's default in-process store: the server swaps it for Postgres when accounts are on (useStore). */
   ephemeral?: boolean;
   log?: Log;
 };
 const day = (at: number) => new Date(at).toISOString().slice(0, 10);
-const tokens = (s: string) => new Set(s.normalize("NFKC").toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []);
+// Words that match everything ("my", "the", "what") are not evidence of relevance.
+const STOP = new Set("i me my mine myself you your yours we us our the a an and or but to of in on at for with from by as is am are was were be been being it its this that these those do does did doing what which who whom how why when where about so just like have has had can could would should will shall get got im i'm it's dont don't not no yes ok okay oh hey hi please really very".split(" "));
+// "Miso's" / "Miso’s" → miso (possessive dropped), "don't" → dont (a stop word)
+const tokens = (s: string) => new Set((s.normalize("NFKC").toLowerCase().match(/[\p{L}\p{N}'’]+/gu) ?? []).map((t) => t.replace(/['’]s$/, "").replace(/['’]/g, "")).filter((t) => t && !STOP.has(t)));
 
 export class MemoryService {
   repository: MemoryRepository;
@@ -124,42 +133,85 @@ export class MemoryService {
     if (!safeMemoryText(text)) return null;
     const revision = (await this.state.getState(userId)).revision;
     if (this.options.isSafe && !await this.options.isSafe(text)) return null;
-    return this.serial(userId, async () => (await this.state.getState(userId)).revision === revision ? this.put(userId, text, kind, sessionId, followUp) : null);
+    const saved = await this.serial(userId, async () => (await this.state.getState(userId)).revision === revision ? this.put(userId, text, kind, sessionId, followUp) : null);
+    if (saved && !saved.keys && this.options.keys) {
+      const makeKeys = this.options.keys;
+      // off the reply path: recall keys for the explicit line, written only onto the still-live row
+      this.background(async () => {
+        const keys = cleanKeys(await makeKeys(saved.text));
+        if (!keys) return;
+        await this.serial(userId, async () => {
+          if ((await this.state.getState(userId)).revision !== revision) return;
+          const row = (await this.repository.list(userId)).find((m) => m.id === saved.id);
+          if (row && !row.keys) await this.repository.put(userId, { ...row, keys });
+        });
+      });
+    }
+    return saved;
   }
-  private async put(userId: string, text: string, kind: MemoryKind, sessionId: string, followUp: boolean, imageRef?: string): Promise<Memory | null> {
+  private async put(userId: string, text: string, kind: MemoryKind, sessionId: string, followUp: boolean, imageRef?: string, keys?: string[]): Promise<Memory | null> {
     if (!safeMemoryText(text) || (kind !== "fact" && kind !== "episode")) return null;
     text = text.trim();
     const now = this.now();
     const old = (await this.repository.list(userId)).find((m) => m.id === memoryId(text));
-    const m: Memory = { ...old, id: memoryId(text), text, kind, created_at: old?.created_at ?? now, updated_at: now, last_used_at: old?.last_used_at ?? null, follow_up: followUp, source_session_id: sessionId, ...(imageRef ? { image_ref: imageRef } : {}) };
+    const m: Memory = { ...old, id: memoryId(text), text, kind, created_at: old?.created_at ?? now, updated_at: now, last_used_at: old?.last_used_at ?? null, follow_up: followUp, source_session_id: sessionId, ...(imageRef ? { image_ref: imageRef } : {}), ...(keys?.length ? { keys } : {}) };
     if (!await this.repository.put(userId, m)) return null;
     // same line seen again with a new crop: the old crop would otherwise be unreachable by Forget / account delete
     if (old?.image_ref && imageRef && old.image_ref !== imageRef) await this.options.deleteCrop?.(userId, old.image_ref).catch(() => {});
     return m;
   }
-  async recall(userId: string, query: string): Promise<Memory[]> {
+  /** The call's top stable facts (see rerank.ts stableFacts): loaded once at call start. */
+  async stableFacts(userId: string): Promise<Memory[]> {
+    // under the user's lock: a Forget in progress (calls notified, rows not deleted yet) finishes first (Codex 11/3);
+    // the caller bounds the wait
+    return this.serial(userId, async () => stableFacts(await this.repository.list(userId)));
+  }
+  /**
+   * Token overlap (stop words removed) ranks; `rerank` (the recall tool only) lets Spark re-order up to
+   * RERANK_CANDIDATES overlap candidates, padded with the newest items so a same-meaning memory ("pet" vs
+   * "my cat") can still be found. Bounded; past the budget or on error the overlap order stands.
+   */
+  async recall(userId: string, query: string, opts: { rerank?: boolean } = {}): Promise<Memory[]> {
     if (!query.trim()) return [];
-    return this.serial(userId, async () => {
-      const q = tokens(query);
-      const ranked = (await this.repository.list(userId)).map((m) => ({ m, score: [...tokens(m.text)].filter((t) => q.has(t)).length }))
-        .filter((r) => r.score > 0).sort((a, b) => b.score - a.score || b.m.updated_at - a.m.updated_at).slice(0, 3).map((r) => r.m);
-      const at = this.now();
-      for (const m of ranked) {
-        m.last_used_at = at;
-        this.log("memory.recalled", { memory_id: m.id, age_s: Math.max(0, Math.floor((at - m.created_at) / 1000)) });
+    const wantsRerank = !!(opts.rerank && this.options.rerank);
+    // the revision is read only for the re-rank (it guards the Spark wait); the per-reply recall stays one read
+    const { items, revision } = await this.serial(userId, async () => ({ items: await this.repository.list(userId), revision: wantsRerank ? (await this.state.getState(userId)).revision : 0 }));
+    const q = tokens(query);
+    // the memory's words plus its recall keys ("pet" finds "my cat Miso")
+    const scored = items.map((m) => ({ m, score: [...tokens(m.text + " " + (m.keys ?? []).join(" "))].filter((t) => q.has(t)).length }))
+      .filter((r) => r.score > 0).sort((a, b) => b.score - a.score || b.m.updated_at - a.m.updated_at);
+    let ranked = scored.slice(0, 3).map((r) => r.m);
+    if (wantsRerank && this.options.rerank && items.length) {
+      const candidates = scored.slice(0, RERANK_CANDIDATES).map((r) => r.m);
+      for (const m of [...items].sort((a, b) => b.updated_at - a.updated_at)) {
+        if (candidates.length >= RERANK_CANDIDATES) break;
+        if (!candidates.includes(m)) candidates.push(m);
       }
-      // The last_used_at write is bookkeeping, not the answer: off the reply path (with Postgres it is a
-      // transaction per item). A Forget in between wins: put() refuses tombstoned ids.
-      // Only last_used_at changes on the CURRENT row (a newer write, e.g. a new crop ref, must not be undone).
-      if (ranked.length) this.background(() => this.serial(userId, async () => {
-        const current = new Map((await this.repository.list(userId)).map((m) => [m.id, m]));
-        for (const m of ranked) {
-          const row = current.get(m.id);
-          if (row) await this.repository.put(userId, { ...row, last_used_at: Math.max(row.last_used_at ?? 0, at) });
-        }
-      }));
-      return ranked;
-    });
+      const t0 = performance.now();
+      const ctl = new AbortController();
+      const picks = await within(this.options.rerank(query, candidates.map((m) => m.text), ctl.signal), RERANK_BUDGET_MS, null);
+      if (!picks) ctl.abort();
+      this.log("memory.reranked", { candidates: candidates.length, picked: picks?.length ?? null, ms: Math.round(performance.now() - t0), fallback: !picks });
+      if (picks) ranked = picks.map((i) => candidates[i]).filter(Boolean);
+      // a Forget while Spark was ranking: nothing from before it
+      if ((await this.state.getState(userId)).revision !== revision) return [];
+    }
+    const at = this.now();
+    for (const m of ranked) {
+      m.last_used_at = at;
+      this.log("memory.recalled", { memory_id: m.id, age_s: Math.max(0, Math.floor((at - m.created_at) / 1000)) });
+    }
+    // The last_used_at write is bookkeeping, not the answer: off the reply path (with Postgres it is a
+    // transaction per item). A Forget in between wins: put() refuses tombstoned ids.
+    // Only last_used_at changes on the CURRENT row (a newer write, e.g. a new crop ref, must not be undone).
+    if (ranked.length) this.background(() => this.serial(userId, async () => {
+      const current = new Map((await this.repository.list(userId)).map((m) => [m.id, m]));
+      for (const m of ranked) {
+        const row = current.get(m.id);
+        if (row) await this.repository.put(userId, { ...row, last_used_at: Math.max(row.last_used_at ?? 0, at) });
+      }
+    }));
+    return ranked;
   }
   async forget(userId: string, id?: string): Promise<void> {
     await this.serial(userId, async () => {
@@ -181,7 +233,7 @@ export class MemoryService {
       if ((await this.state.getState(userId)).revision !== revision) return;
       let count = 0;
       for (const m of items) {
-        if (m.sensitive === "none" && typeof m.follow_up === "boolean" && await this.put(userId, m.text, m.kind, sessionId, m.follow_up)) count++;
+        if (m.sensitive === "none" && typeof m.follow_up === "boolean" && await this.put(userId, m.text, m.kind, sessionId, m.follow_up, undefined, cleanKeys(m.keys))) count++;
       }
       this.log("memory.extracted", { count });
     });
