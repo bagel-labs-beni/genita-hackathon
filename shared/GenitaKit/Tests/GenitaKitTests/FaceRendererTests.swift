@@ -399,7 +399,8 @@ struct MouthQualityTests {
         let face = faceCI(animalSet), extent = CGRect(origin: .zero, size: CGSize(width: animalSet.pixelSize.width, height: animalSet.pixelSize.height))
         let out: CGFloat = 540, k = out / animalSet.pixelSize.width
         var on = AliveMotion(seed: 4), off = AliveMotion(seed: 4)
-        for m in [0, 1] { (m == 0 ? { on.headGain = 0; on.rollGain = 0; on.nodGain = 0 } : { off.headGain = 0; off.rollGain = 0; off.nodGain = 0; off.swayGain = 0 })() }
+        on.headGain = 0; on.rollGain = 0; on.nodGain = 0          // the served still-face map: only the sway moves
+        off.headGain = 0; off.rollGain = 0; off.nodGain = 0; off.swayGain = 0
         let p0 = CGPoint(x: face.midX, y: face.midY)
         var maxD: CGFloat = 0, maxDeg = 0.0, maxScale = 0.0, moved = false, offMax: CGFloat = 0
         for i in 0..<500 {
