@@ -29,6 +29,7 @@
 import { readFileSync } from "node:fs";
 import type { SparkRequest } from "../meta/spark.ts";
 import type { Story } from "../personalize/story.ts";
+import { insightProfileLines, type StoredInsights } from "../insights/profile.ts";
 
 export const IMPORT_PROMPT = readFileSync(new URL("./assets/import-prompt.txt", import.meta.url), "utf8");
 
@@ -254,6 +255,10 @@ export type StyleCard = {
   dropped: { injection: number; sensitive: number };
   /** D47 HISY story cards (src/personalize/story.ts); absent until generated */
   story?: Story;
+  /** SUM insight report (src/insights): what Genita noticed, with the user's verdicts; absent until written */
+  insights?: StoredInsights;
+  /** N1–N3: the user's own picks (labels), so the insight report can quote them as "You picked" */
+  picks?: Array<{ question: string; label: string }>;
   /** calls made with this profile and the still-to-confirm items asked (first 3 calls ask one each) */
   growth?: { calls: number; asked: Array<{ item: string; at: string; answered?: boolean; declined?: boolean }> };
   /** last correction / call update */
@@ -428,6 +433,9 @@ export function styleProfileText(card: StyleCard, max = 2000, opts: { toConfirm?
   // toConfirm:false — the call asks one item at a time (src/personalize/unknowns.ts)
   if (card.toConfirm?.length && opts.toConfirm !== false) parts.push(`Ask naturally on the first call about: ${card.toConfirm.join("; ")}.`);
   if (more.length) parts.push("Also:", ...more);
+  // SUM insight report: what was noticed and how to use it (lightly); "not me" ones as not true
+  const noticed = insightProfileLines(card);
+  if (noticed.length) parts.push("What I noticed about them at setup (use it quietly; never say you noticed or read this, never describe them with it):", ...noticed);
   if (manner.length) parts.push("How they come across with you (match it; never describe or label them with it):", ...manner);
   if (leans.length) parts.push("Leans (indirect, not stated by them; at most a light guess, never a fact or a nickname):", ...leans);
   // "forget that…" / "That's not me": the model must not know-and-say it. Listed only as do-not-mention, never as a

@@ -115,6 +115,14 @@ export class Personalize {
     ]).finally(() => clearTimeout(timer));
   }
 
+  /** Read-modify-write the latest card under the user's lock (the SUM insight report, src/insights). fn → null = no change. */
+  async patchStyle(userId: string, fn: (card: StyleCard) => StyleCard | null): Promise<StyleCard | null> {
+    return this.update(userId, (card) => {
+      const next = fn(card);
+      return next ? { card: next, out: next } : null;
+    });
+  }
+
   /** Replace the user's style (import, N1–N3) under the same lock as every other write. */
   async replaceStyle(userId: string, card: StyleCard): Promise<void> {
     const at = this.now().toISOString();
