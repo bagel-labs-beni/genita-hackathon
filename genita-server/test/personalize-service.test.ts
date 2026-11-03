@@ -311,6 +311,20 @@ test("S1: noteShorter saves an observed line, never over an explicit one about t
   assert.deepEqual([resp[0].text, resp[0].label], ["Short replies, one or two sentences.", "observed"]);
 });
 
+test("QA K-test P2: a line forgotten by voice leaves the story at once (before the stale card is rewritten); what's still said stays", async (t) => {
+  const h = harness((req) => (req.schemaName === "story_cards" ? new Promise(() => {}) : { updates: [{ field: "likes", text: "", replaces: ["Media: slow-burn dramas; lo-fi while working."], chip: "forgot lo-fi" }, { field: "likes", text: "Media: slow-burn dramas.", replaces: [], chip: "" }], answered: { field: "", text: "", chip: "" } }));
+  t.after(h.cleanup);
+  const base = toStyleCard({ ...IMPORT_RAW, sections: { ...IMPORT_RAW.sections, likes: [f("Media: slow-burn dramas; lo-fi while working.")] } }, "import");
+  const { toStory } = await import("../src/personalize/story.ts");
+  const { cards, topics } = toStory({ cards: [card("taste", "Slow stories.", { tags: [{ group: "watch", text: "Slow-burn dramas", dislike: false }, { group: "watch", text: "Lo-fi while working", dislike: false }] })], topics: [] }, base);
+  await h.store.putStyle("u1", { ...base, story: { version: 2, cards, topics, at: "2026-11-03T00:00:00Z", from: "text" } });
+  const r = await h.p.voiceCorrection("u1", "Forget that I said I listen to lo-fi.");
+  assert.ok(r);
+  const s = await h.p.story("u1", 0);
+  const tags = s.cards.find((c) => c.id === "taste")!.tags!.map((x) => x.text);
+  assert.deepEqual(tags, ["Slow-burn dramas"]);
+});
+
 test("S1 perf: PATCH /v1/profile answers before any Spark call (slow correction and story calls run behind it)", async (t) => {
   let storyCalls = 0;
   const h = harness(async (req) => {

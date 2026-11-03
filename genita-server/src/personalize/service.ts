@@ -36,6 +36,10 @@ const STORY_TIMEOUT_MS = 12_000;
 const STORY_BACKOFF_MS = 5 * 60_000;
 const CALL_SIDE_MAX = 12;
 
+const STOPW = new Set("the and you your with for that this from into like likes about very really".split(" "));
+/** content words, 5-letter stems: "Lo-fi while working" ~ "Media: slow-burn dramas; lo-fi while working." */
+const keyWords = (s: string) => (s.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []).filter((w) => !STOPW.has(w)).map((w) => w.slice(0, 5));
+
 export class PersonalizeError extends Error {
   readonly status: number;
   readonly code: string;
@@ -202,7 +206,7 @@ export class Personalize {
 
   /** The cards to show now: the stored ones, with `unknowns` rebuilt from the latest card. */
   private static current(card: StyleCard, hidePending = true): StoryCard[] {
-    const cards = toStory(null, card, card.story?.version === 2 ? card.story.cards : undefined, card.story?.version === 2 ? ["unknowns"] : undefined).cards;
+    const cards = Personalize.withoutRemoved(toStory(null, card, card.story?.version === 2 ? card.story.cards : undefined, card.story?.version === 2 ? ["unknowns"] : undefined).cards, card);
     if (!hidePending) return cards;
     // an answer saved but not merged yet: its topic is already gone from the list (Codex P2)
     const answering = new Set((card.pendingCorrections ?? []).filter((p) => p.cardId === "unknowns" && p.text).map((p) => p.items[0]).filter(Boolean));
@@ -212,6 +216,29 @@ export class Personalize {
       const unknowns = (c.unknowns ?? []).filter((u) => !answering.has(u.topic));
       return unknowns.length ? [{ ...c, unknowns }] : [];
     });
+  }
+
+  /**
+   * A line removed since the story was written ("forget that…", "That's not me") disappears from the cards at once,
+   * before the stale card is rewritten (QA K-test P2: it took 20+ s to leave the story).
+   */
+  private static withoutRemoved(cards: StoryCard[], card: StyleCard): StoryCard[] {
+    const since = card.story?.at ?? "";
+    const gone = (card.removed ?? []).filter((t) => t.at > since).map((t) => keyWords(t.text));
+    if (!gone.length) return cards;
+    // still said by a line that's there now (a correction can rewrite a line without the removed part)
+    const kept = Object.values(card.sections ?? {}).flatMap((l) => (l as Array<{ text: string }>).map((f) => keyWords(f.text)));
+    const hit = (text: string) => {
+      const w = keyWords(text);
+      const covers = (g: string[]) => w.every((x) => g.includes(x));
+      return w.length > 0 && gone.some(covers) && !kept.some(covers);
+    };
+    return cards.map((c) => ({
+      ...c,
+      items: c.items.filter((i) => !hit(i.text)),
+      ...(c.tags ? { tags: c.tags.filter((t) => !hit(t.text)) } : {}),
+      ...(c.help ? { help: c.help.filter((h) => !hit(h.label)) } : {}),
+    }));
   }
 
   /** GET /v1/profile/story?wait=s — `processing` if not written within the wait. */
