@@ -8,16 +8,15 @@
  *
  * Threat line: callers are the iOS/macOS apps (A02-J) and anyone on the internet who can reach
  * /auth/judge. Auth: the code itself, compared in constant time against every configured code
- * (no early exit). Limits (11/4: judges share a venue / office IP): 50 wrong tries per 10 minutes per IP;
- * per code prefix (first 4 characters) a growing wait after the 2nd miss (2 s, 4 s, 8 s … 10 min); 1000
- * misses per 10 minutes across all IPs. A 429 says how long to wait.
+ * (no early exit). Limits (11/4: judges share a venue / office IP): 50 wrong tries per 10 minutes per IP, and
+ * per IP + code prefix (first 4 characters) a growing wait after the 2nd miss (2 s, 4 s, 8 s … 10 min). Never a
+ * limit across IPs (Codex P1 #492: anyone could then lock every judge out); the codes are long random secrets,
+ * so a spread-out guessing run gets nowhere at 50 tries per IP. A 429 says how long to wait.
  * Exposes: only a session for the demo account that code belongs to.
  */
 import { createHash, timingSafeEqual } from "node:crypto";
 
 export const JUDGE_MAX_FAILS = 50;
-/** misses across every IP in a window (a spread-out guessing run) */
-export const JUDGE_GLOBAL_FAILS = 1000;
 export const JUDGE_PREFIX_LEN = 4;
 /** wait before the next try with the same prefix after `n` misses: none after 1, then 2 s, 4 s, 8 s … at most 10 min */
 export const prefixWaitMs = (n: number) => (n < 2 ? 0 : Math.min(2 ** (n - 1), 600) * 1000);
@@ -58,21 +57,20 @@ export class JudgeAccess {
   }
 
   private readonly prefixes = new Map<string, { n: number; last: number; reset: number }>();
-  private global = { n: 0, reset: 0 };
 
-  private static prefix(code: string) {
-    return code.trim().toLowerCase().slice(0, JUDGE_PREFIX_LEN);
+  /** the IP and the code's first characters: one caller hammering one code slows down, nobody else does */
+  private static prefix(ip: string, code: string) {
+    return `${ip}|${code.trim().toLowerCase().slice(0, JUDGE_PREFIX_LEN)}`;
   }
 
-  /** Seconds this try has to wait (0 = check it now): the IP's window, the code prefix's backoff, or the global cap. */
+  /** Seconds this try has to wait (0 = check it now): the IP's window or this IP's backoff on the code prefix. */
   retryAfterSec(ip: string, code: string): number {
     const t = this.now();
     let waitMs = 0;
     const h = this.fails.get(ip);
     if (h && h.reset > t && h.n >= JUDGE_MAX_FAILS) waitMs = Math.max(waitMs, h.reset - t);
-    const p = this.prefixes.get(JudgeAccess.prefix(code));
+    const p = this.prefixes.get(JudgeAccess.prefix(ip, code));
     if (p && p.reset > t) waitMs = Math.max(waitMs, p.last + prefixWaitMs(p.n) - t);
-    if (this.global.reset > t && this.global.n >= JUDGE_GLOBAL_FAILS) waitMs = Math.max(waitMs, this.global.reset - t);
     return waitMs > 0 ? Math.max(1, Math.ceil(waitMs / 1000)) : 0;
   }
 
@@ -94,14 +92,12 @@ export class JudgeAccess {
       if (this.fails.size > 10_000) this.fails.clear();
       this.fails.set(ip, { n: 1, reset: t + JUDGE_WINDOW_MS });
     } else h.n++;
-    const key = JudgeAccess.prefix(code);
+    const key = JudgeAccess.prefix(ip, code);
     const p = this.prefixes.get(key);
     if (!p || p.reset <= t) {
       if (this.prefixes.size > 10_000) this.prefixes.clear();
       this.prefixes.set(key, { n: 1, last: t, reset: t + JUDGE_WINDOW_MS });
     } else { p.n++; p.last = t; }
-    if (this.global.reset <= t) this.global = { n: 1, reset: t + JUDGE_WINDOW_MS };
-    else this.global.n++;
     return null;
   }
 }

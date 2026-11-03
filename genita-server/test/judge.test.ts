@@ -79,13 +79,15 @@ test("rate limit: 50 wrong tries per IP, then 429 (with Retry-After) even for th
 });
 
 test("11/4: wrong guesses on one code prefix wait longer and longer; another prefix and the right code are unaffected", async (t) => {
-  const { judge } = await boot(t);
+  const { judge: raw } = await boot(t, undefined, { GENITA_TRUST_PROXY: "1" });
+  const judge = (body: unknown, headers: Record<string, string> = { "x-forwarded-for": "203.0.113.5" }) => raw(body, headers);
   assert.equal((await judge({ code: "corr-guess-1" })).status, 401);
   assert.equal((await judge({ code: "corr-guess-2" })).status, 401);
   const slow = await judge({ code: "corr-guess-3" });
   assert.equal(slow.status, 429, "third miss on the same prefix right away");
   assert.ok(Number(slow.body.retryAfterSec) >= 1);
   assert.equal((await judge({ code: "battery-staple-2" })).status, 200, "another prefix (another judge's code)");
+  assert.equal((await judge({ code: "correct-horse-1" }, { "x-forwarded-for": "203.0.113.99" })).status, 200, "another IP with the right code is never locked (Codex P1)");
 });
 
 test("60 concurrent wrong tries from one IP: at most 50 get checked", async (t) => {
@@ -121,13 +123,14 @@ test("JudgeAccess: window resets after 10 minutes; parse handles labels, bare co
   assert.match(j.check("1.1.1.1", "two")!, /^j[0-9a-f]{8}$/);
   // per-prefix backoff grows (2 s, 4 s …) and lets the next try through once it has passed
   const k = new JudgeAccess("a=one", () => now);
-  k.check("5.5.5.5", "xyzw-1"); k.check("6.6.6.6", "xyzw-2");
-  assert.equal(k.retryAfterSec("7.7.7.7", "xyzw-3"), 2, "any IP, same prefix");
-  assert.equal(k.retryAfterSec("7.7.7.7", "abcd-1"), 0);
+  k.check("5.5.5.5", "xyzw-1"); k.check("5.5.5.5", "xyzw-2");
+  assert.equal(k.retryAfterSec("5.5.5.5", "xyzw-3"), 2, "same IP, same prefix");
+  assert.equal(k.retryAfterSec("6.6.6.6", "xyzw-3"), 0, "another IP is never slowed by it (Codex P1)");
+  assert.equal(k.retryAfterSec("5.5.5.5", "abcd-1"), 0);
   now += 2000;
-  assert.equal(k.retryAfterSec("7.7.7.7", "xyzw-3"), 0);
-  k.check("7.7.7.7", "xyzw-3");
-  assert.equal(k.retryAfterSec("7.7.7.7", "xyzw-4"), 4);
+  assert.equal(k.retryAfterSec("5.5.5.5", "xyzw-3"), 0);
+  k.check("5.5.5.5", "xyzw-3");
+  assert.equal(k.retryAfterSec("5.5.5.5", "xyzw-4"), 4);
   assert.equal(parseJudgeCodes("a=x,a=y").length, 1);
   assert.equal(parseJudgeCodes("").length, 0);
 });
