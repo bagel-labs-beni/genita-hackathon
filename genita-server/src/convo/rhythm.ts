@@ -52,7 +52,7 @@ export function moodFrom(userLines: string[]): Mood {
 }
 
 export function moodLine(m: Mood): string | null {
-  if (m.valence <= -0.3) return "Your mood right now is softer and quieter, with them.";
+  if (m.valence <= -0.3) return "Your mood right now is quieter, matching theirs.";
   if (m.valence >= 0.35 && m.energy >= 0.3) return "Your mood right now is upbeat and playful.";
   return null;
 }
