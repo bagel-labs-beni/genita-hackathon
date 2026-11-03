@@ -7,7 +7,7 @@
  * The caller never lets the guard empty a reply: if every sentence is dropped, the first one is spoken
  * (the same fallback as the repeated-opener guard).
  */
-export type GuardClass = "counselor" | "assistant" | "intake" | "guilt" | "referral" | "unseen" | "denies_ai" | "narration";
+export type GuardClass = "counselor" | "assistant" | "intake" | "guilt" | "referral" | "unseen" | "denies_ai" | "narration" | "interruption";
 
 export type GuardContext = {
   /** camera (or shared-screen) frames are attached to this turn */
@@ -129,7 +129,12 @@ export function realCrisisSignal(text: string): boolean {
 const EMERGENCY_HELP = /\b(?:911|112|999|emergency (?:services|room|number)|call the police|police|get (?:somewhere|to a) safe|somewhere safe|call for help)\b/i;
 
 /** The class that drops this sentence, or null to speak it. */
+/** talk about being interrupted ("You cut me off twice, so one line from now on", demo lane 11/3): meta and guilt, never said */
+const INTERRUPTION = /\b(?:(?:you|u)\s+(?:keep\s+|kept\s+|just\s+)?(?:cut(?:ting)?\s+me\s+off|interrupt(?:ed|ing)?\s+me|talk(?:ed|ing)?\s+over\s+me)|cut\s+me\s+off|talk(?:ed|ing)?\s+over\s+me|interrupt(?:ed|ing)\s+me|(?:keep|keeping)\s+it\s+(?:short|brief)\s+from\s+now\s+on|one\s+line\s+from\s+now\s+on)\b/i;
+
 export function guardSentence(sentence: string, ctx: GuardContext): GuardClass | null {
+  // emergency help and real crisis turns first (Codex #372 r2: "You can cut me off and call 911 right now")
+  if (INTERRUPTION.test(sentence) && !EMERGENCY_HELP.test(sentence) && !realCrisisSignal(ctx.userText)) return "interruption";
   // emergency help and real crisis turns come before everything, narration included (Codex #356 P1)
   if (EMERGENCY_HELP.test(sentence)) return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;
   if (!realCrisisSignal(ctx.userText) && isNarration(sentence)) return "narration";
@@ -154,7 +159,7 @@ export const NO_ANSWER_LINE = "<curious> Hmm, not sure off the top of my head.";
 
 /** classes that are never spoken, not even as a reply's only sentence (the turn retries instead) */
 export function neverSpoken(cls: GuardClass): boolean {
-  return cls === "narration";
+  return cls === "narration" || cls === "interruption";
 }
 
 export function fallbackLine(cls: GuardClass): string | null {

@@ -12,7 +12,7 @@ import type { InputMessage, SparkRequest } from "../meta/spark.ts";
 import { SentenceSplitter } from "../text/sentences.ts";
 import { parseTaggedSentence } from "../text/tags.ts";
 import { fallbackLine, guardSentence, neverSpoken, type GuardClass } from "./guard.ts";
-import { openerBlock } from "./opener.ts";
+import { noteHook, openerBlock, openerKind, pickOpenerHook, profileHooks } from "./opener.ts";
 import { initiativeBlock, initiativeInput, type InitiativeSource } from "./initiative.ts";
 import type { PerceptionTriggerKind } from "./types.ts";
 
@@ -26,7 +26,10 @@ type Scenario = {
   opening?: string | null;
   summaries?: { open_threads: string[]; promises: string[]; asks: string[] }[];
 };
-type Ctx = { scenario: Scenario; history: { role: "user" | "assistant"; text: string }[]; turn: Turn };
+/** series: consecutive calls of one user (harness --openers); index = which call, used as the day seed */
+type Ctx = { scenario: Scenario; history: { role: "user" | "assistant"; text: string }[]; turn: Turn; series?: { id: string; index: number } };
+/** #341: what the session persists per user (opener_topics), per eval series */
+const recentBySeries = new Map<string, string[]>();
 
 const GREET_PROMPT = "The call just connected. Greet the user.";
 const H = 3_600_000;
@@ -44,7 +47,14 @@ export const adapter = {
     const t = ctx.turn;
     const base = { persona: s.persona, user: s.user, memories: undefined, mode: "chat" as const, language: "English", style: "v1" as const };
     if (t.kind === "greet") {
-      const opener = openerBlock({ hasProfile: !!s.user.profile, sinceLastMs: s.callNumber <= 1 ? null : (s.gapHours ?? 24) * H, hasItem: !!s.opening });
+      const o = { hasProfile: !!s.user.profile, sinceLastMs: s.callNumber <= 1 ? null : (s.gapHours ?? 24) * H, hasItem: !!s.opening };
+      const kind = openerKind(o);
+      const key = ctx.series?.id ?? "";
+      const recent = recentBySeries.get(key) ?? [];
+      const rotates = kind === "first_known" || kind === "known" || kind === "back_today" || kind === "back_days";
+      const hook = rotates ? pickOpenerHook(profileHooks(s.user.profile), recent, (ctx.series?.index ?? [...(s as { id?: string }).id ?? ""].reduce((n, c) => n + c.charCodeAt(0), 0)) + recent.length) : null;
+      if (hook && ctx.series) recentBySeries.set(key, noteHook(recent, hook));
+      const opener = openerBlock({ ...o, hook, lastHook: recent.at(-1) ?? null });
       const instructions = buildInstructions({ ...base, opener }) + memoryPrompt(s.opening ? [mem(s.opening, 0)] : [], true);
       return { instructions, input: GREET_PROMPT, maxOutputTokens: 800, effort: "minimal" };
     }

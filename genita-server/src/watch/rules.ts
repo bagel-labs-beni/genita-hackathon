@@ -25,6 +25,8 @@ export type ReactGate = {
   lastDialogueEndAt: number | null;
   /** when the frames/lines the verdict is about were current */
   verdictAt: number;
+  /** the video's sound right now is crowd, music, commentary or narration (fine to talk over), not a scene's dialogue */
+  talkOver?: boolean;
 };
 
 export type GateResult = { ok: true } | { ok: false; why: string };
@@ -36,8 +38,8 @@ export function reactionAllowed(g: ReactGate): GateResult {
   if (g.now - g.sharingSince < REACT_AFTER_START_MS) return { ok: false, why: "just_started" };
   if (g.lastReactionAt !== null && g.now - g.lastReactionAt < REACT_MIN_GAP_MS) return { ok: false, why: "gap" };
   if (!g.conversationQuiet) return { ok: false, why: "conversation" };
-  if (g.dialogueActive) return { ok: false, why: "dialogue" };
-  if (g.lastDialogueEndAt !== null && g.now - g.lastDialogueEndAt < DIALOGUE_TAIL_MS) return { ok: false, why: "dialogue" };
+  if (!g.talkOver && g.dialogueActive) return { ok: false, why: "dialogue" };
+  if (!g.talkOver && g.lastDialogueEndAt !== null && g.now - g.lastDialogueEndAt < DIALOGUE_TAIL_MS) return { ok: false, why: "dialogue" };
   if (g.now - g.verdictAt > REACT_MAX_STALE_MS) return { ok: false, why: "stale" };
   return { ok: true };
 }

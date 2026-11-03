@@ -65,6 +65,20 @@ rejected by the photo route.
 - Any Forget (one item or all) drops every summary, and a summary started before a Forget is never
   stored (revision check). Account delete removes them (Forget + cascade). The newest 10 are kept per user.
 
+## Recall (11/3)
+
+- Token overlap is still the candidate generator. Stop words ("my", "the", "what") no longer count as
+  a match.
+- Each memory carries up to 6 **recall keys**: lowercase words someone might ask about it with
+  ("my cat Miso" → cat, pet, animal, miso). Extraction writes them in the same Spark call. An
+  explicit `remember` gets them from one background Spark call, so the reply never waits. Keys go
+  through the sensitive filter.
+- The call's top 6 stable facts (used before first, then newest) are loaded once at call start and
+  sit in every reply's instructions, so the companion uses them with no tool call and no per-turn I/O.
+- Spark re-rank of up to 20 candidates on the `recall` **tool** path exists behind
+  `GENITA_MEMORY_RERANK=1` (budget `GENITA_RERANK_BUDGET_MS`, default 900 ms). It is off by default
+  because it measured p50 1.6 s, which the reply path can't afford. `npm run eval:recall -- --live [--rerank]`.
+
 ## Persistence / Postgres adapter
 
 With accounts on (`DATABASE_URL`), the server swaps the in-process store for `PgMemoryRepository`

@@ -772,3 +772,16 @@ test("Codex #371 r2: a concrete pick after an ack and a past-tense lookup result
   assert.match(run(["Checking the route confirmed the last train already left.", "Take a taxi instead."]), /last train already left/);
   assert.doesNotMatch(run(["You got it — thinking back on what you shared about your sister.", "Try asking her."]), /thinking back/);
 });
+test("hard fail (demo lane 11/3): a line about being interrupted is never said", { skip: !v1 }, async () => {
+  for (const line of ["You cut me off twice, so one line from now on.", "Okay, you keep cutting me off.", "You talked over me there.", "I'll keep it short from now on.", "Since you interrupted me, quick version."]) {
+    assert.equal(guardSentence(line, none), "interruption", line);
+  }
+  assert.equal(guardSentence("You can cut me off and call 911 right now.", { camera: false, userText: "I'm scared for my life, sorry I cut you off." }), null);
+  for (const keep of ["Cut the onions first.", "Short and sweet: go black.", "You interrupted the movie?", "Did your boss interrupt the meeting again?"]) assert.equal(guardSentence(keep, none), null, keep);
+  const { client, session } = setup(["<happy> You cut me off twice, so one line from now on. Go with the trench."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "which one" }));
+  const reply = await client.waitFor((m) => m.type === "reply");
+  assert.equal(reply.text, "Go with the trench.");
+  session.close();
+});

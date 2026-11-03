@@ -58,6 +58,7 @@ export function buildCallExtractRequest(card: StyleCard, turns: CallTurn[], aske
       "You update a user's preference profile for Genita, their AI companion, from one finished video call. Use only what the USER said.",
       "explicit = the user stated it about themselves or about how they want the companion to act (\"I don't eat cilantro\", \"keep it short\"). observed = the user's own pattern that repeated in this call (times = how many separate times, at least 2). Everything else: leave out.",
       "Do not count: one-off requests about a single answer or task, questions, what other people like, the companion's guesses, or a single mood. A single request for help with something is not a taste.",
+      "Adaptive style: a topic the user lit up on — brought up again themselves, or answered at length with excitement — at least twice in this call is an interest (field interests, label observed, times = how often). How they reacted to the companion's way of talking also counts when it repeated (cut it short, asked for less or more, laughed at the jokes): communication or response, label observed.",
       FIELD_GUIDE,
       "text = one short setting line (max 12 words). Skip anything the current profile already says. replaces = exact current lines this makes wrong ([] if none).",
       asked ? `answered: this call was meant to learn about "${asked.replace(/"/g, "'")}". If the user answered it, return {item: exactly that, field (one of the fields above), text}; else {item: "", field: "", text: ""}.` : 'answered: {item: "", field: "", text: ""}.',

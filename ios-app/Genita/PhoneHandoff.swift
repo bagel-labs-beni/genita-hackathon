@@ -56,7 +56,8 @@ import ARKit
     private var trackingStarted=false
     private var lastPing=Date().timeIntervalSince1970
     private var timer: Timer?
-    private var debugPeerReachable: Bool?
+    /// DEBUG review states pin "the Mac is reachable" (--handoff-state, --proximity-moment).
+    var debugPeerReachable: Bool?
     private var subscriptions = Set<AnyCancellable>()
     init() {
         let args=ProcessInfo.processInfo.arguments
@@ -289,7 +290,8 @@ struct PhoneHandoffOverlay: View {
             if let motion=handoff.motion { DuoTransition(payload:motion,onReady:handoff.effectReady).ignoresSafeArea().allowsHitTesting(false) }
             if handoff.registeredToast { RegisteredToast().padding(.top,124-59).transition(.opacity) }
             if handoff.registeringVisible { RegisteringView(session:handoff.tracker.session,cancel:handoff.cancelRegistration).ignoresSafeArea() }
-        }.onAppear { handoff.attach(model) }
+            ProximityMomentView()  // GENITA_PROXIMITY_HANDOFF: the glide + toast of a move by bringing the iPhone close
+        }.onAppear { handoff.attach(model);PhoneProximity.shared.attach(handoff) }
         .onChange(of:phase) { _,new in if new != .active { handoff.pause() } else { handoff.resume() } }
         .overlay { if handoff.settings { PhonePairingView().transition(.opacity) } }
         .animation(.easeOut(duration:0.24),value:handoff.settings)
