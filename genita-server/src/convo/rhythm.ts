@@ -12,9 +12,21 @@
  * Intent only, never a line to copy.
  */
 
-const GOOD_NEWS = /\b(?:i|we) (?:got|passed|won|aced|nailed|crushed|landed|finished|did) (?:it|the|my|a|an)\b|\bi did it\b|\bthey said yes\b|\bgot (?:the job|in|accepted|promoted|the offer)\b|\bguess what\b|!!/i;
-const BAD_NEWS = /\b(?:rough|awful|terrible|horrible|sucks|sucked|sad|exhausted|stressed|cried|crying|failed|fired|dumped|broke up|rejected|didn'?t get|so bad|worst day|tore (?:it|my)|redid my)\b/i;
+const GOOD_NEWS = /\b(?:i|we) (?:got|landed) (?:the |a |an |my )?(?:job|offer|part|role|promotion|raise|apartment|place|internship|spot|scholarship|tickets?)\b|\b(?:i|we) (?:passed|won|aced|nailed|crushed)\b|\bi did it\b|\bthey said yes\b|\bgot (?:in|accepted|promoted|engaged|hired)\b/i;
+const BAD_NEWS = /\b(?:rough|awful|terrible|horrible|sucks|sucked|sad|exhausted|stressed|cried|crying|failed|fired|dumped|broke up|rejected|didn'?t get|so bad|worst|tore (?:it|my)|redid my)\b/i;
 const LAUGH = /\b(?:ha(?:ha)+|lol+|lmao+|lmfao|rofl|i'?m dead|that'?s hilarious|you'?re funny)\b|😂|🤣|💀/i;
+/** "dead serious", "stop joking": never read as a laugh that landed (Codex P1 review) */
+const NOT_A_LAUGH = /\b(?:dead serious|i'?m serious|not funny|stop (?:joking|it|laughing))\b/i;
+/** "not sad anymore", "didn't win": a negated hit does not count (the 5 words before it) */
+const NEGATED = /\b(?:not|no longer|never|isn'?t|wasn'?t|aren'?t|don'?t|doesn'?t|didn'?t|won'?t|can'?t)\b(?:\s+\S+){0,3}\s*$/i;
+function said(re: RegExp, line: string): boolean {
+  const m = re.exec(line);
+  if (!m) return false;
+  // "didn't get" is itself bad news, not a negation of something else
+  if (re === BAD_NEWS && /^didn/i.test(m[0])) return true;
+  return !NEGATED.test(line.slice(0, m.index));
+}
+const laughed = (line: string) => LAUGH.test(line) && !NOT_A_LAUGH.test(line);
 
 export type Mood = { valence: number; energy: number };
 
@@ -30,9 +42,9 @@ export function moodFrom(userLines: string[]): Mood {
   for (const line of userLines) {
     valence *= 0.75;
     energy *= 0.75;
-    if (GOOD_NEWS.test(line)) { valence += 0.6; energy += 0.5; }
-    if (BAD_NEWS.test(line)) { valence -= 0.6; energy -= 0.4; }
-    if (LAUGH.test(line)) { valence += 0.3; energy += 0.4; }
+    if (said(GOOD_NEWS, line)) { valence += 0.6; energy += 0.5; }
+    if (said(BAD_NEWS, line)) { valence -= 0.6; energy -= 0.4; }
+    if (laughed(line)) { valence += 0.3; energy += 0.4; }
     valence = clamp(valence);
     energy = clamp(energy);
   }
@@ -71,9 +83,9 @@ export function turnHints(t: TurnHintInput): string | null {
   const close = closenessLine(t.callNumber);
   if (close) out.push(close);
   if (t.mood) out.push(t.mood);
-  if (last && LAUGH.test(user)) out.push("Your last line landed (they laughed): stay in that lane.");
+  if (last && laughed(user) && !said(BAD_NEWS, user)) out.push("Your last line landed (they laughed): stay in that lane.");
   else if (user.split(/\s+/).length >= 30) out.push("They're opening up: stay on what they said.");
-  if (t.remembers && (GOOD_NEWS.test(user) || BAD_NEWS.test(user))) out.push("If this connects to something you remember, name that thing specifically.");
+  if (t.remembers && (said(GOOD_NEWS, user) || said(BAD_NEWS, user))) out.push("If this connects to something you remember, name that thing specifically.");
   // a reply cut off by the user is stored with a trailing "—" (session.ts): it still ended on a question
   if (/\?[\s—–…-]*$/.test(last)) out.push("End on a statement this time.");
   return out.length ? `This turn: ${out.join(" ")}` : null;

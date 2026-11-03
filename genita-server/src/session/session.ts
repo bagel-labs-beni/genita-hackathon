@@ -1068,6 +1068,8 @@ export class Session {
       this.ask = null;
       this.nod = null;
       void this.deps.personalize.unplanCall(this.deps.userId, item).catch((err) => this.log("profile.unplan_failed", { message: String(err).slice(0, 120) }));
+      // the stored count goes back one: keep this call's closeness stage the same as the device that takes it over (Codex P2)
+      if (this.callNumber) this.callNumber = Math.max(1, this.callNumber - 1);
     }
     return this.watch;
   }
@@ -1730,7 +1732,10 @@ export class Session {
         // v1: "Hmm. Hmm, okay so…" (QA r5, 1/6: a hold beat then Spark's own "Hmm,"): a sentence that opens with the
         // interjection the previous sentence was made of drops it ("Hmm." + "Hmm, okay so…" → "Hmm." + "Okay so…")
         const prevSaid = sentences.at(-1)?.display;
-        if (this.v1 && tts && prevSaid && isInterjectionOnly(prevSaid) && !interpret && !self) {
+        // only a standalone interjection ("Hmm," / "Oh!"), never a word in use ("Well water…", "Oh Sehun…", Codex P2)
+        const lead = /^(?:\s*\[[^\]]*\]\s*)*([\p{L}']+)[,.!?…—-]/u.exec(tts)?.[1]?.toLowerCase();
+        const prevLead = /[\p{L}']+/u.exec(prevSaid ?? "")?.[0]?.toLowerCase();
+        if (this.v1 && tts && prevSaid && lead && lead === prevLead && isInterjectionOnly(prevSaid) && !interpret && !self) {
           const once = avoidRepeatedOpener(tts, [prevSaid]);
           if (once !== tts) { tts = once; this.log("convo.interjection_dropped", { utteranceId }); }
         }
