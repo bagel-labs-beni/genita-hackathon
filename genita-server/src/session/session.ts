@@ -252,6 +252,10 @@ const HOLD_BEAT_MS = 1500;
 const HOLD_BEATS = ["<curious> Ooh, okay.", "<warm> Mm, okay.", "<curious> Hmm."];
 /** a greeting / initiative sentence that is plainly a question (QA P3: it ended with "." 1/2) */
 const EXPLICIT_REMEMBER = /\b(?:remember|don'?t forget|keep in mind|note) (?:that|this|i|my|me)\b/i;
+/** the backchannel cue's echo in a transcript ("mm-hm", "mhm", "mm"), never a real word */
+export function stripCueEcho(text: string): string {
+  return text.replace(/(^|[\s,])(?:m+-?h+m+|mh+m+|m{2,})[.,!?…]*(?=\s|$)/gi, "$1").replace(/\s{2,}/g, " ").replace(/\s+([,.!?])/g, "$1").trim();
+}
 /** AI sweep 11/3 [P1 safety]: a real crisis reply must point to real help now */
 export const CRISIS_HELP_LINE = "<sad> Please reach out right now: call or text a crisis line, like 988 in the US, or your local emergency number, or someone you trust. I'm right here.";
 /** real help outside the call — "reach out to me" is not one (Codex #423 final P1) */
@@ -393,6 +397,8 @@ export class Session {
    */
   /** bumped on every speech start / partial / end: a cue whose lookup outlived its pause is dropped (Codex #475 P2) */
   private bcGen = 0;
+  /** a cue played during this user turn: a stray "mm-hm" in its transcript is the cue's echo, not the user */
+  private cuedTurn = false;
 
   private async sendBackchannel(kind: "mm" | "yeah"): Promise<void> {
     const gen = this.bcGen;
@@ -400,13 +406,15 @@ export class Session {
     if (this.tts === "server" && !this.voiceOverflow) {
       try {
         const parts: Buffer[] = [];
-        for await (const c of this.deps.tts({ voiceId: this.voiceId, text: kind === "mm" ? "Mm-hm." : "Yeah.", emotion: null, model: SEAMLESS_MODEL, signal: AbortSignal.timeout(800), lang: "en-US" })) if (c.audio.length) parts.push(c.audio);
+        for await (const c of this.deps.tts({ voiceId: this.voiceId, text: "Mm-hm.", emotion: null, model: SEAMLESS_MODEL, signal: AbortSignal.timeout(800), lang: "en-US" })) if (c.audio.length) parts.push(c.audio);
         const pcm = Buffer.concat(parts);
         if (pcm.length && pcm.length <= 24_000 * 2 * 1.5) audio = pcm.toString("base64");
       } catch { /* no cue audio: the event still goes (the app plays nothing) */ }
     }
     if (this.closed || this.mode !== "chat" || this.reply || !this.turn.userSpeaking || gen !== this.bcGen) return;
     this.client.sendJson({ type: "backchannel", kind, ...(audio ? { audio } : {}) });
+    // the app sends the uplink untouched; whatever of the cue survives echo cancellation is dropped from this turn
+    this.cuedTurn = true;
     this.log("convo.backchannel", { kind, audio: !!audio });
   }
   private perceptionUnsub: (() => void) | null = null;
@@ -1074,6 +1082,8 @@ export class Session {
     // interpretation speech counts as talking too: returning to chat never starts on a stale silence (Codex P2)
     if (this.interp && e.type !== "speaker") this.initiative?.userSpoke(t);
     if (this.interp) return this.onInterpretAsr(e);
+    if (this.cuedTurn && (e.type === "partial" || e.type === "speechComplete")) e = { ...e, text: stripCueEcho(e.text) };
+    if (e.type === "speechComplete") this.cuedTurn = false;
     switch (e.type) {
       case "speechStart":
         this.metrics = {};

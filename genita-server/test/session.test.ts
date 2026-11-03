@@ -912,3 +912,24 @@ test("Codex #475 P2: a cue whose voice lookup outlives its pause (the user spoke
     session.close();
   }
 });
+
+test("Codex #475 P1: the uplink is never cut; a cue's echo ('mm-hm') in that turn's transcript is dropped, the user's words stay", async () => {
+  process.env.GENITA_BACKCHANNEL = "1";
+  let clock = 0;
+  const { asr, client, session, sparkCalls } = setup({ deps: { now: () => clock } });
+  try {
+    await session.onClientText(JSON.stringify({ type: "start", persona }));
+    asr.fire({ type: "speechStart", turnId: 0 });
+    clock += 4000;
+    asr.fire({ type: "partial", text: "so today at work my manager pulled me into this meeting and then he started" });
+    await client.waitFor((m) => m.type === "backchannel", 3000);
+    asr.fire({ type: "speechComplete", turnId: 0, text: "so today at work my manager pulled me into this meeting and then he started mm-hm yelling at me" });
+    await client.waitFor((m) => m.type === "reply", 3000);
+    const final = client.json.find((m) => m.type === "transcript" && m.final === true);
+    assert.equal(final?.text, "so today at work my manager pulled me into this meeting and then he started yelling at me");
+    assert.doesNotMatch(JSON.stringify(sparkCalls.at(-1)?.input), /mm-hm/i);
+  } finally {
+    delete process.env.GENITA_BACKCHANNEL;
+    session.close();
+  }
+});
