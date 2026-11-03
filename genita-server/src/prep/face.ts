@@ -60,7 +60,17 @@ export function faceKeysFor(kind: CompanionKind, profile?: FlowProfile): readonl
   const mouth = new Set<string>(fromProfile ?? MOUTH_KEYS_BY_KIND[kind] ?? MOUTH_KEYS);
   return ALL_FACE_KEYS.filter((k) => !ALL_MOUTH.has(k) || mouth.has(k));
 }
-export const FACE_CONCURRENCY = 6;
+/**
+ * Edits in flight at once. 6 was set for the first 13-key set; with 18–19 keys that was
+ * three waves plus a retry wave: face 72–88 s, upload → ready 96–126 s (11/3 n=3). All keys
+ * at once (one wave + retries): face 34–51 s, ready 64–94 s, no 429 (11/3 n=3).
+ * GENITA_FACE_CONCURRENCY overrides (e.g. back to 6 if Muse Image starts rate limiting).
+ */
+export const FACE_CONCURRENCY = 20;
+export function faceConcurrency(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number(env.GENITA_FACE_CONCURRENCY);
+  return Number.isInteger(n) && n >= 1 && n <= 32 ? n : FACE_CONCURRENCY;
+}
 
 /** Normalised box [x1, y1, x2, y2], 0–1 of the image's own size. */
 export type NBox = readonly [number, number, number, number];
@@ -441,7 +451,7 @@ export async function makeFaceSet(o: FaceSetInput): Promise<FaceState> {
   const todo = plan.filter((k) => !state.items[k]);
   let next = 0;
   let failure: { err: unknown } | null = null;
-  const lanes = Math.min(o.concurrency ?? FACE_CONCURRENCY, todo.length);
+  const lanes = Math.min(o.concurrency ?? faceConcurrency(), todo.length);
   // every lane stops taking keys after a failure or an abort, and the call settles only when all have
   // stopped, so nothing is saved after it returns or throws (the runner may already be on its next attempt)
   await Promise.all(Array.from({ length: lanes }, async () => {

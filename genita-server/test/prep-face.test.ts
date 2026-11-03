@@ -227,10 +227,13 @@ test("makeFaceSet: rejects an edit whose aspect ratio differs from the scene", a
   await assert.rejects(() => makeFaceSet({ metaKey: "k", media, scene: scene(), kind: "human", size: "1024x1820" }), /every edit failed|size_mismatch/);
 });
 
-test("makeFaceSet: at most 6 edits in flight; resume skips settled keys", async () => {
+test("makeFaceSet: every key in flight at once by default (6 when asked); resume skips settled keys", async () => {
+  const six = fakeMedia({ keyOf: keyOf("human"), delayMs: 15 });
+  await makeFaceSet({ metaKey: "k", media: six.media, scene: scene(), kind: "human", size: "1024x1820", concurrency: 6 });
+  assert.equal(six.calls.maxInFlight, 6);
   const a = fakeMedia({ keyOf: keyOf("human"), delayMs: 15 });
   const first = await makeFaceSet({ metaKey: "k", media: a.media, scene: scene(), kind: "human", size: "1024x1820" });
-  assert.equal(a.calls.maxInFlight, 6);
+  assert.equal(a.calls.maxInFlight, 18, "one wave (11/3: prep 96–126 s → 64–94 s)");
 
   // keep 5 settled items (one of them a rejection), drop the rest: a rerun edits only the 8 missing
   const keep = new Set<FaceKey>(["blink", "smile", "MBP", "FV", "TH"]);
@@ -271,7 +274,7 @@ test("makeFaceSet (codex P1): a SAM error on one edit is an edit_failed retry, a
   });
   let settled = false;
   const late: string[] = [];
-  const st = await makeFaceSet({ metaKey: "k", media, scene: scene(), kind: "human", size: "1024x1820", onItem: async (k) => void (settled && late.push(k)) });
+  const st = await makeFaceSet({ metaKey: "k", media, scene: scene(), kind: "human", size: "1024x1820", concurrency: 6, onItem: async (k) => void (settled && late.push(k)) });
   settled = true;
   assert.deepEqual(faceManifest(st, urlFor).rejected, [{ key: "L", reason: "edit_failed", retried: true }]);
   assert.equal(Object.keys(st.items).length, 18);
@@ -283,6 +286,7 @@ test("makeFaceSet (codex P1): a SAM error on one edit is an edit_failed retry, a
   await assert.rejects(
     () =>
       makeFaceSet({
+        concurrency: 6, // fewer lanes than keys: the "no new edit after a failure" path
         metaKey: "k",
         media: b.media,
         scene: scene(),
