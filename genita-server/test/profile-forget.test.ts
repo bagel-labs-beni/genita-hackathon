@@ -32,12 +32,33 @@ test("DELETE /v1/profile: the profile row goes (import, corrections, growth), ca
   const r = await fetch(`${base}/v1/profile`, { method: "DELETE" });
   assert.equal(r.status, 200);
   assert.deepEqual(await r.json(), { ok: true });
-  assert.equal(await store.getStyle("u1"), null, "what Genita knows is gone");
+  const left = await store.getStyle("u1");
+  assert.equal(left?.forgotten, true, "an emptied marker row");
+  assert.equal(left?.display.flatMap((r) => r.items).length ?? 0, 0, "what Genita knows is gone");
+  assert.equal(left?.growth, undefined);
+  assert.deepEqual(await (await fetch(`${base}/v1/import`)).json(), { status: "none" }, "the app sees no import");
+  // the call knows nothing, whatever copy the app sends (another device's old profile)
+  assert.deepEqual(await p.startCall("u1"), { profile: "", taste: [] });
   assert.deepEqual(forgotten, ["u1"], "call memory and summaries are forgotten too");
   assert.ok(await store.getCompanion("u1"), "the companion stays");
   // a correction queued after it writes nothing back (no card to update)
   await p.correct("u1", { cardId: "talk", items: ["Likes jokes in our chats."] }).catch(() => null);
-  assert.equal(await store.getStyle("u1"), null);
+  assert.equal((await store.getStyle("u1"))?.forgotten, true, "nothing written back");
   // twice is fine
   assert.equal((await fetch(`${base}/v1/profile`, { method: "DELETE" })).status, 200);
+});
+
+test("AU-92: an import that started before 'Forget all of this' is not saved; a new one after it is", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "profile-forget-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const store = new FileStore(dir);
+  const p = new Personalize({ store, json: (async () => null) as never });
+  const style = skipStyleCard({ interests: ["Design"], replies: "Start with the answer", avoid: [] });
+  assert.ok(style.ok);
+  const before = p.generation("u1");
+  await p.forgetAll("u1");
+  await assert.rejects(p.replaceStyle("u1", style.card, before), { code: "profile_forgotten" });
+  assert.equal((await store.getStyle("u1"))?.forgotten, true);
+  await p.replaceStyle("u1", style.card, p.generation("u1"));
+  assert.equal((await store.getStyle("u1"))?.forgotten, undefined, "a new import replaces the marker");
 });

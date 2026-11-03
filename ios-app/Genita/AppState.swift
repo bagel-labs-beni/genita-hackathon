@@ -142,6 +142,8 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     var storyChanged: [String: [String]] = [:]
     /// HISY page: 0 = opener (HISY-0 / S0), 1…n = the cards, n + 1 = HISY-7 "Now give me a face."
     var hisyPage = 0
+    /// "Forget all of this" count (AU-92): a story / correction answer asked before it is never applied
+    var profileForgets = 0
     @ObservationIgnored var importTask: Task<Void, Never>?
     @ObservationIgnored var companionTask: Task<Void, Never>?
     @ObservationIgnored var imageCheckTask: Task<Void, Never>?

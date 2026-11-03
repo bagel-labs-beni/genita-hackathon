@@ -13,11 +13,14 @@ import UIKit
         let model = AppState(storage: store, imageURL: url)
         model.setup.name = "Chelsea"; model.setup.accountId = "u1"
         model.setup.styleProfile = "How the user wants to be treated"; model.setup.styleRows = []; model.setup.stylePartial = true
+        model.setup.response = "1. Thinking style - compares options"
         model.setup.skipInterests = ["Design"]; model.setup.skipLikes = ["Minimal"]
         model.setup.companionName = "Jin"; model.setup.companionCreated = true
         model.story = []; model.storySource = "skip"; model.hisyPage = 2
         model.profileForgotten()
         XCTAssertNil(model.setup.styleProfile); XCTAssertNil(model.setup.styleRows); XCTAssertNil(model.setup.stylePartial)
+        XCTAssertEqual(model.setup.response, "", "the pasted reply goes too: the call never falls back to it")
+        XCTAssertEqual(model.profileForgets, 1)
         XCTAssertNil(model.setup.skipInterests); XCTAssertNil(model.setup.skipLikes)
         XCTAssertNil(model.story); XCTAssertNil(model.storySource); XCTAssertEqual(model.hisyPage, 0)
         XCTAssertEqual(model.setup.companionName, "Jin", "the companion stays")

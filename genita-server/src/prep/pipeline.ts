@@ -4,6 +4,7 @@
  * only wires them to Spark, SAM, Muse Image, Meta voice.
  */
 import { randomUUID } from "node:crypto";
+import { PersonalizeError } from "../personalize/service.ts";
 import { sparkJson, type SparkRequest } from "../meta/spark.ts";
 import { museImageEdit, samDetect } from "../meta/media.ts";
 import { getOps } from "../ops/limits.ts";
@@ -142,6 +143,8 @@ export async function checkImage(d: PrepDeps, userId: string, bytes: Buffer, rig
 // ---------- F3-L2: import ----------
 
 export async function importStyle(d: PrepDeps, userId: string, pasted: unknown): Promise<StyleCard> {
+  // "Forget all of this" while this reads (AU-92): its result is not saved
+  const gen = d.personalize?.generation(userId);
   const p = checkPaste(pasted);
   if (!p.ok) throw new PrepError(400, `import_${p.reason}`, "I couldn't read this one. Paste the whole reply, or try again.");
   const t0 = performance.now();
@@ -164,7 +167,12 @@ export async function importStyle(d: PrepDeps, userId: string, pasted: unknown):
     else if (s === "late") d.personalize.trackLate(userId, storyJob);
   }
   // under the personalize lock: a call starting at the same moment can't write the old card back
-  if (d.personalize) await d.personalize.replaceStyle(userId, card);
+  if (d.personalize) {
+    try { await d.personalize.replaceStyle(userId, card, gen); } catch (err) {
+      if (err instanceof PersonalizeError) throw new PrepError(err.status, err.code, err.message);
+      throw err;
+    }
+  }
   else await d.store.putStyle(userId, card);
   d.log("import.applied", { item_count: card.itemCount, latency_ms: since(t0), chars: p.chars, partial: card.partial, dropped: card.dropped });
   return card;

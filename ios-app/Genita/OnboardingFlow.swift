@@ -205,9 +205,11 @@ extension AppState {
         guard serverWired, story == nil, !storyLoading, !importing else { return }
         storyLoading = true; storyFailed = false
         defer { storyLoading = false }
+        let asked = profileForgets
         for _ in 0..<3 {
             do {
                 let r = try await onboarding.story(wait: 8)
+                if profileForgets != asked { return }   // "Forget all of this" meanwhile: an old answer (AU-92)
                 if story != nil { return }   // the import landed meanwhile
                 if r.status == .ready, !r.cards.isEmpty { story = r.cards; storySource = r.source ?? storySource; return }
                 if r.status == .none { break }
@@ -222,8 +224,10 @@ extension AppState {
     /// border) or nil when the correction emptied it (it leaves the deck); the six I04 rows and the call's profile
     /// text follow. Returns the error line to show in the sheet (nil = done).
     func correctStory(cardId: String, items: [String], text: String?) async -> String? {
+        let asked = profileForgets
         do {
             let r = try await onboarding.correct(cardId: cardId, items: items, text: text)
+            if profileForgets != asked { return nil }   // "Forget all of this" meanwhile: never written back (AU-92)
             if var cards = story, let i = cards.firstIndex(where: { $0.id == cardId }) {
                 if let card = r.card { cards[i] = card } else { cards.remove(at: i); hisyPage = min(hisyPage, cards.count + 1) }
                 story = cards
@@ -248,13 +252,16 @@ extension AppState {
         } catch {
             route(error)
             if case GenitaAuthError.server(status: 429, _, _) = error { return "Try again in a minute." }
-            return "Couldn’t forget it just now. Nothing was removed."
+            // the server may have done part of it (the profile, not yet the call memory): a retry finishes it
+            return "Couldn’t finish forgetting. Try again."
         }
     }
 
-    /// The phone drops its copy too: the I04 rows, the call's profile text, the story cards, the skip picks.
+    /// The phone drops its copy too: the I04 rows, the call's profile text, the pasted reply, the story cards, the
+    /// skip picks. A story or correction answer still on its way is ignored (`profileForgets`).
     func profileForgotten() {
-        setup.styleRows = nil; setup.stylePartial = nil; setup.styleProfile = nil
+        profileForgets += 1
+        setup.styleRows = nil; setup.stylePartial = nil; setup.styleProfile = nil; setup.response = ""
         setup.skipInterests = nil; setup.skipReplies = nil; setup.skipAvoid = nil; setup.skipLikes = nil
         story = nil; storySource = nil; storyChanged = [:]; storyFailed = false; hisyPage = 0
     }

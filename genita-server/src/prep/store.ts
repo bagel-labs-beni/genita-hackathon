@@ -84,8 +84,6 @@ export type CompanionRecord = {
 export interface PrepStore {
   getStyle(userId: string): Promise<StyleCard | null>;
   putStyle(userId: string, card: StyleCard): Promise<void>;
-  /** "Forget all of this" (AU-92): the account's profile row goes (import, HISY, corrections, insights) */
-  deleteStyle?(userId: string): Promise<void>;
   putImage(rec: ImageRecord, bytes: Buffer): Promise<void>;
   getImage(id: string): Promise<{ rec: ImageRecord; bytes: Buffer } | null>;
   getCompanion(userId: string): Promise<CompanionRecord | null>;
@@ -156,9 +154,6 @@ export class FileStore implements PrepStore {
   }
   putStyle(userId: string, card: StyleCard) {
     return this.write(`styles/${safe(userId)}.json`, JSON.stringify(card, null, 1));
-  }
-  async deleteStyle(userId: string) {
-    await rm(join(this.dir, `styles/${safe(userId)}.json`), { force: true });
   }
   async putImage(rec: ImageRecord, bytes: Buffer) {
     await this.write(`images/${safe(rec.id)}.bin`, bytes);

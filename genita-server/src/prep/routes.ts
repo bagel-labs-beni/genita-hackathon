@@ -192,7 +192,7 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
       const j = importJobs.get(user);
       if (j) return send(res, 200, j);
       const style = await d.store.getStyle(user);
-      return send(res, 200, style ? { status: "ready", style, profile: styleProfileText(style) } : { status: "none" });
+      return send(res, 200, style && !style.forgotten ? { status: "ready", style, profile: styleProfileText(style) } : { status: "none" });
     }
 
     if (m === "POST" && p === "/v1/companion/image") {
@@ -447,10 +447,8 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
     if (m === "DELETE" && p === "/v1/profile") {
       if (!d.personalize) throw new PrepError(404, "not_found");
       if (!allowCorrect(user)) throw new PrepError(429, "rate_limited", "try again in a minute");
-      try { await d.personalize.forgetAll(user); } catch (err) {
-        if (err instanceof PersonalizeError) throw new PrepError(err.status, err.code, err.message);
-        throw err;
-      }
+      await d.personalize.forgetAll(user);
+      // call memory, live calls, cards made from the old taste; a failure answers 502 and a retry runs it all again
       await d.onProfileForgotten?.(user);
       return send(res, 200, { ok: true });
     }

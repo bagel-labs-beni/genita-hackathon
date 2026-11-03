@@ -128,6 +128,8 @@ export async function startServer(
   // About you → "Forget all of this" (AU-92): after the profile row, call memory and summaries, the handed-off turns,
   // opener topics and the product cards made from the old taste go too; the companion stays
   prep.deps.onProfileForgotten = async (userId) => {
+    // live calls stop using it at once (their next reply and search), not at the next call (Codex #583 P1)
+    for (const [id, u] of sessionUsers) if (u === userId) sessions.get(id)?.profileForgotten();
     dropLastTurns(userId);
     forgetOpenerTopics(userId);
     forgetProductCache(ownerKey(userId), { block: false });

@@ -14,7 +14,7 @@
 import type { SparkRequest } from "../meta/spark.ts";
 import { sparkJson } from "../meta/spark.ts";
 import { backgroundJson } from "../meta/sparkOpen.ts";
-import { looksLikeInjection, redactSensitive, styleProfileText, type DisplayRow, type Finding, type StyleCard } from "../prep/importProfile.ts";
+import { toStyleCard, looksLikeInjection, redactSensitive, styleProfileText, type DisplayRow, type Finding, type StyleCard } from "../prep/importProfile.ts";
 import type { PrepStore } from "../prep/store.ts";
 import { EYEBROWS, SPARK_STORY_IDS, STORY_IDS, buildStoryRequest, cardTexts, interimCard, optimisticCard, toStory, type SparkStoryId, type Story, type StoryCard, type StoryId, type UnknownItem } from "./story.ts";
 import { PROFILE_FIELDS, mergeUpdates, type AppliedUpdate, type ProfileField, type ProfileUpdate } from "./merge.ts";
@@ -27,7 +27,7 @@ import { avoidKeys, forgetTarget, isForgetRequest, type Removed } from "./forgot
 import { isSensitiveDetail } from "./sensitive.ts";
 
 export type JsonFn = <T>(req: Omit<SparkRequest, "text"> & { schemaName: string; schema: Record<string, unknown> }, signal?: AbortSignal) => Promise<T>;
-export type PersonalizeStore = Pick<PrepStore, "getStyle" | "putStyle" | "getCompanion" | "deleteStyle">;
+export type PersonalizeStore = Pick<PrepStore, "getStyle" | "putStyle" | "getCompanion">;
 
 export const ACK = "Got it. I'll remember that.";
 export const CORRECTION_TEXT_MAX = 200;
@@ -93,14 +93,21 @@ export class Personalize {
   }
 
   /** Read-modify-write the latest card under the user's lock. fn returns null = no change. */
+  /** per user: bumped by forgetAll, so an import that started before it never writes the old profile back */
+  private readonly gens = new Map<string, number>();
+  generation(userId: string): number { return this.gens.get(userId) ?? 0; }
+
   /**
    * "Forget all of this" (AU-92): what Genita knows about them — the import, HISY, corrections, insights, call growth —
-   * goes; the companion and the account stay. Inside the per-user lock, so a queued correction or story write that
-   * runs after it finds no card and writes nothing.
+   * goes; the companion and the account stay. The row becomes an empty `forgotten` marker inside the per-user lock:
+   * queued corrections / story writes find nothing to update, an import that started before is refused (generation),
+   * and a call gets the empty profile, never an app's or another device's old copy.
    */
   async forgetAll(userId: string): Promise<void> {
-    if (!this.store.deleteStyle) throw new PersonalizeError(501, "not_supported");
-    await this.serial(userId, () => this.store.deleteStyle!(userId));
+    await this.serial(userId, async () => {
+      this.gens.set(userId, this.generation(userId) + 1);
+      await this.store.putStyle(userId, { ...toStyleCard(null, "import"), forgotten: true, importedAt: this.now().toISOString() });
+    });
     this.storyFailedAt.delete(userId);
     for (const k of [...this.lastSave.keys()]) if (k.startsWith(`${userId}\u0000`)) this.lastSave.delete(k);
     this.log("profile.forgot_all", {});
@@ -109,7 +116,7 @@ export class Personalize {
   private async update<T>(userId: string, fn: (card: StyleCard) => Promise<{ card: StyleCard; out: T } | null> | { card: StyleCard; out: T } | null): Promise<T | null> {
     return this.serial(userId, async () => {
       const card = await this.store.getStyle(userId);
-      if (!card) return null;
+      if (!card || card.forgotten) return null;   // forgotten (AU-92): nothing to update, nothing written back
       const r = await fn(card);
       if (!r) return null;
       await this.store.putStyle(userId, r.card);
@@ -129,9 +136,13 @@ export class Personalize {
   }
 
   /** Replace the user's style (import, N1–N3) under the same lock as every other write. */
-  async replaceStyle(userId: string, card: StyleCard): Promise<void> {
+  async replaceStyle(userId: string, card: StyleCard, since?: number): Promise<void> {
     const at = this.now().toISOString();
-    await this.serial(userId, () => this.store.putStyle(userId, { ...card, importedAt: at }));
+    await this.serial(userId, async () => {
+      // an import that started before "Forget all of this" never brings the old profile back (AU-92)
+      if (since !== undefined && since !== this.generation(userId)) throw new PersonalizeError(409, "profile_forgotten", "The profile was cleared while this was reading.");
+      await this.store.putStyle(userId, { ...card, importedAt: at });
+    });
   }
 
   // ───────────── D47 story ─────────────
@@ -261,7 +272,7 @@ export class Personalize {
   /** GET /v1/profile/story?wait=s — `processing` if not written within the wait. */
   async story(userId: string, waitMs = 0): Promise<{ status: "ready" | "processing" | "none"; source?: StyleCard["source"]; cards: StoryCard[]; ms?: number }> {
     let card = await this.store.getStyle(userId);
-    if (!card) return { status: "none", cards: [] };
+    if (!card || card.forgotten) return { status: "none", cards: [] };
     this.replayPending(userId, card);
     const failed = this.storyFailedAt.get(userId);
     const backoff = failed !== undefined && Date.now() - failed < STORY_BACKOFF_MS && !this.storyJobs.has(userId);
@@ -464,6 +475,8 @@ export class Personalize {
    */
   async startCall(userId: string, opts: { plan?: boolean } = {}): Promise<CallStart | null> {
     const pendingCard = await this.store.getStyle(userId);
+    // forgotten (AU-92): the call knows nothing about them, whatever copy the app sends
+    if (pendingCard?.forgotten) return { profile: "", taste: [] };
     if (pendingCard?.pendingCorrections?.length) this.replayPending(userId, pendingCard);
     if (opts.plan === false) {
       const card = await this.store.getStyle(userId);

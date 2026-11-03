@@ -581,6 +581,19 @@ export class Session {
   }
 
   /** F6-L7: `start` was accepted (the handoff layer gives a conversation nobody holds to this device). */
+  /**
+   * "Forget all of this" during this call (AU-92): the profile, taste lines, the planned question and the first-call
+   * nod go now — the next reply and the next search know nothing about them.
+   */
+  profileForgotten(): void {
+    this.user = { ...this.user, profile: undefined };
+    this.taste = [];
+    this.ask = null;
+    this.nod = null;
+    if (this.started) this.finds?.configure({ owner: this.deps.userId, memories: this.memories, profile: undefined, userName: this.user.name, timeZone: this.timeZone, taste: [] });
+    this.log("profile.forgotten_in_call", {});
+  }
+
   get hasStarted(): boolean {
     return this.started && !this.closed;
   }

@@ -260,6 +260,9 @@ export type StyleCard = {
   updatedAt?: string;
   /** when this profile was imported (or made from N1–N3): call analyses older than this are dropped */
   importedAt?: string;
+  /** "Forget all of this" (AU-92): an emptied profile kept as a marker — the call uses it (empty) instead of an app's old
+   * copy, stale writes are refused, GET /v1/import says none. A new import / N1–N3 replaces it. */
+  forgotten?: true;
   /** lines removed by corrections, with when (an older analysis can't bring them back), last 40 */
   /** forget = from a "forget that …" (its target words are kept out loosely: any of them) */
   removed?: Array<{ text: string; at: string; field?: string; forget?: true }>;
