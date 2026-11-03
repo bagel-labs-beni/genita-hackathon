@@ -8,10 +8,19 @@ import SwiftUI
 struct GlassCTA: View {
     var color: Color
     var radius: CGFloat = 12
+    #if os(macOS)
+    /// Mac: a non-key window (the call window is never key) washes tinted glass out to light grey (build 171), so the
+    /// fill holds the ink there (MacInkGlass: 55 % key, 88 % non-key).
+    @Environment(\.controlActiveState) private var activeState
+    private var fillOpacity: Double { MacInkGlass.fillOpacity(activeState) }
+    #else
+    private var fillOpacity: Double { 0.55 }
+    #endif
     var body: some View {
         if #available(iOS 26.0, macOS 26.0, *) {
-            RoundedRectangle(cornerRadius: radius).fill(color.opacity(0.55))
+            RoundedRectangle(cornerRadius: radius).fill(color.opacity(fillOpacity))
                 .glassEffect(.regular.tint(color).interactive(), in: RoundedRectangle(cornerRadius: radius))
+                .animation(.easeOut(duration: 0.2), value: fillOpacity)
         } else {
             RoundedRectangle(cornerRadius: radius).fill(color)
         }

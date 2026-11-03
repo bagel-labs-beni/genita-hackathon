@@ -629,3 +629,60 @@ test("a 'forget that …' said while another correction check runs is not skippe
   assert.deepEqual(lines, ["Actually I don't like mushrooms anymore.", "Actually, forget that I like leather accessories."]);
   s.session.close();
 });
+
+test("Codex #401 r1 P1: watch together attaches while the question's TTS is still coming → its audio never goes out", async () => {
+  let releaseTts!: () => void;
+  const ttsGate = new Promise<void>((r) => (releaseTts = r));
+  const s = setup({ async unplanCall() {} });
+  const deps = (s.session as unknown as { deps: SessionDeps }).deps;
+  deps.config = { ...deps.config, serverTts: true, voice: voiceCfg };
+  let ttsStarted = false;
+  deps.tts = async function* (req) {
+    if (/weekends/i.test(req.text)) { ttsStarted = true; await ttsGate; }
+    yield { audio: Buffer.alloc(4800), alignment: null, model: "seamless-m4t-v2" };
+  };
+  deps.spark = async function* () {
+    yield { type: "text", delta: "<happy> Are your weekends busy or slow? " };
+    yield { type: "done", responseId: "r", text: "", status: "completed" };
+  };
+  await s.session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await s.session.onClientText(JSON.stringify({ type: "text", text: "Hey, long week." }));
+  const t0 = Date.now();
+  while (!ttsStarted && Date.now() - t0 < 2000) await sleep(5);
+  assert.ok(ttsStarted, "the question's TTS is in flight (askedAt already passed)");
+  const audioBefore = s.client.json.filter((m) => m.type === "audio").length;
+  assert.ok(s.session.attachWatch({ send() {}, sendJson() {}, close() {} } as never));
+  releaseTts();
+  const reply = await s.client.waitFor((m) => m.type === "reply");
+  assert.doesNotMatch(String(reply.text), /weekends/i);
+  assert.ok(String(reply.text).length > 0, "never silent: the short reaction takes its place");
+  assert.equal(audioBefore, 0);
+  s.session.close();
+});
+
+test("Codex #401 r2 P1: the question's TTS fails after watch together attached → the device fallback doesn't say it either", async () => {
+  let releaseTts!: () => void;
+  const ttsGate = new Promise<void>((r) => (releaseTts = r));
+  const s = setup({ async unplanCall() {} });
+  const deps = (s.session as unknown as { deps: SessionDeps }).deps;
+  deps.config = { ...deps.config, serverTts: true, voice: voiceCfg };
+  let ttsStarted = false;
+  deps.tts = async function* (req) {
+    if (/weekends/i.test(req.text)) { ttsStarted = true; await ttsGate; throw new Error("voice 503"); }
+    yield { audio: Buffer.alloc(4800), alignment: null, model: "seamless-m4t-v2" };
+  };
+  deps.spark = async function* () {
+    yield { type: "text", delta: "<happy> Are your weekends busy or slow? " };
+    yield { type: "done", responseId: "r", text: "", status: "completed" };
+  };
+  await s.session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await s.session.onClientText(JSON.stringify({ type: "text", text: "Hey, long week." }));
+  const t0 = Date.now();
+  while (!ttsStarted && Date.now() - t0 < 2000) await sleep(5);
+  assert.ok(s.session.attachWatch({ send() {}, sendJson() {}, close() {} } as never));
+  releaseTts();
+  const reply = await s.client.waitFor((m) => m.type === "reply");
+  assert.doesNotMatch(String(reply.text), /weekends/i);
+  assert.ok(!s.client.json.some((m) => m.type === "say" && /weekends/i.test(String(m.text))));
+  s.session.close();
+});

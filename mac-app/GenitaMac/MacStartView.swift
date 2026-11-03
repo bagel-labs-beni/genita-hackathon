@@ -10,16 +10,26 @@ struct MacStartView: View {
 
     var body: some View {
         Group {
-            switch call.account {
-            case .checking: MacLaunchBlank()
-            case .signedOut, .signingIn: MacSignInView()
-            case .needsConsent: MacConsentView()
-            default: MacHandoffControls()
+            if MacDesignV2.enabled {
+                // MAC-0 "A · Eclipse" (11/4): the launch runs over the first screen and hands off to it
+                MacLaunchHost(checking: call.account == .checking, signedIn: ![.signedOut, .signingIn].contains(call.account)) { screen }
+            } else if call.account == .checking {
+                MacLaunchBlank()
+            } else {
+                screen
             }
         }
         .task {
             _ = MacHandoff.shared // Connections start after /me verifies the signed-in account.
             if call.account == .checking { await call.refresh() }
+        }
+    }
+    @ViewBuilder private var screen: some View {
+        switch call.account {
+        case .checking: MacLaunchBlank()
+        case .signedOut, .signingIn: MacSignInView()
+        case .needsConsent: MacConsentView()
+        default: MacHandoffControls()
         }
     }
 }
