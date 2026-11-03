@@ -229,6 +229,9 @@ function parseInterpretOptions(v: unknown): InterpretOptionsWire {
   };
 }
 const ANNOUNCE_WAIT_MS = 20_000;
+/** hold cap: the longest the first sound waits on a held line (a pre-tool preamble) before a short beat */
+const HOLD_BEAT_MS = 1500;
+const HOLD_BEATS = ["<curious> Hmm.", "<warm> Mm, okay.", "<curious> Ooh, okay."];
 const GREET_PROMPT = "The call just connected. Greet the user.";
 const MAX_GREET_AFTER_MS = 3000;
 
@@ -1556,7 +1559,9 @@ export class Session {
     // Server voice: first clause goes out at its first comma ("Oh wow,") and long sentences split for rhythm
     const splitOptions = !device && this.deps.config.voice ? { eagerFirstClause: true, clauseMaxChars: 140 } : {};
     let splitter = new SentenceSplitter(splitOptions);
-    const sentences: { tts: string; display: string; emotion: string | null; face: { tag: Expression; intensity: number } | null }[] = [];
+    const sentences: { tts: string; display: string; emotion: string | null; face: { tag: Expression; intensity: number } | null; beat?: true }[] = [];
+    /** real sentences only: a hold beat ("Mm, okay.") is never the answer (Codex #384) */
+    const said = () => sentences.filter((x) => !x.beat);
     let emotion: string | null = null;
     const waiter: { wake: (() => void) | null } = { wake: null };
     let sparkDone = false;
@@ -1565,7 +1570,7 @@ export class Session {
     let droppedOpener = false;
     // a she/he in the reply is the user only when their own line is about themselves (the v1 address check)
     const narration = new NarrationJudge(!interpret && !self, { thirdPersonIsUser: !synthetic && thirdPersonCouldBeUser(text, this.user?.name) });
-    const hasAnswer = () => narration.hasAnswer(sentences.map(({ display }) => display));
+    const hasAnswer = () => narration.hasAnswer(said().map(({ display }) => display));
     let onlyOpener: string | null = null;
     // v1 sentence guard (src/convo/guard.ts): the first dropped sentence, spoken only if nothing else is
     const guarded: { first: { raw: string; cls: GuardClass } | null; narration: boolean; tool: boolean } = { first: null, narration: false, tool: false };
@@ -1616,7 +1621,8 @@ export class Session {
         // "I knew you'd crush it… I knew you'd crush it…"): a sentence already spoken in this reply is not said twice
         if (this.v1 && !interpret && !self) {
           const key = normTranscript(display);
-          if (key && !isInterjectionOnly(display) && sentences.some((x) => normTranscript(x.display) === key)) { this.log("convo.duplicate_dropped", { utteranceId }); continue; }
+          // only after a tool ran in this reply: an intentional repeat ("Breathe in. Breathe out." ×2) is kept (Codex r23)
+          if (key && guarded.tool && !isInterjectionOnly(display) && sentences.some((x) => normTranscript(x.display) === key)) { this.log("convo.duplicate_dropped", { utteranceId }); continue; }
         }
         if (m.firstSentenceAt === undefined) {
           m.firstSentenceAt = this.now();
@@ -1648,6 +1654,20 @@ export class Session {
     };
 
     // Producer: Spark stream → sentences
+    // hold cap (prod smoke 11/3 13:0x: a held pre-tool line kept a memory turn silent 5.9 s): if nothing has been
+    // said 1.5 s after Spark's first text, one short human beat goes out — never narration, never "let me…"
+    let beatTimer: NodeJS.Timeout | null = null;
+    const armBeat = () => {
+      if (beatTimer || !this.v1 || interpret || self) return;
+      beatTimer = setTimeout(() => {
+        if (signal.aborted || this.reply !== reply || sentences.length) return;
+        const before = sentences.length;
+        enqueueSentences([HOLD_BEATS[utteranceId % HOLD_BEATS.length]], true);
+        for (let i = before; i < sentences.length; i++) sentences[i].beat = true;
+        this.log("convo.hold_beat", { utteranceId });
+      }, HOLD_BEAT_MS);
+      beatTimer.unref?.();
+    };
     const producer = (async () => {
       try {
         if (self) {
@@ -1668,6 +1688,7 @@ export class Session {
             for await (const ev of stream) {
               if (signal.aborted) return;
               if (ev.type === "text") {
+                if (ev.delta.trim()) armBeat();
                 // a speculation hit's tokens waited in a buffer: count from when Spark sent the first one
                 if (ev.delta.trim() && m.firstTokenAt === undefined) m.firstTokenAt = attempt === 0 && pre && spec?.firstTextAt !== undefined ? Math.min(spec.firstTextAt, this.now()) : this.now();
                 gotText ||= !!ev.delta.trim();
@@ -1693,15 +1714,15 @@ export class Session {
           applyNarration(narration.finish());
           // A bare "Yes!"/"Okay." is a valid answer. Defer a dropped eager
           // opener until EOF so "Oh, the rest" still loses the repeated Oh.
-          if (!sentences.length && guarded.first && !neverSpoken(guarded.first.cls)) {
+          if (!said().length && guarded.first && !neverSpoken(guarded.first.cls)) {
             // never an empty reply: a style drop speaks its sentence; a safety drop says the fallback line
             const fb = fallbackLine(guarded.first.cls);
             enqueueSentences(fb ? [fb] : [guarded.first.raw], true);
           }
-          if (!sentences.length && onlyOpener) enqueueSentences([onlyOpener], true);
+          if (!said().length && onlyOpener) enqueueSentences([onlyOpener], true);
           // the retry also only announced a lookup and NO tool ran: say so honestly. With a tool, never "not sure"
           // right before (or instead of) the real result — say nothing (main 11/3: Scene 4 map, Scene 5 products)
-          if (!sentences.length && attempt === 1 && guarded.narration && !guarded.tool) enqueueSentences([NO_ANSWER_LINE], true);
+          if (!said().length && attempt === 1 && guarded.narration && !guarded.tool) enqueueSentences([NO_ANSWER_LINE], true);
           if (hasAnswer()) { sparkError = attemptError; break; }
           emptyCause = attemptError ? "upstream_error_before_text" : gotText ? "filtered_only_content" : `${status || "stream_ended"}_without_text`;
           if (attempt === 0) this.log("spark.empty_retry", { utteranceId, cause: emptyCause, status });
@@ -1719,6 +1740,7 @@ export class Session {
       } finally {
         if (!signal.aborted) applyNarration(narration.finish());
         sparkDone = true;
+        if (beatTimer) clearTimeout(beatTimer);
         waiter.wake?.();
       }
     })();
