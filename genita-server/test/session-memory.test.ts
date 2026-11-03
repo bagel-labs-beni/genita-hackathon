@@ -471,3 +471,41 @@ test("server (Codex 11/3 r3): an ended call still closing its socket is not a li
   assert.ok(logs.includes("history.not_seeded"), "a return visit on the iPhone that hung up");
   for (const w of sockets) w.terminate();
 });
+
+test("server (Codex 11/3 r4): the old Mac's late close never replaces a newer iPhone call's cache, even of another thread", { timeout: 20_000 }, async (t) => {
+  const { memory, deps, requests } = setup(fakeSummarizer().fn);
+  const logs: string[] = [];
+  const server = await startServer({ ...config, sessionToken: "test-token" }, (e) => { logs.push(e); }, { ...deps, log: (e) => { logs.push(e); } }, {}, null);
+  t.after(() => new Promise<void>((r) => server.close(() => r())));
+  const addr = server.address(); assert.ok(addr && typeof addr === "object");
+  const headers = { authorization: "Bearer test-token", "x-genita-user": "acct-a" };
+  const sockets: WebSocket[] = [];
+  const open = (device: string) => new Promise<{ ws: WebSocket; replies: () => number; ready: () => boolean }>((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${addr.port}/v1/session?device=${device}`, { headers });
+    sockets.push(ws);
+    let n = 0; let ok = false;
+    ws.on("message", (d, bin) => { if (bin) return; const m = JSON.parse(String(d)); if (m.type === "reply") n++; if (m.type === "ready") ok = true; });
+    ws.once("open", () => resolve({ ws, replies: () => n, ready: () => ok })); ws.once("error", reject);
+  });
+  const closes = () => logs.filter((e) => e === "session.close").length;
+  const say = async (c: { ws: WebSocket; replies: () => number }, text: string) => { const n = c.replies(); c.ws.send(JSON.stringify({ type: "text", text })); await waitFor(() => c.replies() > n); };
+  const start = (c: { ws: WebSocket }) => c.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  const mac = await open("mac"); start(mac); await waitFor(() => mac.replies() >= 1);
+  await say(mac, "White or black for the party?");
+  const phone = await open("iphone"); start(phone); await waitFor(phone.ready); // continues the Mac's thread
+  await say(phone, "Black it is.");
+  mac.ws.pause(); mac.ws.send(JSON.stringify({ type: "stop" })); // the Mac's close handshake stalls
+  await new Promise((r) => setTimeout(r, 100));
+  phone.ws.send(JSON.stringify({ type: "stop" })); await waitFor(() => closes() === 1);
+  const again = await open("iphone"); start(again); await waitFor(() => again.replies() >= 1); // a return visit: new thread
+  await say(again, "Dark brown shoes, decided.");
+  again.ws.send(JSON.stringify({ type: "stop" })); await waitFor(() => closes() === 2); await memory.drain();
+  mac.ws.resume(); await waitFor(() => closes() === 3); await memory.drain(); // the old Mac finally closes
+  assert.ok(logs.includes("history.not_cached"), "the moved-on Mac call is not cached");
+  requests.length = 0;
+  const onMac = await open("mac"); start(onMac); await waitFor(onMac.ready);
+  await say(onMac, "Where were we?");
+  const req = requests.find((r) => /Where were we/.test(JSON.stringify(r.input)))!;
+  assert.match(JSON.stringify(req.input), /Dark brown shoes, decided/, "the newest call's turns, not the old Mac's");
+  for (const w of sockets) w.terminate();
+});

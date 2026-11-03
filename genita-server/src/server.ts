@@ -328,13 +328,13 @@ export async function startServer(
     const revision = session.historyForgetRevision;
     if (!turns.length || deletedUsers.has(userId)) return;
     const save = () => {
-      // a stale copy of the same conversation (the old device closing late) never replaces the fuller one (Codex 11/3)
+      // Late closes never win (Codex 11/3): a call whose conversation another call continued (whatever is cached
+      // now, even another thread), or an older copy of the same thread with fewer pairs.
       const cur = lastTurns.get(userId);
-      // ...nor does the device that no longer owns the thread (it moved on), even with as many pairs
-      const stale = cur?.thread && thread && cur.thread.threadId === thread.threadId
-        && (cur.thread.covered > thread.covered || (deps.memory && !deps.memory.ownsThread(userId, thread.threadId, session.id)));
-      if (stale) {
-        log("history.not_cached", { session: session.id, by: "stale_copy" });
+      const movedOn = !!thread && !!deps.memory && !deps.memory.ownsThread(userId, thread.threadId, session.id);
+      const fewer = !!(cur?.thread && thread && cur.thread.threadId === thread.threadId && cur.thread.covered > thread.covered);
+      if (movedOn || fewer) {
+        log("history.not_cached", { session: session.id, by: movedOn ? "moved_on" : "stale_copy" });
         return;
       }
       dropLastTurns(userId);
