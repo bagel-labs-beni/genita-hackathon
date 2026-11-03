@@ -54,6 +54,10 @@ struct ConsentView: View {
 
     private func agree() {
         guard !sending else { return }
+        #if DEBUG
+        // Appetize preview: the screen is shown and has to be agreed to, but there is no server to tell
+        if BrowserPreview.isActive { model.consentAccepted(); return }
+        #endif
         sending = true
         Task { @MainActor in
             defer { sending = false }

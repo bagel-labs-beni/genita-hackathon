@@ -16,6 +16,8 @@ import CoreMedia
     @Published var reacting = false
     /// FT-SPK: who is talking in the shared video (never what they say).
     @Published var speakerName: String?
+    /// A capture is not a working share until /watch acknowledges `start`.
+    @Published private(set) var connectionMessage: String?
     /// Set by the call client from `ready` (server, token, sessionId). Nil = capture stays on this Mac.
     var watchConfig: WatchUplink.Config? = {
         #if DEBUG
@@ -25,7 +27,7 @@ import CoreMedia
         #endif
     }() {
         // a reconnect gives the call a new session id: a running share moves to it (or starts, if it began before ready)
-        didSet { if isSharing, watchConfig != oldValue { uplink?.stop(); uplink = nil; connectUplink(source: sourceName) } }
+        didSet { if isSharing, watchConfig != oldValue { disconnectUplink(); reconnectAttempt = 0; connectUplink(source: sourceName) } }
     }
     private struct CaptureSession {
         let stream: SCStream
@@ -35,6 +37,9 @@ import CoreMedia
     private var startingCapture: CaptureSession?
     private var captureRequest = ScreenSharingRequest()
     private var uplink: WatchUplink?
+    private var uplinkGeneration = UUID()
+    private var reconnectAttempt = 0
+    private var reconnectTask: Task<Void, Never>?
     private var reactingTask: Task<Void, Never>?
     private static let noticeKey = "genita.watch.noticeShown"
     private let queue = DispatchQueue(label: "ai.thebeni.genita.mac.screen-sharing")
@@ -83,7 +88,7 @@ import CoreMedia
         let old = activeCapture; activeCapture = nil; isSharing = false
         SCContentSharingPicker.shared.isActive = false
         stopCapture(old)
-        uplink?.stop(); uplink = nil
+        disconnectUplink(); reconnectAttempt = 0; connectionMessage = nil
         reactingTask?.cancel(); reactingTask = nil
         blank = false; reacting = false; speakerName = nil; sourceName = nil
     }
@@ -142,7 +147,7 @@ import CoreMedia
                 stopCapture(old)
                 blank = false
                 isSharing = true; permissionRequired = false; sourceName = name
-                uplink?.stop(); uplink = nil
+                disconnectUplink(); reconnectAttempt = 0
                 connectUplink(source: name)
             } catch {
                 guard captureRequest.isStarting(request) else { return }
@@ -172,13 +177,13 @@ import CoreMedia
         let capture = output.capture
         capture.onFrame = { [weak self] jpeg, blank, motion in
             Task { @MainActor in
-                guard let self, self.captureRequest.acceptsSamples(request), self.isSharing else { return }
+                guard let self, self.captureRequest.acceptsSamples(request), self.isSharing, self.callIsValid else { return }
                 self.uplink?.sendFrame(jpeg, blank: blank, motion: motion)
             }
         }
         capture.onAudio = { [weak self] pcm in
             Task { @MainActor in
-                guard let self, self.captureRequest.acceptsSamples(request), self.isSharing else { return }
+                guard let self, self.captureRequest.acceptsSamples(request), self.isSharing, self.callIsValid else { return }
                 self.uplink?.sendAudio(pcm)
             }
         }
@@ -189,17 +194,53 @@ import CoreMedia
             }
         }
     }
+    private var callIsValid: Bool {
+        let call = CallController.shared
+        return WatchReconnectPolicy.callIsValid(configuredSession: watchConfig?.sessionId, activeSession: call.sessionId,
+                                                isLive: call.link == .live, isOwner: MacHandoff.shared.ownership.isOwner,
+                                                isSignedIn: MacCall.shared.isSignedIn)
+    }
+    private func disconnectUplink() {
+        reconnectTask?.cancel(); reconnectTask = nil
+        uplinkGeneration = UUID()
+        uplink?.stop(); uplink = nil
+    }
     private func connectUplink(source: String?) {
-        guard let watchConfig else { return }
+        guard isSharing else { return }
+        guard callIsValid, let watchConfig else {
+            connectionMessage = "Screen sharing is waiting for the call."
+            return
+        }
+        connectionMessage = reconnectAttempt == 0 ? "Connecting screen sharing…" : "Reconnecting screen sharing…"
+        let generation = UUID(); uplinkGeneration = generation
         let link = WatchUplink(config: watchConfig) { [weak self] event in
-            Task { @MainActor in self?.handle(event) }
+            Task { @MainActor in
+                guard let self, self.isSharing, self.uplinkGeneration == generation else { return }
+                self.handle(event)
+            }
         }
         uplink = link
         link.connect(source: source)
+        // An opened socket without a start acknowledgement must not hang forever.
+        reconnectTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(10))
+            guard let self, !Task.isCancelled, self.uplinkGeneration == generation else { return }
+            self.handle(.closed)
+        }
     }
     private func handle(_ event: WatchUplink.Event) {
         switch event {
-        case .state(_, let isBlank): blank = isBlank || blank
+        case .state(let sharing, let isBlank):
+            guard callIsValid else { disconnectUplink(); connectionMessage = "Screen sharing is disconnected."; return }
+            blank = isBlank || blank
+            if sharing, connectionMessage != nil {
+                connectionMessage = nil; reconnectAttempt = 0
+                reconnectTask?.cancel(); reconnectTask = nil
+                // The new server session needs a frame even if the screen has not changed.
+                if let output = activeCapture?.output {
+                    queue.async { output.forceNextFrame() }
+                }
+            }
         case .reaction:
             // MS-2 first reaction (Chelsea 11/2 21:10: watch together is back, reactions on)
             reacting = true
@@ -210,7 +251,34 @@ import CoreMedia
             }
         // The speaker chip (FT-SPK) stays cut (D40): who is talking in the video never shows.
         case .speaker: break
-        case .closed: speakerName = nil
+        case .closed:
+            disconnectUplink()
+            speakerName = nil; blank = false; reacting = false
+            reactingTask?.cancel(); reactingTask = nil
+            recoverUplink()
+        }
+    }
+    private func recoverUplink() {
+        switch WatchReconnectPolicy.recoveryAction(attempt: reconnectAttempt, isSharing: isSharing,
+            callIsValid: callIsValid, isCallActive: CallController.shared.link != .idle,
+            isOwner: MacHandoff.shared.ownership.isOwner, isSignedIn: MacCall.shared.isSignedIn) {
+        case .waitForCall:
+            connectionMessage = "Screen sharing is waiting for the call."
+        case .stop:
+            stop(); error = "Screen sharing disconnected. Try sharing again."
+        case .retry(let delay):
+            reconnectAttempt += 1
+            connectionMessage = "Reconnecting screen sharing…"
+            let generation = uplinkGeneration
+            reconnectTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(delay))
+                guard let self, !Task.isCancelled, self.uplinkGeneration == generation else { return }
+                guard self.isSharing, self.callIsValid else {
+                    self.recoverUplink()
+                    return
+                }
+                self.connectUplink(source: self.sourceName)
+            }
         }
     }
     /// A whole-display share leaves Genita's own windows out of the picture.
@@ -264,6 +332,13 @@ private final class WatchStreamOutput: NSObject, SCStreamOutput, @unchecked Send
         lock.lock(); defer { lock.unlock() }
         gate.invalidate()
         capture.reset()
+    }
+
+    /// Replay uses the same lock as media intake and invalidation, so a stopped
+    /// stream's frame cannot be replayed into a new capture or account.
+    func forceNextFrame() {
+        lock.lock(); defer { lock.unlock() }
+        capture.forceNextFrame()
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {

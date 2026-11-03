@@ -7,6 +7,7 @@ extension AppState {
     /// UI tests and screen review run without a server unless they point one at the app (GENITA_API_URL).
     var serverWired: Bool {
         #if DEBUG
+        if BrowserPreview.isActive { return false } // Appetize preview: no server
         let env = ProcessInfo.processInfo.environment
         if env["GENITA_REVIEW_STAGE"] != nil && env["GENITA_API_URL"] == nil { return false }
         if ProcessInfo.processInfo.arguments.contains("--uitesting") && env["GENITA_API_URL"] == nil { return false }
@@ -25,21 +26,26 @@ extension AppState {
     func routeOnLaunch(afterSignIn: Bool = false) async {
         guard serverWired, onboarding.auth.isSignedIn else { return }
         let generation = authGeneration
+        let request = onboardingSnapshot()
         let state = await onboarding.auth.sessionState()
-        guard generation == authGeneration, !Task.isCancelled else { return }
+        guard generation == authGeneration, !Task.isCancelled,
+              ownsOnboardingResponse(request, allowingClearedSession: state == .expired) else { return }
         var me: GenitaMe?
         if case .active(let m) = state { me = m; adopt(accountId: m.user.id) }
         let route = StartRouter.route(state, device: .iphone)
         // a companion on the server but not on this phone (reinstall, new phone, a judge's ready-made one):
         // bring its name, card and face back first
-        if route == .connecting || route == .textWhilePreparing, setup.companionName == nil || me?.companionDemo == true { await restoreCompanion() }
-        guard generation == authGeneration, !Task.isCancelled else { return }
+        if route == .connecting || route == .textWhilePreparing, setup.companionName == nil || me?.companionDemo == true { await restoreCompanion(for: request) }
+        guard generation == authGeneration, !Task.isCancelled,
+              ownsOnboardingResponse(request, allowingClearedSession: state == .expired) else { return }
         apply(route, me: me, afterSignIn: afterSignIn)
     }
 
-    func restoreCompanion() async {
+    func restoreCompanion(for request: OnboardingSessionGeneration.Snapshot? = nil) async {
         let generation = authGeneration
-        guard let c = try? await onboarding.companion(), generation == authGeneration, !Task.isCancelled else { return }
+        let request = request ?? onboardingSnapshot()
+        guard let c = try? await onboarding.companion(), generation == authGeneration, !Task.isCancelled,
+              ownsOnboardingResponse(request) else { return }
         setup.companionName = c.name
         setup.imageId = c.imageId
         setup.imageType = c.type
@@ -51,7 +57,8 @@ extension AppState {
         // the face on this phone: the companion's call scene (the original photo isn't downloadable)
         // (Meta-only `sceneUrl` is a token-protected server path, so it goes through the account client)
         if setup.imageData == nil, let url = c.prep?.sceneURL,
-           let data = try? await onboarding.sceneImage(url), UIImage(data: data) != nil, generation == authGeneration {
+           let data = try? await onboarding.sceneImage(url), UIImage(data: data) != nil,
+           generation == authGeneration, !Task.isCancelled, ownsOnboardingResponse(request) {
             setup.imageData = data
         }
     }
@@ -106,17 +113,20 @@ extension AppState {
         importError = nil
         let text = setup.response
         guard serverWired else { importing = false; return }
+        let request = onboardingSnapshot()
         importing = true
         importTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let style = try await onboarding.importReply(text)
-                if Task.isCancelled { return }
+                guard !Task.isCancelled, ownsOnboardingResponse(request) else { return }
                 applyStyle(style)
                 importing = false
                 if stage == .preparing { go(.preferences) }
             } catch {
-                if Task.isCancelled { return }
+                let expiredCurrentSession = (error as? GenitaAuthError) == .unauthorized
+                guard !Task.isCancelled,
+                      ownsOnboardingResponse(request, allowingClearedSession: expiredCurrentSession) else { return }
                 importing = false
                 importError = Self.importErrorLine(error)
                 if stage == .preparing { returnTo(.paste) }

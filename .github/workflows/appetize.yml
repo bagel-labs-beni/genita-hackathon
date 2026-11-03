@@ -1,0 +1,129 @@
+name: Appetize preview
+
+# Builds the iPhone app for the iOS Simulator and uploads it to Appetize.io, so it can be clicked through in a
+# browser (no device needed). The link opens the app in its browser-preview mode (launch argument
+# `--browser-preview`, Debug-compiled code only, see shared/Call/BrowserPreview.swift).
+#
+# Needs the repo secret APPETIZE_API_TOKEN. Without it a run only prints a notice and stops.
+# APPETIZE_PUBLIC_KEY (secret or variable, optional) makes every run update the same Appetize app, so the link stays
+# the same.
+
+# Manual only (Chelsea 11/3: CI cost) — run it from main once per build (build 3, build 4).
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: appetize-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  appetize:
+    runs-on: macos-15
+    timeout-minutes: 40
+    env:
+      APPETIZE_API_TOKEN: ${{ secrets.APPETIZE_API_TOKEN }}
+      APPETIZE_PUBLIC_KEY: ${{ secrets.APPETIZE_PUBLIC_KEY || vars.APPETIZE_PUBLIC_KEY }}
+    steps:
+      - name: Decide what to do
+        id: plan
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"; echo "upload=false" >> "$GITHUB_OUTPUT"
+            echo "Pull request: build and zip only, nothing is uploaded."
+          elif [ -z "$APPETIZE_API_TOKEN" ]; then
+            echo "build=false" >> "$GITHUB_OUTPUT"; echo "upload=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Appetize skipped::The repo secret APPETIZE_API_TOKEN is not set, so nothing was built or uploaded. Add it under Settings > Secrets and variables > Actions, then run this workflow again."
+            {
+              echo "### Appetize preview skipped"
+              echo ""
+              echo "The repo secret \`APPETIZE_API_TOKEN\` is not set. Create an Appetize account, copy the API token, add it as the secret, then run this workflow again (Actions > Appetize preview > Run workflow)."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"; echo "upload=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.plan.outputs.build == 'true'
+
+      - name: Replay recordings match the call-replay server's
+        if: steps.plan.outputs.build == 'true'
+        run: |
+          cmp ios-app/Tools/call-replay/session-r1.json ios-app/Genita/Resources/preview-session-r1.json
+          cmp ios-app/Tools/call-replay/session-int.json ios-app/Genita/Resources/preview-session-int.json
+
+      - name: Select Xcode 26
+        if: steps.plan.outputs.build == 'true'
+        run: |
+          XC="$(ls -d /Applications/Xcode_26.*.app | sort -V | tail -1)"
+          sudo xcode-select -s "$XC"
+          xcodebuild -version
+
+      # Release (optimised) for the simulator. DEBUG is switched on for this build only: the fixtures the preview
+      # uses are Debug-compiled code (as in the UI tests), and nothing runs without the --browser-preview launch
+      # argument. The TestFlight / App Store archive (device-test.yml) is Release without DEBUG and has none of it.
+      # arm64 only: Appetize recommends ARM simulator builds.
+      - name: Build for the iOS Simulator
+        if: steps.plan.outputs.build == 'true'
+        run: |
+          xcodebuild build \
+            -project ios-app/Genita.xcodeproj -scheme Genita \
+            -configuration Release -sdk iphonesimulator \
+            -destination "generic/platform=iOS Simulator" \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
+            SWIFT_ACTIVE_COMPILATION_CONDITIONS=DEBUG \
+            CONFIGURATION_BUILD_DIR="$PWD/build-output/app" \
+            CODE_SIGNING_ALLOWED=NO | grep -E "error:|warning: unre|\*\* BUILD" | cut -c1-240
+          exit "${PIPESTATUS[0]}"
+
+      - name: Zip the app
+        if: steps.plan.outputs.build == 'true'
+        run: |
+          test -d build-output/app/Genita.app
+          lipo -archs build-output/app/Genita.app/Genita
+          (cd build-output/app && zip -qry ../Genita-simulator.zip Genita.app)
+          ls -l build-output/Genita-simulator.zip
+
+      - name: Keep the zip
+        if: steps.plan.outputs.build == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Genita-simulator
+          path: build-output/Genita-simulator.zip
+          retention-days: 7
+
+      - name: Upload to Appetize
+        if: steps.plan.outputs.upload == 'true'
+        run: |
+          if [ -n "$APPETIZE_PUBLIC_KEY" ]; then
+            ENDPOINT="https://api.appetize.io/v1/apps/$APPETIZE_PUBLIC_KEY"
+            echo "Updating the existing Appetize app $APPETIZE_PUBLIC_KEY"
+          else
+            ENDPOINT="https://api.appetize.io/v1/apps"
+            echo "No APPETIZE_PUBLIC_KEY: creating a new Appetize app"
+          fi
+          CODE="$(curl -sS -o appetize-response.json -w '%{http_code}' -X POST "$ENDPOINT" \
+            -H "X-API-KEY: $APPETIZE_API_TOKEN" \
+            -F "file=@build-output/Genita-simulator.zip" \
+            -F "platform=ios" \
+            --form-string "note=genita ${GITHUB_SHA::7} (${GITHUB_REF_NAME})" \
+            -F "timeout=300")"
+          if [ "$CODE" != "200" ]; then
+            echo "::error title=Appetize upload failed::HTTP $CODE"
+            python3 -c "import json,sys; d=json.load(open('appetize-response.json')); d.pop('publicKey', None); print(json.dumps(d)[:600])" 2>/dev/null || head -c 600 appetize-response.json
+            exit 1
+          fi
+          KEY="$(python3 -c "import json; print(json.load(open('appetize-response.json'))['publicKey'])")"
+          # launchArgs is a URL-encoded JSON array: ["--browser-preview"]
+          URL="https://appetize.io/app/${KEY}?device=iphone17pro&osVersion=26.0&autoplay=true&launchArgs=%5B%22--browser-preview%22%5D"
+          echo "::notice title=Appetize preview::$URL"
+          {
+            echo "### Appetize preview"
+            echo ""
+            echo "Open in a browser: $URL"
+            echo ""
+            echo "Commit \`${GITHUB_SHA::7}\`. The app opens in browser-preview mode; use the **Preview** tab on the right edge to jump between flows."
+            if [ -z "$APPETIZE_PUBLIC_KEY" ]; then
+              echo ""
+              echo "**This run created a new Appetize app.** To keep this link for future runs, add its key \`$KEY\` as the repo secret (or variable) \`APPETIZE_PUBLIC_KEY\`. Without it every run creates another app with another link."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
