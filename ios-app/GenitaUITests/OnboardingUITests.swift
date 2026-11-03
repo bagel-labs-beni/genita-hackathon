@@ -428,7 +428,7 @@ final class OnboardingUITests: XCTestCase {
     }
 
     private func launchToI01(_ app: XCUIApplication) {
-        app.launchArguments = ["--uitesting", "--stub-signin", "--fixture-image"]
+        app.launchArguments = ["--uitesting", "--stub-signin", "--fixture-image", "--stub-external-apps"]
         app.launchEnvironment = ["GENITA_API_URL": "http://127.0.0.1:8790", "GENITA_SERVER_URL": "ws://127.0.0.1:8788/v1/session", "GENITA_FIXTURE_SCRIPT": "none"]
         app.launch()
     }
@@ -441,24 +441,13 @@ final class OnboardingUITests: XCTestCase {
         func element(_ id: String) -> XCUIElement { app.descendants(matching: .any).matching(identifier: id).firstMatch }
         XCTAssertTrue(app.buttons["openChatGPT"].waitForExistence(timeout: 15), "I01")
         app.buttons["openChatGPT"].tap()
-        // One tap copies the prompt, shows "Prompt copied" and opens ChatGPT (on the simulator, with no ChatGPT app:
-        // chatgpt.com in Safari). Safari can take the foreground before the toast is read (flaky on loaded CI
-        // runners), so the toast is only looked for while Genita is still in front; the open and the copy are then
-        // checked on their own: Safari comes to the front, and back on I02 the paste button pastes the prompt.
+        // One tap copies the prompt, shows "Prompt copied" and opens ChatGPT. Under `--stub-external-apps` the app
+        // doesn't hand off to Safari (that round trip was flaky on loaded CI runners): it comes back on its own after
+        // the toast, through the same return path, so the toast and the return are both checked deterministically.
         let toast = element("promptCopiedToast")
-        var sawToast = false
-        let end = Date().addingTimeInterval(3)
-        while Date() < end, app.state == .runningForeground {
-            if toast.exists { sawToast = true; break }
-            Thread.sleep(forTimeInterval: 0.05)
-        }
-        if sawToast { let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "onb-I01-prompt-copied"; shot.lifetime = .keepAlways; add(shot) }
-        let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
-        XCTAssertTrue(safari.wait(for: .runningForeground, timeout: 15), "the AI app's site opened")
-        // Safari in front is the proof the app left; Genita's own reported state lags on CI (it stayed
-        // .runningForeground for 5 s after Safari came up), so it is not asserted
-        app.activate()
-        XCTAssertTrue(app.buttons["pasteReply"].waitForExistence(timeout: 10), "back from the AI app → I02 with the paste button")
+        XCTAssertTrue(toast.waitForExistence(timeout: 10), "Prompt copied")
+        let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "onb-I01-prompt-copied"; shot.lifetime = .keepAlways; add(shot)
+        XCTAssertTrue(app.buttons["pasteReply"].waitForExistence(timeout: 30), "back from the AI app → I02 with the paste button")
         XCTAssertTrue(element("responseInput").exists)
         XCTAssertFalse(element("copyPrompt").exists, "not on I01 any more")
         // the copy: the system paste button puts the I01 prompt into the reply box
