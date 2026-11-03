@@ -115,17 +115,19 @@ export async function checkImage(d: PrepDeps, userId: string, bytes: Buffer, rig
   }
   // a failed animal / character check (the polish flow) still gets its net: that kind's face and head, for the rim only
   // (the stored head box and `heads` stay as they were)
-  let rimHead = head ? pickHeadBox(head.boxes) : null;
+  let kindHead: Promise<SamBox[]> = Promise.resolve([]);
   if (scan && !check.passed && check.type && check.type !== "human") {
     const kind = check.type;
     samFace = samFaceOf(kind);
-    const kindHead = await within(samDetect(d.metaKey, url, headPrompt(kind), optional).catch(() => [] as SamBox[]), FACE_SCAN_TIMEOUT_MS, []);
-    rimHead = pickHeadBox(kindHead) ?? rimHead;
+    kindHead = samDetect(d.metaKey, url, headPrompt(kind), optional).catch(() => [] as SamBox[]);
   }
   // one shared deadline: the answer waits at most FACE_SCAN_GRACE_MS for the scan once the check and head box are in
   const deadline = performance.now() + FACE_SCAN_GRACE_MS;
   const left = () => Math.max(0, deadline - performance.now());
-  const [faceBoxes, [eyes, mouth]] = await Promise.all([within(samFace, left(), [] as SamBox[]), within(samFeatures, left(), [[], []])]);
+  const [faceBoxes, [eyes, mouth], kindHeads] = await Promise.all([
+    within(samFace, left(), [] as SamBox[]), within(samFeatures, left(), [[], []]), within(kindHead, left(), [] as SamBox[]),
+  ]);
+  const rimHead = pickHeadBox(kindHeads) ?? (head ? pickHeadBox(head.boxes) : null);
   // the net for every photo with a face, passed or not (lead 11/4 05:3x: the polish flow and V02-F show it too);
   // only "no face" skips it
   const faceFound = !!check.type && !check.reasons.some((r) => r.code === "no_face");

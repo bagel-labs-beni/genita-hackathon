@@ -198,3 +198,32 @@ test("face rim: SAM's traced mask; else an ellipse in the face box; a goggle-siz
   assert.equal(faceRim([], head)!.length, 32);
   assert.equal(faceRim([], null), null);
 });
+
+test("checkImage: a failed animal photo asks SAM for an animal face and head for its net, inside the same 1.5 s grace", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "genita-face-geo-animal-"));
+  const realFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = realFetch; rmSync(dir, { recursive: true, force: true }); });
+  const prompts: string[] = [];
+  globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
+    const body = JSON.parse(String(init!.body));
+    const prompt = body.model === "sam-3.1" ? body.input[0].content[0].text as string : "spark";
+    prompts.push(prompt);
+    if (prompt === "the animal's head") {
+      // hangs: the answer must not wait for it past the grace
+      return new Promise<Response>((_, reject) => init!.signal?.addEventListener("abort", () => reject(new Error("aborted"))));
+    }
+    const text = prompt === "spark"
+      ? JSON.stringify({ subject: "animal", face_count: 1, front_facing: true, face_covered: false, sharp: false, well_lit: true, text_on_image: false, public_figure: false, any_public_figure: false, species: "dog", character_style: "none" })
+      : prompt === "the animal's face" ? "<|box;x1=300;y1=500;x2=700;y2=1300;w=1000;h=2000|>" : "";
+    return Response.json({ output: [{ type: "message", content: [{ type: "output_text", text }] }] });
+  }) as typeof fetch;
+  const d: PrepDeps = { metaKey: "k", store: new FileStore(dir), voices: DEFAULT_VOICES, log: () => {} };
+  const t0 = performance.now();
+  const rec = await checkImage(d, "u1", fakePng(1000, 2000, "face-geo-animal"), true);
+  assert.equal(rec.check.passed, false);
+  assert.ok(prompts.includes("the animal's face") && prompts.includes("the animal's head"));
+  assert.ok(performance.now() - t0 < 2500, "the hung head call stays inside the grace");
+  assert.equal(rec.faceOutline?.length, 32, "an ellipse in SAM's animal face box");
+  assert.deepEqual(rec.faceOutline![0], [0.5, 0.25]);
+  assert.equal(rec.headBox, null, "the stored head box is untouched on a failed check");
+});
