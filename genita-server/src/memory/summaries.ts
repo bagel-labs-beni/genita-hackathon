@@ -142,7 +142,8 @@ export const metaSummarizer = (key: string): Summarizer => {
   // background only: Muse Spark Open on Baseten first, then the Muse Spark API (meta/sparkOpen.ts),
   // plus one more Muse try on an empty/invalid answer — no reply latency either way
   const client: StructuredClient = <T,>(req: Parameters<StructuredClient>[0]) =>
-    backgroundJson<T>(key, req, { timeoutMs: 30_000 }).catch(() => museJson<T>(key, req, AbortSignal.timeout(30_000)));
+    // backgroundJson has its own fallback; the last resort is one plain call, no inner 5xx retry on top (Codex: 2 → 4 calls)
+    backgroundJson<T>(key, req, { timeoutMs: 30_000 }).catch(() => museJson<T>(key, req, AbortSignal.timeout(30_000), { retry: false }));
   return createSummarizer(client, createLineSafety(client));
 };
 

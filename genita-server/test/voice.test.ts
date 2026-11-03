@@ -3,6 +3,8 @@
  * the HTTP client (NDJSON, filler cache, fail-fast after a failure).
  */
 import { test } from "node:test";
+// these tests check the timing pass-through byte for byte; the dictionary relabel (lips/g2p.ts) has its own tests
+process.env.GENITA_LIPS_G2P = "0";
 import assert from "node:assert/strict";
 import { loadConfig, type VoiceConfig } from "../src/config.ts";
 import { normalizeEnglish, normalizeKorean, numberToWords, pauseAfterMs, sinoKorean } from "../src/voice/normalize.ts";
@@ -122,11 +124,29 @@ test("client: sends spoken text, lang, speaker, pause; yields PCM + character al
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, "https://voice.test/v1/tts");
   assert.equal(calls[0].auth, "Bearer secret");
-  assert.deepEqual(calls[0].body, { text: "It's five dollars, okay?", lang: "eng", speaker: 3, speed: 1.05, tail_ms: 200, model: "seamless" });
+  assert.deepEqual(calls[0].body, { text: "It's five dollars, okay?", lang: "eng", speaker: 3, speed: 1.05, tail_ms: 200, model: "seamless", emotion: "happy" });
   assert.equal(chunks.length, 2);
   assert.equal(chunks[0].audio.length, 4800);
   assert.deepEqual(chunks[0].alignment, { chars: ["H", "i"], startsSec: [0, 0.05], endsSec: [0.05, 0.1] });
   assert.equal(chunks[0].model, "seamless-m4t-v2");
+});
+
+// 11/3 post chain: the emotion goes to the voice GPU for longer clauses only (fillers and the first sound stay cached
+// and unchanged); neutral sends nothing; GENITA_VOICE_POST=0 asks for the raw voice
+test("client: emotion is sent for longer clauses only, neutral never; post:false only when turned off", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const f = (async (_u: string, init: RequestInit) => (bodies.push(JSON.parse(String(init.body))), ndjson([{ audio_base64: pcm(10) }, { done: true }]))) as typeof fetch;
+  const v = createSeamless(cfg, { fetch: f });
+  const say = async (cl: typeof v, text: string, emotion: string | null) => { for await (const _ of cl.speak({ voiceId: "seamless:3", text, emotion, model: "x" })) void _; };
+  await say(v, "Oh wow,", "excited");
+  await say(v, "you actually made the soup?", "Excited");
+  await say(v, "you actually made the soup?", "neutral");
+  await say(createSeamless({ ...cfg, post: false }, { fetch: f }), "you actually made the soup?", "sad");
+  assert.equal("emotion" in bodies[0], false, "short filler: no emotion");
+  assert.equal(bodies[1].emotion, "excited");
+  assert.equal("emotion" in bodies[2], false, "neutral: nothing");
+  assert.equal(bodies[3].post, false);
+  assert.equal("post" in bodies[0], false, "default requests do not carry post");
 });
 
 test("client: Korean sentences go out as kor (interpretation uses the same service)", async () => {
@@ -215,6 +235,45 @@ test("client: a body that stalls after the headers still times out (idle timeout
   }, /voice/);
   assert.ok(Date.now() - t0 < 1000, `took ${Date.now() - t0} ms`);
   assert.equal(v.isDown(), true);
+});
+
+// D27 capacity: the voice GPU answers 503 {"error":"busy"} when its queue is full (deploy/modal-voice QUEUE_WAIT_MS).
+// That sentence goes to the device voice, but the voice is parked only briefly, not 30 s for every call.
+test("client: a busy GPU (503 busy) parks the voice for 2 s only, then server voice resumes", async () => {
+  let n = 0;
+  let t = 1000;
+  let busy = true;
+  const v = createSeamless(cfg, { now: () => t, fetch: (async () => (n++, busy ? new Response('{"error":"busy"}', { status: 503 }) : ndjson([{ audio_base64: pcm(10) }, { done: true }]))) as typeof fetch });
+  const run = async () => {
+    for await (const _ of v.speak({ voiceId: "seamless:3", text: "Hello there, friend.", emotion: null, model: "x" })) void _;
+  };
+  await assert.rejects(run, /voice 503/);
+  assert.equal(v.isDown(), true);
+  await assert.rejects(run, /voice_down/);
+  assert.equal(n, 1);
+  t += 2_001;
+  busy = false;
+  await run();
+  assert.equal(n, 2, "back on the server voice after 2 s");
+});
+
+test("client: a busy answer after an outage does not shorten the 30 s window (Codex P2)", async () => {
+  let t = 1000;
+  const answers = [new Response("boom", { status: 500 }), new Response('{"error":"busy"}', { status: 503 })];
+  let gate!: () => void;
+  const held = new Promise<void>((r) => (gate = r));
+  let n = 0;
+  const v = createSeamless(cfg, { now: () => t, fetch: (async () => { const k = n++; if (k === 1) await held; return answers[k]; }) as typeof fetch });
+  const run = async () => {
+    for await (const _ of v.speak({ voiceId: "seamless:3", text: "Hello there, friend.", emotion: null, model: "x" })) void _;
+  };
+  const a = run(); // will 500
+  const b = run(); // in flight, answers busy after the outage started
+  await assert.rejects(a, /voice 500/);
+  gate();
+  await assert.rejects(b, /voice 503/);
+  t += 2_001;
+  assert.equal(v.isDown(), true, "still inside the 30 s outage window");
 });
 
 test("client: a 400 (bad input) fails that sentence but does not take the voice down for everyone", async () => {

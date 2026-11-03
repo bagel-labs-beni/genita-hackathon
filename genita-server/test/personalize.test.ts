@@ -427,6 +427,17 @@ test("01: the recipe prompt asks for the 'left out' line only when there's a pro
   const { recipePrompt } = await import("../src/finds/pipeline.ts");
   assert.match(recipePrompt("What can I make?", "- Taste: Dislikes seafood."), /left the shrimp out/);
   assert.doesNotMatch(recipePrompt("What can I make?"), /left the shrimp out/);
+  // sweep 11/3 [P2]: the recipe's own "left the X out" line rides on the spoken fridge line (it was dropped 3/3)
+  const { leftOutLine } = await import("../src/finds/pipeline.ts");
+  assert.equal(leftOutLine("Tacos with salsa — and I left the cilantro out."), " And I left the cilantro out.");
+  assert.equal(leftOutLine("Found pico de gallo, I've left out the cilantro."), " And I left the cilantro out.");
+  assert.equal(leftOutLine("Here's a great pho recipe."), "");
+  assert.equal(leftOutLine("I’ve left the cilantro out."), " And I left the cilantro out.", "curly apostrophe (Codex P3)");
+  assert.equal(leftOutLine("I left out cilantro for you."), "", "not 'the cilantro for you' (Codex P2)");
+  assert.equal(leftOutLine("No chopping because you dislike prep."), "", "not a left-out ingredient (Codex P2)");
+  // sweep 11/3 [P2]: a named dish is the dish ("pho" came back as the fridge's kimchi soup)
+  assert.match(recipePrompt("Can you help me make pho?"), /If they name a dish they want to make.*that is the dish/);
+  assert.match(recipePrompt("Can you help me make pho?"), /Pick one simple dish .* unless they named one/);
 });
 
 test("K5: health, religion, politics, sexuality and finances never stored or shown; topic boundaries and a shopping budget are fine", async () => {

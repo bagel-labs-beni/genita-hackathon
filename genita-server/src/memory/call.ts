@@ -15,6 +15,17 @@ export const MEMORY_TOOLS: Tool[] = [
     parameters: { type: "object", properties: { fact: { type: "string", maxLength: 300 }, kind: { type: "string", enum: ["fact", "episode"] } }, required: ["fact", "kind"], additionalProperties: false } },
 ];
 
+/**
+ * QA sweep 11/3 (2 of 7 memory turns): the in-reply `remember` tool made Spark narrate the save ("I'll save that
+ * bouldering detail quietly…", "locking that in so I keep his beach story straight") and chained 2–3 sequential
+ * save rounds (8.7–15 s to the first sound). Saving now happens only after the answer, in the background extraction
+ * (every 4 pairs and at call end, Forget-aware, same rules), so the reply carries `recall` only.
+ * GENITA_REMEMBER_TOOL=1 puts the in-reply save back.
+ */
+export function replyMemoryTools(env: NodeJS.ProcessEnv = process.env): Tool[] {
+  return env.GENITA_REMEMBER_TOOL === "1" ? MEMORY_TOOLS : MEMORY_TOOLS.filter((t) => !("name" in t) || t.name !== "remember");
+}
+
 /** reply-path budgets for memory reads (a store that is slower just means no memory this turn) */
 export const RECALL_BUDGET_MS = 400;
 export const OPENING_BUDGET_MS = 1000;
@@ -143,9 +154,39 @@ export class MemoryCall {
     const word = recentOpeningWords([text])[0];
     if (word) this.service.background(() => this.service.noteOpener(this.userId, word));
   }
+  /**
+   * "Remember that I like pistachio ice cream": with the in-reply save gone (replyMemoryTools), an explicit ask is
+   * sent to extraction at once, so a reply cut off or a call ended mid-answer never loses it (Codex #423 P1).
+   */
+  saveNow(user: string): void {
+    if (this.closed || !user.trim()) return;
+    const st: { ok: boolean | null; waiting: { user: string; assistant: string } | null } = { ok: null, waiting: null };
+    this.savedNow.set(user, st);
+    this.pending.push({ user, assistant: "" });
+    const gen = this.forgetsSeen;
+    // a failed extraction is retried once — the completed pair if the reply finished, else the ask itself — even after
+    // the call ended (never lost), but never after a Forget since the ask (Codex #423 recheck P1 ×2). The store's own
+    // revision check (this.revision) rejects a write from before a Forget too.
+    this.flush()?.then(() => { st.ok = true; }, () => {
+      st.ok = false;
+      if (this.forgetsSeen !== gen) return;
+      const turn = st.waiting ?? { user, assistant: "" };
+      st.waiting = null;
+      st.ok = true; // covered by this retry: a later completedTurn does not send it a third time
+      this.pending.push(turn);
+      this.flush();
+    });
+  }
+  private savedNow = new Map<string, { ok: boolean | null; waiting: { user: string; assistant: string } | null }>();
+
   completedTurn(user: string, assistant: string): void {
     if (this.closed || !user.trim()) return;
-    this.pending.push({ user, assistant });
+    // already sent by saveNow: not twice — unless that save failed (then it goes in this batch), or is still running
+    // (then it waits: pushed only if the save fails)
+    const st = this.savedNow.get(user);
+    if (!st || st.ok === false) this.pending.push({ user, assistant });
+    else if (st.ok === null) st.waiting = { user, assistant };
+    if (st) this.savedNow.delete(user);
     if (this.pending.length >= 4) this.flush();
     this.thread = [...this.thread, { user: user.slice(0, 1000), assistant: assistant.slice(0, 1000) }].slice(-SUMMARY_MAX_PAIRS);
     this.covered++;
@@ -172,10 +213,10 @@ export class MemoryCall {
     this.queue = job;
     this.service.background(() => job);
   }
-  private flush(): void {
-    if (!this.pending.length) return;
+  private flush(): Promise<unknown> | undefined {
+    if (!this.pending.length) return undefined;
     const turns = scrubPairs(this.pending.splice(0, 4), this.avoid);
-    if (!turns.length) return;
+    if (!turns.length) return undefined;
     const forgets = this.forgetsSeen;
     const before = this.queue;
     // A slow start (the persisted revision not read yet) holds the batch instead of writing it under a
@@ -184,6 +225,7 @@ export class MemoryCall {
       forgets === this.forgetsSeen ? this.service.extract(this.userId, this.sessionId, turns, this.revision) : undefined);
     this.queue = job;
     this.service.background(() => job);
+    return job;
   }
   close(): void {
     if (this.closed) return;
@@ -218,7 +260,7 @@ export class MemoryCall {
       const pinned = this.clearOf(this.pinned);
       const pinnedIds = new Set(pinned.map((m) => m.id));
       const extra = this.clearOf(items).filter((m) => !pinnedIds.has(m.id));
-      next = { ...req, instructions: (req.instructions ?? "") + pinnedPrompt(pinned) + notes + memoryPrompt(extra, opening !== undefined, !!notes), tools: [...req.tools ?? [], ...MEMORY_TOOLS] };
+      next = { ...req, instructions: (req.instructions ?? "") + pinnedPrompt(pinned) + notes + memoryPrompt(extra, opening !== undefined, !!notes), tools: [...req.tools ?? [], ...replyMemoryTools()] };
     }
     for (let round = 0; round < 4; round++) {
       if (signal.aborted) return;
@@ -238,12 +280,12 @@ export class MemoryCall {
       if (signal.aborted) return;
       const input: SparkInputItem[] = typeof next.input === "string" ? [{ role: "user", content: next.input }] : [...next.input];
       if (text) input.push({ role: "assistant", content: text });
-      for (const call of calls) {
+      // the round's calls run side by side (QA sweep: 2–3 sequential calls at 1.1–1.5 s each held the answer)
+      for (const call of calls) yield { type: "tool", name: call.name, status: "in_progress" };
+      const results = await Promise.all(calls.map((call) => this.execute(call).catch(() => ({ error: "memory_unavailable" }))));
+      for (const [i, call] of calls.entries()) {
         if (signal.aborted) return;
-        yield { type: "tool", name: call.name, status: "in_progress" };
-        let result: unknown;
-        try { result = await this.execute(call); } catch { result = { error: "memory_unavailable" }; }
-        if (signal.aborted) return;
+        const result: unknown = results[i];
         input.push(call, { type: "function_call_output", call_id: call.call_id, output: JSON.stringify(result) });
         // Checkpoint completed calls/results before exposing completion. An empty
         // or failed follow-up retries this continuation, never the original save.

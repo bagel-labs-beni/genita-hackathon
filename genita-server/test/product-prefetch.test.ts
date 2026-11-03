@@ -160,12 +160,42 @@ test("Codex r1: a failed prefetch's fresh search shows one 'searching' state; a 
   assert.equal(b.events.filter((e) => e.type === "find.started" && e.findId === s2.findId).length, 1, "and no second searching state");
 });
 
-test("Codex r1: the prefetch sees both outfit frames (the pick may be the first)", async () => {
+test("11/3 S5: the prefetch searches from what was said (no frames, 5 lanes); GENITA_PREFETCH_FRAMES=1 sends both outfit frames (Codex r1)", async (t) => {
+  const { prefetchFrames, prefetchHedge } = await import("../src/finds/runner.ts");
+  assert.equal(prefetchFrames({}), false);
+  assert.equal(prefetchHedge(3, {}), 5);
+  assert.equal(prefetchHedge(3, { GENITA_PREFETCH_HEDGE: "2" }), 2);
+  const said = "The white top, for sure.";
+  {
+    // "the first one" names nothing the search could go by: frames stay (Codex P2)
+    const { v, searches } = vendors(10);
+    const { r } = runner(v);
+    r.onTurn({ text: "Which one, this or that?", frames: ["data:image/jpeg;base64,V0hJVEU=", "data:image/jpeg;base64,QkxBQ0s="], utteranceId: 1, replyText: Promise.resolve("Definitely the first one.") });
+    await r.settle(); await sleep(30);
+    assert.ok(searches[0].includes("V0hJVEU="), "frames kept when the pick is not named");
+  }
+  {
+    const { namesPick } = await import("../src/finds/runner.ts");
+    assert.equal(namesPick("The first one. Dark brown shoes would look great."), false, "the shoes' color is not the pick (Codex P2)");
+    assert.equal(namesPick("Black, for sure. Dark brown shoes or leather accessories."), true);
+  }
+  {
+    const { v, searches } = vendors(10);
+    const { r } = runner(v);
+    r.onTurn({ text: "Which one looks better on me, the white one or the black one?", frames: ["data:image/jpeg;base64,V0hJVEU=", "data:image/jpeg;base64,QkxBQ0s="], utteranceId: 1, replyText: Promise.resolve(said) });
+    await r.settle(); await sleep(30);
+    assert.ok(!searches[0].includes("V0hJVEU=") && !searches[0].includes("QkxBQ0s="), "no frames by default");
+    assert.equal(searches.filter((x) => x.includes("outfit they just picked")).length, 5, "5 lanes really run (Codex P2: the search capped them at 3)");
+    assert.ok(searches[0].includes("white top"), "the pick as said");
+  }
+  const prev = process.env.GENITA_PREFETCH_FRAMES;
+  process.env.GENITA_PREFETCH_FRAMES = "1";
+  t.after(() => { if (prev === undefined) delete process.env.GENITA_PREFETCH_FRAMES; else process.env.GENITA_PREFETCH_FRAMES = prev; });
   const { v, searches } = vendors(10);
   const { r } = runner(v);
-  r.onTurn({ text: "Which one looks better on me, the white one or the black one?", frames: ["data:image/jpeg;base64,V0hJVEU=", "data:image/jpeg;base64,QkxBQ0s="], utteranceId: 1, replyText: Promise.resolve("The first one, the white top.") });
+  r.onTurn({ text: "Which one looks better on me, the white one or the black one?", frames: ["data:image/jpeg;base64,V0hJVEU=", "data:image/jpeg;base64,QkxBQ0s="], utteranceId: 1, replyText: Promise.resolve(said) });
   await r.settle(); await sleep(30);
-  assert.ok(searches[0].includes("V0hJVEU=") && searches[0].includes("QkxBQ0s="), "both frames");
+  assert.ok(searches[0].includes("V0hJVEU=") && searches[0].includes("QkxBQ0s="), "both frames when asked");
 });
 
 test("coordinator: a prefetch still running when she asks → a fresh search starts at once; the first card wins", async () => {

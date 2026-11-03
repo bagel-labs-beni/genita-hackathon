@@ -63,6 +63,8 @@ export type VoiceConfig = {
   /** GENITA_VOICE_ALIGN=1: ask the service for word + phoneme timing (Meta MMS forced aligner), sent to the app
    * as `audio.timing` after each clause's audio. Off: requests are unchanged. */
   align?: boolean;
+  /** GENITA_VOICE_POST=0: ask the voice GPU for the raw vocoder voice (no post chain, no emotion moves). Unset: unchanged requests. */
+  post?: boolean;
   /** `expression` events per reply clause (face expression layer, 11/3). Default on; GENITA_EXPRESSION=0 turns them off. */
   expressions?: boolean;
 };
@@ -105,12 +107,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
           timeoutMs: num(env.GENITA_VOICE_TIMEOUT_MS, 4000),
           model: env.GENITA_VOICE_MODEL === "mms" ? "mms" : "seamless",
           align: env.GENITA_VOICE_ALIGN === "1",
+          ...(env.GENITA_VOICE_POST === "0" ? { post: false } : {}),
           expressions: env.GENITA_EXPRESSION !== "0",
         }
       : null;
   if (voiceUrl && !voice) throw new Error("GENITA_VOICE_URL needs GENITA_VOICE_TOKEN");
   const serverTts = !!voice;
-  const voiceMaxCalls = num(env.GENITA_VOICE_MAX_CALLS?.trim(), 3);
+  // 11/3 (D27 sweep: 8 calls -> 9/16 turns on the device voice): the GPU autoscales (deploy/modal-voice TARGET_INPUTS)
+  // and served 8 calls x 4 replies with 0/32 fallbacks in the load test, so the seat cap follows (was 3)
+  const voiceMaxCalls = num(env.GENITA_VOICE_MAX_CALLS?.trim(), 8);
   return {
     metaKey,
     paused: flag(env.GENITA_PAUSED),
@@ -120,7 +125,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     userDailyTurns: num(env.GENITA_USER_DAILY_TURNS, 300),
     serverTts,
     voice,
-    voiceMaxCalls: Number.isSafeInteger(voiceMaxCalls) && voiceMaxCalls >= 0 ? voiceMaxCalls : 3,
+    voiceMaxCalls: Number.isSafeInteger(voiceMaxCalls) && voiceMaxCalls >= 0 ? voiceMaxCalls : 8,
     host: env.HOST ?? "127.0.0.1",
     port: num(env.PORT, 8787),
     sessionToken: env.GENITA_SESSION_TOKEN || null,
