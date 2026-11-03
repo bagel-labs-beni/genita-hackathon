@@ -7,7 +7,8 @@ final class ResumePolicyTests: XCTestCase {
         XCTAssertFalse(ResumePolicy.opensCall(.coldLaunch))
     }
     func testConnectTimeSyncWaitsForTheTap() {
-        for trigger in [nil, "current", "sync"] {
+        // connect-time copies and this Mac's own claims echoed back (a reconnect re-sends them) never open it
+        for trigger in [nil, "current", "sync", "continue", "move", "touch", "button", "start"] {
             XCTAssertEqual(ResumePolicy.arrival(localClaim: false, serverTrigger: trigger), .syncedClaim, "\(trigger ?? "nil")")
             XCTAssertFalse(ResumePolicy.opensCall(ResumePolicy.arrival(localClaim: false, serverTrigger: trigger)))
         }
@@ -15,9 +16,7 @@ final class ResumePolicyTests: XCTestCase {
     func testLiveMoveOpensTheCall() {
         // this Mac's own claim: the iPhone's Move to Mac (server moveRequested / link moveRequest), touch, Continue here
         XCTAssertTrue(ResumePolicy.opensCall(ResumePolicy.arrival(localClaim: true, serverTrigger: nil)))
-        // the server moved it here now (proximity) or relayed a live move
-        for trigger in ["proximity", "move", "touch", "continue", "button"] {
-            XCTAssertTrue(ResumePolicy.opensCall(ResumePolicy.arrival(localClaim: false, serverTrigger: trigger)), trigger)
-        }
+        // the server moved it here by itself (proximity)
+        XCTAssertTrue(ResumePolicy.opensCall(ResumePolicy.arrival(localClaim: false, serverTrigger: "proximity")))
     }
 }

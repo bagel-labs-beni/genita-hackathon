@@ -39,10 +39,20 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     /// A move the server makes for this Mac (proximity) can land first as a trigger-less `claim.result` (seen as a
     /// sync: Continue here offered). Its confirmation — `proximity.result ok`, or the `ownership` with a live trigger
     /// for the same epoch, which the reducer ignores — then opens the call (Codex P1/P2: no time window).
-    func liveMoveConfirmed() {
+    /// - Parameter epoch: the confirming claim's epoch; it must be the one the offer is waiting on (a late event for
+    ///   an older move never resumes the current one, Codex P2). nil = `proximity.result ok`, accepted only for an
+    ///   offer made after this Mac's own report.
+    func liveMoveConfirmed(epoch:Int?) {
         guard ownership.isOwner,resumeOffered else{return}
+        if let epoch {guard epoch==resumeEpoch else{return}}
+        else {guard proximityReportedAt>0,resumeOfferedAt>=proximityReportedAt else{return}}
         resumeHere()
     }
+    private var resumeEpoch:Int?
+    private var resumeOfferedAt=0.0
+    private var proximityReportedAt=0.0
+    func proximityReported() { proximityReportedAt=Date().timeIntervalSince1970 }
+    private func offerResume() { resumeOffered=true;resumeEpoch=ownership.state.epoch;resumeOfferedAt=Date().timeIntervalSince1970 }
     /// R2 says "Screen sharing stopped." only when sharing was on as the conversation left.
     @Published fileprivate(set) var sharingStopped = false
     @Published var motion: TransitionPayload?
@@ -123,7 +133,7 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
         }
         // MC-01: a cold launch never opens the call by itself; the home offers Continue here (ResumePolicy)
         if ownership.isOwner && ownership.state.epoch>0 {
-            if ResumePolicy.opensCall(.coldLaunch) {showCompanion()} else {resumeOffered=true}
+            if ResumePolicy.opensCall(.coldLaunch) {showCompanion()} else {offerResume()}
         }
     }
     /// MAC-4 "Continue here" after a cold launch: now the call window opens and the call starts.
@@ -224,7 +234,7 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     private func receiveServerClaim(_ claim:OwnershipClaim,trigger:String?) {
         applyingTrigger=trigger;ownership.receive(claim);applyingTrigger=nil
         // a live server move for an epoch already applied (claim.result came first): confirm it now
-        if claim.owner == .mac,ResumePolicy.arrival(localClaim:false,serverTrigger:trigger) == .liveMove {liveMoveConfirmed()}
+        if claim.owner == .mac,ResumePolicy.arrival(localClaim:false,serverTrigger:trigger) == .liveMove {liveMoveConfirmed(epoch:claim.epoch)}
     }
     private func ownerChanged(from old:ConversationDevice,to new:ConversationDevice) {
         phoneCallSeen.applied(owner:new,epoch:ownership.state.epoch,trigger:applyingTrigger)
@@ -233,7 +243,7 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
             if ResumePolicy.opensCall(ResumePolicy.arrival(localClaim:claimingLive,serverTrigger:applyingTrigger)) {
                 resumeOffered=false;sharingStopped=false;showCompanion()
                 MacCall.shared.conversationArrived()
-            } else {resumeOffered=true}
+            } else {offerResume()}
         } else {
             resumeOffered=false
             if old == .mac {sharingStopped=sharing.isSharing}

@@ -14,13 +14,14 @@ enum OwnerArrival: Equatable {
 enum ResumePolicy {
     /// true: open the call now. false: offer "Continue here" and wait for the tap.
     static func opensCall(_ arrival: OwnerArrival) -> Bool { arrival == .liveMove }
-    /// The server's connect-time copies of the current claim; any other trigger is a move happening now
-    /// (e.g. "proximity", where the server itself moves the conversation here).
-    static let syncTriggers: Set<String> = ["current", "sync"]
+    /// The only move the server makes for this device by itself (PROTOCOL "Proximity"). Every other trigger on a
+    /// claim for this device is this device's own claim coming back (button/touch/continue/move/start, also re-sent
+    /// by a reconnect's publishCurrent) or a connect-time copy (current/sync) — not a move happening now (Codex P1).
+    static let serverMoveTriggers: Set<String> = ["proximity"]
     /// What a change of owner to this device was: this device's own claim, or a server claim and its trigger.
     static func arrival(localClaim: Bool, serverTrigger: String?) -> OwnerArrival {
         if localClaim { return .liveMove }
-        if let serverTrigger, !syncTriggers.contains(serverTrigger) { return .liveMove }
+        if let serverTrigger, serverMoveTriggers.contains(serverTrigger) { return .liveMove }
         return .syncedClaim
     }
 }
