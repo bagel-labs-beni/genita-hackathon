@@ -11,16 +11,19 @@ import type { Moment } from "./rules.ts";
 
 export type MemoEntry = { at: number; text: string };
 export type DialogueLine = { at: number; label: string | null; text: string };
-export type MemoVerdict = { memo: string; moment: Moment; reaction: string; speakers: { label: string; name: string }[] };
+export type MemoVerdict = { memo: string; moment: Moment; reaction: string; speakers: { label: string; name: string }[]; protectedVideo?: boolean };
 
 export const MEMO_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["memo", "moment", "reaction", "speakers"],
+  // order matters: the verdict (protectedVideo, moment, reaction) streams first, so a reaction can start before the
+  // memo text is written (watch.ts earlyVerdict)
+  required: ["protectedVideo", "moment", "reaction", "memo", "speakers"],
   properties: {
-    memo: { type: "string" },
+    protectedVideo: { type: "boolean" },
     moment: { type: "string", enum: ["none", "funny", "surprising", "sweet"] },
     reaction: { type: "string" },
+    memo: { type: "string" },
     speakers: {
       type: "array",
       items: {
@@ -58,9 +61,12 @@ export function buildMemoRequest(m: MemoInput): SparkRequest {
   const instructions = [
     `You keep a running memo while ${who} watches the user's shared screen with them. It can be anything: a show, a game, a website, a document.`,
     "memo: one or two short lines on what is NEW in these frames and lines (who or what is on screen, what happened, what was said). Don't repeat the memo so far. If the frames are black, write \"Screen is black.\"",
-    `moment: funny, surprising or sweet only if something new here would make a friend watching react out loud right now; otherwise none (most of the time, and always for documents, code, menus or browsing).`,
+    "The frames are a short sequence since the last memo (0.6–1 s apart), oldest first: read the motion across them — a dance move, a fall, a reveal, a cut to someone laughing or reacting — and any on-screen text (captions, a punchline).",
+    `moment: funny, surprising or sweet only if something new here would make a friend watching react out loud right now; otherwise none (most of the time, and always for documents, code, menus or browsing). funny = a punchline, a fail, people on screen cracking up. surprising = a reveal, or something impressive: a dunk, a trick landed, a big dance move. sweet = a tender moment.`,
     `reaction: if moment is not none, the 2 to 8 words ${m.companion.name} blurts out about that exact thing, casual English, no question. Otherwise empty.`,
     "speakers: for each voice label in the new lines, a short name from what you see (\"the chef\", \"the woman in green\") only if you are sure; skip the rest.",
+    "protectedVideo: true only if a video player's picture is solid black while the page or app around it shows (protected streaming like Netflix captures black); then memo says so, moment none.",
+    "Never name a real person from their face.",
   ].join("\n");
   const parts: ContentPart[] = [];
   const text = [
@@ -84,6 +90,22 @@ export function buildMemoRequest(m: MemoInput): SparkRequest {
   };
 }
 
+/**
+ * The reaction part of a memo still streaming: moment + the finished reaction string (protectedVideo false).
+ * null until both are complete, or when there is nothing to react to.
+ */
+export function earlyVerdict(raw: string): { moment: Exclude<Moment, "none">; reaction: string } | null {
+  if (/"protectedVideo"\s*:\s*true/.test(raw)) return null;
+  if (!/"protectedVideo"\s*:\s*false/.test(raw)) return null;
+  const m = raw.match(/"moment"\s*:\s*"(funny|surprising|sweet)"/);
+  const r = raw.match(/"reaction"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  if (!m || !r) return null;
+  let reaction: string;
+  try { reaction = JSON.parse(`"${r[1]}"`) as string; } catch { return null; }
+  reaction = reaction.trim().slice(0, 120);
+  return reaction ? { moment: m[1] as Exclude<Moment, "none">, reaction } : null;
+}
+
 export function parseMemoVerdict(raw: string): MemoVerdict | null {
   const m = raw.match(/\{[\s\S]*\}/);
   if (!m) return null;
@@ -101,6 +123,7 @@ export function parseMemoVerdict(raw: string): MemoVerdict | null {
       moment,
       reaction: typeof o.reaction === "string" ? o.reaction.trim().slice(0, 120) : "",
       speakers,
+      protectedVideo: o.protectedVideo === true,
     };
   } catch {
     return null;
@@ -139,7 +162,8 @@ export function buildQuestionContext(c: {
     out.push("The shared screen shows up black to you right now (some apps block capture). You can't see it: say so and don't guess what's on it.");
     return { instructions: out.join("\n"), images: [] };
   }
-  if (c.frames.length) out.push(`The attached images are the shared screen, oldest first; the last one is the screen right now. For "what did they say", use the lines heard.`);
+  if (c.frames.length) out.push(`The attached images are the shared screen over the last second or two, oldest first; the last one is the screen right now. For "what did they say", use the lines heard.`);
+  if (c.frames.length) out.push("If a video's picture is solid black there (protected streaming like Netflix shows black to screen capture), say you can't see that one and never guess what's in it.");
   out.push("If the user asks about it, answer in one short sentence with only what you saw or heard; add nothing you didn't see.");
   if (c.frames.length) out.push(NAMING_RULE);
   return { instructions: out.join("\n"), images: c.frames };

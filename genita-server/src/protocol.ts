@@ -349,7 +349,8 @@ export function checkServerEvent(o: Record<string, unknown>): string[] {
 
 export type WatchClientMessage =
   | { type: "start"; source?: string }
-  | { type: "frame"; image: string; blank?: boolean }
+  /** motion: 0..1 change from the previous sent frame (Mac, 32×18 luma); a spike = a cut or a big move (11/3) */
+  | { type: "frame"; image: string; blank?: boolean; motion?: number }
   | { type: "stop" }
   | { type: "ping"; t?: unknown };
 

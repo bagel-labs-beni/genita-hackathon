@@ -42,6 +42,8 @@ struct ConversationView: View {
                         // F10-U-SHEET r03: the face steps back as the sheet rises (half .814, rising .895) and
                         // becomes a 96 × 128 window when the sheet is full.
                         CompanionFaceView(still: companionImage, loop: loopURL, face: connecting ? nil : call.face, faceStill: call.faceStill).frame(width: full.size.width, height: full.size.height).clipped()
+                            // S07 veiled → S09 the veil lifts (motion lane); never in the handoff snapshot (ImageRenderer, no onAppear)
+                            .genitaFaceReveal(veiled: connecting, enabled: handoffEnabled)
                             .grayscale(sheetOffline ? 1 : 0).brightness(sheetOffline ? -0.25 : 0).blur(radius: unclear ? 8 : 0)
                             .scaleEffect(faceScale(sheet), anchor: .topLeading).offset(faceOffset(sheet, top: top))
                             .opacity(sheet == .full || call.cameraOn ? 0 : 1)
@@ -107,7 +109,7 @@ struct ConversationView: View {
                                 .accessibilityLabel("Back to half height").accessibilityIdentifier("findsPip").transition(.opacity)
                         }
                         if sheet == .dismissed {
-                            FindsToast(finds: call.finds).position(x: full.size.width / 2, y: 210 + top).transition(.opacity.combined(with: .offset(y: -8)))
+                            FindsToast(finds: call.finds).position(x: full.size.width / 2, y: 210 + top).genitaToastTransition()
                         }
                         // The call cue belongs to S09. Keep it below the Finds tab so it cannot cover that
                         // screen's title or subtitle; closing Finds immediately resumes the current call cue.
@@ -211,7 +213,14 @@ struct ConversationView: View {
             }
         }
         .onDisappear { if !connecting { call.end() } }
-        .onChange(of: scenePhase) { _, phase in if phase != .active { call.suspend() } }
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .active: call.sceneActivityChanged(.active)
+            case .inactive: call.sceneActivityChanged(.inactive)
+            case .background: call.sceneActivityChanged(.background)
+            @unknown default: call.sceneActivityChanged(.background)
+            }
+        }
         // #2: the conversation moved to the Mac (R1 waiting sheet): this iPhone stops listening and showing
         .onChange(of: handoff.surface) { _, surface in if surface != .active { call.suspend() } }
         // F1-L7: 4401 → A02 sign in, 4403 → CS01 consent (CallController.stopped)

@@ -127,6 +127,16 @@ extension FindsModel {
                 for _ in 0..<80 where CallController.shared.cameraOn == false { try? await Task.sleep(for: .milliseconds(100)) }
                 if let last = recipe.events.last(where: { if case .observeBoxes = $0 { return true }; return false }), case let .observeBoxes(b) = last { self?.boxes.apply(b) }
             }
+        case 33, 34:
+            // demo S3 · SAM pixel masks (flag GENITA_SAM_MASKS_UI=1): a live #298 observe.boxes with masks, recorded on
+            // the fixture camera frame (33 = fridge, finds-frame-fridge-1; 34 = counter, finds-frame-counter-0, 8 items)
+            let name = n == 33 ? "finds-masks-fixture" : "finds-masks-counter"
+            Task { [weak self] in
+                for _ in 0..<80 where CallController.shared.cameraOn == false { try? await Task.sleep(for: .milliseconds(100)) }
+                guard let url = Bundle.main.url(forResource: name, withExtension: "json"), let data = try? Data(contentsOf: url),
+                      case let .observeBoxes(b)? = try? JSONDecoder().decode(ServerEvent.self, from: data) else { return }
+                self?.boxes.apply(b)
+            }
         case 26:
             // FT-NOSEE: boxes on the camera, no sheet, the check card says the rice is not in view
             play([(recipe, recipe.events)]); force(.idle)
@@ -201,7 +211,10 @@ actor FixtureFindsAPI: FindsAPI {
             m.load(recorded: run.events, frames: run.frames)
             guard var c = m.entries.first?.card else { return }
             let original = c.id
-            c.createdAt = iso.string(from: now.addingTimeInterval(-hoursAgo * 3600))
+            // anchored at noon today, not "now": a run just after midnight put the "today" cards on yesterday and the
+            // "yesterday" one two days back (testFindsListFrame failed every CI run 00:00–03:00 UTC)
+            let noon = Calendar.current.startOfDay(for: now).addingTimeInterval(12 * 3600)
+            c.createdAt = iso.string(from: noon.addingTimeInterval(-hoursAgo * 3600))
             change(&c)
             if cards.contains(where: { $0.id == c.id }) { c.id = UUID().uuidString.lowercased() }
             cards.append(c)
