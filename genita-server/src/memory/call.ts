@@ -5,6 +5,7 @@ import { MemoryService } from "./service.ts";
 import { recentOpeningWords } from "../prompt/persona.ts";
 import { within } from "../util/within.ts";
 import { pinnedPrompt } from "./rerank.ts";
+import { avoidKeys, mentionsAvoided, scrubPairs, type AvoidKey, type Removed } from "../personalize/forgotten.ts";
 import { SUMMARY_EVERY, SUMMARY_INJECT, SUMMARY_LOAD_MS, SUMMARY_MAX_PAIRS, summaryPrompt, type CallSummary } from "./summaries.ts";
 
 export const MEMORY_TOOLS: Tool[] = [
@@ -68,6 +69,22 @@ export class MemoryCall {
   private summarizedAt = 0;
   /** earlier threads' summaries for this call's instructions (loaded once at open) */
   summaries: CallSummary[] = [];
+  /** what the user had removed from their profile ("forget that…"): never summarized, extracted or put in a prompt */
+  private avoid: AvoidKey[] = [];
+  /** personalize (session.ts): the removed lines so far; called again after a "forget that…" in this call */
+  setAvoid(removed: Removed[]): void {
+    this.avoid = avoidKeys(removed);
+  }
+  private clearOf<T extends { text: string }>(items: T[]): T[] {
+    return this.avoid.length ? items.filter((m) => !mentionsAvoided(m.text, this.avoid)) : items;
+  }
+  private clearSummaries(items: CallSummary[]): CallSummary[] {
+    // a note about the forgetting itself ("asked to forget the leather thing") never reaches the next call either
+    const ok = (l: string) => !/\bforg[eo]t|\b(?:drop|delete|remove|erase)(?:d)? (?:it|that|this)\b/i.test(l) && !mentionsAvoided(l, this.avoid);
+    return items
+      .map((s) => ({ ...s, topics: s.topics.filter(ok), open_threads: s.open_threads.filter(ok), promises: s.promises.filter(ok), asks: s.asks.filter(ok) }))
+      .filter((s) => s.topics.length || s.open_threads.length || s.promises.length || s.asks.length);
+  }
   /** this call's top stable facts (loaded once at open, in every reply's instructions) */
   pinned: Memory[] = [];
   /** Forget notifications seen by this call: a batch or notes from before one are never used */
@@ -182,7 +199,9 @@ export class MemoryCall {
     // the thread moved to another device: that call owns its summary now; this (older, shorter) copy would
     // describe a conversation that already went on (live eval 11/3: "did you pick white or black?" after she picked)
     if (!this.service.ownsThread(this.userId, this.threadId, this.sessionId)) return;
-    const turns = [...this.thread];
+    // no forget request, nothing about what was removed (QA post-deploy 11/3)
+    const turns = scrubPairs([...this.thread], this.avoid);
+    if (!turns.length) return;
     const forgets = this.forgetsSeen;
     const threadId = this.threadId;
     const covered = this.covered;
@@ -196,7 +215,8 @@ export class MemoryCall {
   }
   private flush(): Promise<unknown> | undefined {
     if (!this.pending.length) return undefined;
-    const turns = this.pending.splice(0, 4);
+    const turns = scrubPairs(this.pending.splice(0, 4), this.avoid);
+    if (!turns.length) return undefined;
     const forgets = this.forgetsSeen;
     const before = this.queue;
     // A slow start (the persisted revision not read yet) holds the batch instead of writing it under a
@@ -221,7 +241,8 @@ export class MemoryCall {
     // the tool path may re-rank with Spark (bounded inside recall); the per-reply implicit recall never does
     if (call.name === "recall" && typeof args.query === "string" && args.query.length <= 300) {
       const memories = await within(this.service.recall(this.userId, args.query, { rerank: true }).then((m) => m, () => null), TOOL_BUDGET_MS, null);
-      return memories ? { memories } : { error: "memory_unavailable" };
+      // only what the model needs: never recall keys or bookkeeping (Codex 11/3); nothing the user asked to forget
+      return memories ? { memories: this.clearOf(memories).map((m) => ({ id: m.id, text: m.text, ...(m.image_ref ? { seen: true } : {}) })) } : { error: "memory_unavailable" };
     }
     if (call.name === "remember" && typeof args.fact === "string" && (args.kind === "fact" || args.kind === "episode")) {
       // past the budget the save may still land; the companion just doesn't claim it
@@ -236,10 +257,11 @@ export class MemoryCall {
       // Bounded (Codex 11/3): the per-user memory lock can sit behind a slow store write; the reply never waits
       // more than RECALL_BUDGET_MS for memories — past it, it answers without them.
       const items = opening === undefined ? await within(this.service.recall(this.userId, query).catch(() => []), RECALL_BUDGET_MS, [] as Memory[]) : opening ? [opening] : [];
-      const notes = summaryPrompt(this.summaries, this.service.now());
-      const pinnedIds = new Set(this.pinned.map((m) => m.id));
-      const extra = items.filter((m) => !pinnedIds.has(m.id));
-      next = { ...req, instructions: (req.instructions ?? "") + pinnedPrompt(this.pinned) + notes + memoryPrompt(extra, opening !== undefined, !!notes), tools: [...req.tools ?? [], ...replyMemoryTools()] };
+      const notes = summaryPrompt(this.clearSummaries(this.summaries), this.service.now());
+      const pinned = this.clearOf(this.pinned);
+      const pinnedIds = new Set(pinned.map((m) => m.id));
+      const extra = this.clearOf(items).filter((m) => !pinnedIds.has(m.id));
+      next = { ...req, instructions: (req.instructions ?? "") + pinnedPrompt(pinned) + notes + memoryPrompt(extra, opening !== undefined, !!notes), tools: [...req.tools ?? [], ...replyMemoryTools()] };
     }
     for (let round = 0; round < 4; round++) {
       if (signal.aborted) return;

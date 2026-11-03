@@ -32,7 +32,7 @@ const PRIVATE = /\b(?:lives?|living|live in|based in|from|moved?|city|town|neigh
 
 function nodLine(card: StyleCard): Finding | null {
   for (const k of NOD_ORDER) {
-    const f = (card.sections?.[k] ?? []).find((x) => x.label === "explicit" && !/^\s*(?:dislikes?|avoids?|no |never )/i.test(x.text) && !/^budget:/i.test(x.text) && !PRIVATE.test(x.text) && !isSensitiveDetail(x.text) && !storyTextProblem(x.text));
+    const f = (card.sections?.[k] ?? []).find((x) => x.label === "explicit" && !x.direction && !/^\s*(?:dislikes?|avoids?|no |never )/i.test(x.text) && !/^budget:/i.test(x.text) && !PRIVATE.test(x.text) && !isSensitiveDetail(x.text) && !storyTextProblem(x.text));
     if (f) return f;
   }
   return null;

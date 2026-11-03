@@ -53,6 +53,7 @@ import type { CallStart, VoiceUpdate } from "../personalize/service.ts";
 import type { CallTurn } from "../personalize/extract.ts";
 import { ASK_TURNS, replyAsks } from "../personalize/unknowns.ts";
 import { mightBeCorrection } from "../personalize/corrections.ts";
+import { avoidKeys, forgetTarget, isForgetRequest, scrubHistory, type Removed } from "../personalize/forgotten.ts";
 import { localTimeLine } from "../personalize/knows.ts";
 import type { UnknownItem } from "../personalize/story.ts";
 import type { TasteLine } from "../personalize/reasons.ts";
@@ -434,6 +435,10 @@ export class Session {
   private awaitingAnswer: UnknownItem | null = null;
   private userTurns = 0;
   private callStartedAt: string | null = null;
+  /** profile lines the user removed (personalize): kept out of memory, notes and handed-off turns */
+  private removedLines: Removed[] = [];
+  /** resolves when the running correction check ends (a "forget that …" waits for it instead of being skipped) */
+  private correctionDone: Promise<void> = Promise.resolve();
   /** this call was counted as a new call by personalize (not a handoff) */
   private callPlanned = false;
   /** the question watch together took back: a reply built before still asking it has that sentence dropped */
@@ -712,7 +717,8 @@ export class Session {
           const claimed = revision === 0 && msg.handoff === true ? parseHistory(msg.history) : [];
           const seed = server?.length ? server : claimed;
           if (!seed.length) return;
-          this.history = seed.slice(-MAX_HISTORY);
+          // a "forget that…" turn and the reply to it are never carried to the next device (QA post-deploy 11/3)
+          this.history = scrubHistory(seed, []).slice(-MAX_HISTORY);
           // a handoff is the same conversation: one thread, one summary (iPhone and Mac write the same row)
           this.memoryCall?.continueThread(server?.length ? this.deps.priorThread?.(revision) ?? null : null, this.history);
           this.recentReplies = [...this.recentReplies, ...this.history.filter((h) => h.role === "assistant").map((h) => h.text)].slice(-3);
@@ -753,6 +759,12 @@ export class Session {
         // a stored profile always wins, even an empty one (a deleted preference must not come back from the app's copy)
         if (p) this.user = { ...this.user, profile: p.profile || undefined };
         if (p?.nod) this.nod = p.nod;
+        // what they removed from their profile stays out of memory, notes and the handed-off turns
+        if (p?.removed?.length) {
+          this.removedLines = p.removed;
+          this.memoryCall?.setAvoid(p.removed);
+          this.history = scrubHistory(this.history, avoidKeys(p.removed));
+        }
         if (p?.calls) this.callNumber = p.calls;
         if (p?.ask && p.askItem) this.ask = { line: p.ask, item: p.askItem, topic: p.askTopic ?? null, asked: false };
         this.taste = p?.taste ?? [];
@@ -1303,18 +1315,34 @@ export class Session {
   private checkCorrection(text: string): void {
     const p = this.deps.personalize;
     const userId = this.deps.userId;
+    // "forget that …": from this line on, memory, notes and the turns handed on leave its target out (no Spark wait)
+    if (isForgetRequest(text) && this.mode === "chat") {
+      const target = forgetTarget(text);
+      if (target) { this.removedLines = [...this.removedLines, { text: target, forget: true }].slice(-40); this.memoryCall?.setAvoid(this.removedLines); }
+    }
     const asked = this.awaitingAnswer;
     this.awaitingAnswer = null;
     // only lines that will reach Spark count toward the per-call budget
+    // a "forget that …" is never skipped because another check is still running: it runs right after it
+    if (this.correcting && p && userId && this.mode === "chat" && isForgetRequest(text) && !this.closed) {
+      const waitFor = this.correctionDone;
+      void waitFor.then(() => { if (!this.closed) this.checkCorrection(text); });
+      return;
+    }
     if (!p || !userId || this.mode !== "chat" || this.correcting || this.correctionChecks >= MAX_CORRECTION_CHECKS || (!asked && !mightBeCorrection(text))) return;
     const lastAssistant = [...this.history].reverse().find((h) => h.role === "assistant")?.text;
     const abort = new AbortController();
     this.correcting = abort;
     this.correctionChecks++;
+    let done!: () => void;
+    this.correctionDone = new Promise<void>((r) => (done = r));
     void p.voiceCorrection(userId, text, lastAssistant, abort.signal, asked).then(
       (r) => {
         if (!r || this.closed || abort.signal.aborted) return;
         this.user = { ...this.user, profile: r.profile };
+        // "forget that…" in this call: from now on memory, notes and the turns handed on leave it out too
+        const gone = r.applied.flatMap((a) => a.removed);
+        if (gone.length) { this.removedLines = [...this.removedLines, ...gone].slice(-40); this.memoryCall?.setAvoid(this.removedLines); }
         // lines said in this call are "You said: …" on result cards (grey), the stored ones "Your taste: …" (blue)
         const said = new Set(r.applied.filter((a) => a.field === "likes" && a.text).map((a) => a.text));
         // the latest taste lines, even none (a "forget that" can empty them — Codex round 6)
@@ -1324,7 +1352,7 @@ export class Session {
         this.log("profile.updated", { fields: r.applied.map((a) => a.field), answered: r.answered });
       },
       (err) => this.log("profile.correction_failed", { message: String(err).slice(0, 120) }),
-    ).finally(() => { if (this.correcting === abort) this.correcting = null; });
+    ).finally(() => { if (this.correcting === abort) this.correcting = null; done(); });
   }
 
   /** Conversation engine v1 inputs for this turn: style, the greeting's opener, an initiative block, the camera lines. */
@@ -1441,7 +1469,8 @@ export class Session {
 
   /** This call's turns (copy) — for the account's next device after a handoff. */
   historySnapshot(): HistoryItem[] {
-    return this.history.map((h) => ({ ...h }));
+    // the next device never gets a "forget that…" turn or what it removed (QA post-deploy 11/3)
+    return scrubHistory(this.history, avoidKeys(this.removedLines)).map((h) => ({ ...h }));
   }
 
   /** Revision of these turns, not the latest revision at socket close (which may arrive after Forget). */
