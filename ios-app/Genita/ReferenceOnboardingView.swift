@@ -516,7 +516,10 @@ import UniformTypeIdentifiers
             placed.y += shift
             let key = n.characters ?? ""
             guard n.fontSize == 18, !referenceViewport else { return (placed, nil, key) }
-            let value = summaryValue(y: n.y)
+            // the last two words stay together: never a one-word last line ("… without / approval"); DesignLabel draws
+            // its own lines, so the paragraph's push-out strategy alone didn't do it (CI onb-SUM after #525 r1)
+            var value = summaryValue(y: n.y)
+            if let r = value.range(of: " ", options: .backwards), value.split(separator: " ").count > 2 { value.replaceSubrange(r, with: "\u{00A0}") }
             let margin = 390 - n.x - n.w
             let w = n.w >= 240 && margin >= 20 && n.x >= 20 ? max(1, width - n.x - margin) : n.w   // DesignPlacement's width
             let used = ceil(n.attributed(value).boundingRect(with: CGSize(width: w + 0.5, height: 1000), options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil).height)
