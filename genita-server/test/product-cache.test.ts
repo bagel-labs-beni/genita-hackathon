@@ -155,6 +155,25 @@ test("S5 cache (Codex #522 r5 P1): a search whose profile changed while it ran i
   r.close();
 });
 
+test("S5 cache (Codex #522 r6 P1): DELETE /me takes the account's cached cards and warm-ups, and nothing is cached for it again", async () => {
+  clearProductCache();
+  const { forgetProductCache } = await import("../src/finds/productCache.ts");
+  const { ownerKey } = await import("../src/finds/store.ts");
+  const { v } = vendors(10);
+  const a = runner(v, "acct-del");
+  await sleep(200); // warmed
+  forgetProductCache(ownerKey("acct-del"));
+  const s = a.r.onTurn({ text: "Can you find me some dark brown shoes?", frames: [], utteranceId: 2, replyText: Promise.resolve(null) });
+  await sleep(5);
+  assert.ok(!a.events.some((e) => e.type === "find.created" && e.findId === s!.findId), "the warmed card is gone");
+  await a.r.settle(); await sleep(50);
+  const again = a.r.onTurn({ text: "Can you find me some dark brown shoes?", frames: [], utteranceId: 3, replyText: Promise.resolve(null) });
+  await sleep(5);
+  assert.ok(!a.events.some((e) => e.type === "find.created" && e.findId === again!.findId), "a search finishing after the delete is not cached");
+  await a.r.settle();
+  a.r.close();
+});
+
 test("Spark search slots (Codex #522 r3): with a limit of 1 a background search gives up at once instead of waiting forever", async (t) => {
   const prev = process.env.GENITA_SPARK_SEARCH_MAX;
   process.env.GENITA_SPARK_SEARCH_MAX = "1";

@@ -18,6 +18,7 @@
  * Limits: maxSessions concurrent, 2 MB per message, maxSessionMs per
  * session, 120 s idle. Vendor keys never leave the server.
  */
+import { forgetProductCache } from "./finds/productCache.ts";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -155,6 +156,8 @@ export async function startServer(
       await prep.runner.forgetUser(userId);
       await deps.memory?.forget(userId);
       await deps.finds?.store.removeOwner(ownerKey(userId));
+      // S5 product cache: this account's cards and warm-ups (in memory, keyed by the account)
+      forgetProductCache(ownerKey(userId));
     } catch (err) {
       deletedUsers.delete(userId); // the account stays (DELETE /me answers 502 and can be retried)
       throw err;

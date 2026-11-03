@@ -118,8 +118,29 @@ export function cacheGet(key: string, now: number): CachedProducts | null {
   return e;
 }
 
+/** accounts deleted in this process: nothing is cached for them again (a search finishing during DELETE /me) */
+const forgotten = new Set<string>();
+const ownerOf = (key: string) => key.match(/\|account:([^|]*)\|/)?.[1] ?? null;
+
+/**
+ * DELETE /me (Codex #522 r6 P1): this account's cached cards (its taste text is in the key, its chips in the card)
+ * and warm-ups go now, and none is stored again.
+ */
+export function forgetProductCache(owner: string): void {
+  const o = owner.toLowerCase();
+  forgotten.add(o);
+  if (forgotten.size > 10_000) forgotten.delete(forgotten.values().next().value as string);
+  for (const k of [...cache.keys()]) if (ownerOf(k) === o) cache.delete(k);
+  for (const k of [...warming.keys()]) if (ownerOf(k) === o) warming.delete(k);
+}
+
 export function cachePut(key: string, entry: CachedProducts): void {
   if (!entry.card.products?.length) return;
+  const o = ownerOf(key);
+  if (o !== null && forgotten.has(o)) return;
+  // expired cards go on every write, not only when their own key is read again
+  const now = Date.now();
+  for (const [k, e] of cache) if (now - e.at > PRODUCT_CACHE_TTL_MS) cache.delete(k);
   cache.delete(key);
   cache.set(key, entry);
   while (cache.size > MAX_ENTRIES) cache.delete(cache.keys().next().value as string);
@@ -158,4 +179,5 @@ export function cardFitsColors(card: FindCard, colors: string[]): boolean {
 export function clearProductCache(): void {
   cache.clear();
   warming.clear();
+  forgotten.clear();
 }
