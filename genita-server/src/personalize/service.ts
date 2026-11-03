@@ -441,6 +441,26 @@ export class Personalize {
   }
   /** tests / shutdown: wait for background card rewrites */
   async drainRewrites(): Promise<void> { while (this.rewrites.size) await Promise.all([...this.rewrites]); }
+  /**
+   * tests / shutdown: every background write this instance started (story jobs, queued corrections, rewrites, the
+   * per-user store locks) has settled — or `maxMs` passed (a test's Spark that never answers never writes either).
+   * A test removing its store dir after this sees no file appear mid-delete (CI ENOTEMPTY flake, 11/4).
+   */
+  async idle(maxMs = 3000): Promise<void> {
+    const end = Date.now() + maxMs;
+    for (;;) {
+      const all = [...this.rewrites, ...this.storyJobs.values(), ...this.corrections.values(), ...this.locks.values()];
+      if (!all.length || Date.now() >= end) return;
+      const settled = await Promise.race([
+        Promise.allSettled(all).then(() => true),
+        new Promise<false>((r) => setTimeout(() => r(false), Math.max(0, end - Date.now())).unref?.()),
+      ]);
+      if (!settled) return;
+      // settled: anything new they started is picked up on the next pass; nothing new → done
+      const again = [...this.rewrites, ...this.storyJobs.values(), ...this.corrections.values(), ...this.locks.values()];
+      if (again.every((x) => all.includes(x))) return;
+    }
+  }
 
   // ───────────── calls ─────────────
 

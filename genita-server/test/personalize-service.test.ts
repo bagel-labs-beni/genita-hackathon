@@ -49,7 +49,9 @@ function harness(handler: Handler) {
   }) as unknown as PrepDeps["spark"];
   const logs: Array<[string, Record<string, unknown>]> = [];
   const p = new Personalize({ store, json: json!, log: (e, d) => logs.push([e, d]) });
-  return { dir, store, p, calls, logs, cleanup: () => rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }) };
+  // background writes (story jobs, corrections) settle before the dir goes: CI flaked ENOTEMPTY on a write landing mid-rm (11/4)
+  const cleanup = async () => { await p.idle(2000); rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); };
+  return { dir, store, p, calls, logs, cleanup };
 }
 
 async function http(p: Personalize, store: FileStore, handlerJson: PrepDeps["spark"]) {
