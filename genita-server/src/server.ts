@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
 /**
  * HTTP + WebSocket entry.
  *   GET  /healthz          → {ok:true, sessions, spark_open, spark_open_provider, spark_open_model}
@@ -29,6 +31,9 @@ import { META_BASE, metaHeaders } from "./meta/http.ts";
 import { setLlmLog, sparkOpenStatus, startSparkOpenProbe } from "./meta/sparkOpen.ts";
 import { installKeepAlive, makePrewarm } from "./util/keepalive.ts";
 import { createSeamless } from "./tts/seamless.ts";
+import { fileClips } from "./tts/clips.ts";
+import { DEFAULT_VOICES } from "./prep/voices.ts";
+const CURATED_SPEAKERS = DEFAULT_VOICES.map((v) => Number(v.id)).filter((n) => Number.isInteger(n));
 import { createVoiceSeats } from "./tts/capacity.ts";
 import { createPrep } from "./prep/index.ts";
 import { demoTemplateWanted, startDemoTemplate } from "./prep/demoTemplate.ts";
@@ -65,7 +70,7 @@ async function* serverTtsOff(): AsyncGenerator<never> {
 }
 
 export function defaultDeps(config: Config, log: LogFn): SessionDeps {
-  const voice = config.voice ? createSeamless(config.voice, { log }) : null;
+  const voice = config.voice ? createSeamless(config.voice, { log, clips: fileClips(join(process.env.GENITA_DATA_DIR || join(homedir(), ".genita-data"), "voice-clips")) }) : null;
   return {
     config,
     ...createMemory(config.metaKey, log),
@@ -73,6 +78,8 @@ export function defaultDeps(config: Config, log: LogFn): SessionDeps {
     spark: (req, opts) => sparkStream(config.metaKey, req, opts),
     tts: voice ? (req) => voice.speak(req) : serverTtsOff,
     voicePrefetch: voice ? (speaker) => voice.prefetch(speaker) : undefined,
+    // main.ts at boot: render (or load) the cold-GPU lines for the curated speakers, so the first call after a deploy has them
+    voiceWarm: voice ? () => { for (const spk of new Set([...CURATED_SPEAKERS, ...Object.values(config.voice!.speakers)])) voice.prefetch(spk); } : undefined,
     greetOpener: greetOpenerOn(),
     // one socket per hedged Spark lane, one to the voice service (kept open by installKeepAlive)
     prewarm: makePrewarm({ metaUrl: META_BASE + "/models", metaHeaders: metaHeaders(config.metaKey, false), lanes: config.sparkHedge, voiceUrl: config.voice ? config.voice.url + "/healthz" : undefined }),
