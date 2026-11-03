@@ -59,18 +59,21 @@ import ARKit
     /// DEBUG review states pin "the Mac is reachable" (--handoff-state, --proximity-moment).
     var debugPeerReachable: Bool?
     private var subscriptions = Set<AnyCancellable>()
+    private var accountScope = HandoffAccountScope()
+    private let accountResolver = HandoffAccountResolver()
     init() {
         let args=ProcessInfo.processInfo.arguments
         if args.contains("--uitesting") { for key in ["genita.handoff.ownership","genita.handoff.rememberedMac"] {UserDefaults.standard.removeObject(forKey:key)} }
         link=HandoffLink()
         ownership=OwnershipCoordinator(device:.phone)
+        ownership.useAccount(nil)
         let fanout=OwnershipFanout([link,server]);self.fanout=fanout
         ownership.transport=fanout
         ownership.onChange = { [weak self] old,new in self?.ownerChanged(from:old,to:new) }
         link.onMessage = { [weak self] in self?.receive($0) }
         server.onEffect = { [weak self] in self?.serverEffect($0) }
         server.onConnect = { [weak self] in
-            guard let self else{return}
+            guard let self,self.accountScope.accountID != nil else{return}
             self.server.send(["type":"hello","owner":self.ownership.state.owner.serverName,"epoch":self.ownership.state.epoch,"active":self.sceneActive])
         }
         tracker.$registered.dropFirst().removeDuplicates().sink { [weak self] done in
@@ -78,7 +81,6 @@ import ARKit
             // Keep `registering` on: tracking must restart even if the app leaves before the world map is saved.
             self.registeringVisible=false;self.showRegisteredToast()
         }.store(in:&subscriptions)
-        link.autoReconnect=true
         tracker.onReading = { [weak self] reading in
             guard let self else { return }; var packet=reading; packet["type"]="reading"
             self.link.send(packet, reliable:false)
@@ -86,11 +88,51 @@ import ARKit
         // the live call owns camera and mic (CallController); Dyno's tracking hooks attach to it
         CallController.shared.beforeCameraStart = { [weak self] in self?.trackingStarted=false;self?.tracker.stop() }
         CallController.shared.onCameraChange = { [weak self] in self?.updateTracking() }
+        CallController.shared.onConnected = { [weak self] in self?.startConnections() }
         link.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in:&subscriptions)
         server.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in:&subscriptions)
         tracker.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in:&subscriptions)
         refreshSurface()
         timer=Timer.scheduledTimer(withTimeInterval:1,repeats:true){ [weak self] _ in Task { @MainActor in self?.refreshSurface() } }
+    }
+    /// Verified sign-in /me and logout switch the local link and ownership together.
+    func setAccount(_ accountID: String?) {
+        // Logout must cancel /me even when no scope has been resolved yet.
+        accountResolver.invalidate()
+        guard accountScope.select(accountID) else { return }
+        server.stop();link.autoReconnect=false;link.useAccount(accountID)
+        generation+=1;pairingAttempt+=1;moveAttempt+=1;moveFailedToken+=1
+        pending=nil;motion=nil;renderedMotionID=nil;feedback.cancel()
+        moving=false;moveFailed=false;pairingFailed=false;code="";settings=false
+        registering=false;registeringVisible=false;registeredToast=false
+        trackingURL=nil;trackingStarted=false;tracker.stop();lastPing=0;snapshot=""
+        media.stopAll()
+        ownership.useAccount(accountID)
+        refreshSurface()
+        link.autoReconnect=accountID != nil && sceneActive
+        if accountID != nil,model != nil {startConnections()}
+    }
+    private func startConnections() {
+        guard sceneActive else { return }
+        guard accountScope.accountID != nil else { resolveAccount();return }
+        let args=ProcessInfo.processInfo.arguments
+        if !args.contains("--uitesting") || args.contains("--handoff-server") {server.start()}
+        if !link.connected {link.reconnect()}
+    }
+    private func resolveAccount() {
+        guard sceneActive,accountScope.accountID == nil,let model,model.serverWired,
+              !model.storage.bool(forKey:AppState.signedOutKey) else { return }
+        let auth=model.onboarding.auth
+        accountResolver.resolve(snapshot:model.launchAuthSnapshot,current:{ model.launchAuthSnapshot },
+            fetch:{ await auth.sessionState() },adopt:{ [weak self,weak model] accountID in
+                guard let self,let model else { return }
+                // Verification resets the account's transports. Keep the code entered while /me
+                // was pending, then join only after the verified scope has been installed.
+                let code=self.code,settings=self.settings
+                model.adopt(accountId:accountID)
+                self.code=code;self.settings=settings
+                if code.count == 6 {self.connect()}
+            },expired:{ [weak model] in model?.signedOut() })
     }
     func attach(_ model: AppState) {
         self.model=model
@@ -116,21 +158,21 @@ import ARKit
         }
         #endif
         // UI tests stay offline so their screens never depend on a server.
-        if !args.contains("--uitesting") || args.contains("--handoff-server") {server.start()}
+        startConnections()
         if !launchConnected,let i=args.firstIndex(of:"--handoff-code"),args.indices.contains(i+1) {launchConnected=true;code=args[i+1];connect();return}
-        if !link.connected {link.reconnect()}
     }
     func resume() {
-        sceneActive=true;link.autoReconnect=true;lastPing=Date().timeIntervalSince1970
+        sceneActive=true;link.autoReconnect=accountScope.accountID != nil;lastPing=Date().timeIntervalSince1970
         server.setActive(true)
-        if !link.connected {link.reconnect()}
+        startConnections()
         updateTracking();refreshSurface()
     }
     /// P01: runs by itself when the sixth digit goes in. No Mac within 8 s shows P01-E.
     func connect() {
         // Registering the screen waits for Set up touch to move (P02), so Not now leaves no MAC-REG behind.
-        pairingFailed=false;registering=false;link.join(code)
+        pairingFailed=false;registering=false
         guard code.count == 6 else{return}
+        if accountScope.accountID == nil {resolveAccount()} else {link.join(code)}
         pairingAttempt+=1;let attempt=pairingAttempt
         DispatchQueue.main.asyncAfter(deadline:.now()+8) { [weak self] in
             guard let self,self.pairingAttempt==attempt,!self.link.connected else{return}
@@ -196,12 +238,17 @@ import ARKit
         } else if trackingStarted {trackingStarted=false;tracker.stop()}
     }
     private func serverEffect(_ effect:PresenceEffect) {
+        guard accountScope.accountID != nil else{return}
         switch effect {
         case let .apply(claim):
             // A touch move's effect is driven by Dyno's local prepare/ready/start. If the server's copy of the
             // same claim arrives first, hold it until the effect has begun so the transition looks unchanged.
             if pending != nil || motion != nil {
-                DispatchQueue.main.asyncAfter(deadline:.now()+1.2) { [weak self] in self?.ownership.receive(claim) }
+                let generation=accountScope.generation
+                DispatchQueue.main.asyncAfter(deadline:.now()+1.2) { [weak self] in
+                    guard let self,self.accountScope.accepts(generation) else{return}
+                    self.ownership.receive(claim)
+                }
             } else {ownership.receive(claim)}
         case .moveRequested: if sceneActive && !ownership.isOwner {server.nextTrigger="move";continueHere()}
         case .moveFailed: if moving {moving=false;moveAttempt+=1;moveFailed=true}
@@ -215,6 +262,7 @@ import ARKit
         if next != surface {withAnimation(.easeOut(duration:0.24)) {surface=next}}
     }
     func receive(_ data:[String:Any]) {
+        guard accountScope.accountID != nil else{return}
         switch data["type"] as? String {
         case "connected":
             lastPing=Date().timeIntervalSince1970
@@ -271,6 +319,7 @@ import ARKit
     }
     /// Background or lock. The owner stays the same; only the effect layer rests.
     func pause() {
+        accountResolver.invalidate()
         sceneActive=false;link.autoReconnect=false
         server.setActive(false)
         link.send(["type":"inactive"]);updateTracking()

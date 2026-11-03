@@ -143,6 +143,31 @@ struct CallCueView: View {
     }
 }
 
+/// CC-1 "Updated: no cilantro" / "Noted: quiet company" for 2.5 s (`profile.updated`), and the softer GK-1
+/// "Getting to know you · {topic}" (`profile.asking`). The status line's pill, smaller, just under it.
+struct ProfileChipView: View {
+    let text: String
+    /// GK-1: lighter pill, a "?" instead of the check
+    var soft = false
+    @State private var shown = false
+    var body: some View {
+        HStack(spacing: 6) {
+            if soft {
+                Image("hisy-question").resizable().renderingMode(.template).foregroundStyle(CallInk.blueOnInk).frame(width: 13, height: 13)
+            } else {
+                Image(systemName: "checkmark").font(.system(size: 12, weight: .bold)).foregroundStyle(CallInk.blueOnInk)
+            }
+            Text(text).font(TypeStyle.body(13, .medium)).foregroundStyle(CallInk.onInk.opacity(soft ? 0.92 : 1)).lineLimit(1)
+        }
+        .padding(.horizontal, 14).frame(height: 30)
+        .background(soft ? CallInk.ink.opacity(0.5) : CallInk.pill, in: RoundedRectangle(cornerRadius: 15))
+        .opacity(shown ? 1 : 0).offset(y: shown ? 0 : -6)
+        .onAppear { withAnimation(.fade) { shown = true } }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier(soft ? "askingChip" : "profileChip")
+    }
+}
+
 private struct CueDot: View {
     var body: some View { Circle().fill(CallInk.blueOnInk).frame(width: 8, height: 8) }
 }

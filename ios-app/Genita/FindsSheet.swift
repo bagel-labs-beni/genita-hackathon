@@ -16,6 +16,25 @@ enum FindsInk {
     static let white = Color.white
 }
 
+/// D48 ③ reason chips under the card title: blue "Your style/taste: …" from the profile, grey "You said: …" from
+/// this call (`Reason.from`). VoiceOver reads them as one "Why this: …" line.
+struct FindReasonChips: View {
+    let reasons: [FindCard.Reason]
+    var body: some View {
+        // wraps: each chip reads whole (two short chips usually share a line)
+        ChipLayout(spacing: 6) {
+            ForEach(Array(reasons.enumerated()), id: \.offset) { _, r in
+                // blue = from the profile (HISY, import, corrections) · grey = what they said in this call
+                let call = r.from == "call"
+                Text(r.text).font(TypeStyle.body(13, .medium)).foregroundStyle(call ? CallInk.mute : FindsInk.blueText).lineLimit(1).truncationMode(.tail).frame(maxWidth: 260)
+                    .padding(.horizontal, 10).frame(height: 26).background(call ? FindsInk.skip : FindsInk.blueSoft, in: Capsule())
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .ignore).accessibilityLabel("Why this: " + reasons.map(\.text).joined(separator: ", "))
+            .accessibilityIdentifier("findReasons")
+    }
+}
+
 extension Animation {
     /// r03 `--ease-drawer` cubic-bezier(0.32, 0.72, 0, 1), 420 ms.
     static let drawer = Animation.timingCurve(0.32, 0.72, 0, 1, duration: 0.42)
@@ -458,6 +477,8 @@ struct FindCardPage: View {
                     Text(entry.reopened ? Self.reopenedSubtitle(card.subtitle) : card.subtitle)
                         .font(TypeStyle.body(14)).foregroundStyle(CallInk.mute).lineLimit(1).truncationMode(.tail)
                 }
+                // D48 ③: why this fits you — 1–2 chips from the user's own taste lines (not on link cards)
+                if card.kind != .link, let reasons = card.reasons, !reasons.isEmpty { FindReasonChips(reasons: Array(reasons.prefix(2))).padding(.top, 8) }
             }.frame(maxWidth: .infinity, alignment: .leading)
             if card.kind != .link, let hero = card.hero {
                 FindPicture(image: hero, resolve: call.findsURL, showFailText: false).frame(width: 56, height: 56).clipShape(RoundedRectangle(cornerRadius: 12))

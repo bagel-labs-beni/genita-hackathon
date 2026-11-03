@@ -352,7 +352,10 @@ export function checkServerEvent(o: Record<string, unknown>): string[] {
 // s16le mono 24 kHz (the shared screen's sound, never the mic).
 
 export type WatchClientMessage =
-  | { type: "start"; source?: string }
+  /** title (11/3): the shared window's title, e.g. a browser tab "<YouTube video title> - YouTube" (ScreenCaptureKit window title) */
+  | { type: "start"; source?: string; title?: string }
+  /** context (11/3): the shared window's title changed (another video or page); sent only on change */
+  | { type: "context"; title?: string }
   /** motion: 0..1 change from the previous sent frame (Mac, 32×18 luma); a spike = a cut or a big move (11/3) */
   | { type: "frame"; image: string; blank?: boolean; motion?: number }
   | { type: "stop" }

@@ -16,7 +16,7 @@
 import type { SparkRequest, SparkStreamEvent } from "../meta/spark.ts";
 import type { AsrEvent } from "../meta/transcribe.ts";
 import type { WatchServerEvent } from "../protocol.ts";
-import { buildMemoRequest, buildQuestionContext, buildQuickRequest, earlyVerdict, parseMemoVerdict, parseQuick, type DialogueLine, type MemoEntry, type MemoVerdict, type QuestionContext } from "./memo.ts";
+import { buildMemoRequest, buildQuestionContext, buildQuickRequest, cleanTitle, earlyVerdict, parseMemoVerdict, parseQuick, type DialogueLine, type MemoEntry, type MemoVerdict, type QuestionContext } from "./memo.ts";
 import { echoNow, isVideoEcho, pickFrames, REACT_MIN_GAP_MS, reactionAllowed, reactionScript, speakerChipEnabled, SPEAKER_SILENCE_MS } from "./rules.ts";
 
 export interface WatchAsr {
@@ -132,6 +132,8 @@ export class WatchController {
   private sink: WatchSink | null = null;
   private sharing = false;
   private source: string | null = null;
+  /** the shared window's title (a YouTube tab: "<video title> - YouTube"), from the Mac app */
+  private title: string | null = null;
   private sharingSince = 0;
   private blank = false;
   private blankSpoken = false;
@@ -211,7 +213,12 @@ export class WatchController {
     }
     switch (type) {
       case "start":
+        if ("title" in msg) this.setTitle(msg.title);
+        // another window or display: the old window's title must not ride along with the new picture
+        else if (this.sharing && typeof msg.source === "string" && msg.source.slice(0, 60) !== this.source) this.title = null;
         return this.start(typeof msg.source === "string" ? msg.source.slice(0, 60) : null);
+      case "context":
+        return this.setTitle(msg.title);
       case "frame":
         return this.onFrame(msg.image, msg.blank === true, typeof msg.motion === "number" && Number.isFinite(msg.motion) ? msg.motion : null);
       case "stop":
@@ -228,6 +235,15 @@ export class WatchController {
     this.stats.audioBytes += pcm.length;
     this.lastAudioAt = this.deps.now();
     this.asr?.sendAudio(pcm);
+  }
+
+  /** the title changed = usually another video or page: the memo sees it on its next run (no extra Spark call) */
+  private setTitle(raw: unknown): void {
+    const t = cleanTitle(raw);
+    if (t === this.title) return;
+    this.title = t;
+    // the text itself can be private (a document, a mail subject): only its length is logged
+    this.log("watch.title", { chars: t?.length ?? 0 });
   }
 
   private start(source: string | null): void {
@@ -289,6 +305,7 @@ export class WatchController {
     this.asr?.end();
     this.asr = null;
     this.frames = []; // never kept past the share
+    this.title = null;
     this.dialogueActive = false;
     this.openLine = "";
     this.pendingLabel = null;
@@ -477,6 +494,7 @@ export class WatchController {
     const req = buildMemoRequest({
       companion: this.host.companion(),
       source: this.source,
+      title: this.title,
       memo: this.memo,
       lines,
       names: this.names,
@@ -665,6 +683,7 @@ export class WatchController {
     const frames = this.sharing ? pickFrames(this.frames, QUESTION_FRAMES, QUESTION_FRAME_SPACING_MS).map((f) => f.url) : [];
     return buildQuestionContext({
       source: this.source,
+      title: this.title,
       memo: this.memo,
       lines: this.sharing ? this.lines.filter((l) => now - l.at <= QUESTION_LINES_MS).slice(-12) : this.lines.slice(-6),
       names: this.names,
