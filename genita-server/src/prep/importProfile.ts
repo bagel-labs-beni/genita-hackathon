@@ -238,6 +238,8 @@ export type StyleCard = {
   importedAt?: string;
   /** lines removed by corrections, with when (an older analysis can't bring them back), last 40 */
   removed?: Array<{ text: string; at: string; field?: string }>;
+  /** S1: "That's not me" saves answered at once and not yet turned into profile updates (replayed after a restart) */
+  pendingCorrections?: Array<{ cardId: string; items: string[]; text: string; asOf: string }>;
 };
 
 type FindingKey = Exclude<SectionKey, "to_confirm">;
