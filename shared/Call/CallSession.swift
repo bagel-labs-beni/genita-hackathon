@@ -80,6 +80,7 @@ enum CallStop: Equatable {
     case signIn      // 4401: no, bad, expired or revoked token, or the account was deleted → A02
     case consent     // 4403: signed in, no AI-data consent yet → CS01
     case timeLimit   // 4001: max call length
+    case companionReset   // 4410: the companion was reset (POST /v1/companion/reset) → iPhone V01, Mac "Set up on iPhone"
 }
 
 /// F4-L10 + F4-U-S09 · One live call: WebSocket session, mic uplink, reply playback, camera frames,
@@ -630,7 +631,7 @@ enum CallStop: Equatable {
         playing = false
         awaitingFirstAudio = false
         guard !userEnded else { return }
-        if case let .server(code, _) = closure, let stop: CallStop = code == 4401 ? .signIn : code == 4403 ? .consent : code == 4001 ? .timeLimit : nil {
+        if case let .server(code, _) = closure, let stop: CallStop = code == 4401 ? .signIn : code == 4403 ? .consent : code == 4001 ? .timeLimit : code == 4410 ? .companionReset : nil {
             // Reconnecting can't fix these; hand them to the router.
             stopped = stop
             link = .idle

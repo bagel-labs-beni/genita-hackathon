@@ -324,7 +324,8 @@ struct CallToggleGlass: View {
             if on {
                 Circle().fill(CallInk.onInk)
                 if let url = Bundle.main.url(forResource: icon, withExtension: "png"), let image = UIImage(contentsOfFile: url.path) {
-                    Image(uiImage: image).resizable().colorInvert().frame(width: image.size.width / 4, height: image.size.height / 4)
+                    let g = GlassGlyph.size(pixels: CGSize(width: image.size.width * image.scale, height: image.size.height * image.scale), diameter: CallHUDGrid.button)
+                    Image(uiImage: image).resizable().colorInvert().frame(width: g.width, height: g.height)
                 }
             }
         }.frame(width: CallHUDGrid.button, height: CallHUDGrid.button).contentShape(Circle())
@@ -435,9 +436,10 @@ extension AppState {
     }
 
     /// The server's persona card (setup answers, F4) when there is one, always with the NM01 name; the imported
-    /// style's profile text (never the raw paste once the import ran); 2 s wait on the first call (D21).
+    /// style's profile text — never the raw paste, even when the import never landed (AU-13: it skipped every
+    /// redaction and injection filter); 2 s wait on the first call (D21).
     var callStart: ClientMessage.Start {
-        var start = ClientMessage.Start.companion(name: companionDisplayName, userName: setup.name, profile: setup.styleProfile ?? setup.response,
+        var start = ClientMessage.Start.companion(name: companionDisplayName, userName: setup.name, profile: setup.styleProfile ?? "",
                                                   traits: setup.presence.sorted(), voiceId: nil)
         if var persona = setup.serverPersona { persona.name = companionDisplayName; start.persona = persona }
         if let kind = setup.imageType.flatMap(ClientMessage.Persona.Kind.init(rawValue:)) { start.persona.kind = kind }

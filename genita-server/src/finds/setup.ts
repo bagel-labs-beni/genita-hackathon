@@ -24,6 +24,7 @@ export function findsFromEnv(metaKey: string, env: NodeJS.ProcessEnv = process.e
     shopRegion: /^[A-Za-z .-]{2,40}$/.test(env.GENITA_SHOP_REGION ?? "") ? env.GENITA_SHOP_REGION : "US",
     productHedge: Math.min(3, Math.max(1, Number.parseInt(env.GENITA_PRODUCT_HEDGE ?? "3", 10) || 3)),
     productPrefetch: env.GENITA_PRODUCT_PREFETCH !== "0",
+    productCache: env.GENITA_PRODUCT_CACHE !== "0",
   };
 }
 

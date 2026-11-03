@@ -189,10 +189,13 @@ struct ImageCheckView: View {
             }
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(rows, id: \.0) { row in
-                    HStack(spacing: 8) {
+                    // icon on the first line; a two-sentence reason gets a sentence per line
+                    // ("We couldn't find a clear face. Try / another photo." → "… face. / Try another photo.", pixel QA 11/4)
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Image(systemName: row.1 ? "checkmark" : "xmark").font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(row.1 ? Color(red: 0, green: 0.42, blue: 0.75) : Color(red: 0.85, green: 0.2, blue: 0.2)).frame(width: 20, height: 20)
-                        Text(row.0).font(TypeStyle.body(15)).foregroundStyle(CallInk.ink)
+                            .foregroundStyle(row.1 ? Color(red: 0, green: 0.42, blue: 0.75) : Color(red: 0.85, green: 0.2, blue: 0.2)).frame(width: 20)
+                        Text(row.1 ? row.0 : row.0.replacingOccurrences(of: ". ", with: ".\n")).font(TypeStyle.body(15)).foregroundStyle(CallInk.ink)
+                            .fixedSize(horizontal: false, vertical: true)
                     }.accessibilityElement(children: .combine).accessibilityLabel((row.1 ? "Passed: " : "Failed: ") + row.0)
                 }
             }.frame(width: width - 62, alignment: .leading).position(x: 31 + (width - 62) / 2, y: 536 + 41 + top)
@@ -371,7 +374,16 @@ struct SkipImportView: View {
         default: []
         }
     }
+    /// A pick on answers that were already sent (or are from an older build) starts a new, unsent set: one edit
+    /// never turns another account's answers into this phone's own (Codex #516 r3).
+    private func markUnsent() {
+        if model.setup.skipSent != false {
+            model.setup.skipInterests = nil; model.setup.skipReplies = nil; model.setup.skipLikes = nil; model.setup.skipAvoid = nil
+        }
+        model.setup.skipSent = false
+    }
     private func toggle(_ v: String) {
+        markUnsent()
         switch step {
         case .skipTopics: var s = model.setup.skipInterests ?? []; if let i = s.firstIndex(of: v) { s.remove(at: i) } else if s.count < 8 { s.append(v) }; model.setup.skipInterests = s
         case .skipReplies: model.setup.skipReplies = model.setup.skipReplies == v ? nil : v
@@ -380,6 +392,7 @@ struct SkipImportView: View {
     }
     /// N3 chips: tap once = like, twice = avoid, three times = clear (Chelsea 11/3: likes and things to avoid).
     private func cycleTaste(_ v: String) {
+        markUnsent()
         var like = model.setup.skipLikes ?? [], avoid = model.setup.skipAvoid ?? []
         if let i = like.firstIndex(of: v) { like.remove(at: i); avoid.append(v) }
         else if let i = avoid.firstIndex(of: v) { avoid.remove(at: i) }
@@ -576,7 +589,8 @@ struct ChipLayout: Layout {
 
 /// PREP-1 motion and colours (Figma rp1wR9pxV0IsgyjvOcwo92 182:51 / 182:3 / 182:96 / 182:142 notes):
 /// photo breathes 1.00 → 1.03 over 8 s, a light band sweeps top → bottom every 2.8 s, a finished stage's check
-/// scales 0.8 → 1 in 200 ms, ready = 400 ms crossfade then S07 0.8 s later. Reduce Motion: no breathing, no sweep.
+/// scales 0.8 → 1 in 200 ms, ready = 400 ms crossfade then S07 2 s later (0.8 s read as no ready screen at all,
+/// design review 11/4). Reduce Motion: no breathing, no sweep.
 enum PrepStyle {
     static let breathScale: CGFloat = 1.03
     static let breathSeconds: Double = 8
@@ -588,7 +602,7 @@ enum PrepStyle {
         // UI tests: long enough for XCUITest to see and capture PREP-1c before S07
         if ProcessInfo.processInfo.arguments.contains("--uitesting") { return 3 }
         #endif
-        return 0.8
+        return 2.0
     }
     static let photoHeight: CGFloat = 560
     static let background = Color(red: 17 / 255, green: 17 / 255, blue: 17 / 255)
@@ -641,6 +655,8 @@ struct BringingView: View {
         .task(id: s.phase == .ready) {
             // PREP-1c: no button, "Saying hi…", then S07 by itself
             guard s.phase == .ready else { return }
+            // the call opens on the made face, not the uploaded photo (no face swap inside S09)
+            await model.waitForScene()
             try? await Task.sleep(for: .seconds(PrepStyle.crossfadeSeconds + PrepStyle.readyHoldSeconds))
             if !Task.isCancelled { model.startFirstCall() }
         }
@@ -670,6 +686,11 @@ struct BringingView: View {
         .overlay(alignment: .bottom) {
             LinearGradient(colors: [PrepStyle.background.opacity(0), PrepStyle.background], startPoint: .top, endPoint: .bottom)
                 .frame(height: 300)
+        }
+        // the white status bar stays readable over a light photo (a pencil drawing on paper, pixel QA 11/4)
+        .overlay(alignment: .top) {
+            LinearGradient(colors: [PrepStyle.background.opacity(0.45), PrepStyle.background.opacity(0)], startPoint: .top, endPoint: .bottom)
+                .frame(height: 120).allowsHitTesting(false)
         }
         .frame(width: width, height: PrepStyle.photoHeight).clipped()
         .accessibilityLabel("\(model.companionDisplayName)'s photo")

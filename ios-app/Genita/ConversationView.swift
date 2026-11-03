@@ -176,12 +176,14 @@ struct ConversationView: View {
                             ProfileChipView(text: chip, soft: call.profileChip == nil).id(call.profileChip == nil ? chip : "\(chip)#\(call.profileChipSerial)")
                                 .frame(width: sheet == .full ? 250 : full.size.width - 2 * CallHUDGrid.margin, alignment: sheet == .full ? .leading : .center)
                                 .position(x: sheet == .full ? 16 + 125 : full.size.width / 2,
-                                          y: sheet == .full ? 122 + top : grid.chipCenterY(status: status, prepLine: model.callPrepIndicator != nil && !interpreting && !moveLine,
-                                                                                         fitsRow: ProfileChipView.width(chip, soft: call.profileChip == nil) <= grid.rowPillWidth))
+                                          y: sheet == .full ? 122 + top : grid.chipCenterY(status: status, prepLine: model.callPrepIndicator != nil && !interpreting && !moveLine && !findsTabOpen && sheet != .full,
+                                                                                         fitsRow: ProfileChipView.width(chip, soft: call.profileChip == nil) <= grid.rowPillWidth,
+                                                                                         prepFitsRow: model.callPrepIndicator.map { CallPrepLine.width($0) <= grid.rowPillWidth } ?? true))
                         }
                         // S09-PREP (228:543): the face is still being made while the call runs (S09-P, D28)
-                        if !connecting && !interpreting && !moveLine && sheet != .full, let line = model.callPrepIndicator {
-                            CallPrepLine(text: line).position(x: full.size.width / 2, y: grid.prepLineCenterY(status: status)).transition(.opacity)
+                        // never over the Finds tab (its title sits on the menu row and the line under it — Codex P2)
+                        if !connecting && !interpreting && !moveLine && !findsTabOpen && sheet != .full, let line = model.callPrepIndicator {
+                            CallPrepLine(text: line).position(x: full.size.width / 2, y: grid.prepLineCenterY(status: status, fitsRow: CallPrepLine.width(line) <= grid.rowPillWidth)).transition(.opacity)
                         }
                         }
                         if connecting {
@@ -502,14 +504,18 @@ struct CallGlassControl: View {
     var body: some View {
         ZStack {
             if #available(iOS 26.0, *) {
-                Circle().fill(.black.opacity(0.15)).glassEffect(.clear, in: Circle()).environment(\.colorScheme, .dark).overlay(Circle().strokeBorder(LinearGradient(colors: [.white.opacity(0.65), .white.opacity(0.06), .white.opacity(0.32)], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 0.7))
+                Circle().fill(.black.opacity(GlassGlyph.fill)).glassEffect(.clear, in: Circle()).environment(\.colorScheme, .dark).overlay(Circle().strokeBorder(LinearGradient(colors: [.white.opacity(0.65), .white.opacity(0.06), .white.opacity(0.32)], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 0.7))
             } else {
                 Circle().fill(.ultraThinMaterial).environment(\.colorScheme, .dark)
-                    .overlay(Circle().fill(.black.opacity(0.15)))
+                    .overlay(Circle().fill(.black.opacity(GlassGlyph.fill)))
                     .overlay(Circle().strokeBorder(LinearGradient(colors: [.white.opacity(0.65), .white.opacity(0.06), .white.opacity(0.32)], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 0.7))
             }
-            if let url = Bundle.main.url(forResource: icon, withExtension: "png"), let image = UIImage(contentsOfFile: url.path) {
-                Image(uiImage: image).resizable().frame(width: image.size.width / 4, height: image.size.height / 4)
+            // glyph = 55 % of the circle (GlassGlyph); ⋮ as three dots
+            if icon == GlassGlyph.moreIcon {
+                GlassDots(diameter: size)
+            } else if let url = Bundle.main.url(forResource: icon, withExtension: "png"), let image = UIImage(contentsOfFile: url.path) {
+                let g = GlassGlyph.size(pixels: CGSize(width: image.size.width * image.scale, height: image.size.height * image.scale), diameter: size)
+                Image(uiImage: image).resizable().frame(width: g.width, height: g.height)
             }
             if slashed { Capsule().fill(.white).frame(width: 26, height: 1.5).rotationEffect(.degrees(45)) }
         }.frame(width: size, height: size).contentShape(Circle())
@@ -520,6 +526,11 @@ struct CallGlassControl: View {
 /// (#179 draws the same pill from `CallController.prepStage`; this one reads the account's prep poll.)
 struct CallPrepLine: View {
     let text: String
+    /// 16 + arc 14 + 8 + text (14 medium) + 16 — the pill's room rule decides whether it may sit on the menu row.
+    static func width(_ text: String) -> CGFloat {
+        let font = UIFont(name: "PretendardVariable-Medium", size: 14) ?? .systemFont(ofSize: 14, weight: .medium)
+        return 16 + 14 + 8 + ceil((text as NSString).size(withAttributes: [.font: font]).width) + 16
+    }
     @State private var turn = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {

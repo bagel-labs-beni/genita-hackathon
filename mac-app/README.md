@@ -9,7 +9,9 @@ cd ios-app
 xcodebuild -project Genita.xcodeproj -target GenitaMac -configuration Debug -sdk macosx CODE_SIGNING_ALLOWED=NO
 ```
 
-Run these commands from the repository root. Output: `ios-app/build/Debug/GenitaMac.app`. Choose a signing team for device distribution.
+Run these commands from the repository root. Output: `ios-app/build/Debug/Genita.app` (target GenitaMac, `PRODUCT_NAME = Genita`). Choose a signing team for device distribution.
+
+The shipped app is `Genita.app`. Builds up to 7 were `GenitaMac.app`; Sparkle updates them in place, and at first launch the app renames itself to `Genita.app` (`GenitaMac/MacBundleName.swift`, checks: `mac-app/Tools/bundle-name/check.sh`).
 
 Fonts, original Figma imagery, `AppState` and settings are shared with `ios-app`. The native window includes the requested Figma 9:41 time, status icons and Dynamic Island, glass controls, menu, settings, screen-sharing permission UI, system content picker and local SCStream capture. Screen frames are neither stored nor sent to AI.
 
