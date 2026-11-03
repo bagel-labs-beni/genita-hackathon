@@ -284,7 +284,6 @@ struct MacLinkPrompt: View {
     /// Dyno's demo video (2:16–2:20) shows this layout: the spoken line as a pill at the top, one white "Share this
     /// window" button at the bottom of the face (no sheet). Lead 11/4: match the video.
     var body: some View { v1Body }
-    }
     /// MAC-LINK v2: the spoken line stays a one-line pill (#211, drawn by the call view); the ask is the same white
     /// sheet as MS-1 (handle, serif title, ink button, Not now).
     private var v2Body: some View {
