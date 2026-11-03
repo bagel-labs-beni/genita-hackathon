@@ -53,7 +53,7 @@ import type { CallStart, VoiceUpdate } from "../personalize/service.ts";
 import type { CallTurn } from "../personalize/extract.ts";
 import { ASK_TURNS, replyAsks } from "../personalize/unknowns.ts";
 import { mightBeCorrection } from "../personalize/corrections.ts";
-import { forgetInCall, isAnaphoricForget, pointedLine } from "../convo/forgetInCall.ts";
+import { forgetInCall, forgetKeyText, isAnaphoricForget, pointedLine } from "../convo/forgetInCall.ts";
 import { avoidKeys, forgetTarget, isForgetRequest, scrubHistory, type Removed } from "../personalize/forgotten.ts";
 import { isForgetRequest as isMemoryForgetRequest } from "../memory/extract.ts";
 import { localTimeLine } from "../personalize/knows.ts";
@@ -1452,7 +1452,8 @@ export class Session {
     const pointsBack = isAnaphoricForget(text);
     if ((isForgetRequest(text) || pointsBack) && this.mode === "chat") {
       const prev = pointsBack ? pointedLine(this.history) : null;
-      const removed: Removed | null = pointsBack ? prev : forgetTarget(text) ? { text: forgetTarget(text), forget: true } : null;
+      // anaphoric: the pointed-at line's distinctive words, loosely (Codex #547 P1: "Likes jasmine tea." must go too)
+      const removed: Removed | null = pointsBack ? (prev && forgetKeyText(prev) ? { text: forgetKeyText(prev), forget: true } : null) : forgetTarget(text) ? { text: forgetTarget(text), forget: true } : null;
       if (removed) { this.removedLines = [...this.removedLines, removed].slice(-40); this.memoryCall?.setAvoid(this.removedLines); }
     }
     const asked = this.awaitingAnswer;

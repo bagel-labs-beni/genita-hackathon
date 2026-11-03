@@ -7,6 +7,7 @@ import { within } from "../util/within.ts";
 import { pinnedPrompt } from "./rerank.ts";
 import { avoidKeys, mentionsAvoided, scrubPairs, type AvoidKey, type Removed } from "../personalize/forgotten.ts";
 import { isForgetRequest } from "./extract.ts";
+import { isAnaphoricForget } from "../convo/forgetInCall.ts";
 import { SUMMARY_EVERY, SUMMARY_INJECT, SUMMARY_LOAD_MS, SUMMARY_MAX_PAIRS, summaryPrompt, type CallSummary } from "./summaries.ts";
 
 export const MEMORY_TOOLS: Tool[] = [
@@ -108,8 +109,14 @@ export class MemoryCall {
     });
   }
   /** For the next device (server.ts handoff): this thread, how many pairs it covers, and its kept pairs. */
+  /** this thread minus forget turns, the line an anaphoric forget pointed at, and anything about a removed line */
+  private keptPairs(): Turn[] {
+    const pairs = this.thread.filter((t, i, all) => !isAnaphoricForget(t.user) && !(i + 1 < all.length && isAnaphoricForget(all[i + 1].user)));
+    return scrubPairs(pairs, this.avoid);
+  }
   threadState(): ThreadState {
-    return { threadId: this.threadId, covered: this.covered, pairs: this.thread.map((t) => ({ ...t })) };
+    // Codex #547 P1: the next device never gets what was forgotten in this call (forget turns, their targets)
+    return { threadId: this.threadId, covered: this.covered, pairs: this.keptPairs().map((t) => ({ ...t })) };
   }
   /**
    * Handoff: this call continues another device's conversation — the same thread, not a second call.
@@ -214,7 +221,7 @@ export class MemoryCall {
     // describe a conversation that already went on (live eval 11/3: "did you pick white or black?" after she picked)
     if (!this.service.ownsThread(this.userId, this.threadId, this.sessionId)) return;
     // no forget request, nothing about what was removed (QA post-deploy 11/3)
-    const turns = scrubPairs([...this.thread], this.avoid);
+    const turns = this.keptPairs();
     if (!turns.length) return;
     const forgets = this.forgetsSeen;
     const threadId = this.threadId;

@@ -17,10 +17,18 @@ const POINT_BACK = /\b(?:forget|ignore|scratch|disregard|unhear) (?:all )?(?:abo
 const TAIL_OK = /^(?:\s*(?:[,.!?…—-]|$)|\s+(?:lol|lmao|please|pls|ok(?:ay)?|actually|for real|fr|thanks|nvm|never ?mind|i (?:don'?t|do not) (?:wanna|want to)|it'?s (?:nothing|whatever|fine)|whatever|anyway)\b)/i;
 
 /** "forget I said that", "actually forget that, i don't wanna get into it", "scratch that", "don't remember that" */
+// Codex #547 P2: "I can't ignore that", "I can't forget what I just said", "she said forget it" are not requests
+const NOT_A_REQUEST = /\b(?:can'?t|cannot|couldn'?t|won'?t|don'?t|never|didn'?t|hard to|trying to|try to|wish i could|how (?:do|can) i|(?:he|she|they|you) (?:said|says|told))\s+(?:\w+\s+){0,2}$/i;
 export function isAnaphoricForget(text: string): boolean {
   const t = text.replace(/[’‘]/g, "'");
   const m = POINT_BACK.exec(t);
-  return !!m && TAIL_OK.test(t.slice(m.index + m[0].length));
+  return !!m && TAIL_OK.test(t.slice(m.index + m[0].length)) && !NOT_A_REQUEST.test(t.slice(0, m.index));
+}
+
+const COMMON = new Set("i i'm im me my we you your the a an and or but so to of in on at for with about that this it is was be been am are like love prefer want wanted think really just kinda pretty very always never before after today tonight yesterday tomorrow".split(" "));
+/** Codex #547 P1: the forgotten line as its distinctive words (a loose match), so a summarized memory ("Likes jasmine tea.") goes too */
+export function forgetKeyText(line: string): string {
+  return line.toLowerCase().replace(/[^a-z0-9' ]+/g, " ").split(/\s+/).filter((w) => w && !COMMON.has(w)).join(" ");
 }
 
 /** the user's line an anaphoric forget points back to (the last user line before it), or null */
@@ -35,21 +43,18 @@ export function pointedLine(history: Item[]): string | null {
  */
 export function forgetInCall<T extends Item>(history: T[], removed: Removed[] = []): T[] {
   const keys = avoidKeys(removed);
-  const out: T[] = [];
-  let skipReply = false;
-  for (const h of history) {
-    if (h.role === "user" && (isForgetRequest(h.text) || isAnaphoricForget(h.text))) {
-      if (isAnaphoricForget(h.text)) {
-        while (out.length && out[out.length - 1].role === "assistant") out.pop();
-        if (out.length && out[out.length - 1].role === "user") out.pop();
-      }
-      skipReply = true;
-      continue;
+  // Codex #547 P2: mark what goes by position in the ORIGINAL history first, then apply the key filter
+  const drop = new Set<number>();
+  for (let i = 0; i < history.length; i++) {
+    const h = history[i];
+    if (h.role !== "user" || !(isForgetRequest(h.text) || isAnaphoricForget(h.text))) continue;
+    drop.add(i);
+    if (history[i + 1]?.role === "assistant") drop.add(i + 1);
+    if (isAnaphoricForget(h.text)) {
+      let j = i - 1;
+      while (j >= 0 && history[j].role === "assistant") drop.add(j--);
+      if (j >= 0 && history[j].role === "user") drop.add(j);
     }
-    if (h.role === "assistant" && skipReply) { skipReply = false; continue; }
-    skipReply = false;
-    if (keys.length && mentionsAvoided(h.text, keys)) continue;
-    out.push(h);
   }
-  return out;
+  return history.filter((h, i) => !drop.has(i) && !(keys.length && mentionsAvoided(h.text, keys)));
 }

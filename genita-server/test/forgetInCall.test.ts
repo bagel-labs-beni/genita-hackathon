@@ -21,3 +21,19 @@ test("explicit forget: the request turn goes, and lines about its target go (str
   assert.deepEqual(forgetInCall(h, ["leather jackets"]).map((x) => x.text), ["anyway ramen?"]);
   assert.deepEqual(forgetInCall([u("hi"), a("yo")]).map((x) => x.text), ["hi", "yo"]);
 });
+
+test("Codex #547: 'I can't forget what I just said' is no request; an earlier unrelated pair stays; the forgotten line's words key loosely", async () => {
+  const { forgetKeyText } = await import("../src/convo/forgetInCall.ts");
+  for (const t of ["I can't ignore that.", "I can't forget what I just said.", "she said forget it"]) assert.ok(!isAnaphoricForget(t), t);
+  const h = [u("what should I eat tonight"), a("Ramen."), u("I prefer jasmine tea before bed"), a("Cozy."), u("forget I said that"), a("Gone."), u("ok so dinner?")];
+  assert.deepEqual(forgetInCall(h, [{ text: forgetKeyText("I prefer jasmine tea before bed"), forget: true }]).map((x) => x.text), ["what should I eat tonight", "Ramen.", "ok so dinner?"]);
+  assert.equal(forgetKeyText("I prefer jasmine tea before bed"), "jasmine tea bed");
+});
+
+test("Codex #547 P1: a summarized memory of the forgotten line is caught by its loose keys", async () => {
+  const { avoidKeys, mentionsAvoided } = await import("../src/personalize/forgotten.ts");
+  const { forgetKeyText } = await import("../src/convo/forgetInCall.ts");
+  const keys = avoidKeys([{ text: forgetKeyText("I prefer jasmine tea before bed"), forget: true }]);
+  assert.ok(mentionsAvoided("Likes jasmine tea.", keys));
+  assert.ok(!mentionsAvoided("Likes spicy ramen.", keys));
+});
