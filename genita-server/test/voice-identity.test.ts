@@ -133,3 +133,31 @@ test("seamless client: a forced retry that the service answers ends the parked o
   await drain(req("Second clause of the reply."));
   assert.equal(n, 3);
 });
+
+// audit AU-98 (11/4): a cold GPU timed out the first prefetched filler at 4 s and parked the whole server's voice 30 s
+test("prefetch on a cold GPU: the warmup waits past the 4 s live timeout, a failed prefetch never parks the voice for live calls", async () => {
+  const { createSeamless } = await import("../src/tts/seamless.ts");
+  const ok = () => new Response(`${JSON.stringify({ audio_base64: Buffer.alloc(480).toString("base64"), alignment: null })}\n{"done":true}\n`, { status: 200 });
+  const cfg = { ...loadConfig({ MODEL_API_KEY: "k", GENITA_VOICE_URL: "https://v", GENITA_VOICE_TOKEN: "t" }).voice!, timeoutMs: 40 };
+  // 1) cold start slower than the live timeout: the warmup still gets its answer and nothing is parked
+  let first = true;
+  const cold = (async (_u: string, init: RequestInit) => {
+    if (first) { first = false; await new Promise((r, j) => { const t = setTimeout(r, 120); init.signal?.addEventListener("abort", () => { clearTimeout(t); j(init.signal!.reason); }); }); }
+    return ok();
+  }) as unknown as typeof fetch;
+  const a = createSeamless(cfg, { fetch: cold });
+  a.prefetch(19);
+  await new Promise((r) => setTimeout(r, 400));
+  assert.equal(a.isDown(), false, "the slow warmup is not an outage");
+  let n = 0;
+  for await (const c of a.speak({ voiceId: "seamless:19", text: "Hmm,", emotion: null, model: "seamless-m4t-v2", lang: "en" })) n += c.audio.length;
+  assert.ok(n > 0, "the warmed filler is in the cache");
+  // 2) the service is down for the prefetch: it gives up quietly; a live reply is not failed fast because of it
+  let calls = 0;
+  const down = (async () => (calls++, new Response("cold", { status: 503 }))) as unknown as typeof fetch;
+  const b = createSeamless(cfg, { fetch: down });
+  b.prefetch(19);
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(b.isDown(), false, "a prefetch failure never trips the shared breaker");
+  assert.equal(calls, 2, "the warmup clause is tried twice, then the prefetch stops");
+});

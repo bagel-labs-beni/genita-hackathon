@@ -46,6 +46,8 @@ export const NEUTRAL_FILLERS = new Set<string>([
   "Oh!|whisper", "Oh wow,|whisper",
 ]);
 const DOWN_MS = 30_000;
+/** first-byte budget for the prefetch warmup clause: a cold GPU container (min_containers 0) starts in 25-40 s */
+export const WARMUP_MS = 45_000;
 /** D27: the GPU's queue was full (503 {"error":"busy"}): park briefly so the next sentences go straight to the device */
 const BUSY_DOWN_MS = 2_000;
 
@@ -119,10 +121,11 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
   let downUntil = 0;
   const modelName = cfg.model === "mms" ? "mms-tts" : SEAMLESS_MODEL;
 
-  async function* request(text: string, lang: "eng" | "kor", speaker: number, tailMs: number, speed: number, signal?: AbortSignal, extra: Record<string, unknown> = {}): AsyncGenerator<TtsChunk> {
+  async function* request(text: string, lang: "eng" | "kor", speaker: number, tailMs: number, speed: number, signal?: AbortSignal, extra: Record<string, unknown> = {}, firstByteMs = cfg.timeoutMs): AsyncGenerator<TtsChunk> {
     const ctl = new AbortController();
-    // no first byte, or a stalled stream: give up after timeoutMs without progress (reset on every chunk)
-    let timer = setTimeout(() => ctl.abort(new Error("voice_timeout")), cfg.timeoutMs);
+    // no first byte, or a stalled stream: give up after timeoutMs without progress (reset on every chunk); the
+    // prefetch warmup waits longer for its first byte (a cold GPU container starts in 25-40 s)
+    let timer = setTimeout(() => ctl.abort(new Error("voice_timeout")), firstByteMs);
     const progress = () => {
       clearTimeout(timer);
       timer = setTimeout(() => ctl.abort(new Error("voice_timeout")), cfg.timeoutMs);
@@ -211,7 +214,7 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
     cache.set(k, chunks);
   };
 
-  async function* speak(req: SeamlessRequest, quiet = false): AsyncGenerator<TtsChunk> {
+  async function* speak(req: SeamlessRequest, quiet = false, firstByteMs = cfg.timeoutMs): AsyncGenerator<TtsChunk> {
     const lang = seamlessLang(req.lang, req.text);
     const text = spokenText(req.text, lang);
     if (!text || !/[\p{L}\p{N}]/u.test(text)) return; // nothing to say (emoji-only, punctuation)
@@ -240,7 +243,7 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
       let offsetSec = 0;
       for (const [n, piece] of pieces.entries()) {
         let pieceSec = 0;
-        for await (const c of request(piece, lang, spk, n === pieces.length - 1 ? tail : 0, speed, req.signal, extra)) {
+        for await (const c of request(piece, lang, spk, n === pieces.length - 1 ? tail : 0, speed, req.signal, extra, firstByteMs)) {
           let shifted = offsetSec && c.alignment
             ? { ...c, alignment: { ...c.alignment, startsSec: c.alignment.startsSec.map((t) => t + offsetSec), endsSec: c.alignment.endsSec.map((t) => t + offsetSec) } }
             : c;
@@ -268,14 +271,24 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
 
   function prefetch(speaker: number): void {
     const p = `${speaker}`;
-    if (prefetched.has(p) || now() < downUntil) return;
+    // no down check: the warmup below is how a parked voice finds out the GPU is back (an answer clears it)
+    if (prefetched.has(p)) return;
     prefetched.add(p);
     void (async () => {
-      for (const f of [...FILLERS, RECOVER_LINE]) {
-        try {
-          for await (const _ of speak({ voiceId: `seamless:${speaker}`, text: f, emotion: null, model: SEAMLESS_MODEL, lang: "en" })) void _;
-        } catch {
+      // 11/4 (audit AU-98): a prefetch never parks the voice for every call (quiet), and its first clause is the
+      // warmup: it waits up to WARMUP_MS for a cold container and is tried twice. Was: a cold GPU timed out the first
+      // filler at 4 s, marked the whole server's voice down for 30 s, and every call fell back to the phone's voice.
+      for (const [k, f] of [...FILLERS, RECOVER_LINE].entries()) {
+        let ok = false;
+        for (let attempt = 0; attempt < (k === 0 ? 2 : 1) && !ok; attempt++) {
+          try {
+            for await (const _ of speak({ voiceId: `seamless:${speaker}`, text: f, emotion: null, model: SEAMLESS_MODEL, lang: "en", ...(k === 0 ? { force: true } : {}) }, true, k === 0 ? WARMUP_MS : cfg.timeoutMs)) void _;
+            ok = true;
+          } catch { /* next attempt, or give up below */ }
+        }
+        if (!ok) {
           prefetched.delete(p);
+          opts.log?.("voice.prefetch_failed", { speaker, clause: k });
           return;
         }
       }
