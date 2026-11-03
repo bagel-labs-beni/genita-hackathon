@@ -439,7 +439,7 @@ struct MouthQualityTests {
             var worst: CGFloat = 0, moved = false
             for i in 0..<500 {
                 let t = Double(i) / 25, open = (i % 12) < 4 ? 0.9 : 0.1
-                let tr = m.transforms(at: t, open: open, face: face, extent: extent, outputWidth: out, screenZoom: zoom)
+                let tr = m.transforms(at: t, open: open, face: face, extent: extent, outputWidth: out, screenScale: toOut)
                 let a = tr.head.concatenating(tr.camera)
                 for q in pts { let p = q.applying(a); worst = max(worst, hypot(p.x - q.x, p.y - q.y) * toOut) }
                 if hypot(face.midX - CGPoint(x: face.midX, y: face.midY).applying(a).x, 0) * toOut > 0.3 { moved = true }
@@ -447,6 +447,42 @@ struct MouthQualityTests {
             print(String(format: "screen sway (gain %.1f, smoothing %.2f s): worst corner %.3f px", gain, smoothing, worst))
             #expect(moved)
             #expect(worst <= AliveMotion.swayScreenMaxPx + 0.01)
+        }
+    }
+
+    /// codex P2: the cap holds in on-screen pixels for any output shape (a tall output fills by height) — through the
+    /// renderer's own scale.
+    @Test func theSwayCapHoldsOnATallOutput() {
+        let face = faceCI(animalSet)
+        for size in [CGSize(width: 540, height: 1280), CGSize(width: 540, height: 960), CGSize(width: 960, height: 540)] {
+            let r = FaceRenderer(faceSet: animalSet, outputSize: size, seed: 4)
+            let s = r.screenScale
+            #expect(abs(s - max(size.width / animalSet.pixelSize.width, size.height / animalSet.pixelSize.height) * AliveMotion.overscan) < 1e-6)
+            let pts = [CGPoint(x: face.minX, y: face.minY), CGPoint(x: face.maxX, y: face.minY), CGPoint(x: face.minX, y: face.maxY),
+                       CGPoint(x: face.maxX, y: face.maxY), CGPoint(x: face.midX, y: face.midY)]
+            var worst: CGFloat = 0
+            for i in 0..<500 {
+                let open = (i % 12) < 4 ? 0.9 : 0.1
+                let cam = r.motionTransforms(at: Double(i) / 25, open: open).camera   // the sway (the frame moves as one)
+                for q in pts { let p = q.applying(cam); worst = max(worst, hypot(p.x - q.x, p.y - q.y) * s) }
+            }
+            print(String(format: "sway on %.0fx%.0f: worst corner %.3f px", size.width, size.height, worst))
+            #expect(worst <= AliveMotion.swayScreenMaxPx + 0.01)
+            #expect(worst > 0.3)
+        }
+    }
+
+    /// codex P3: a tiny or non-finite smoothing constant leaves the sway unfiltered (no runaway sub-step count).
+    @Test func aDegenerateSmoothingConstantIsOff() {
+        let face = faceCI(animalSet), extent = CGRect(origin: .zero, size: CGSize(width: animalSet.pixelSize.width, height: animalSet.pixelSize.height))
+        for bad in [1e-20, 0, -1, .nan, .infinity] {
+            var raw = AliveMotion(seed: 5), m = AliveMotion(seed: 5); m.swaySmoothing = bad
+            for i in 0..<50 {
+                let t = Double(i) / 25
+                let a = raw.transforms(at: t, open: 0.6, face: face, extent: extent, outputWidth: 540).camera
+                let b = m.transforms(at: t, open: 0.6, face: face, extent: extent, outputWidth: 540).camera
+                #expect(abs(a.tx - b.tx) < 1e-9 && abs(a.ty - b.ty) < 1e-9)
+            }
         }
     }
 

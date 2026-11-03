@@ -72,7 +72,9 @@ struct AliveMotion {
     }
 
     /// Advances the nod spring to `t` with the current openness and returns the layer transforms.
-    mutating func transforms(at t: Double, open: Double, face: CGRect, extent: CGRect, outputWidth: CGFloat, screenZoom: CGFloat = 1)
+    /// `screenScale`: output px per still px as shown (aspect fill × overscan × framing zoom); nil = a width fill with
+    /// the overscan. The ±1.5 px sway cap is enforced in these on-screen pixels.
+    mutating func transforms(at t: Double, open: Double, face: CGRect, extent: CGRect, outputWidth: CGFloat, screenScale: CGFloat? = nil)
         -> (head: CGAffineTransform, body: CGAffineTransform, camera: CGAffineTransform)
     {
         // Output px → still px.
@@ -133,7 +135,7 @@ struct AliveMotion {
             sy += 0.25 * swayGain * (1 - live) * sin(2 * .pi * Self.breathingHz * t)   // quiet breath
             // drive: x, y (output px), roll and scale (shares of their caps)
             var u = [sx, sy, swayGain * live * noise(11, hz: 0.35, t), swayGain * live * noise(12, hz: 0.3, t)]
-            if swaySmoothing > 0 {
+            if swaySmoothing.isFinite, swaySmoothing >= 0.01 {   // codex P3: a tiny / non-finite constant is off, not 1e19 steps
                 if swayLP.count != u.count || dt < 0 || dt > 0.5 { swayLP = u; swayLPV = u.map { _ in 0 } }   // first frame / jump
                 else if dt > 0 {
                     let w = 1 / swaySmoothing, steps = max(1, Int((dt * w / 0.1).rounded(.up))), h = dt / Double(steps)
@@ -160,8 +162,9 @@ struct AliveMotion {
             // 11/4 CA-09: ±1.5 px is the whole move ON SCREEN — translation + roll + scale at the face's corners, after the
             // framing zoom (2D / animals are zoomed up to 1.35×) and the overscan. Measured 1.5–3.7 px before (roll and zoom
             // added to the clamped translation). Over the cap, the whole sway is scaled down together.
-            // (codex P1: named `screenZoom` — the camera's local `zoom` above shadowed a parameter called `zoom`)
-            let outPerStill = Double(screenZoom) * Double(Self.overscan) / max(1e-6, k)
+            // (codex P1: the camera's local `zoom` above shadowed a parameter called `zoom`; codex P2: a portrait output
+            // fills by height, so the caller passes the real on-screen scale)
+            let outPerStill = screenScale.map(Double.init) ?? Double(Self.overscan) / max(1e-6, k)
             var worst = 0.0
             for q in [CGPoint(x: face.minX, y: face.minY), CGPoint(x: face.maxX, y: face.minY), CGPoint(x: face.minX, y: face.maxY),
                       CGPoint(x: face.maxX, y: face.maxY), pivot] {

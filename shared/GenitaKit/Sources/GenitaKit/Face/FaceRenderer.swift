@@ -473,9 +473,14 @@ public final class FaceRenderer: @unchecked Sendable {
         return (m.head, m.body, m.camera)
     }
 
+    /// Output px per still px as drawn (the aspect fill in `image(at:)` × overscan × framing zoom): the sway cap's units.
+    var screenScale: CGFloat {
+        max(outputSize.width / extent.width, outputSize.height / extent.height) * AliveMotion.overscan * max(1, framingZoom)
+    }
+
     private func motionState(at t: Double, open: Double, face: CGRect) -> (head: CGAffineTransform, body: CGAffineTransform, camera: CGAffineTransform) {
         lock.lock(); defer { lock.unlock() }
-        return motion.transforms(at: t, open: open, face: face, extent: extent, outputWidth: outputSize.width, screenZoom: framingZoom)
+        return motion.transforms(at: t, open: open, face: face, extent: extent, outputWidth: outputSize.width, screenScale: screenScale)
     }
 
     /// Head layer ellipse (image coordinates, y up): hair and face; fully opaque inside
