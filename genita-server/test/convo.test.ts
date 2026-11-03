@@ -633,3 +633,10 @@ test("Codex r17: a plan with the choice in it stays ('… and it's the trench', 
   const out = [...j.push("I'll pick one: the trench.").speak, ...j.onToolCall().speak, ...j.push("It matches your understated style.").speak, ...j.finish().speak];
   assert.match(out.join(" "), /the trench/);
 });
+
+test("Codex r18: '… and it's the trench' is never held, even with a tool after it", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  const j = new NarrationJudge(true);
+  const out = [...j.push("I'll pick one for you and it's the trench.").speak, ...j.onToolCall().speak, ...j.push("It matches your understated style.").speak, ...j.finish().speak];
+  assert.match(out.join(" "), /it's the trench/);
+});
