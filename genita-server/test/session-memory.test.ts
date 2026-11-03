@@ -318,3 +318,35 @@ test("summary safety: a verdict list of the wrong length drops only the lines wi
   assert.deepEqual(out?.open_threads, NOTES.open_threads);
   assert.deepEqual(out?.promises, []);
 });
+
+test("server: hanging up (stop) and calling again is a return visit — a greeting with the last call's notes, not a silent continuation", { timeout: 20_000 }, async (t) => {
+  const fake = fakeSummarizer();
+  const { memory, deps, requests } = setup(fake.fn);
+  const logs: string[] = [];
+  const server = await startServer({ ...config, sessionToken: "test-token" }, (e) => { logs.push(e); }, deps, {}, null);
+  t.after(() => new Promise<void>((r) => server.close(() => r())));
+  const addr = server.address(); assert.ok(addr && typeof addr === "object");
+  const open = () => new Promise<{ ws: WebSocket; replies: () => number; ready: () => boolean }>((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${addr.port}/v1/session`, { headers: { authorization: "Bearer test-token", "x-genita-user": "acct-a" } });
+    let n = 0; let ok = false;
+    ws.on("message", (d, bin) => { if (bin) return; const m = JSON.parse(String(d)); if (m.type === "reply") n++; if (m.type === "ready") ok = true; });
+    ws.once("open", () => resolve({ ws, replies: () => n, ready: () => ok })); ws.once("error", reject);
+  });
+  const first = await open();
+  first.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  await waitFor(() => first.replies() >= 1);
+  first.ws.send(JSON.stringify({ type: "text", text: "I need a warm jacket for Saturday." }));
+  await waitFor(() => first.replies() >= 2);
+  first.ws.send(JSON.stringify({ type: "stop" }));
+  await waitFor(() => logs.includes("session.close"));
+  await waitFor(() => fake.calls.length === 1); await memory.drain();
+  assert.ok(logs.includes("history.not_cached"));
+  requests.length = 0;
+  const back = await open();
+  back.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  await waitFor(() => back.replies() >= 1);
+  assert.ok(!logs.includes("history.seeded"), "not a handoff continuation");
+  assert.match(inst(requests[0]), /Your notes from your last calls/);
+  assert.match(inst(requests[0]), /picking up where you left off/);
+  back.ws.close();
+});

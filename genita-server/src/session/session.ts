@@ -400,6 +400,8 @@ export class Session {
         this.setFrames(msg.images);
         return;
       case "stop":
+        // the app's hang-up (CallSocket.close sends stop, then a normal close): a new call later is a return, not a move
+        this.endedByUser = true;
         return this.close(1000, "stopped");
       case "find.confirm":
         if (typeof msg.findId === "string" && typeof msg.itemId === "string" && typeof msg.yes === "boolean") this.finds?.confirm(msg.findId, msg.itemId, msg.yes);
@@ -1078,6 +1080,8 @@ export class Session {
 
   /** Revision of these turns, not the latest revision at socket close (which may arrive after Forget). */
   get historyForgetRevision(): number | null { return this.historyRevision; }
+  /** the user hung up (`stop`), as opposed to a dropped socket or a move to the other device */
+  endedByUser = false;
 
   private remember(role: "user" | "assistant", text: string): void {
     this.history.push({ role, text });

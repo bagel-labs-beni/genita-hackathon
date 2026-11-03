@@ -316,11 +316,19 @@ export async function startServer(
     handedThread.delete(self);
     return t;
   }
-  async function cacheTurns(userId: string, session: Session): Promise<void> {
+  async function cacheTurns(userId: string, session: Session, openedAt = 0): Promise<void> {
     const turns = session.historySnapshot();
     const thread = session.threadInfo();
     const revision = session.historyForgetRevision;
     if (!turns.length || deletedUsers.has(userId)) return;
+    // She hung up: calling again is a return visit (greeting + last call's notes), not a handoff to continue.
+    // Device moves keep the live iPhone call (suspended, not stopped), and dropped sockets never send stop.
+    if (session.endedByUser) {
+      // an older call's turns (cached before this call opened) must not come back either; a newer call's stay
+      if ((lastTurns.get(userId)?.at ?? Infinity) < openedAt) dropLastTurns(userId);
+      log("history.not_cached", { session: session.id, by: "hang_up" });
+      return;
+    }
     const save = () => {
       dropLastTurns(userId);
       const unsubscribe = deps.memory?.subscribe(userId, () => dropLastTurns(userId));
@@ -338,6 +346,7 @@ export async function startServer(
 
   function attach(ws: WebSocket, who: Principal, device: ReturnType<typeof gatedCallDevice>, turnUserId: string | null) {
     const id = randomUUID();
+    const openedAt = Date.now();
     const raw: ClientSink = {
       sendJson: (m) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(m)),
       sendBinary: (b) => ws.readyState === ws.OPEN && ws.send(b, { binary: true }),
@@ -392,7 +401,7 @@ export async function startServer(
       sessionUsers.delete(id);
       handedThread.delete(id);
       touches.delete(id);
-      void cacheTurns(who.userId, session)
+      void cacheTurns(who.userId, session, openedAt)
         .catch(() => log("history.unavailable", { session: id }))
         .finally(() => log("session.close", { session: id, sessions: sessions.size }));
     });
