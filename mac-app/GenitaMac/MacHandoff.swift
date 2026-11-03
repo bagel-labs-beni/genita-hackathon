@@ -303,8 +303,10 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
         case "disconnected":
             // Losing the local link never ends the conversation on this Mac.
             pending=nil;last=nil;candidate=nil;status="iPhone not connected";refreshSurface()
+            closeRegistration()  // AU-89: the iPhone that was reading MAC-REG is gone; never leave the screen covered
         case "inactive":
             last=nil;candidate=nil
+            closeRegistration()  // AU-89: the iPhone locked or left the app during P03
         default:break
         }
     }
@@ -398,8 +400,6 @@ struct MacHandoffControls:View {
     }
     var body:some View {
         MacHomeView(kind:kind,name:call.companionName ?? "Your companion",handoff:handoff)
-            // 4401 → MAC-1, 4403 → CS01 (this window is always there, so it sees every stop of the call)
-            .onChange(of:CallController.shared.stopped) { _,stop in if let stop {call.callStopped(stop)} }
             // MAC-2 / offline: the window coming to the front, and every 10 s while it waits, asks /me again
             .onReceive(NotificationCenter.default.publisher(for:NSApplication.didBecomeActiveNotification)) { _ in recheck() }
             .onReceive(tick) { _ in recheck() }

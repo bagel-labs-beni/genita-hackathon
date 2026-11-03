@@ -142,7 +142,7 @@ import XCTest
         XCTAssertNotEqual(call.cue, .answerFailed, "speaking again clears S09-F")
     }
 
-    /// D48 ①: `profile.updated` shows "Updated: …" for 2.5 s; a second one replaces it and restarts the clock.
+    /// D48 ① + D103: `profile.updated` shows "Updated: …" for 2.4 s; a second one replaces it and restarts the clock.
     func testProfileUpdatedShowsTheChipFor2500ms() async throws {
         let call = CallController()
         XCTAssertNil(call.profileChip)
@@ -157,6 +157,14 @@ import XCTest
         XCTAssertNil(call.profileChip, "gone after 2.5 s")
         call.handle(#"{"type":"profile.updated","text":"  ","fields":[]}"#)
         XCTAssertNil(call.profileChip, "an empty text shows nothing")
+    }
+
+    /// IC-01 step 7 (AU-52): "Call yourself Max" renames the companion and confirms it with the Noted chip.
+    func testRenameShowsTheNotedChip() {
+        let call = CallController()
+        call.handle(#"{"type":"companion.named","name":"Max"}"#)
+        XCTAssertEqual(call.companionName, "Max")
+        XCTAssertEqual(call.profileChip, "Noted: I'm Max now")
     }
 
     /// GK-1: `profile.asking` sets the soft chip; the saved answer (`profile.updated` "Noted: …") clears it.

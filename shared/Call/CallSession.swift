@@ -632,7 +632,9 @@ enum CallStop: Equatable {
                 return
             }
             #endif
-            guard audio.openMic() else { micDenied = true; return }
+            // AU-56: permission is granted here; a mic that won't open (input busy, a route glitch) is not a denial,
+            // so no E02 "turn it on in Settings". The button stays off and a tap tries again.
+            guard audio.openMic() else { log.error("mic would not open (input unavailable)"); return }
             micOn = true
             socket?.send(.audioStart)
         } else {
@@ -889,6 +891,8 @@ enum CallStop: Equatable {
             start?.persona.name = n.name   // a reconnect's start carries the new name too
             interpretBoard.companionName = n.name
             onCompanionNamed?(n.name)
+            // IC-01 step 7 (AU-52): the rename gets the same "Noted" confirmation as other in-call corrections
+            showProfileChip("Noted: I'm \(n.name) now")
         case let .profileUpdated(p):
             // CC-1 "Updated: …" / "Noted: …" (it answers the GK-1 question, so that chip goes)
             askingChip = nil; askingChipTask?.cancel()
@@ -933,12 +937,12 @@ enum CallStop: Equatable {
         audio.enqueue(pcm: AudioFrameHeader.payload(of: data), utteranceId: utterance)
     }
 
-    /// `profile.updated` chip: 2.5 s (PROTOCOL.md). Debug UI tests on slow simulators can lengthen it (GENITA_PROFILE_CHIP_MS).
+    /// `profile.updated` chip: 2.4 s (D103; PROTOCOL.md said 2.5). Debug UI tests on slow simulators can lengthen it (GENITA_PROFILE_CHIP_MS).
     static var profileChipMs: Int {
         #if DEBUG
         if let ms = ProcessInfo.processInfo.environment["GENITA_PROFILE_CHIP_MS"].flatMap(Int.init) { return ms }
         #endif
-        return 2500
+        return 2400   // D103: Noted holds 2.4 s
     }
 
     /// GK-1 time on screen. Debug UI tests can change it (GENITA_ASKING_CHIP_MS).

@@ -93,7 +93,8 @@ struct ConversationView: View {
                             .buttonStyle(PreviewControlStyle()).disabled(connecting).accessibilityLabel(call.cameraOn ? "Turn camera off" : "Turn camera on").accessibilityIdentifier("cameraToggle").position(x: full.size.width - 56, y: 665 + bottom + railShift(sheet))
                             .opacity(sheet == .full ? 0 : 1).accessibilityHidden(sheet == .full).animation(.drawer, value: sheet)
                         Button { call.toggleMic() } label: { CallToggleGlass(icon: "glass-mic-icon", on: call.micOn) }
-                            .buttonStyle(PreviewControlStyle()).disabled(connecting).accessibilityLabel(call.micOn ? "Turn microphone off" : "Turn microphone on").accessibilityIdentifier("micToggle").position(x: full.size.width - 56, y: 724 + bottom + railShift(sheet))
+                            // IC-01 step 1 (AU-54): pressed at 0.92 with a light haptic
+                            .buttonStyle(MicPressStyle()).sensoryFeedback(.impact(weight: .light), trigger: call.micOn).disabled(connecting).accessibilityLabel(call.micOn ? "Turn microphone off" : "Turn microphone on").accessibilityIdentifier("micToggle").position(x: full.size.width - 56, y: 724 + bottom + railShift(sheet))
                             .opacity(sheet == .full ? 0 : 1).accessibilityHidden(sheet == .full).animation(.drawer, value: sheet)
                         Button { debugNoteMore(); withAnimation(.easeOut(duration: 0.22)) { moreOpen = true } } label: { CallGlassControl(icon: "glass-more-icon", size: 46) }
                             .buttonStyle(PreviewControlStyle()).disabled(connecting).accessibilityLabel("More").accessibilityIdentifier("more").position(x: full.size.width - 56, y: 783 + bottom + railShift(sheet))
@@ -412,6 +413,16 @@ struct ConversationView: View {
 
 private struct PreviewControlStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View { configuration.label }
+}
+
+/// IC-01 step 1: the mic button sinks to 0.92 while pressed (no motion under Reduce Motion).
+private struct MicPressStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.92 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
 }
 
 struct CallGlassControl: View {

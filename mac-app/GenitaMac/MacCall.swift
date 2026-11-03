@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import Foundation
+import Observation
 
 /// F9 · #118 · The Mac call client: who is signed in, which companion the account has, and when the shared
 /// `CallController` (the same session, mic, playback and barge-in as the iPhone) runs on this Mac.
@@ -62,6 +63,51 @@ import Foundation
     init() {
         // The call socket and /v1/watch use the same host as the accounts API (deployed server by default).
         UserDefaults.standard.register(defaults: ["genita.server.url": Self.sessionURL(api: auth.baseURL).absoluteString])
+        watchStops()
+        watchLock()
+    }
+
+    /// AU-86: 4401 → MAC-1, 4403 → CS01, 4001 → ended. Watched here, not in a window: the home window can be closed
+    /// while the call runs (#511), and a stop it never saw left the call dead (begin() refused until end()).
+    private func watchStops() {
+        withObservationTracking { _ = call.stopped } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                if let stop = self.call.stopped, !self.call.isEnded { self.callStopped(stop) }
+                self.watchStops()
+            }
+        }
+    }
+
+    /// AU-55 / IC-02 step 4 on the Mac: locking the screen or sleeping pauses the call like Home on the iPhone (mic,
+    /// camera and sound off; back within the grace the same call goes on, past it the call hangs up with `stop`).
+    /// Unlocking after a hang-up calls again while the conversation is still on this Mac.
+    private func watchLock() {
+        let distributed = DistributedNotificationCenter.default()
+        let workspace = NSWorkspace.shared.notificationCenter
+        let away: (Notification) -> Void = { [weak self] _ in MainActor.assumeIsolated { self?.screenAway() } }
+        let back: (Notification) -> Void = { [weak self] _ in MainActor.assumeIsolated { self?.screenBack() } }
+        lockObservers = [
+            distributed.addObserver(forName: .init("com.apple.screenIsLocked"), object: nil, queue: .main, using: away),
+            distributed.addObserver(forName: .init("com.apple.screenIsUnlocked"), object: nil, queue: .main, using: back),
+            workspace.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main, using: away),
+            workspace.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main, using: back),
+        ]
+    }
+    private var lockObservers: [NSObjectProtocol] = []
+    private var screenLocked = false
+
+    private func screenAway() {
+        screenLocked = true
+        guard !call.isEnded else { return }
+        call.sceneActivityChanged(.background)
+    }
+
+    private func screenBack() {
+        guard screenLocked else { return }
+        screenLocked = false
+        call.sceneActivityChanged(.active)
+        if call.isEnded, call.stopped == nil, wantsCall, MacHandoff.shared.ownership.isOwner { startCall() }
     }
 
     static func sessionURL(api: URL) -> URL {
@@ -342,7 +388,5 @@ struct MacAccountRow: View {
         }
         .font(.custom("PretendardVariable-Regular", fixedSize: 13)) // Figma: Pretendard everywhere but the serif titles
         .task { if call.account == .checking { await call.refresh() } }
-        // 4401 → MAC-1, 4403 → MAC-2 (the control window is always there, so this sees every stop)
-        .onChange(of: CallController.shared.stopped) { _, stop in if let stop { call.callStopped(stop) } }
     }
 }
