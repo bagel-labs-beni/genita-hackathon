@@ -36,10 +36,15 @@ struct HandoffWaitingSheet: View {
                     Text(line).font(.custom("PretendardVariable-Regular", fixedSize: 16)).foregroundStyle(sheetInk).frame(minHeight: 24, alignment: .leading)
                 }
             }.padding(.top, 16)
+            #if os(macOS)
+            // Mac: the Liquid Glass capsule every Mac button uses (CEO 11/3); the iPhone keeps its button
+            MacV2Button(label: "Continue here", id: "continueHere", action: action).padding(.top, 32)
+            #else
             Button(action: action) {
                 Text("Continue here").font(.custom("PretendardVariable-Medium", fixedSize: 16)).foregroundStyle(sheetOnInk)
                     .frame(maxWidth: .infinity).frame(height: 50).background(sheetInk, in: RoundedRectangle(cornerRadius: 6)).contentShape(Rectangle())
             }.buttonStyle(.plain).padding(.top, 32).accessibilityIdentifier("continueHere")
+            #endif
         }
         .padding(.top, 40).padding(.horizontal, 38).padding(.bottom, 48)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -70,10 +75,14 @@ struct MediaPermissionSheet: View {
                 ForEach(lines, id: \.self) { Text($0).font(.custom("PretendardVariable-Regular", fixedSize: 16)).foregroundStyle(sheetInk).frame(minHeight: 22, alignment: .leading) }
             }.padding(.top, 15)
             Spacer(minLength: 16)
+            #if os(macOS)
+            MacV2Button(label: "Open Settings", id: "permissionOpenSettings", action: openSettings)
+            #else
             Button(action: openSettings) {
                 Text("Open Settings").font(.custom("PretendardVariable-Medium", fixedSize: 16)).foregroundStyle(sheetOnInk)
                     .frame(maxWidth: .infinity).frame(height: 50).background(sheetInk, in: RoundedRectangle(cornerRadius: 6)).contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityIdentifier("permissionOpenSettings")
+            #endif
             Button(action: dismiss) {
                 Text(kind == .camera ? "Keep camera off" : "Not now").font(.custom("PretendardVariable-Medium", fixedSize: 15)).foregroundStyle(sheetInk).frame(maxWidth: .infinity).frame(height: 36).contentShape(Rectangle())
             }.buttonStyle(.plain).padding(.top, 6).padding(.bottom, 41).accessibilityIdentifier("permissionDismiss")

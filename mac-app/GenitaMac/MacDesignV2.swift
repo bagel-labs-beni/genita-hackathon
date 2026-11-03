@@ -81,8 +81,9 @@ struct MacV2Status: View {
     }
 }
 
-/// Buttons of the Mac v2 set: primary = ink fill, secondary = white with a 1 pt #E3E3E3 outline, both 50 tall
-/// and 12 round; text = 44 tall, 15 medium ink.
+/// Buttons of the Mac v2 set, Liquid Glass on macOS 26 (CEO 11/3: "Apple-style glass, not flat stamps"):
+/// primary = ink-tinted glass, secondary = clear glass, both 50 tall capsules with hover and press states;
+/// text = 44 tall, 15 medium ink. Before macOS 26 the same capsules fall back to ink fill / white + 1 pt outline.
 struct MacV2Button: View {
     enum Style { case primary, secondary, text }
     let label: String
@@ -92,30 +93,75 @@ struct MacV2Button: View {
     var id: String
     let action: () -> Void
     @Environment(\.isEnabled) private var isEnabled
+    /// Disabled primary drops the ink tint and shows mute text (white on a 28 % ink fill was unreadable, A02-M "Send code").
+    private var labelColor: Color {
+        switch style {
+        case .primary: isEnabled ? MacSheetInk.onInk : MacSheetInk.mute
+        case .secondary, .text: isEnabled ? MacSheetInk.ink : MacSheetInk.mute
+        }
+    }
     var body: some View {
         Button(action: action) {
             HStack(spacing: 8) {
-                if loading { ProgressView().controlSize(.small).tint(style == .primary ? MacSheetInk.onInk : MacSheetInk.ink) }
+                if loading { ProgressView().controlSize(.small).tint(labelColor) }
                 else {
                     if let icon { icon.resizable().scaledToFit().frame(width: 15, height: 18) }
                     Text(label)
                 }
             }
             .font(MacSheetInk.sans(style == .text ? 15 : 16, .medium))
-            .foregroundStyle(style == .primary ? MacSheetInk.onInk : MacSheetInk.ink)
+            .foregroundStyle(labelColor)
             .lineLimit(1)
             .frame(maxWidth: style == .text ? nil : .infinity).frame(height: style == .text ? 44 : 50)
-            .padding(.horizontal, style == .text ? 12 : 0)
-            .background {
-                switch style {
-                case .primary: RoundedRectangle(cornerRadius: 12).fill(MacSheetInk.ink)
-                case .secondary: RoundedRectangle(cornerRadius: 12).fill(Color.white).overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(MacDesignV2.outline, lineWidth: 1))
-                case .text: Color.clear
+            .padding(.horizontal, style == .text ? 12 : 20)
+            .contentShape(Capsule())
+        }.buttonStyle(MacGlassButtonStyle(kind: style == .primary ? .prominent : style == .secondary ? .regular : .plain))
+            .accessibilityIdentifier(id)
+    }
+}
+
+/// One button look for every Mac surface: Liquid Glass capsule (macOS 26) with hover lift and press squeeze.
+struct MacGlassButtonStyle: ButtonStyle {
+    enum Kind { case prominent, regular, plain }
+    var kind: Kind
+    var tint: Color = MacSheetInk.ink
+    func makeBody(configuration: Configuration) -> some View {
+        MacGlassButtonBody(label: configuration.label, kind: kind, tint: tint, pressed: configuration.isPressed)
+    }
+}
+
+private struct MacGlassButtonBody<Label: View>: View {
+    let label: Label
+    let kind: MacGlassButtonStyle.Kind
+    let tint: Color
+    let pressed: Bool
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var hover = false
+    var body: some View {
+        surface
+            .scaleEffect(pressed && isEnabled ? 0.98 : 1)
+            .onHover { hover = $0 }
+            .animation(.easeOut(duration: 0.12), value: pressed)
+            .animation(.easeOut(duration: 0.15), value: hover)
+    }
+    @ViewBuilder private var surface: some View {
+        switch kind {
+        case .plain:
+            label.opacity(pressed ? 0.6 : 1).background(Capsule().fill(MacSheetInk.ink.opacity(hover && isEnabled ? 0.05 : 0)))
+        case .prominent, .regular:
+            if #available(macOS 26.0, *) {
+                label.glassEffect(glass, in: Capsule())
+                    .brightness(hover && isEnabled && kind == .prominent ? 0.08 : 0)
+            } else {
+                label.background {
+                    if kind == .prominent && isEnabled { Capsule().fill(tint).brightness(hover ? 0.08 : 0) }
+                    else { Capsule().fill(Color.white).overlay(Capsule().strokeBorder(hover && isEnabled ? MacSheetInk.faint : MacDesignV2.outline, lineWidth: 1)) }
                 }
             }
-            .opacity(isEnabled ? 1 : (style == .primary ? 0.28 : 0.4))
-            .contentShape(Rectangle())
-        }.buttonStyle(.plain).accessibilityIdentifier(id)
+        }
+    }
+    @available(macOS 26.0, *) private var glass: Glass {
+        kind == .prominent && isEnabled ? .regular.tint(tint).interactive() : .regular.interactive(isEnabled)
     }
 }
 
