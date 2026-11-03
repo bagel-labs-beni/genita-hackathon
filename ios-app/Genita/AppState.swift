@@ -177,6 +177,9 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     var hisyPage = 0
     @ObservationIgnored var importTask: Task<Void, Never>?
     @ObservationIgnored var companionTask: Task<Void, Never>?
+    /// `409 reset_in_progress` on create: this many more tries, this far apart (tests shorten it)
+    @ObservationIgnored var resetRetries = 4
+    @ObservationIgnored var resetRetryDelay: Duration = .seconds(2)
     @ObservationIgnored var imageCheckTask: Task<Void, Never>?
     @ObservationIgnored var imageCheckTicket: UUID?
     /// Changes whenever sign-in state changes, so old account responses cannot affect the new account.
