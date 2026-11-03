@@ -135,9 +135,9 @@ export type QuickVerdict = { moment: Exclude<Moment, "none">; line: string; talk
 
 export function buildQuickRequest(q: { companion: { name: string }; frames: string[]; heard: string[] }): SparkRequest {
   const instructions = [
-    `${q.companion.name} watches a video with a friend. These frames are the last second, oldest first; the last one is now.`,
-    "react: true if something a friend would blurt about is happening in these frames: a dunk or a score, a trick landed, a fall or a fail, a big dance move, a reveal, a punchline, people cracking up. Sports highlights and stunts count. False for ordinary walking, talking, menus or pages.",
-    "moment: funny, surprising or sweet (none if react is false). line: 2 to 6 casual words about exactly that, no question, no names.",
+    `${q.companion.name} watches a video with a friend. These frames are from the last few seconds, oldest first.`,
+    "react: true if something a friend would blurt about happens in these frames: a dunk or a score, a trick landed, a fall or a fail, a big dance move, a reveal, a punchline, people cracking up. Sports highlights and stunts count. False for ordinary walking, talking, menus or pages.",
+    "moment: funny, surprising or sweet (none if react is false). line: 2 to 6 casual words about exactly that (past tense ok), no question, no names.",
     // AI sweep 11/3: jumpstyle kicks blurred mid-move were read as "he's losing balance" / "he totally dodged that" (prod + local, 2/3 runs)
     "The line may only name what is clearly visible in the last frame (the move, the dunk, the face; a blur is the move). No guesses: no clothes slipping or falling off, no balance or dodging, no injuries, no intentions, nothing about to happen.",
     "talkOver: true if the sound is crowd noise, music, sports commentary or narration; false if people on screen are talking to each other.",

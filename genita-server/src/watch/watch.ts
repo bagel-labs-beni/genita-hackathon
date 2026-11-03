@@ -65,7 +65,7 @@ export type WatchDeps = {
   manualTick?: boolean;
 };
 
-type Frame = { at: number; url: string };
+type Frame = { at: number; url: string; motion?: number };
 /** a react-worthy moment a quick look or memo saw (spoken or not), for "did you see that dunk?" a bit later */
 type SeenMoment = { at: number; moment: string; line: string; frame: string | null };
 
@@ -134,6 +134,8 @@ const QUICK_CONCURRENCY = 2;
 const words = (s: string) => s.split(/\s+/).filter((w) => /\p{L}/u.test(w)).length;
 /** 2 frames (~0.3–0.9 s apart, the newest last): enough for the motion, fewer images = a faster call (11/3 15:30) */
 const QUICK_FRAMES = 2;
+/** a quick look picks its moment from this far back (its verdict can take ~4–5 s) */
+const QUICK_LOOKBACK_MS = 3_000;
 const QUICK_ON = process.env.GENITA_WATCH_QUICK !== "0";
 const ECHO_WINDOW_MS = 10_000;
 const ECHO_WAIT_MS = 1_500;
@@ -147,6 +149,24 @@ const MAX_FRAME_URL = Math.round(1_500_000 * 1.4);
 /** Transcribe errors with "Ingress audio slower than real-time" when audio stops (11/2): pad silence */
 const PAD_AFTER_MS = 300;
 const PAD_CHUNK = Buffer.alloc(24_000 * 2 / 10); // 100 ms
+
+/**
+ * The quick look's frames (lead's call 11/3 22:0x, Spark quick looks at p50 ~4.5 s): not just "now" but the moment
+ * with the most motion in the last ~3 s that no look has seen yet, plus the frame right after it (the landing).
+ * A slow verdict then still had the dunk in its frames. A spike's own look keeps its frames around the spike.
+ */
+export function quickFrames<T extends { at: number; motion?: number }>(frames: T[], spikeAt: number | null, lastLookedAt: number): T[] {
+  if (!frames.length) return [];
+  const newest = frames[frames.length - 1].at;
+  if (spikeAt !== null && spikeAt < newest - 50) return pickFrames(frames.filter((f) => f.at >= spikeAt - 900), QUICK_FRAMES, 300);
+  const pool = frames.filter((f) => f.at > lastLookedAt && f.at >= newest - QUICK_LOOKBACK_MS);
+  if (!pool.length) return pickFrames(frames, QUICK_FRAMES, 300);
+  let peak = pool[0];
+  for (const f of pool) if ((f.motion ?? 0) > (peak.motion ?? 0)) peak = f;
+  const i = frames.indexOf(peak);
+  const pair = i < frames.length - 1 ? [peak, frames[i + 1]] : i > 0 ? [frames[i - 1], peak] : [peak];
+  return pair.slice(0, QUICK_FRAMES);
+}
 
 export class WatchController {
   private readonly deps: WatchDeps;
@@ -187,6 +207,8 @@ export class WatchController {
   private quickSpikeAt: number | null = null;
   private quickInFlight = new Set<AbortController>();
   private lastQuickAt = -Infinity;
+  /** the newest frame the last quick look saw: the next one picks from what came after */
+  private lastLookedAt = -Infinity;
   private motionAware = false;
   private protectedSpoken = false;
   private protectedPending = false;
@@ -322,7 +344,9 @@ export class WatchController {
     this.source = source;
     this.sharingSince = this.deps.now();
     this.lastMemoAt = this.sharingSince;
-    this.lastQuickAt = this.sharingSince;
+    // the first quick look goes out on the first frame (lead's call 11/3 22:0x), not a cadence step later
+    this.lastQuickAt = -Infinity;
+    this.lastLookedAt = -Infinity;
     this.blank = false;
     this.blankSpoken = false;
     this.protectedSpoken = false;
@@ -403,7 +427,7 @@ export class WatchController {
         this.salientAt = now;
         this.quickSpikeAt ??= now; // the first pending spike; the quick look takes the newest frames anyway
       }
-      this.frames.push({ at: now, url });
+      this.frames.push({ at: now, url, ...(motion !== null ? { motion } : {}) });
       // the newest frame stays even when old: a paused screen sends no new frames
       this.frames = this.frames.filter((f, i, all) => i === all.length - 1 || now - f.at <= FRAME_KEEP_MS).slice(-MAX_FRAMES_KEPT);
       this.maybeQuick();
@@ -661,7 +685,8 @@ export class WatchController {
     const after = spike !== null && (this.frames.some((f) => f.at > spike! + QUICK_AFTER_SPIKE_MS - 50) || now - spike >= 400);
     const newest = this.frames.at(-1)?.at ?? -Infinity;
     // the cadence needs a motion-aware Mac (frames carry `motion`, ≤3 fps); older builds get spikes only
-    const cadence = !after && this.motionAware && newest > this.lastQuickAt && now - this.lastQuickAt >= (this.deps.quickEveryMs ?? QUICK_EVERY_MS) * slow;
+    // a pending spike gets its own look one frame later; the cadence (and the share's opening look) waits for it
+    const cadence = !after && spike === null && this.motionAware && newest > this.lastQuickAt && now - this.lastQuickAt >= (this.deps.quickEveryMs ?? QUICK_EVERY_MS) * slow;
     if (!(after || cadence) || this.quickInFlight.size >= QUICK_CONCURRENCY || now - this.lastQuickAt < QUICK_MIN_GAP_MS * slow) return;
     spike = after ? spike : newest;
     this.quickSpikeAt = null;
@@ -673,7 +698,9 @@ export class WatchController {
     const at = this.deps.now();
     const gen = this.clipGen;
     this.lastQuickAt = at;
-    const frames = pickFrames(this.frames.filter((f) => f.at >= Math.min(spikeAt, (this.frames.at(-1)?.at ?? spikeAt)) - 900), QUICK_FRAMES, 300).map((f) => f.url);
+    const picked = quickFrames(this.frames, spikeAt, this.lastLookedAt);
+    this.lastLookedAt = picked.at(-1)?.at ?? this.lastLookedAt;
+    const frames = picked.map((f) => f.url);
     const seq = this.speechSeq;
     const heard = [this.dialogueActive ? this.openLine : "", ...this.lines.filter((l) => at - l.at <= 3_000).map((l) => l.text)].filter(Boolean).slice(-2);
     const abort = new AbortController();

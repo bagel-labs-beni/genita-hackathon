@@ -975,11 +975,12 @@ test("quick look: a spike gets its own small Spark call on the next frame and re
     q.at(ms);
     q.c.onMessage({ type: "frame", image: `${frame}${ms}`, motion });
   }
-  assert.equal(q.calls.filter(q.isQuick).length, 0, "waits for one frame after the spike");
+  // the share's opening look went out on the first frame (lead's call 11/3 22:0x); the spike waits for one frame after
+  assert.equal(q.calls.filter(q.isQuick).length, 1, "only the opening look so far: the spike waits for one frame after it");
   q.at(7_990);
   q.c.onMessage({ type: "frame", image: `${frame}7990`, motion: 0.05 });
   await wait(5);
-  const quick = q.calls.filter(q.isQuick);
+  const quick = q.calls.filter(q.isQuick).slice(1);
   assert.equal(quick.length, 1);
   const imgs = (quick[0].input as { content: { type: string }[] }[])[0].content.filter((p) => p.type === "input_image");
   assert.equal(imgs.length, 2, "the last second as 2 frames (the spike and after it), newest last");
@@ -1057,6 +1058,16 @@ test("a question while watching never reads out small text like jersey numbers (
   const { buildQuestionContext } = await import("../src/watch/memo.ts");
   const q = buildQuestionContext({ source: "YouTube", memo: [], lines: [], names: new Map(), frames: [frame], blank: false });
   assert.match(q.instructions, /don't read out small text you can't make out for sure \(jersey numbers/);
+});
+
+test("quick look frames: the biggest motion of the last 3 s no look has seen, plus the frame after it (slow Spark, lead's call 11/3)", async () => {
+  const { quickFrames } = await import("../src/watch/watch.ts");
+  const f = (at: number, motion: number) => ({ at, url: `f${at}`, motion });
+  const frames = [f(1_000, 0.01), f(1_330, 0.02), f(1_660, 0.09), f(2_000, 0.03), f(2_330, 0.01), f(2_660, 0.01), f(3_000, 0.01)];
+  assert.deepEqual(quickFrames(frames, null, -Infinity).map((x) => x.url), ["f1660", "f2000"], "the dunk 1.3 s ago, not just now");
+  assert.deepEqual(quickFrames(frames, null, 2_000).map((x) => x.url), ["f2330", "f2660"], "a moment already looked at is not sent again");
+  assert.deepEqual(quickFrames(frames, null, 3_000).map((x) => x.url), ["f2660", "f3000"], "nothing new: the last two");
+  assert.deepEqual(quickFrames([f(5_000, 0.2)], null, -Infinity).map((x) => x.url), ["f5000"]);
 });
 
 test("moments belong to one video: a new share or another title starts clean, an unread count does not (QA prod 11/3)", async () => {
