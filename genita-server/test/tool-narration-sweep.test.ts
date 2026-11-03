@@ -26,6 +26,9 @@ const leaked: [string, string][] = [
   ["Trying to remember which concert that was.", "remember which"],
   ["Looking at today's weather now.", "today's weather"],
   ["First search came up empty, so I'll dig deeper on Zorblax Pod.", "dig deeper"],
+  // #413 web answers (QA prod 11/3, 1/3)
+  ["Oh that game was wild — pulling the final score now.", "pulling the final"],
+  ["Grabbing the latest score.", "Grabbing"],
   // D13 crisis turns (Spark searches for the local hotline first)
   ["This matters more than anything else — getting you fast, accurate support options.", "getting you"],
   ["I'm really glad you told me — I care about you, and I'm going to find the right support resources for you.", "find the right"],
@@ -61,6 +64,8 @@ const answers = [
   // Codex #415 P2: answers that carry a result next to the same words
   "The last train leaves at 11, so I'll try another search for a later bus.",
   "Searching for a job takes time.",
+  "Checking the score is my whole personality during finals.",
+  "The final score was 4 to 1, Brewers.",
   "Let me get you the number: call one oh nine right now.",
   // Codex #431 P1: help in the same sentence is the answer
   "Let me get you the crisis line: 988.",
