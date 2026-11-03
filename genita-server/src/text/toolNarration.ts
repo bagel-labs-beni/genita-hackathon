@@ -75,7 +75,7 @@ let metaIsUser = true;
 function isNarrationClause(clause: string): boolean {
   const s = normalize(clause);
   if (!s) return false;
-  if (SEARCH_RETRY.test(s) || RECALL_NOW.test(s) || progressClause(s)) return true;
+  if (searchRetry(s) || recallNow(s) || progressClause(s)) return true;
   // an explicit pick is the answer before anything else ("I'm picking the trench for you", Codex r24)
   if (DECISION.test(s) && !(CHOOSE_PLAN.test(s) && new RegExp(`\\b${NO_CHOICE}\\b`).test(s))) return false;
   if (isNarrowNarration(s)) return true;
@@ -111,16 +111,29 @@ const SEARCH_RETRY = /\b(?:i'll|i will|let me|i'm gonna|i'm going to)(?: just)? 
 /** "— finding you the Hongdae spots now", "Got you, hunting down late-night ramen", "— pulling it up now" (sweep r2):
  * our own search in progress. A result in the clause ("…is exhausting", "found", "says") keeps it. */
 const PROGRESS = /^(?:i'm |i am )?(?:just |now |still )?(?:hunting (?:down|for)|tracking down|rounding up|scouting(?: out)?|finding (?:you|some|the best|a few)|pulling (?:up|together|it up|that up|those up|them up)|digging (?:up|into|through)|searching for|looking for (?:some|the best|a few|spots|places|options))\b/;
-const PROGRESS_RESULT = /\b(?:says|shows|found|turns out|is|was|were|has|had)\b/;
-/** "I've got that note about your sister" said before the recall result: the memory store, never the answer */
-const NOTE_CLAIM = /^i(?:'ve| have)? got (?:that|the|a|your|some) notes? (?:about|on|for)\b/;
+// a predicate keeps it: "Searching for a job takes time", "Trying to remember what you ate can be hard" (Codex #415 P2)
+const PROGRESS_RESULT = /\b(?:says|shows|found|turns out|is|was|were|has|had|takes|took|makes|costs|means|sucks|helps|works|gets|feels|seems|can|could|will|would|should|might|must)\b|\d/;
+/** "I've got that note about your sister" said before the recall result, nothing in it: the memory store, never the
+ * answer. "…note about your sister saying her birthday is May 12" carries the content and stays (Codex #415 P2). */
+const NOTE_CLAIM = /^i(?:'ve| have)? got (?:that|the|a|your|some) notes? (?:about|on|for) (?:your |the |that |my )?[\w'-]+(?: [\w'-]+)?$/;
 const progressClause = (c: string) => (PROGRESS.test(c) && !PROGRESS_RESULT.test(c.replace(/\b(?:that|which) are\b.*$/, ""))) || NOTE_CLAIM.test(c);
-const RECALL_NOW = /^(?:(?:got it|okay|ok|hmm+|wait)\W+)?(?:i'm )?(?:still )?trying to (?:remember|recall|place|think of) (?:that|which|what|who|when|where|the one|your)\b(?!.*\b(?:last time|first time|whenever|every time|back when)\b)/;
+// "which concert that was" is the thing being recalled, not a predicate
+const RECALL_HEAD = /^(?:(?:got it|okay|ok|hmm+|wait)\W+)?(?:i'm )?(?:still )?trying to (?:remember|recall|place|think of) (?:that|which|what|who|when|where|the one|your)\b(?!.*\b(?:last time|first time|whenever|every time|back when)\b)/;
+const RECALL_PRED = /\b(?:can|could|will|would|should|might|must|takes|makes|sucks|gets|is (?:hard|tough|impossible|easy|rough)|helps)\b/;
+const recallNow = (s: string) => RECALL_HEAD.test(s) && !RECALL_PRED.test(s);
+/** a retry is narration only when everything else in the sentence is about the search too (Codex #415 P2: "The last
+ * train leaves at 11, so I'll try another search for a later bus" keeps the train time) */
+const SEARCH_META = /\b(?:search|query|results?|nothing (?:yet|so far)|came (?:up|back) (?:empty|blank|short|with nothing)|no luck)\b/;
+const searchRetry = (s: string) => {
+  if (!SEARCH_RETRY.test(s)) return false;
+  const parts = s.split(/\s*(?:,|;|—|–| - )\s*(?:so |and |but )?|\s+so\s+/).map((p) => p.trim()).filter(Boolean);
+  return parts.every((p) => SEARCH_RETRY.test(p) || (SEARCH_META.test(p) && !/\d/.test(p)) || /^(?:okay|ok|hmm+|ugh|got it|nothing yet)$/.test(p));
+};
 
 export function isToolNarration(sentence: string): boolean {
   const s = normalize(sentence);
   if (!s) return false;
-  if (SEARCH_RETRY.test(s) || RECALL_NOW.test(s) || progressClause(s)) return true;
+  if (searchRetry(s) || recallNow(s) || progressClause(s)) return true;
   if (isProcessLine(sentence)) return true;
   if (isNarrowNarration(s)) return true;
   const clauses = s.split(CLAUSE_SPLIT).map(normalize).filter(Boolean);

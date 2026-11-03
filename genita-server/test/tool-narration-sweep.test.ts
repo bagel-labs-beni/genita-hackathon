@@ -53,6 +53,11 @@ const answers = [
   "Looking for a job is exhausting, I get it.",
   "Hunting down a vintage jacket like that is a whole sport.",
   "Love that, you're finally going.",
+  // Codex #415 P2: answers that carry a result next to the same words
+  "The last train leaves at 11, so I'll try another search for a later bus.",
+  "Searching for a job takes time.",
+  "Trying to remember what you ate can be hard after a long day.",
+  "I've got that note about your sister saying her birthday is May 12.",
 ];
 
 test("sweep: real answers with search / remember / forecast words are kept", () => {
