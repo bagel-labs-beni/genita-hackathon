@@ -155,6 +155,8 @@ export type SessionPersonalize = {
   unplanCall?(userId: string, item: string | null): Promise<void>;
   /** "Forget all of this" was the last profile event in this process (AU-92): a failed / timed-out read uses no profile */
   isForgotten?(userId: string): boolean;
+  /** bumped by "Forget all of this": a profile read from before it is never applied */
+  generation?(userId: string): number;
   voiceCorrection(userId: string, line: string, lastAssistant?: string, signal?: AbortSignal, asked?: UnknownItem | null): Promise<VoiceUpdate | null>;
   endCall(userId: string, turns: CallTurn[], asked: string | null, startedAt?: string): Promise<number>;
   /** Knows-Me S1: the user cut two long replies short → observed "short replies" line; null = not saved */
@@ -859,6 +861,7 @@ export class Session {
         try { continuation ||= this.deps.continuesCall?.() ?? false; } catch { /* never fails the call */ }
         this.callPlanned = !continuation;
         const TIMED_OUT = Symbol("timed_out");
+        const genAtStart = this.deps.personalize.generation?.(this.deps.userId);
         const read = this.deps.personalize.startCall(this.deps.userId, { plan: !continuation });
         const p = await Promise.race([
           read,
@@ -873,8 +876,12 @@ export class Session {
           this.log("profile.start_timeout", {});
           void read.then((late) => {
             if (!late || this.closed) return;
+            // read before "Forget all of this" landed: never applied (Codex #583 r4)
+            if (this.deps.userId && this.deps.personalize?.generation?.(this.deps.userId) !== genAtStart) return;
             this.user = { ...this.user, profile: late.profile || undefined };
             this.taste = late.taste ?? [];
+            // Finds was configured meanwhile with the app's copy: it follows too
+            if (this.started) this.finds?.configure({ owner: this.deps.userId, memories: this.memories, profile: this.user.profile, userName: this.user.name, timeZone: this.timeZone, taste: this.taste });
           }).catch(() => {});
         }
         const got = p === TIMED_OUT ? null : p;

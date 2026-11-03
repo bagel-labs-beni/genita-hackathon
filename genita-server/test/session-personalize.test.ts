@@ -686,3 +686,27 @@ test("Codex #401 r2 P1: the question's TTS fails after watch together attached â
   assert.ok(!s.client.json.some((m) => m.type === "say" && /weekends/i.test(String(m.text))));
   s.session.close();
 });
+
+test("AU-92 r4: a profile read that timed out lands later â€” applied (with Finds) unless 'Forget all of this' came in between", { timeout: 15_000 }, async () => {
+  let gen = 0;
+  const slow = (profile: string) => setup({
+    async startCall() { await sleep(1700); return { profile, taste: [] }; },
+    generation: () => gen,
+  });
+  // landed, same generation: applied
+  const a = slow("How the user wants to be treated:\n- Taste: Late but fine.");
+  await a.session.onClientText(JSON.stringify({ type: "start", persona, user: { profile: "- Taste: App copy." } }));
+  await sleep(1900);
+  await say(a, "Hi.", 1);
+  assert.match(a.sparkCalls.at(-1)!.instructions!, /Late but fine/);
+  a.session.close();
+  // forgotten in between: the old read never lands
+  const b = slow("How the user wants to be treated:\n- Taste: Old secret.");
+  await b.session.onClientText(JSON.stringify({ type: "start", persona, user: { profile: "" } }));
+  gen = 1;
+  await sleep(1900);
+  await say(b, "Hi.", 1);
+  assert.doesNotMatch(b.sparkCalls.at(-1)!.instructions!, /Old secret/);
+  b.session.close();
+  await sleep(10);
+});
