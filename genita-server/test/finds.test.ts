@@ -4,7 +4,7 @@ import { cleanName, nameKey, sameIngredient, isStaple } from "../src/finds/names
 import { Candidates, tierOf, toWire, recipeSummary } from "../src/finds/tiers.ts";
 import { parseSeenLine, LineSplitter, lastJsonObject, isYes, findUrl } from "../src/finds/parse.ts";
 import { classifyTurn } from "../src/finds/intent.ts";
-import { confirmItem, fridgeLine, fridgePill, occasionOf, runRecipe, runOutfit, runLink, toNormBox, type PipelineCtx } from "../src/finds/pipeline.ts";
+import { confirmItem, fridgeLine, fridgePill, occasionOf, recipePrompt, runRecipe, runOutfit, runLink, toNormBox, type PipelineCtx } from "../src/finds/pipeline.ts";
 import { MemoryFindsStore, FileFindsStore, UNDO_MS } from "../src/finds/store.ts";
 import { checkServerEvent, type FindCard, type ServerEvent } from "../src/protocol.ts";
 import type { FindsVendors } from "../src/finds/vendors.ts";
@@ -621,4 +621,39 @@ test("AU-57: occasionOf reads the occasion as said", () => {
   assert.equal(occasionOf("what should I wear to the wedding"), "the wedding");
   assert.equal(occasionOf("tonight, which one?"), "tonight");
   assert.equal(occasionOf("which one looks better on me"), null);
+});
+
+// ───────────── finds audit 11/4 (P2/P3) ─────────────
+
+test("AU-60/61 CW-02 variants: clothes held up and a choice between them is an outfit pick", () => {
+  assert.deepEqual(classifyTurn("Which one should I wear to dinner this weekend?", true), { kind: "outfit" }, "dinner is the occasion, not the food");
+  assert.deepEqual(classifyTurn("Which of these looks better on me for lunch?", true), { kind: "outfit" });
+  assert.deepEqual(classifyTurn("Which jacket would you recommend for this weekend?", true), { kind: "outfit" }, "recommend is not a web search here");
+  assert.deepEqual(classifyTurn("Can you suggest which top looks better on me?", true), { kind: "outfit" });
+  // unchanged: an explicit shop verb still searches; food still cooks; no camera still shops
+  assert.deepEqual(classifyTurn("can you find me some white sneakers", true), { kind: "product" });
+  assert.deepEqual(classifyTurn("Can we look for a jacket like this one or that one?", true), { kind: "product" });
+  assert.deepEqual(classifyTurn("Which one should I make for dinner?", true), { kind: "recipe" });
+  assert.deepEqual(classifyTurn("What can I make for lunch?", true), { kind: "recipe" });
+  assert.deepEqual(classifyTurn("Which jacket would you recommend for this weekend?", false), { kind: "product" }, "no camera: nothing to choose between");
+});
+
+test("AU-68 CW-01: no health or nutrition advice on the recipe card", async () => {
+  const json = `{"dish":"kimchi fried rice","minutes":15,"ingredients":[{"name":"kimchi","optional":false}],"steps":["Fry the kimchi.","Use less oil for a healthier dish.","Top with egg."],"sources":[{"title":"K","url":"https://www.maangchi.com/recipe/kimchi-bokkeumbap"}],"ask":["Is it healthy?","How spicy is it?","Lower calorie swap?","Add cheese?"],"say":"Found one."}`;
+  const v = fakeVendors({ seen: "eggs | 6 | carton\nkimchi | - | red jar\n", recipe: json });
+  const { ctx } = ctxFor("recipe", v, { images: false });
+  const card = (await runRecipe(ctx)).card!;
+  assert.deepEqual(card.steps.map((s) => s.text), ["Fry the kimchi.", "Top with egg."]);
+  assert.deepEqual(card.ask, ["How spicy is it?", "Add cheese?"]);
+});
+
+test("AU-68: the recipe prompt rules out health advice", () => {
+  assert.match(recipePrompt("What can I make?"), /No health, nutrition, calorie, diet or weight advice/);
+});
+
+test("AU-76 FD-01: camera cards credit Muse Spark · SAM 3.1 in 'How I found this'", async () => {
+  const r = await runRecipe(ctxFor("recipe", fakeVendors({ seen: "eggs | 6 | carton\n", recipe: RECIPE_JSON }), { images: false }).ctx);
+  assert.equal(r.card!.how.at(-1), "Muse Spark · SAM 3.1");
+  const o = await runOutfit(ctxFor("outfit", fakeVendors({ outfit: '{"pick":0,"title":"Wear the navy one.","taste":"","options":[{"label":"Navy coat","frame":1},{"label":"Camel blazer","frame":0}],"why":["a","b"],"ask":[],"say":"Navy."}' })).ctx);
+  assert.ok(o.card!.how.includes("Muse Spark · SAM 3.1"));
 });

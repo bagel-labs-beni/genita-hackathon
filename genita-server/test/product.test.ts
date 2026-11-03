@@ -424,3 +424,17 @@ test("QA 11/3: shoes for an outfit are never slippers / sandals / mules unless a
   assert.equal(offOccasion("Leather slide buckle belt", ask), false);
   assert.match(productPrompt({ question: ask, recent: [], taste: [], city: null, region: "US", today: "Tuesday, November 3" }), /never slippers, sandals, slides, flip-flops or mules unless they asked/);
 });
+
+test("AU-79 FD-02: a category page nothing could read never fills a product slot", () => {
+  // unread (bot-blocked) or markerless pages with a category slug
+  assert.equal(isProductPage("https://shop.example.com/womens-brown-boots", null), false);
+  assert.equal(isProductPage("https://shop.example.com/boots-dark-brown/", { kind: "unknown" }), false);
+  assert.equal(isProductPage("https://shop.example.com/mens-jackets.html", null), false);
+  assert.equal(isProductPage("https://shop.example.com/a/b", { kind: "unknown", title: "Women's Boots | Shop" }), false);
+  assert.equal(isProductPage("https://shop.example.com/a/b", { kind: "unknown", title: "Shop 24 results" }), false);
+  // one item, by URL shape or slug, still counts
+  assert.equal(isProductPage("https://shop.example.com/products/boots-dark-brown", null), true);
+  assert.equal(isProductPage("https://shop.example.com/en/highwood-chelsea-boot", null), true);
+  assert.equal(isProductPage("https://shop.example.com/a/b", { kind: "unknown", title: "Highwood Chelsea Boot – Dark Brown" }), true);
+  assert.equal(isProductPage("https://shop.example.com/collections/x", { kind: "product" }), true, "the page's own markup wins (unchanged)");
+});

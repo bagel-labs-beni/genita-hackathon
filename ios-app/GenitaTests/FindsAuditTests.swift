@@ -125,4 +125,27 @@ import XCTest
         XCTAssertNil(CallController.firstLink(in: "example dot com"))
         XCTAssertNil(CallController.firstLink(in: ""))
     }
+
+    /// AU-80 · F10-17: closing a failed or still-running search has nothing in Finds to undo: no "In Finds · Undo" toast.
+    func testClosingACardlessSheetShowsNoUndoToast() {
+        let m = FindsModel()
+        var sent: [ClientMessage] = []
+        m.send = { sent.append($0) }
+        m.apply(started("a"))
+        m.close()
+        XCTAssertEqual(m.state, .idle, "no toast state")
+        XCTAssertEqual(sent.last, .findStop(findId: "a"), "a running search is stopped")
+        m.apply(started("b"))
+        m.apply(.findFailed(.init(findId: "b", reason: .searchFailed, message: "Nothing that fits. Try again?")))
+        sent = []
+        m.close()
+        XCTAssertEqual(m.state, .idle)
+        XCTAssertTrue(sent.isEmpty, "a failed search needs no stop")
+        // a card still closes with Undo
+        m.apply(started("c")); m.apply(created("c")); m.force(.half)
+        m.close()
+        XCTAssertEqual(m.state, .dismissed)
+        m.undo()
+        XCTAssertEqual(m.state, .half)
+    }
 }

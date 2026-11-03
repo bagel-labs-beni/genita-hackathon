@@ -182,6 +182,11 @@ function illustrate(ctx: PipelineCtx, jobs: { slot: string; prompt: string }[]):
 
 const pending = (slot: string): FindImage => ({ slot, status: "pending" });
 
+/** FD-01 step 1 'How I found this' on camera cards (Figma 151:29/54/74); never on product cards (D50). AU-76 */
+export const MODEL_CREDIT = "Muse Spark · SAM 3.1";
+/** AU-68: health, nutrition or diet advice never reaches a recipe card (steps, ask). */
+export const HEALTH_ADVICE = /\b(health(?:y|ier|iest)?|nutrition(?:al)?|nutritious|nutrients?|calories?|caloric|low[- ](?:fat|carb|cal|sodium)|diet(?:ary|ing)?|guilt[- ]free|good for you|vitamins?|protein[- ](?:packed|rich)|cholesterol|keto)\b/i;
+
 // ───────────────────────── recipe (fridge) ─────────────────────────
 
 type RecipeJson = {
@@ -205,6 +210,8 @@ export function recipePrompt(question: string, profile?: string): string {
     "If they name a dish they want to make (like pho, or tacos with salsa), that is the dish: keep it even when few of its ingredients are visible, and list everything it needs (what is not in the photo is fine, they will buy it).",
     "Pick one simple dish they can cook tonight mostly with what is visible in this photo, unless they named one.",
     "Do exactly one web search for a recipe of that dish. Do not open pages.",
+    // CW-01 pass: no health or nutrition advice on the card (AU-68)
+    "No health, nutrition, calorie, diet or weight advice anywhere: not in steps, ask or say.",
     'Reply with only JSON: {"dish": str, "minutes": int, "ingredients": [{"name": short lowercase name, "optional": bool}], "steps": [3 short imperative steps, under 12 words each], "sources": [{"title": str, "url": str}], "ask": [2 short follow-up questions the user might ask about this dish, under 5 words each], "say": "one short spoken line, under 12 words, telling the user what you found"}',
   ]
     .filter(Boolean)
@@ -368,7 +375,7 @@ export async function runRecipe(ctx: PipelineCtx): Promise<PipelineResult> {
   }
   pushItems(true);
 
-  const steps = strList(r?.steps, 4, 140);
+  const steps = strList(r?.steps, 4, 140).filter((t) => !HEALTH_ADVICE.test(t));
   const sources = (Array.isArray(r?.sources) ? r!.sources : [])
     .map((s) => s as { title?: unknown; url?: unknown })
     .map((s) => ({ title: str(s.title, 120), url: str(s.url, 500) }))
@@ -387,6 +394,7 @@ export async function runRecipe(ctx: PipelineCtx): Promise<PipelineResult> {
     if (ctx.images) how.push("The pictures are illustrations I made, not photos of this recipe.");
     const label = clockLabel(at, ctx.timeZone);
     how.push(`Boxes are drawn on your camera frame from ${label}.`);
+    how.push(MODEL_CREDIT);
     card = {
       id: ctx.findId,
       kind: "recipe",
@@ -402,7 +410,7 @@ export async function runRecipe(ctx: PipelineCtx): Promise<PipelineResult> {
       steps: steps.map((text, i) => ({ text, ...(sources[0] ? { source: sources[0].domain } : {}), ...(ctx.images ? { image: pending(`step-${i + 1}`) } : {}) })),
       options: [],
       why: [],
-      ask: strList(r?.ask, 2, 40),
+      ask: strList(r?.ask, 4, 40).filter((t) => !HEALTH_ADVICE.test(t)).slice(0, 2),
       sources,
       how,
     };
@@ -587,7 +595,7 @@ export async function runOutfit(ctx: PipelineCtx): Promise<PipelineResult> {
     ...(situation || taste ? { evidence: { style: taste, situation } } : {}),
     ask: strList(j.ask, 2, 40),
     sources: [],
-    how: [`From ${ctx.frames.length} frame${ctx.frames.length > 1 ? "s" : ""} on your camera, ${label}.`, searched ? "Checked the weather on the web." : "No web search for this one."],
+    how: [`From ${ctx.frames.length} frame${ctx.frames.length > 1 ? "s" : ""} on your camera, ${label}.`, searched ? "Checked the weather on the web." : "No web search for this one.", MODEL_CREDIT],
   };
   if (!card.say) delete card.say;
   if (!card.subtitle && said) card.subtitle = "";

@@ -236,8 +236,15 @@ struct FindEntry: Identifiable, Equatable {
             selectedItem = nil; browser = nil
             return
         }
-        undoState = state == .searching ? nil : state
-        if state == .searching, let f = current { send(.findStop(findId: f.id)) }
+        if state == .searching || current?.card == nil {
+            // nothing went to Finds (a failed or still-running search): no "In Finds · Undo" toast (F10-17, AU-80)
+            if let f = current, f.card == nil, f.failed == nil { send(.findStop(findId: f.id)) }
+            state = .idle
+            undoState = nil
+            selectedItem = nil; browser = nil
+            return
+        }
+        undoState = state
         state = .dismissed
         toastTask?.cancel()
         toastTask = Task { [weak self] in

@@ -173,12 +173,39 @@ export function shortName(s: string): string {
   return cut.slice(0, cut.lastIndexOf(" ") > 20 ? cut.lastIndexOf(" ") : 48).replace(/[\s,;:–-]+$/, "") + "…";
 }
 
-/** Keep a product page: the page says product → yes; says list → no; can't tell → URL shape must not be a list. */
+const PLURAL_GOODS = "boots|shoes|sneakers|loafers|sandals|heels|flats|jackets|coats|blazers|dresses|shirts|tops|tees|sweaters|hoodies|pants|trousers|jeans|skirts|bags|totes|accessories|clothing";
+/** "/womens-brown-boots", "/mens-jackets", "/boots-dark-brown/": a category slug, not one item (AU-79). */
+const LIST_SLUG = new RegExp(`^(?:(?:womens?|mens?|women-s|men-s|kids|all|shop)-(?:[a-z]+-){0,3}(?:${PLURAL_GOODS})|(?:${PLURAL_GOODS})(?:-[a-z]+){0,3})$`, "i");
+/** A page title that names a list: "Women's Boots | Shop", "24 results", "Brown boots collection". */
+const LIST_TITLE = new RegExp(`\\b(?:\\d+ (?:items|results|products|styles)|results for|shop (?:all|women|men)|collection|category|(?:women|men)'?s (?:${PLURAL_GOODS}))\\b`, "i");
+
+/** A category / collection the URL slug or the page title gives away, when the markup can't say (AU-79). */
+export function looksLikeList(url: string, title?: string): boolean {
+  if (title && LIST_TITLE.test(title)) return true;
+  // "/products/boots-dark-brown" is one product whatever its slug says
+  if (urlShape(url) === "product") return false;
+  try {
+    const seg = new URL(url).pathname.replace(/\/+$/, "").split("/").pop() ?? "";
+    return LIST_SLUG.test(seg.replace(/\.html?$/i, ""));
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Keep a product page: the page says product → yes; says list → no; can't tell (unread, or no markers) → the URL
+ * shape must not be a list and neither the slug nor the title may read as a category (FD-02: category pages 0).
+ */
 export function isProductPage(url: string, facts: PageFacts | null): boolean {
   if (hardList(url)) return false;
   if (facts?.kind === "product") return true;
   if (facts?.kind === "list") return false;
-  return urlShape(url) !== "list";
+  if (urlShape(url) === "list") return false;
+  return !looksLikeList(url, facts?.title);
+}
+/** Pages that say "one product" (markup or URL) are taken before ones nothing could confirm. */
+function proven(url: string, facts: PageFacts | null): boolean {
+  return facts?.kind === "product" || urlShape(url) === "product";
 }
 
 const words = (s: string) => new Set(s.toLowerCase().match(/[a-z가-힣]{3,}/g) ?? []);
@@ -422,7 +449,10 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
 
   const products: (FindProduct & { _image?: string })[] = [];
   let serverOpened = 0;
-  cands.forEach((p, i) => {
+  // proven product pages first, then pages nothing could confirm (a category page can't take a slot a product page had)
+  const order = cands.map((_, i) => i).sort((a, b) => Number(proven(cands[b].url, facts[b])) - Number(proven(cands[a].url, facts[a])));
+  order.forEach((i) => {
+    const p = cands[i];
     if (products.length >= PRODUCT_COUNT) return;
     const f = facts[i];
     // not in the trace: only a page we fetched ourselves and that says "one product" counts as opened
