@@ -108,6 +108,17 @@ final class GenitaUITests: XCTestCase {
         XCTAssertTrue(chip.waitForExistence(timeout: 10))
         if title.exists { XCTAssertEqual(chip.frame.minX, title.frame.minX, accuracy: 1.5, "N3 chips start at the title's left edge") }
         shot("qa5-n3-taste"); app.terminate()
+        // I03 orb in motion (Chelsea 11/4): six shots ~0.5 s apart, exported as preview-*
+        open("preparing")
+        XCTAssertTrue(app.descendants(matching: .any)["primaryCTA"].waitForExistence(timeout: 10))
+        let start = Date()
+        for i in 0..<6 {
+            let due = start.addingTimeInterval(0.5 * Double(i))
+            if due > Date() { Thread.sleep(until: due) }
+            let a = XCTAttachment(screenshot: app.screenshot())
+            a.name = String(format: "preview-i03-orb-%d-%04dms", i, Int(Date().timeIntervalSince(start) * 1000)); a.lifetime = .keepAlways; add(a)
+        }
+        app.terminate()
     }
     func testCaptureReviewTransientScreens() {
         let app = XCUIApplication()
@@ -292,7 +303,7 @@ final class GenitaUITests: XCTestCase {
         link.tap()
         let alert = app.alerts["Judge access"]
         XCTAssertTrue(alert.waitForExistence(timeout: 5), "A02-J is a system alert")
-        XCTAssertTrue(alert.staticTexts["Enter the code from the submission form. No Apple ID needed."].exists)
+        XCTAssertTrue(alert.staticTexts["Enter the code from the submission form. No Apple\u{00A0}ID\u{00A0}needed."].exists)
         let field = alert.textFields.element(boundBy: 0)
         XCTAssertTrue(field.exists)
         field.tap(); field.typeText("not-a-real-code")

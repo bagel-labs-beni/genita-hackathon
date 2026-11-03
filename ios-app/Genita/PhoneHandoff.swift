@@ -30,12 +30,15 @@ import ARKit
     /// MV-E: shown for 3 s as the call's status line, then it clears itself (independent of any view).
     @Published var moveFailed = false {
         didSet {
-            guard moveFailed else{return} // every failure restarts the 3 s (a quick retry that fails again stays up 3 s)
+            guard moveFailed,!pinMoveFailed else{return} // every failure restarts the 3 s (a quick retry that fails again stays up 3 s)
             moveFailedToken+=1;let token=moveFailedToken
             DispatchQueue.main.asyncAfter(deadline:.now()+3) { [weak self] in if self?.moveFailedToken==token {self?.moveFailed=false} }
         }
     }
     private var moveFailedToken = 0
+    /// DEBUG `--handoff-state mve`: the line stays up for the screenshot (a slow CI runner launched after the 3 s
+    /// had passed and missed it). The 3 s clear is covered by `PhoneHandoffMoveLineTests`.
+    private var pinMoveFailed = false
     /// P03: the rear camera is looking for the MAC-REG picture.
     @Published private(set) var registeringVisible = false
     /// P04: the toast after the screen was learned (4 s).
@@ -159,7 +162,7 @@ import ARKit
             case "p01e": code="482918";pairingFailed=true;settings=true;return
             case "p02": debugPaired=true;settings=true;return
             case "mv1": moving=true;return
-            case "mve": moveFailed=true;return
+            case "mve": pinMoveFailed=true;moveFailed=true;return
             default: break
             }
             if !ownership.isOwner || ownership.state.epoch==0 {ownership.receive(OwnershipClaim(owner:.mac,epoch:1))}
@@ -278,7 +281,7 @@ import ARKit
         case "connected":
             lastPing=Date().timeIntervalSince1970
             snapshotCall()
-            var hello:[String:Any]=["type":"hello","image":snapshot,"profile":model?.setup.imageData?.base64EncodedString() ?? "","register":registering && proximitySupported]
+            var hello:[String:Any]=["type":"hello","image":snapshot,"profile":model?.companionFaceData?.base64EncodedString() ?? "","register":registering && proximitySupported]
             if let size=PhoneDisplayGeometry.meters {hello["phoneHeight"]=size.height;hello["phoneWidth"]=size.width}
             link.send(hello)
             ownership.publishCurrent()
