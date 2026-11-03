@@ -181,7 +181,6 @@ struct JSONWord: Decodable { var w: String; var s: Int; var e: Int }
 
 let o = parse()
 let faceSet: FaceSet
-FaceSet.onDevicePersonMask = true   // as the apps do
 do { faceSet = try FaceSet(directory: URL(fileURLWithPath: o.face)) } catch { fail("face set: \(error)") }
 print("face set: \(faceSet.patches.count)/10 patches; notes: \(faceSet.notes.joined(separator: "; "))")
 

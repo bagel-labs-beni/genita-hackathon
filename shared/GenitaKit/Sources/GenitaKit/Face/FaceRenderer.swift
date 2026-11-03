@@ -140,12 +140,13 @@ public final class FaceRenderer: @unchecked Sendable {
         var head = Self.ellipseMask(center: he.center, rx: he.rx, ry: he.ry, inner: Self.headMaskInner, extent: extent)
         var body = Self.ellipseMask(center: CGPoint(x: face.midX, y: face.minY - face.height * 1.25),
                                     rx: face.width * 2.0, ry: face.height * 1.75, inner: 0.6, extent: extent)
-        if let pm = faceSet.personMask {
-            // Only the person moves (11/3 Chelsea: still background): layers = ellipse × person mask,
-            // feathered so the hair edge blends instead of cutting.
-            let p = Self.personAlpha(pm, extent: extent)
-            head = Self.multiply(head, p, extent: extent); body = Self.multiply(body, p, extent: extent)
-        }
+        // Only the person moves (11/3 Chelsea: still background): layers = ellipse × person lock. The lock
+        // is prep's person matte (SAM, hair edge feathered) or, without one, a fixed feathered
+        // head-and-shoulders ellipse from the face box; outside it the still itself shows.
+        let ext = extent
+        let lock: CIImage
+        if let pm = faceSet.personMask { lock = Self.personAlpha(pm, extent: ext) } else { lock = Self.headShouldersLock(face: face, extent: ext) }
+        head = Self.multiply(head, lock, extent: ext); body = Self.multiply(body, lock, extent: ext)
         headMask = head; bodyMask = body
     }
 
@@ -411,17 +412,31 @@ public final class FaceRenderer: @unchecked Sendable {
     }
 
     /// White-opaque ellipse fading to clear between `inner` and 1 of its radii.
-    /// Prep's person mask (white = person) as an alpha mask at the still's extent, hair edge feathered.
+    /// Prep's person matte (8-bit grey, white = subject, hard edge) as an alpha mask at the still's extent.
     static func personAlpha(_ cg: CGImage, extent: CGRect) -> CIImage {
         var m = CIImage(cgImage: cg)
         if m.extent.size != extent.size {
             m = m.transformed(by: CGAffineTransform(scaleX: extent.width / m.extent.width, y: extent.height / m.extent.height))
         }
+        // prep sends a hard matte: erode ~4 px (fur / hair halo stays with the background), feather ~2.5 px
+        let erode = CIFilter.morphologyMinimum()
+        erode.inputImage = m.clampedToExtent(); erode.radius = Float(max(1, 0.0035 * extent.width))
         let blur = CIFilter.gaussianBlur()
-        blur.inputImage = m.clampedToExtent(); blur.radius = Float(max(1.5, 0.004 * extent.width))
+        blur.inputImage = erode.outputImage!; blur.radius = Float(max(1.5, 0.0025 * extent.width))
         let a = CIFilter.maskToAlpha()
         a.inputImage = blur.outputImage!.cropped(to: extent)
         return a.outputImage!.cropped(to: extent)
+    }
+
+    /// Non-ML person lock: head (with hair) and shoulders as two feathered ellipses (CI coords, y up).
+    static func headShouldersLock(face: CGRect, extent: CGRect) -> CIImage {
+        let he = headEllipse(face: face)
+        let head = ellipseMask(center: he.center, rx: he.rx * 1.08, ry: he.ry * 1.08, inner: 0.82, extent: extent)
+        let shoulders = ellipseMask(center: CGPoint(x: face.midX, y: face.minY - face.height * 0.95),
+                                    rx: face.width * 1.25, ry: face.height * 0.75, inner: 0.78, extent: extent)
+        let f = CIFilter.maximumCompositing()
+        f.inputImage = head; f.backgroundImage = shoulders
+        return f.outputImage!.cropped(to: extent)
     }
 
     /// a with its alpha multiplied by b's alpha (source-in): the product of two masks.
