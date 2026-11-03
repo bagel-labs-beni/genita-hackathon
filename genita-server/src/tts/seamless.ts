@@ -24,6 +24,8 @@ export const FILLERS = ["Hmm,", "Oh!", "Yeah.", "Oh wow,", "Okay,", "Right,", "M
 const CACHE_MAX_CHARS = 14;
 const CACHE_MAX = 400;
 const DOWN_MS = 30_000;
+/** D27: the GPU's queue was full (503 {"error":"busy"}): park briefly so the next sentences go straight to the device */
+const BUSY_DOWN_MS = 2_000;
 
 /** The service takes ≤ 400 chars; cut longer spoken text at a clause or word boundary (≤ 380 each). */
 export function splitForService(text: string, max = 380): string[] {
@@ -217,8 +219,10 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
       const status = err instanceof UpstreamError ? err.status : null;
       const outage = status === null || status >= 500 || status === 429 || status === 401 || status === 403;
       if (!req.signal?.aborted && outage) {
-        downUntil = now() + DOWN_MS;
-        opts.log?.("voice.down", { message: err instanceof Error ? err.message.slice(0, 160) : "unknown", forMs: DOWN_MS });
+        const busy = status === 503 && err instanceof Error && /"busy"/.test(err.message);
+        const forMs = busy ? BUSY_DOWN_MS : DOWN_MS;
+        downUntil = now() + forMs;
+        opts.log?.("voice.down", { message: err instanceof Error ? err.message.slice(0, 160) : "unknown", forMs });
       }
       throw err;
     }
