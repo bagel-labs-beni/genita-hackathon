@@ -54,6 +54,7 @@ import type { CallTurn } from "../personalize/extract.ts";
 import { ASK_TURNS, replyAsks } from "../personalize/unknowns.ts";
 import { mightBeCorrection } from "../personalize/corrections.ts";
 import { avoidKeys, forgetTarget, isForgetRequest, scrubHistory, type Removed } from "../personalize/forgotten.ts";
+import { isForgetRequest as isMemoryForgetRequest } from "../memory/extract.ts";
 import { localTimeLine } from "../personalize/knows.ts";
 import type { UnknownItem } from "../personalize/story.ts";
 import type { TasteLine } from "../personalize/reasons.ts";
@@ -1487,7 +1488,8 @@ export class Session {
 
   private remember(role: "user" | "assistant", text: string): void {
     // whole call, not just the kept history: a forget request anywhere keeps this call's raw lines out of a return visit
-    if (role === "user" && isForgetRequest(text)) this.forgetAsked = true;
+    // either detector: #442's (personalize, drives the do-not-mention scrub) or memory's broader one (#443)
+    if (role === "user" && (isForgetRequest(text) || isMemoryForgetRequest(text))) this.forgetAsked = true;
     this.history.push({ role, text });
     if (this.history.length > MAX_HISTORY) this.history.splice(0, this.history.length - MAX_HISTORY);
     this.deps.onHistoryChange?.(role);
