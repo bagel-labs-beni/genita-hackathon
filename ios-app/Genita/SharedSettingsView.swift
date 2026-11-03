@@ -131,9 +131,11 @@ struct SettingsView: View {
             do {
                 try await model.onboarding.resetCompanion()
                 guard asked.accepts(model.launchAuthSnapshot) else { return }
+                // the call's 4410 reset this phone already: the user may have picked a new photo or started a new
+                // call since — this late answer touches nothing, not even the call (Codex #514 r2)
+                guard model.companionResets == resets else { return }
                 CallController.shared.end()
                 dismiss()
-                // the call's 4410 may have reset this phone already and the user picked a new photo since: never again
                 model.companionResetAnswered(since: resets)
             } catch GenitaAuthError.unauthorized where asked.generation == model.authGeneration {
                 // this request's 401 cleared the token (same sign-in): A02, as everywhere else
