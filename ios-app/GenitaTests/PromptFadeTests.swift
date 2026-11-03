@@ -24,9 +24,16 @@ import SwiftUI
         XCTAssertEqual(reader.textContainerInset.bottom, ScrollEdgeFade.height, "room for the last line above the fade")
         XCTAssertGreaterThan(reader.contentSize.height, reader.bounds.height, "the prompt is longer than the card, so it scrolls")
 
-        let format = UIGraphicsImageRendererFormat(); format.scale = 2
-        let image = UIGraphicsImageRenderer(size: size, format: format).image { _ in host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true) }
-        let shot = XCTAttachment(image: image); shot.name = "uidef-prompt-fade"; shot.lifetime = .keepAlways; add(shot)
+        func capture(_ name: String) {
+            let format = UIGraphicsImageRendererFormat(); format.scale = 2
+            let image = UIGraphicsImageRenderer(size: size, format: format).image { _ in host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true) }
+            let shot = XCTAttachment(image: image); shot.name = name; shot.lifetime = .keepAlways; add(shot)
+        }
+        capture("uidef-prompt-fade")
+        // scrolled so body lines sit in the fade band (the top of the prompt has a paragraph break there)
+        reader.setContentOffset(CGPoint(x: 0, y: 60), animated: false)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+        capture("uidef-prompt-fade-scrolled")
         window.isHidden = true
     }
 }
