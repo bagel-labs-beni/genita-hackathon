@@ -519,9 +519,11 @@ export function optimisticCard(shown: StoryCard, marked: string[], text: string)
   const items = shown.items.filter((i) => !gone.has(i.text));
   const tags = shown.tags?.filter((t) => !gone.has(tagText(t)));
   const help = shown.help?.filter((h) => !gone.has(h.label));
+  // a chip is short: cut at a word, with an ellipsis (never mid-word: "…earth to")
+  const chip = (t: string) => (t.length <= 40 ? t : t.slice(0, 39).replace(/\s+\S*$/, "").replace(/[\s,.;:!?-]+$/, "") + "…");
   if (line) {
-    if (shown.id === "taste" && tags) tags.push({ group: "style", text: line.slice(0, 40), dislike: false });
-    else if (shown.id === "help" && help) help.push({ label: line.slice(0, 40), sub: "", mode: "ask_first" });
+    if (shown.id === "taste" && tags) tags.push({ group: "style", text: chip(line), dislike: false });
+    else if (shown.id === "help" && help) help.push({ label: chip(line), sub: "", mode: "ask_first" });
     else items.push({ text: line, evidence: "explicit" as Evidence });
   }
   if (!items.length && !tags?.length && !help?.length) return null;
