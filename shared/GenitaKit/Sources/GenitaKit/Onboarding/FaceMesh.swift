@@ -156,7 +156,11 @@ public struct FaceMesh: Equatable, Sendable {
                 a2 += c; sx += (p.x + q.x) * c
             }
             cx = abs(a2) > 1e-9 ? sx / (3 * a2) : (minX + maxX) / 2
-            cy = (top + bottom) / 2; ry = (bottom - top) / 2; rx = (maxX - minX) / 2
+            // AU-36: the rim must stay inside the outline's box: an off-centre centroid gets the smaller half-width
+            cx = min(max(cx, minX), maxX)
+            rx = min(cx - minX, maxX - cx)
+            if rx < (maxX - minX) * 0.35 { cx = (minX + maxX) / 2; rx = (maxX - minX) / 2 }   // a lopsided outline: use its box
+            cy = (top + bottom) / 2; ry = (bottom - top) / 2
         } else {
             guard let b = headBox, let x1 = b.nx1, let y1 = b.ny1, let x2 = b.nx2, let y2 = b.ny2, x2 - x1 > 0.02, y2 - y1 > 0.02 else { return nil }
             cx = (x1 + x2) / 2; cy = y1 + (y2 - y1) * 0.6; rx = (x2 - x1) * 0.36; ry = (y2 - y1) * 0.38

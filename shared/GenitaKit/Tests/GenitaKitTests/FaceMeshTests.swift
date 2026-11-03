@@ -153,6 +153,14 @@ struct FaceMeshTests {
         #expect(mesh.bounds.maxY < 0.56, "the net stays on the face (\(mesh.bounds.maxY))")
     }
 
+    @Test func theRimStaysInsideAnOffCentreOutline() throws {
+        // AU-36: a pear-shaped outline (wide at the bottom-right) puts the centroid off the box centre
+        let outline: [[Double]] = [[0.40, 0.20], [0.50, 0.18], [0.58, 0.22], [0.66, 0.40], [0.70, 0.60], [0.62, 0.66], [0.48, 0.66], [0.40, 0.55], [0.38, 0.35]]
+        let mesh = try #require(FaceMesh.make(outline: outline, points: nil, headBox: nil))
+        let rim = mesh.points.prefix(12)
+        #expect(rim.allSatisfy { $0.x >= 0.38 - 1e-6 && $0.x <= 0.70 + 1e-6 }, "rim x \(rim.map(\.x))")
+    }
+
     @Test func mapsImageFractionsLikeScaledToFill() {
         // a 941 × 1672 photo in a 342 × 240 frame: width fills, the middle band shows
         let view = CGSize(width: 342, height: 240), image = CGSize(width: 941, height: 1672)
