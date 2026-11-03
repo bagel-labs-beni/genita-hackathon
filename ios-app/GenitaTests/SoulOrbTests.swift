@@ -56,12 +56,19 @@ final class SoulOrbTests: XCTestCase {
         clock.step(10); XCTAssertEqual(clock.idleClock, 6 * 1.5 + 0.05 * 1.5, accuracy: 1e-9) // dt capped at 50 ms
     }
 
-    func testReduceMotionIsSlowAndCalm() {
+    /// PRD D94: Reduce Motion = breathing only (1.00 ↔ 1.04, 3 s); the shape and the clocks hold, no reaction.
+    func testReduceMotionBreathesOnly() {
         var clock = SoulOrbClock(motion: SoulOrbMotion(random: lcg(1)))
         clock.reduceMotion = true
+        let shape = clock.key
         clock.respond()
-        for _ in 0..<60 { clock.step(1.0 / 60) }
+        for _ in 0..<90 { clock.step(1.0 / 60) }
         XCTAssertFalse(clock.responding); XCTAssertEqual(clock.activity, 0)
-        XCTAssertEqual(clock.idleClock, 1.5 * SoulOrbClock.reducedSpeed, accuracy: 1e-9)
+        XCTAssertEqual(clock.idleClock, 0); XCTAssertEqual(clock.time, 0); XCTAssertEqual(clock.key, shape)
+        XCTAssertEqual(clock.scale, 1.04, accuracy: 1e-9)
+        for _ in 0..<90 { clock.step(1.0 / 60) }
+        XCTAssertEqual(clock.scale, 1, accuracy: 1e-9)
+        clock.reduceMotion = false
+        XCTAssertEqual(clock.scale, 1)
     }
 }

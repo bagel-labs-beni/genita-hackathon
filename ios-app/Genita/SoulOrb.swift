@@ -5,7 +5,7 @@ import UIKit
 // Live soul orb: a native port of Dyno's three.js orb (bagel-labs-beni/genita 25afbe03, src/orb/entry.js +
 // orb-motion.mjs), the one Chelsea wants moving "사르륵 사르륵" (11/4). Dyno's default template is the "dots" mode:
 // 9,900 round points on a breathing sphere, folded by a simplex curl field, slowly morphing through eight shape
-// profiles. Shaders: SoulOrb.metal. Constants are Dyno's; where a line differs from entry.js it says why.
+// profiles. Reduce Motion: the shape holds and the orb only breathes (PRD D94). Shaders: SoulOrb.metal. Constants are Dyno's; where a line differs from entry.js it says why.
 // Rollback without a release: launch env GENITA_LIVE_ORB=0, or UserDefaults "GenitaLiveOrb" = false → the PNG orb.
 
 /// Dyno's orb-motion.mjs: eight deformation families visited shuffle-bag without repeats, each transition 6–10 s
@@ -75,8 +75,8 @@ struct SoulOrbMotion {
 struct SoulOrbClock {
     /// Dyno's default template: speed 1.5, organic 2
     static let speed = 1.5, organic = 2.0
-    /// Reduce Motion: a slow, single morph (no reaction burst)
-    static let reducedSpeed = 0.35
+    /// Reduce Motion (PRD D94, lead 11/4): breathing only, 1.00 ↔ 1.04 over 3 s, eased; the shape holds still
+    static func breath(_ t: Double) -> Double { 1 + 0.02 * (1 - cos(2 * .pi * t / 3)) }
     static let reactionSeconds = 2.5
 
     var idleClock = 0.0
@@ -86,6 +86,7 @@ struct SoulOrbClock {
     var reactionElapsed = 0.0
     var failureKind = false
     var reduceMotion = false
+    var breathClock = 0.0
     var motion = SoulOrbMotion()
     var key: SoulOrbMotion.Key
 
@@ -103,7 +104,8 @@ struct SoulOrbClock {
 
     mutating func step(_ rawDt: Double) {
         let dt = min(max(rawDt, 0), 0.05)
-        let speed = Self.speed * (reduceMotion ? Self.reducedSpeed : 1)
+        if reduceMotion { breathClock += dt; responding = false; activity = 0; return }
+        let speed = Self.speed
         idleClock += dt * speed
         if responding { reactionElapsed += dt; if reactionElapsed >= Self.reactionSeconds { responding = false } }
         let tau = responding ? (failureKind ? 0.18 : 0.65) : 0.20
@@ -113,6 +115,8 @@ struct SoulOrbClock {
     }
 
     var failure: Double { failureKind ? activity : 0 }
+    /// whole-orb scale: the Reduce Motion breath, 1 otherwise
+    var scale: Double { reduceMotion ? Self.breath(breathClock) : 1 }
     var organicUniform: Double { Self.organic * (0.12 + 0.88 * activity) }
 }
 
@@ -264,7 +268,7 @@ final class SoulOrbRenderer: NSObject, MTKViewDelegate {
         u.fieldOffset = SIMD4(Float(k.offset.x), Float(k.offset.y), Float(k.offset.z), 0)
         u.tint = SoulOrbLook.linear(SoulOrbLook.tintHex)
         u.accent = SoulOrbLook.linear(SoulOrbLook.accentHex)
-        u.projection = proj.xy; u.depth = proj.depth
+        u.projection = proj.xy * Float(clock.scale); u.depth = proj.depth
         u.time = Float(clock.time); u.idleClock = Float(clock.idleClock)
         u.activity = Float(clock.activity); u.failure = Float(clock.failure)
         u.spread = SoulOrbLook.spread; u.swirl = SoulOrbLook.swirl; u.organic = Float(clock.organicUniform)
@@ -390,8 +394,9 @@ struct SoulOrbView: UIViewRepresentable {
     func updateUIView(_ view: SoulOrbMTKView, context: Context) {
         let renderer = context.coordinator
         renderer.stretchWide = stretchWide
-        renderer.clock.reduceMotion = reduceMotion
-        view.preferredFramesPerSecond = reduceMotion ? 30 : 60
+        let calm = reduceMotion || ProcessInfo.processInfo.environment["GENITA_ORB_REDUCE_MOTION"] == "1"
+        renderer.clock.reduceMotion = calm
+        view.preferredFramesPerSecond = calm ? 30 : 60
         if reaction != renderer.lastReaction {
             renderer.lastReaction = reaction
             renderer.clock.respond()
