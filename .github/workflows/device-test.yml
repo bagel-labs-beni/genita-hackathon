@@ -444,16 +444,58 @@ jobs:
             mkdir -p mac && cp "$ROOT/$DMG" "mac/$NAME"
             node "$ROOT/.github/device-test/appcast.mjs" --dir mac --dmg "$NAME" --build "$BUILD_NUMBER" --version "$MAC_VERSION" \
               --signature "$SPARKLE_SIG" --length "$SPARKLE_LEN" --base "$UPDATES_BASE_URL" --commit "$GITHUB_SHA"
+            # Stable path for README and judge docs: always the newest build on the appcast, never an older one finishing
+            # late on another branch (same blob as mac/Genita-Mac-<newest>.dmg, so the site does not grow).
+            NEWEST="$(grep -oE '<sparkle:version>[0-9]+</sparkle:version>' mac/appcast.xml | grep -oE '[0-9]+' | sort -n | tail -1)"
+            test -f "mac/Genita-Mac-$NEWEST.dmg" && cp "mac/Genita-Mac-$NEWEST.dmg" mac/Genita-latest.dmg
             git add -A mac
             git commit -q -m "mac: Genita $MAC_VERSION ($BUILD_NUMBER) from ${GITHUB_SHA::7}"
             if git push -q origin HEAD:main; then published=1; break; fi
             sleep $((i * 5))
           done
           test "$published" = 1 || { echo "::error::could not push the appcast entry after 4 tries"; exit 1; }
+          echo "PUBLISHED_NEWEST=$NEWEST" >> "$GITHUB_ENV"
           {
             echo "### Sparkle update published"
             echo "Genita $MAC_VERSION ($BUILD_NUMBER) → $UPDATES_BASE_URL/appcast.xml. Pages deploys in about a minute; installed Macs see it at next launch or daily check."
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check the README Mac download link
+        if: env.PUBLISH_UPDATE == 'true' && env.HAS_UPDATE_SECRETS == 'true'
+        env:
+          SPARKLE_ED_PRIVATE: ${{ secrets.GENITA_SPARKLE_ED_PRIVATE }}
+        run: |
+          # Judges download from the README link. A real GET must return 200 with the newest appcast build's bytes:
+          # same length and a valid Sparkle signature. The newest build is re-read each try, so another branch
+          # publishing a newer build meanwhile does not fail this one.
+          URL="$(grep -oE 'https://bagel-labs-beni\.github\.io/genita-legal/mac/[^[:space:])>"`]+' README.md | head -1)"
+          test -n "$URL" || { echo "::error::README has no genita-legal Mac download link"; exit 1; }
+          echo "README link: $URL"
+          OUT="$RUNNER_TEMP/readme-dmg"; AC="$RUNNER_TEMP/appcast-live.xml"
+          ok=; for i in $(seq 1 30); do
+            rm -f "$OUT" "$AC"
+            curl -s --connect-timeout 10 --max-time 30 -o "$AC" "$UPDATES_BASE_URL/appcast.xml" || true
+            read -r NB SIG LEN <<< "$(python3 - "$AC" <<'PY' 2>/dev/null || echo "- - -"
+          import sys, xml.etree.ElementTree as ET
+          ns = {"sparkle": "http://www.andymatuschak.org/xml-namespaces/sparkle"}
+          items = ET.parse(sys.argv[1]).getroot().findall("channel/item")
+          it = max(items, key=lambda i: int(i.findtext("sparkle:version", "0", ns)))
+          e = it.find("enclosure")
+          print(it.findtext("sparkle:version", "", ns), e.get("{%s}edSignature" % ns["sparkle"]), e.get("length"))
+          PY
+            )"
+            code="$(curl -sL --connect-timeout 10 --max-time 180 -o "$OUT" -w '%{http_code}' "$URL" || true)"
+            size="$( [ -f "$OUT" ] && wc -c < "$OUT" | tr -d ' ' || echo 0)"
+            sigok=no
+            # the live appcast must already show what this run pushed (Pages deployed), not an older state
+            if [ "${NB:-0}" -ge "$PUBLISHED_NEWEST" ] 2>/dev/null && [ "$code" = 200 ] && [ "$size" = "$LEN" ] && printf '%s' "$SPARKLE_ED_PRIVATE" | "$RUNNER_TEMP/sparkle/bin/sign_update" --verify -f - "$OUT" "$SIG" >/dev/null 2>&1; then sigok=yes; fi
+            echo "try $i: HTTP $code, $size bytes; live newest build $NB (pushed $PUBLISHED_NEWEST, $LEN bytes); ok $sigok"
+            if [ "$sigok" = yes ]; then ok=1; break; fi
+            sleep 20
+          done
+          rm -f "$OUT" "$AC"
+          test -n "$ok" || { echo "::error::README Mac link $URL does not serve the newest appcast DMG after 10 min (wrong name, or Pages not deployed)"; exit 1; }
+          echo "README Mac link OK: $URL → 200, newest build $NB, Sparkle signature valid" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Update publish skipped
         if: env.PUBLISH_UPDATE == 'true' && env.HAS_UPDATE_SECRETS != 'true'

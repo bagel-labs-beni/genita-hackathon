@@ -172,7 +172,7 @@ import UniformTypeIdentifiers
                         // I01 → AI app → back: open I02 with the paste button ready (only after the app really left)
                         guard stage == .prompt, openedAI else { return }
                         if phase == .background { leftApp = true }
-                        else if phase == .active, leftApp { openedAI = false; leftApp = false; model.pasteFocusRequested = true; model.go(.paste) }
+                        else if phase == .active, leftApp { backFromAI() }
                     }
             case .preparing: processing(width: width, top: bodyTop, shift: orb.map { Self.readingFit(orb: $0, nodes: nodes, limit: contentBottom - bodyTop).shift } ?? 0)
             case .image: imageContent(width: width, top: bodyTop)
@@ -307,6 +307,8 @@ import UniformTypeIdentifiers
             }
         }
     }
+    /// Back from the AI app: I02 with the paste button ready.
+    func backFromAI() { openedAI = false; leftApp = false; copiedToast = false; model.pasteFocusRequested = true; model.go(.paste) }
     /// I01: opens the AI app, or its website when the app isn't installed.
     func appButton(_ title: String, app: String, web: String) -> some View {
         Button {
@@ -315,6 +317,12 @@ import UniformTypeIdentifiers
             UIPasteboard.general.string = AppState.prompt
             copied = true; openedAI = true; leftApp = false
             withAnimation(.easeOut(duration: 0.2)) { copiedToast = true }
+            #if DEBUG
+            // UI tests (`--stub-external-apps`): nothing opens (no Safari round trip on a loaded CI runner) and the
+            // toast stays until the test leaves and comes back (Home → activate), so neither depends on timing; the
+            // return goes through the real scene-phase path below
+            if ProcessInfo.processInfo.arguments.contains("--stub-external-apps") { return }
+            #endif
             Task { @MainActor in try? await Task.sleep(for: .seconds(2)); withAnimation(.easeOut(duration: 0.2)) { copiedToast = false } }
             UIApplication.shared.open(a) { ok in if !ok { UIApplication.shared.open(w) } }
         } label: {
