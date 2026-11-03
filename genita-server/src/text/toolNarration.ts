@@ -75,7 +75,7 @@ let metaIsUser = true;
 function isNarrationClause(clause: string): boolean {
   const s = normalize(clause);
   if (!s) return false;
-  if (searchRetry(s) || recallNow(s) || progressClause(s) || RESOURCE_PROMISE.test(s)) return true;
+  if (searchRetry(s) || recallNow(s) || progressClause(s) || (RESOURCE_PROMISE.test(s) && !HELP_ACTION.test(s))) return true;
   // an explicit pick is the answer before anything else ("I'm picking the trench for you", Codex r24)
   if (DECISION.test(s) && !(CHOOSE_PLAN.test(s) && new RegExp(`\\b${NO_CHOICE}\\b`).test(s))) return false;
   if (isNarrowNarration(s)) return true;
@@ -119,7 +119,10 @@ const PROGRESS_RESULT = /\b(?:says|shows|found|turns out|is|was|were|has|had|tak
 /** "I've got that note about your sister" said before the recall result, nothing in it: the memory store, never the
  * answer. "…note about your sister saying her birthday is May 12" carries the content and stays (Codex #415 P2). */
 const NOTE_CLAIM = /^i(?:'ve| have)? got (?:that|the|a|your|some) notes? (?:about|on|for) (?:your |the |that |my )?[\w'-]+(?: [\w'-]+)?$/;
-const progressClause = (c: string) => (PROGRESS.test(c) && !PROGRESS_RESULT.test(c.replace(/\b(?:that|which) are\b.*$/, ""))) || NOTE_CLAIM.test(c);
+/** a sentence that carries help or a result is never a lookup promise (Codex #431 P1: "Let me get you the crisis line:
+ * 988.", "Getting you support: call the police right now.", "Call 988 now, and I'll find support resources for you.") */
+const HELP_ACTION = /\b(?:call|text|dial|police|emergency|crisis (?:line|text line)|hotline|helpline|one (?:oh|zero) nine|nine one one|nine eight eight)\b|\d/;
+const progressClause = (c: string) => !HELP_ACTION.test(c) && (PROGRESS.test(c) && !PROGRESS_RESULT.test(c.replace(/\b(?:that|which) are\b.*$/, ""))) || NOTE_CLAIM.test(c);
 // "which concert that was" is the thing being recalled, not a predicate
 const RECALL_HEAD = /^(?:(?:got it|okay|ok|hmm+|wait)\W+)?(?:i'm )?(?:still )?trying to (?:remember|recall|place|think of) (?:that|which|what|who|when|where|the one|your)\b(?!.*\b(?:last time|first time|whenever|every time|back when)\b)/;
 const RECALL_PRED = /\b(?:can|could|will|would|should|might|must|takes|makes|sucks|gets|is (?:hard|tough|impossible|easy|rough)|helps)\b/;
@@ -137,7 +140,7 @@ const searchRetry = (s: string) => {
 export function isToolNarration(sentence: string): boolean {
   const s = normalize(sentence);
   if (!s) return false;
-  if (searchRetry(s) || recallNow(s) || progressClause(s) || RESOURCE_PROMISE.test(s)) return true;
+  if (searchRetry(s) || recallNow(s) || progressClause(s) || (RESOURCE_PROMISE.test(s) && !HELP_ACTION.test(s))) return true;
   if (isProcessLine(sentence)) return true;
   if (isNarrowNarration(s)) return true;
   const clauses = s.split(CLAUSE_SPLIT).map(normalize).filter(Boolean);

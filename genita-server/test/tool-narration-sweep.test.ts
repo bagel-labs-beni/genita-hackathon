@@ -62,6 +62,10 @@ const answers = [
   "The last train leaves at 11, so I'll try another search for a later bus.",
   "Searching for a job takes time.",
   "Let me get you the number: call one oh nine right now.",
+  // Codex #431 P1: help in the same sentence is the answer
+  "Let me get you the crisis line: 988.",
+  "Getting you support: call the police right now.",
+  "Call 988 now, and I'll find support resources for you.",
   "I'll find you the crisis line, it's one oh nine, call it now.",
   "Let me look again at the tag because it says hand wash only.",
   "The shop closes at nine, so I'll dig deeper into the menu with you tomorrow.",
