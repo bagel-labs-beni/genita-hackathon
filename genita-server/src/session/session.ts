@@ -189,6 +189,12 @@ type Reply = {
   spoken: string[];
   firstAudioAt: number | null;
   audioMs: number;
+  /**
+   * AU-49: when the app's queued speech ends, on the server clock. The app plays each clip at
+   * max(its queue end, arrival), so a gap between clips (a line, a web search, then the answer)
+   * pushes the end out; audioMs alone does not count the gap.
+   */
+  playEnd: number;
   doneTimer: NodeJS.Timeout | null;
   /** device mode: characters sent in `say` (drives the speaking estimate) */
   chars: number;
@@ -216,6 +222,8 @@ const MAX_FRAMES = 2;
 const MAX_FRAME_BYTES = 1_500_000;
 const FRAMES_TTL_MS = 15_000;
 const PLAYBACK_SLACK_MS = 250;
+/** AU-49: the gap-aware playback end never holds a reply in "speaking" longer than this from now */
+const PLAYBACK_MAX_WAIT_MS = 60_000;
 /** longest a ready reply waits for the user to stop talking before its first sound (ASR lost a speechEnd) */
 const HOLD_MAX_MS = 3000;
 /** re-open vendor connections when the user starts a turn after this much quiet (keep-alive is 60 s) */
@@ -1859,7 +1867,7 @@ export class Session {
     if (!self) this.lastWarmAt = this.now();
     // F2-L26: "Call yourself Max" — the new name applies from this reply on (chat only, never a greeting)
     const newName = !self && !synthetic && this.mode === "chat" ? detectRename(text) : null;
-    const reply: Reply = { utteranceId, abort: new AbortController(), spoken: [], firstAudioAt: null, audioMs: 0, doneTimer: null, chars: 0, fellBack: this.deviceVoiceForReply() && this.tts === "server" };
+    const reply: Reply = { utteranceId, abort: new AbortController(), spoken: [], firstAudioAt: null, audioMs: 0, playEnd: 0, doneTimer: null, chars: 0, fellBack: this.deviceVoiceForReply() && this.tts === "server" };
     const device = this.tts === "device";
     this.reply = reply;
     // D41 daily cap: real user turns were charged in admitTurn(); the greeting and an initiative cue only run
@@ -2437,6 +2445,7 @@ export class Session {
       }
       this.client.sendJson({ type: "say", utteranceId, sentence: i, text: s.display, emotion: s.emotion ?? "neutral", lang: speechLang(s.display, lang) });
       reply.chars += s.display.length;
+      reply.playEnd = Math.max(reply.playEnd, this.now()) + s.display.length * DEVICE_MS_PER_CHAR;
     };
     for (let i = 0; ; i++) {
       while (!sentences[i] && !sparkDone && !signal.aborted) await new Promise<void>((r) => (waiter.wake = r));
@@ -2529,6 +2538,7 @@ export class Session {
             this.client.sendBinary(Buffer.concat([encodeFrameHeader(FRAME_KIND_TTS_PCM, seq), chunk.audio]));
           }
           reply.audioMs += durationMs;
+          reply.playEnd = Math.max(reply.playEnd, this.now()) + durationMs;
         }
         if (skipped) {
           this.log("profile.ask_dropped", { utteranceId, midTts: true, replaced });
@@ -2713,7 +2723,10 @@ export class Session {
     // "speaking" (so barge-in still works) until playback should be over or
     // the app says playback_done. Device mode: audioMs is already the estimate
     // (70 ms/char + 1.5 s, ≤ 60 s) counted from the first `say`.
-    const playEnd = reply.firstAudioAt === null ? 0 : reply.firstAudioAt + reply.audioMs + (device ? 0 : PLAYBACK_SLACK_MS);
+    // AU-49: never before the app's queue ends (gaps between clips included), bounded from now.
+    const estimate = reply.firstAudioAt === null ? 0 : reply.firstAudioAt + reply.audioMs + (device ? 0 : PLAYBACK_SLACK_MS);
+    const queued = reply.firstAudioAt === null ? 0 : reply.playEnd + (device || reply.chars ? DEVICE_SLACK_MS : PLAYBACK_SLACK_MS);
+    const playEnd = Math.max(estimate, Math.min(queued, this.now() + PLAYBACK_MAX_WAIT_MS));
     const wait = Math.max(0, playEnd - this.now());
     reply.doneTimer = setTimeout(() => this.finishReply(reply), wait);
     // speech first, sheet after: the sources card when the answer has played (finishReply: playback_done or the estimate)
