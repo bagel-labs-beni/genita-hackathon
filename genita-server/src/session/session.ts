@@ -761,6 +761,10 @@ export class Session {
     const g = msg.greetAfterMs;
     const greetAfterMs = typeof g === "number" && Number.isFinite(g) ? Math.round(Math.min(MAX_GREET_AFTER_MS, Math.max(0, g))) : null;
     this.started = true;
+    // first sound on connect (Chelsea 05:04, p50 ≤ 1 s): where start → ready goes, per stage
+    const spanT0 = this.now();
+    const spans: Record<string, number> = {};
+    const span = (k: string, from: number) => { spans[k] = Math.round(this.now() - from); };
     this.warm();
     (this.deps.ops ?? getOps()).prime(this.limitUserId());
     if (this.deps.memory && this.deps.userId) {
@@ -819,7 +823,9 @@ export class Session {
           this.log("history.seeded", { turns: this.history.length, from: server?.length ? "server" : "start" });
         });
       };
+      const memT0 = this.now();
       const outcome = await within(init().then(() => "ok" as const, () => "error" as const), MEMORY_START_BUDGET_MS, "slow" as const);
+      span("memoryMs", memT0);
       if (outcome === "error") { this.log("memory.unavailable", {}); memoryCall.close(); this.memoryCall = null; this.historyRevision = null; }
       else if (outcome === "slow") {
         abandoned = true;
@@ -829,7 +835,9 @@ export class Session {
       }
     }
     if (this.closed) return;
+    const voiceT0 = this.now();
     const owned = await this.ownedVoice;
+    span("voiceMs", voiceT0);
     if (this.closed) return;
     // One voice per reply: if something already started speaking (input raced the lookup), this call keeps it.
     if (owned && this.turn.utteranceId === 0 && !this.reply) this.pickVoice(owned, persona.kind);
@@ -843,10 +851,12 @@ export class Session {
         let continuation = this.continued || msg.handoff === true;
         try { continuation ||= this.deps.continuesCall?.() ?? false; } catch { /* never fails the call */ }
         this.callPlanned = !continuation;
+        const profileT0 = this.now();
         const p = await Promise.race([
           this.deps.personalize.startCall(this.deps.userId, { plan: !continuation }),
           new Promise<null>((r) => setTimeout(() => r(null), STARTCALL_TIMEOUT_MS).unref?.()),
         ]);
+        span("profileMs", profileT0);
         this.callStartedAt = new Date().toISOString();
         // a stored profile always wins, even an empty one (a deleted preference must not come back from the app's copy)
         if (p) this.user = { ...this.user, profile: p.profile || undefined };
@@ -869,9 +879,13 @@ export class Session {
     this.timeZone = str(u.timeZone, 40);
     this.finds?.configure({ owner: this.deps.userId, memories: this.memories, profile: this.user.profile, userName: this.user.name, timeZone: this.timeZone, taste: this.taste });
     if (this.micOn) {
+      const asrT0 = this.now();
       await this.ensureAsr();
+      span("asrMs", asrT0);
     }
     if (this.closed) return;
+    span("totalMs", spanT0);
+    this.log("call.start_spans", spans);
     this.client.sendJson({
       type: "ready",
       protocol: PROTOCOL_VERSION,
