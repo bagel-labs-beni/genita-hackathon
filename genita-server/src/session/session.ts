@@ -2131,7 +2131,10 @@ export class Session {
         // a hold beat is audio only: the caption's previous sentence is the model's own (#427)
         const prevEnd = [...sentences].reverse().find((x) => !x.beat)?.display.trim();
         // only where a guard cut something (Codex #423 P2: "npm install ws." must stay as written)
-        if ((droppedOpener && !sentences.some((x) => !x.beat)) || (this.v1 && !interpret && (cutBefore || tts !== p.ttsText) && (!prevEnd || /[.!?…]["')\]]*$/.test(prevEnd)))) tts = tts.replace(/^(\s*(?:\[[^\]]*\]\s*)*)(\p{Ll})/u, (_, lead, c) => lead + c.toUpperCase());
+        // …and a plain word Spark itself wrote lower case at a sentence start ("finally, you did it"; r3 sweep), never a
+        // command or code ("npm install ws.")
+        const plainLower = /^(?:\s*\[[^\]]*\]\s*)*[a-z][a-z']+\b/.test(tts) && !/[`/\\_=<>{}]|\b(?:npm|npx|git|cd|ls|pip|brew|yarn|node|python|sudo|curl|https?|www)\b/i.test(tts);
+        if ((droppedOpener && !sentences.some((x) => !x.beat)) || (this.v1 && !interpret && (cutBefore || tts !== p.ttsText || plainLower) && (!prevEnd || /[.!?…]["')\]]*$/.test(prevEnd)))) tts = tts.replace(/^(\s*(?:\[[^\]]*\]\s*)*)(\p{Ll})/u, (_, lead, c) => lead + c.toUpperCase());
         // …and the other way round (QA P3 2/3: "Got you, Black top…"): mid-sentence after a comma piece, a word a guard
         // capitalised goes back to how Spark wrote it
         if (this.v1 && !interpret && prevEnd && !/[.!?…]["')\]]*$/.test(prevEnd) && tts !== p.ttsText) {

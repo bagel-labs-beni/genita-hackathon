@@ -159,6 +159,7 @@ const SAVE_TALK = [
 ];
 
 /** K-test 11/3: what they're wearing / how they look, said with no camera ("you're in something all black right now") */
+const CLOTHES_NOW = /\b(?:leather|jacket|coat|outfit|fit|dress|hoodie|sweater|boots|sneakers|look)\b[^.!?]{0,40}\b(?:right now|tonight|today)\b|\b(?:rocking|wearing|got on)\s+(?:it|that|those|them|the)\b/i;
 const WEARING_NOW = /\b(?:you'?re (?:in|wearing|rocking|dressed in)\b[^.!?]{0,30}\b(?:black|white|red|blue|green|grey|gray|beige|camel|navy|outfit|fit|dress|shirt|top|jacket|hoodie|sweater|jeans|blazer|coat|pajamas|sweats|minimal|monochrome|something)\b|what you'?re wearing\b|your (?:outfit|fit|hair|makeup|shirt|top|dress|jacket|hoodie|sweater|jeans|look) (?:right now|today|tonight)\b)/i;
 /** AI sweep 11/3: hearing them before they spoke ("your voice sounds super alive right now") */
 const UNHEARD = /\b(?:your voice|you sound(?:s|ing)?\b|i (?:can )?hear (?:you|that|it in your)|sounds like you'?re|the way you sound)/i;
@@ -207,10 +208,10 @@ export function guardSentence(sentence: string, ctx: GuardContext): GuardClass |
   // a real crisis or danger turn: only an AI denial is dropped. "Stay with me", "you're not alone", a referral
   // are the friend staying, not therapy-speak or clinginess (Codex 11/3 P1)
   if (realCrisisSignal(ctx.userText)) return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;
-  if (!ctx.camera && WEARING_NOW.test(sentence) && !USER_ON_CLOTHES.test(ctx.userText)) return "unseen";
+  if (!ctx.camera && (WEARING_NOW.test(sentence) || CLOTHES_NOW.test(sentence)) && !USER_ON_CLOTHES.test(ctx.userText)) return "unseen";
   // a greeting / initiative turn (nothing said yet this turn): never claim to hear them ("your voice sounds super alive")
   if (!ctx.userText.trim() && (UNHEARD.test(sentence) || heardBeforeSpeech(sentence.replace(/’/g, "'")))) return "unseen";
-  if ((INCOME.test(sentence) && !/\b(?:salary|income|make|earn|paid|\d+\s?k)\b/i.test(ctx.userText)) || (HEALTH.test(sentence) && !HEALTH.test(ctx.userText))) return "sensitive";
+  if (INCOME.test(sentence) || (HEALTH.test(sentence) && !HEALTH.test(ctx.userText)) || echoesSensitiveNumber(sentence, ctx.userText)) return "sensitive";
   if (APPEARANCE_WORDS.test(sentence) && !APPEARANCE_WORDS_USER.test(ctx.userText) && CLASSES.find(([c]) => c === "appearance")![1].test(sentence)) return "appearance";
   if (energyLabel(sentence)) return "label";
   for (const [cls, re] of CLASSES) {
@@ -321,4 +322,26 @@ export function nameAsYou(sentence: string, name: string | undefined): string {
   if (glue === "'s") return lead + "You're" + sentence.slice(lead.length + n.length + 2);
   const v = TO_YOU[verb] ?? (VERB_S.test(verb) ? verb.replace(/ies$/, "y").replace(/(?<=[^s])s$/, "") : verb);
   return lead + "You " + v + sentence.slice(all.length);
+}
+
+/**
+ * r3 sweep 11/4: a sensitive number the user just said, said back ("eighty five K", "one fifty over ninety five",
+ * "fourteen twenty three Maple"): when their line is about money, health or where they live, any of its numbers
+ * repeated (digits or spoken) drops the sentence. Prices in a shopping turn are not touched.
+ */
+const SENSITIVE_CONTEXT = /\b(?:salary|income|(?:got|get|getting) a raise|my raise|pay raise|paycheck|per year|annual(?:ly)?|net worth|savings|in (?:my|the) bank|i owe|debt|rent is|i (?:make|earn)\s+\$?\d[\d,.]*\s?(?:k|grand|thousand|a year|an hour|a month|per (?:year|hour|month))\b|i'?m (?:making|earning)\s+\$?\d[\d,.]*\s?(?:k|grand|thousand|a year|an hour|a month|per (?:year|hour|month))\b|blood pressure|blood sugar|glucose|a1c|cholesterol|heart rate|bpm|bmi|i weigh|my weight|address|zip ?code|apartment \d|apt\.? ?\d|live at|moved to|\d+\s+\w+\s+(?:street|st|avenue|ave|road|rd|blvd|boulevard|lane|ln|drive|dr|way|court|ct)\b)/i;
+const ONES_W = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"];
+const TENS_W = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"];
+function under100(n: number): string { return n < 20 ? ONES_W[n] : TENS_W[Math.floor(n / 10)] + (n % 10 ? `[- ]${ONES_W[n % 10]}` : ""); }
+function spokenForms(n: number): string[] {
+  const out = [String(n)];
+  if (n < 100) out.push(under100(n));
+  else if (n < 1000) { out.push(`(?:one |a )?${ONES_W[Math.floor(n / 100)]}[- ]hundred(?:[- ](?:and[- ])?${under100(n % 100)})?`.replace(/\(\?:\[- \]\(\?:and\[- \]\)\?zero\)\?/, "")); if (n % 100) out.push(`${ONES_W[Math.floor(n / 100)]}[- ]${under100(n % 100)}`); }
+  else if (n < 10000 && n % 100) out.push(`${under100(Math.floor(n / 100))}[- ]${n % 100 < 10 ? `oh[- ]${ONES_W[n % 100]}` : under100(n % 100)}`);
+  return out;
+}
+export function echoesSensitiveNumber(sentence: string, userText: string): boolean {
+  if (!SENSITIVE_CONTEXT.test(userText)) return false;
+  const nums = [...userText.matchAll(/\d[\d,]*/g)].map((m) => Number(m[0].replace(/,/g, ""))).filter((x) => Number.isFinite(x) && x >= 10);
+  return nums.some((x) => spokenForms(x).some((f) => new RegExp(`\\b${f}\\b`, "i").test(sentence)));
 }
