@@ -81,6 +81,7 @@ import UIKit
         model.signedIn(userId: "user-b", consented: true)
         XCTAssertEqual(model.setup.skipInterests, ["Food", "Style"])
         XCTAssertEqual(model.setup.skipReplies, "Show me options")
+        XCTAssertEqual(model.setup.skipSent, false, "still unsent: an N3 pick after sign-in keeps N1·N2 (Codex r4)")
         XCTAssertEqual(AppState.skipAnswers(model.setup).interests, ["Food", "Style"], "the skip request carries them")
         // B tried to send them (even with the reply lost: no style yet), then C signs in: C starts clean (Codex P1)
         model.setup.skipSent = true

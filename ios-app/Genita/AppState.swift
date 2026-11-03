@@ -288,6 +288,7 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
             if setup.skipSent == false && setup.styleRows == nil && setup.companionCreated != true {
                 fresh.skipInterests = setup.skipInterests; fresh.skipReplies = setup.skipReplies
                 fresh.skipAvoid = setup.skipAvoid; fresh.skipLikes = setup.skipLikes
+                fresh.skipSent = false
             }
             setup = fresh
             history = []
@@ -322,6 +323,7 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
         if carry {
             setup.skipInterests = old.skipInterests; setup.skipReplies = old.skipReplies
             setup.skipAvoid = old.skipAvoid; setup.skipLikes = old.skipLikes
+            setup.skipSent = false   // still unsent: a later N3 pick must not clear them (Codex r4)
         }
         story = nil; storyChanged = [:]; storyFailed = false; hisyPage = 0
         prep = nil; sceneImage = nil
