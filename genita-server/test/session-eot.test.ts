@@ -369,3 +369,38 @@ test("Codex r3: a final that turns up after the watchdog answered is dropped —
   assert.equal(h.sent.filter((s) => s.m.type === "utterance.cancelled").length, 0);
   assert.equal(h.sparkCalls.length, 1);
 });
+
+test("handover b9-6 P2: a proximity handoff drops a held turn — the device that lost the sound never answers it later", async (t) => {
+  const h = setup();
+  t.after(() => h.session.close());
+  await partA(h);
+  await sleep(100);
+  h.session.stopForHandoff();
+  await sleep(EOT.incompleteMs + 300);
+  assert.equal(h.at(thinking).length, 0, h.types().join(","));
+  assert.equal(h.sparkCalls.length, 0, "no Spark call for the dropped turn");
+  assert.equal(h.sent.filter((s) => s.m.type === "backchannel").length, 0, "no cue after the move");
+  assert.ok(!h.sent.some((s) => s.m.type === "transcript" && s.m.final === true), "no late final for the held line");
+});
+
+test("handover b9-6 P2: a cued turn dropped as watch echo does not strip the next turn's real 'mm-hm'", async (t) => {
+  const h = setup();
+  t.after(() => h.session.close());
+  await h.session.onClientText(JSON.stringify({ type: "start", persona: { name: "Mina" } }));
+  await sleep(30);
+  const s = h.session as unknown as { watch: unknown; cuedTurn: boolean };
+  s.watch = { isSharing: true, isEcho: async () => true, questionContext: () => null, close() {} };
+  s.cuedTurn = true; // a cue played in this turn
+  h.asr.fire({ type: "speechStart", turnId: 0 });
+  h.asr.fire({ type: "speechEnd", turnId: 0 });
+  h.asr.fire({ type: "speechComplete", turnId: 0, text: "Not tonight love." }); // the video's line → dropped
+  await sleep(30);
+  s.watch = null;
+  h.asr.fire({ type: "speechStart", turnId: 1 });
+  h.asr.fire({ type: "speechEnd", turnId: 1 });
+  h.asr.fire({ type: "speechComplete", turnId: 1, text: "Mm-hm." });
+  await sleep(100);
+  const finals = h.sent.filter((x) => x.m.type === "transcript" && x.m.final === true).map((x) => x.m.text);
+  assert.deepEqual(finals, ["Mm-hm."]);
+  assert.equal(h.at(thinking).length, 1, "the user's own 'Mm-hm.' is answered");
+});

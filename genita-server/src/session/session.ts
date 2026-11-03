@@ -676,6 +676,11 @@ export class Session {
   stopForHandoff(): void {
     // the other device has the sound now: this call never speaks first again (Codex 11/3 P2)
     this.stopInitiative();
+    // a turn the end-of-turn hold kept open is not answered here later (CA-14, handover b9-6 P2): this device lost the
+    // sound and the mic, so its reply would only land in the shared history; no cue either
+    this.dropHeld();
+    this.bcGen++;
+    this.backchannel?.stop();
     if (this.started && !this.closed) this.dispatch({ type: "client_barge_in" });
   }
 
@@ -1485,6 +1490,8 @@ export class Session {
     // a held turn waits again from here (the video's line was not the user going on); if the user went on meanwhile,
     // the hold's clock waits for their final (holdTimerFired)
     if (this.held) return this.completeTurn(turnId, "");
+    // the turn ended (as the video's echo): the cue-echo filter is for that turn only (handover b9-6 P2)
+    this.cuedTurn = false;
     this.dispatch({ type: "speech_complete", text: "" });
     this.dropSpeculation();
   }
