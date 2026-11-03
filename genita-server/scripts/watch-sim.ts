@@ -250,8 +250,9 @@ const logs: Record<string, unknown>[] = [];
 const REMOTE = args.find((a) => a.startsWith("--remote="))?.slice(9).replace(/\/+$/, "") ?? null;
 const remoteToken = process.env.GENITA_SESSION_TOKEN?.trim();
 if (REMOTE && !remoteToken) throw new Error("--remote needs GENITA_SESSION_TOKEN (a session JWT or the shared dev token)");
-const remoteModes = ["--naming", "--moments"].filter((m) => args.some((a) => a === m || a.startsWith(`${m}=`)));
-if (REMOTE && (remoteModes.length !== 1 || args.some((a) => ["--qa", "--react", "--blank", "--funny"].includes(a)))) throw new Error("--remote runs exactly one of --naming or --moments (the other modes read server logs)");
+// 11/4: --qa runs remote too (it only reads the client's own events: reply text and first audio)
+const remoteModes = ["--naming", "--moments", "--qa"].filter((m) => args.some((a) => a === m || a.startsWith(`${m}=`)));
+if (REMOTE && (remoteModes.length !== 1 || args.some((a) => ["--react", "--blank", "--funny"].includes(a)))) throw new Error("--remote runs exactly one of --naming, --moments or --qa (the other modes read server logs)");
 const AUTH: Record<string, string> = REMOTE ? { authorization: `Bearer ${remoteToken}` } : {};
 const server = REMOTE ? null : await startServer({ ...config, port: 0 }, (event, data) => {
   logs.push({ t: Math.round(performance.now()), event, ...data });
@@ -260,6 +261,23 @@ const server = REMOTE ? null : await startServer({ ...config, port: 0 }, (event,
 const addr = server?.address();
 const url = REMOTE ?? `ws://127.0.0.1:${typeof addr === "object" && addr ? addr.port : 8787}`;
 if (REMOTE) console.log(`remote: ${new URL(url).host}`);
+
+/** CW-03 (11/4): judged against what the video shows (--truth file), with invented details counted on their own */
+async function judgeVideo(truth: string, key: string | undefined, q: string, a: string): Promise<{ correct: boolean; invented: boolean; why: string; judged: boolean }> {
+  for (let i = 0; i < 3; i++) {
+    try {
+      const g = await sparkText(config.metaKey, {
+        input: `A friend watched a short video with the user and answered the user's question about it.\nWhat the video shows (checked frame by frame by a person): ${truth}${key ? `\nExpected answer for this question: ${key}` : ""}\nQuestion: ${q}\nAnswer given: ${a}\nAnswer as JSON {"correct":bool,"invented":bool,"why":string}: correct = the answer gets the question right per the video (casual wording, extra chat and jokes are fine); invented = it states a concrete detail the video does not show or contradicts (a person, object, event, quote, number). A figure of speech about something that is there invents nothing. why = 3 to 10 words.`,
+        effort: "low",
+      });
+      const o = JSON.parse(g.match(/\{[\s\S]*\}/)?.[0] ?? "null") as Record<string, unknown> | null;
+      if (o && typeof o.correct === "boolean" && typeof o.invented === "boolean") return { correct: o.correct, invented: o.invented, why: String(o.why ?? "").slice(0, 80), judged: true };
+    } catch {
+      await sleep(2000);
+    }
+  }
+  return { correct: false, invented: false, why: "judge failed", judged: false };
+}
 
 async function judge(truth: string, q: string, a: string): Promise<boolean> {
   for (let i = 0; i < 3; i++) {
@@ -281,6 +299,9 @@ const result: Record<string, unknown> = {};
 if (T5) {
   const t5 = JSON.parse(readFileSync(join(T5, "t5.json"), "utf8")) as Record<string, { title: string; prompt: string; qa: { q: string; correct: boolean; sec: number }[] }>;
   const only = args.find((a) => a.startsWith("--clips="))?.slice(8).split(",");
+  // --truth=<file>: what each clip actually shows (genita-watch-moments/t5-video-truth.json); the prompt key stays too
+  const truthFile = args.find((a) => a.startsWith("--truth="))?.slice(8);
+  const vt = truthFile ? (JSON.parse(readFileSync(truthFile, "utf8")) as Record<string, { truth: string; keys?: Record<string, string> }>) : null;
   const rows: Record<string, unknown>[] = [];
   for (const key of Object.keys(t5).sort()) {
     if (only && !only.includes(key)) continue;
@@ -295,8 +316,9 @@ if (T5) {
     for (const { q, correct: t5correct } of clip.qa) {
       const r = await call.ask(q);
       const ok = await judge(clip.prompt, q, r.a);
-      rows.push({ clip: key, q, ...r, correct: ok, t5correct });
-      console.log(`${ok ? "✓" : "✗"} ${(r.firstAudioMs ?? 0) / 1000}s  ${q} → ${r.a}`);
+      const v = vt?.[key] ? await judgeVideo(vt[key].truth, vt[key].keys?.[q], q, r.a) : null;
+      rows.push({ clip: key, q, ...r, correct: ok, t5correct, ...(v ? { video: v } : {}) });
+      console.log(`${ok ? "✓" : "✗"}${v ? ` video:${v.correct ? "✓" : "✗"}${v.invented ? " INVENTED" : ""}` : ""} ${(r.firstAudioMs ?? 0) / 1000}s  ${q} → ${r.a}${v && (!v.correct || v.invented) ? `  [${v.why}]` : ""}`);
     }
     const reactions = call.wev.filter((e) => e.type === "reaction").length;
     rows.push({ clip: key, reactions });
@@ -307,6 +329,11 @@ if (T5) {
   const fa = qa.map((r) => r.firstAudioMs).filter((x): x is number => x !== null);
   result.qa = {
     correct: qa.filter((r) => r.correct).length,
+    // against what the videos show (--truth): right answers and answers with an invented detail
+    videoCorrect: vt ? qa.filter((r) => (r as { video?: { correct: boolean } }).video?.correct).length : undefined,
+    videoInvented: vt ? qa.filter((r) => (r as { video?: { invented: boolean } }).video?.invented).length : undefined,
+    videoJudgeFailed: vt ? qa.filter((r) => (r as { video?: { judged: boolean } }).video?.judged === false).length : undefined,
+    videoPerClip: vt ? Object.fromEntries([...new Set(qa.map((r) => r.clip))].map((c) => [c, `${qa.filter((r) => r.clip === c && (r as { video?: { correct: boolean } }).video?.correct).length}/${qa.filter((r) => r.clip === c).length}`])) : undefined,
     total: qa.length,
     t5BaselineCorrect: qa.filter((r) => r.t5correct).length,
     perClip: Object.fromEntries([...new Set(qa.map((r) => r.clip))].map((c) => [c, `${qa.filter((r) => r.clip === c && r.correct).length}/${qa.filter((r) => r.clip === c).length}`])),
