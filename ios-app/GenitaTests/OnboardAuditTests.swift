@@ -110,4 +110,25 @@ import XCTest
         XCTAssertEqual(PresenceChips.toggle(on, "calm"), ["witty", "warm"], "no third chip")
         XCTAssertEqual(PresenceChips.toggle(on, "warm"), ["witty"])
     }
+
+    /// AU-32 · PU-01 step 4: a polished picture already passed (V02-T); "Try again" comes back failing its re-check.
+    /// The passing picture stays usable, and the new attempt's reason is one line.
+    func testATryAgainThatFailsKeepsThePolishedPictureThatPassed() async throws {
+        let failing = Data(#"{"imageId":"p2","sourceImageId":"src","passed":false,"type":"human","reasons":[{"code":"style_changed","label":"The style changed too much"}],"attempt":3,"retriesLeft":0}"#.utf8)
+        let (model, _) = makeModel { req in
+            (req.url?.path ?? "").hasSuffix("/v1/companion/image/polish") ? (200, failing) : (404, Data())
+        }
+        model.imageCheck = try JSONDecoder().decode(ImageCheck.self, from: Data(#"{"imageId":"src","passed":false,"polish":true,"reasons":[]}"#.utf8))
+        let first = try JSONDecoder().decode(PolishedImage.self, from: Data(#"{"imageId":"p1","sourceImageId":"src","passed":true,"type":"human","reasons":[],"attempt":2,"retriesLeft":1}"#.utf8))
+        model.polished = first; model.polishedImage = Data([1, 2, 3]); model.polishRetriesLeft = 1
+        model.setup.imageId = "p1"; model.setup.imageType = "human"
+        model.retryPolish()
+        for _ in 0..<200 where model.polishRetriesLeft != 0 { try await Task.sleep(for: .milliseconds(10)) }
+        await model.imageCheckTask?.value
+        XCTAssertEqual(model.polished, first, "the passing polished picture stays")
+        XCTAssertEqual(model.polishedImage, Data([1, 2, 3]))
+        XCTAssertEqual(model.setup.imageId, "p1", "Use this image still makes the companion from it")
+        XCTAssertEqual(model.polishRetriesLeft, 0)
+        XCTAssertEqual(model.polishError, "The style changed too much")
+    }
 }

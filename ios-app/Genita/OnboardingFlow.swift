@@ -349,6 +349,13 @@ extension AppState {
             polishAttempts += 1
             let p = try await onboarding.polishImage(imageId: source)
             guard imageCheckTicket == ticket, !Task.isCancelled else { return }
+            // AU-32: a Try again that fails its re-check never takes away a polished picture that already passed;
+            // V02-T keeps it (Use this image still works) with the new attempt's reason on one line
+            if !p.passed, let kept = polished, kept.passed, polishedImage != nil, setup.imageId == kept.imageId {
+                polishRetriesLeft = p.retriesLeft
+                polishError = p.reasons.first?.label ?? "Couldn't polish this photo."
+                return
+            }
             // kept before the download: a failed download only reloads the picture, it never costs a polish
             polished = p; polishedImage = nil; polishRetriesLeft = p.retriesLeft
             setup.imageId = p.passed ? p.imageId : nil
