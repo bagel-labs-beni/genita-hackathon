@@ -19,6 +19,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 | 11/3 | D34 / #153 prep: scene → Meta face set only. Session hints use `lip:"none"` for humans, animals and characters; the device animates the face set. Legacy prep response keys remain neutral (`emotionVideos:{}`, video/lip steps `skipped`, lip URL `null`). See [PREP_API.md](PREP_API.md). |
 | 11/2 | D34 / #153: removed non-Meta voice and remote lip-worker paths. Binary kind 2 is reserved and never emitted. Unknown legacy lip modes safely select `none`; `atlas` playback, kind 1 audio, `say` and protocol v1 remain supported. |
 | 11/2 | v1 published. |
+| 11/3 | Watch together, realtime (no wire change): a turn while sharing gets the newest screen frame (last) plus one ~2 s older (was 4 over ≈6 s), the memo refreshes every 5 s while the screen changes (was 12 s), the echo check decides from the video's partial line instead of waiting up to 1.5 s, and the prompt takes the user's naming of someone on screen as given and answers with what is visible (no face-based identity). |
 | 11/3 | Handoff (#199): with server memory on, a call starting while the account has another live call (or one ended < 10 min ago) is seeded with that call's turns and skips the greeting; optional `start.handoff: true` lets the app's own `history` seed it when the server has none. Additive. |
 | 11/2 | F0-L4: TS + Swift types and shared samples. Added optional `turn.metrics.speculative` (`hit`/`miss`/`none`). No breaking change. |
 | 11/2 | F10 Finds (F5-L3, F5-L8, F10-L3~L6): new events `find.started`, `find.progress`, `find.items`, `observe.boxes`, `find.created`, `find.image`, `find.failed`; new client messages `find.confirm`, `find.stop`; optional `text.findId`, `start.user.id`, `start.user.timeZone`; REST `/v1/finds`. A turn may now get one server-initiated reply after it (the card's line; an ordinary `state`/`reply.delta`/`audio`/`reply` sequence with a new `utteranceId`). Additive. |
@@ -26,6 +27,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 | 11/2 | F8-L1 interpretation: new events `interpret.pair` and `interpret.bubble` (two-language bubbles with speaker side); new app message `hold`; `start` and `mode` take optional `interpret {source, other, app}`; Mac call mode sends app→server binary frames with a `GA` header (kind `3` mic, `4` call sound); `mode.changed.by` can be `model` (voice switch). In interpret mode speech no longer cancels Genita (only `barge_in` does). Additive: a chat-only app sees nothing new. |
 | 11/3 | Pill line: optional `FindCard.pill` and `find.items.pill` — the status pill's text for a card, ≤ 28 characters (one line on iPhone and Mac). `say` is spoken, `pill` is shown. Product: same as `say`. Additive. |
 | 11/3 | #199: `find.started` and `find.progress` take optional `evidence {style, situation}` on product searches — the import line the search follows (top Likes line at start, the line the picks follow once known); show as-is when present. A product ask on a call continued from the other device refines the search asked there (from the conversation's turns). Additive. |
+| 11/3 | SAM masks (#298, behind server env `GENITA_SAM_MASKS=1`): `observe.boxes.items[]` gains optional `mask {w, h, rle}` — a w×h binary grid stretched over that item's `box`, row-major run lengths alternating 0s then 1s (the first run may be 0), `sum(rle) == w*h`, long side ≤ 96. With the flag on, an ingredient with several matches arrives as one item per match (same `label` repeated, each with its own `box`/`mask`), at most 12 items; over that, the largest group arrives as one merged item. An item without `mask` (flag off, or a mask that did not decode) is drawn as a box. Additive. |
 | 11/3 | Fridge order (#122, D23): a camera cooking turn's reply is now the short line "Let me take a look." (not a full answer from the raw photo); `observe.boxes` follow; then one server-initiated reply names only `have` items ("I can see eggs and tofu. You could make …, if you have kimchi."), also stored as `card.say`. A failed card for such a turn (or a product search) is spoken as its own reply. Same message types; additive. |
 | 11/3 | F7 product search (#119): `FindKind` gains `product`; `FindCard` gains optional `products[]` ({id, name, url, domain, store, price?, image?, taste, situation}) and `evidence` ({style, situation}). A product ask (voice alone, no camera) gets a short spoken line ("On it.") as that turn's reply instead of a full answer, then the card and its `say`. Product pictures are `find.image` slots `product-1`/`product-2`. Swift `FindKind` decodes an unknown kind as `.unknown`. Additive. |
 | 11/2 | F7/F9: optional server memory, Spark `recall`/`remember`, automatic greeting after `ready`, and authenticated REST memory/settings/Us-photo routes. No new WebSocket fields/events; legacy sessions without the memory dependency retain their behavior. |
@@ -36,6 +38,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 | 11/2 | F5 watch together: second socket `/v1/watch?session=<sessionId>` (section below). On the call socket nothing new except that the companion may now speak first while a screen is shared (normal `state`/`speaking`/`audio`/`reply` events) and `speaking.emotion` can be `laugh` (play the laugh clip, F4-L13). Additive. |
 | 11/2 | F6-L7: conversation owner. New socket `/v1/presence` and `GET /v1/handoff`, `POST /v1/handoff/claim|release` (section **Handoff**). `/v1/session?device=iphone\|mac` now plays audio only while that device owns the conversation; a call without `device` is not gated (old builds keep working). Call sockets also get the `ownership` event (unknown to old builds → ignored). After a move the old device's reply ends with `utterance.cancelled` reason `client`, so every build flushes its queue. No breaking change. |
 | 11/3 | L4 lip timing (Meta MMS forced aligner): new event `audio.timing {utteranceId, sentence, seq, words, phonemes}` after each clause's audio when the server runs with `GENITA_VOICE_ALIGN=1`. Additive: unknown to old builds → ignored; `audio` events are unchanged. |
+| 11/3 | Expression layer: new event `expression {utteranceId, sentence, tag, intensity, startMs, endMs}` (tag `smile\|smileopen\|laugh\|surprised\|concerned`), at most one per reply clause, server voice only, after that clause's audio. Nothing for neutral clauses. `GENITA_EXPRESSION=0` turns it off. Additive: unknown to old builds → ignored. |
 | 11/3 | App config: new public REST `GET /v1/app-config` (copy, flags, tuning, update nudges, remote asset URLs; ETag/304). No WebSocket change. Additive. |
 | 11/3 | D27 voice GPU capacity: above `GENITA_VOICE_MAX_CALLS` (default 3, 0 = unlimited), chat and interpretation replies use the existing `say` fallback; server voice resumes from the next reply once a seat is free. Voice never switches mid-reply. No wire or `ready` changes. |
 
@@ -217,6 +220,7 @@ contracts and offline/live checks: [`src/memory/README.md`](src/memory/README.md
 | `say` | `utteranceId`, `sentence`, `text`, `emotion`, `lang` | device mode only: one sentence for the app to speak, in order. `text` is plain (no tags); `lang` is a BCP-47 hint (`en-US`, `ko-KR`, …) |
 | `audio` | `utteranceId`, `seq`, `sentence`, `offsetMs`, `durationMs`, `sampleRate`, `model`, `words`, `mouth?` | server mode only: timing for the binary frame that follows |
 | `audio.timing` | `utteranceId`, `sentence`, `seq`, `words`, `phonemes` | server voice with `GENITA_VOICE_ALIGN=1`: forced-aligner timing of one clause, after its audio (below) |
+| `expression` | `utteranceId`, `sentence`, `tag`, `intensity`, `startMs`, `endMs` | server voice: the face expression of one clause, after its audio (below) |
 | `reply` | `utteranceId`, `text`, `emotion`, `interpret`, `final:true` | full reply text (what was spoken) |
 | `utterance.cancelled` | `utteranceId`, `reason: barge_in \| text \| client` | **stop playback now and drop queued audio** |
 | `turn.metrics` | `model`, `ttsModel`, `speechEndToFirstAudioMs`, … | per-turn latency breakdown (server clock). Device mode: `ttsModel:"device"`, "first audio" = first `say` sent, `audioMs` = the speaking estimate below |
@@ -228,7 +232,7 @@ contracts and offline/live checks: [`src/memory/README.md`](src/memory/README.md
 | `find.started` | `findId`, `utteranceId`, `kind: recipe \| outfit \| link`, `title`, `detail` | open the sheet in "searching" (r03 #1) |
 | `find.progress` | `findId`, `detail` | update the searching line ("Kimchi, eggs, tofu · recipes") |
 | `find.items` | `findId`, `items`, `checking`, `subtitle?`, `status?` | full ingredient list each time; replace, don't merge. `checking:false` = all checks done |
-| `observe.boxes` | `findId`, `frame`, `w`, `h`, `items[{label, box}]` | boxes to pop on the camera preview (CAM-H, 240 ms pop, 4 s) |
+| `observe.boxes` | `findId`, `frame`, `w`, `h`, `items[{label, box, mask?}]` | boxes to pop on the camera preview (CAM-H, 240 ms pop, 4 s); `mask` = SAM outline over the box (`GENITA_SAM_MASKS=1`, see changelog 11/3) |
 | `find.created` | `findId`, `card` | the card's text; pictures may still be `pending` |
 | `find.image` | `findId`, `slot`, `status: ready \| failed`, `url?` | an illustration landed (or failed: show r03 #15, keep the text) |
 | `find.failed` | `findId`, `reason: unclear \| search_failed \| error \| stopped`, `message` | `unclear` = IC-4 "show me again"; nothing was made up |
@@ -319,6 +323,21 @@ runs device mode (above), so a checkout with only `MODEL_API_KEY` still works.
   - Fallback: if the aligner fails, is late (> 250 ms after the clause's last audio) or is not confident, no
     `audio.timing` comes for that clause; keep using `audio.words` / text + loudness for it. Nothing comes for a
     cancelled utterance.
+- **Face expression (`expression`, 11/3)**: at most one per clause of a chat reply, never for a neutral clause, never in
+  interpretation or device mode. Sent after the clause's audio (and after its `audio.timing` when the aligner is on):
+
+  ```json
+  { "type": "expression", "utteranceId": 4, "sentence": 0, "tag": "smile", "intensity": 0.7, "startMs": 40, "endMs": 520 }
+  ```
+  - `tag` = `smile` | `smileopen` | `laugh` | `surprised` | `concerned`. `intensity` 0…1: 0.7, `laugh` 1.0.
+  - `startMs`/`endMs` = ms on the reply's audio timeline (the `audio.offsetMs` clock): the clause's first word start →
+    last word end from the aligner when it is on, else the clause's audio span. The app eases in before `startMs`
+    and out after `endMs` (envelope in the app spec).
+  - Where it comes from: Spark may start a clause with `[smile]`, `[laugh]`, … (the server strips it: never spoken,
+    never in captions). Without a tag, laughing words ("haha") → `laugh`, "oh no / sorry / long day" → `concerned`,
+    else the reply's leading `<emotion>` on its first clause (`happy`/`warm`/`teasing` → `smile`, `excited` →
+    `smileopen`, `surprised` → `surprised`, `sad` → `concerned`; `curious`/`whisper`/`neutral` → none).
+  - `GENITA_EXPRESSION=0` on the server sends none.
 - Interpretation uses the same service: a sentence that is mostly Hangul is spoken in Korean (`kor`),
   everything else in English (`eng`). Same speaker as the companion.
 - Text is rewritten for speech before synthesis (numbers, money, times, %, ordinals, units, `Dr.`, lists →
@@ -372,9 +391,14 @@ Server side (genita-server/src/watch): the system audio gets its own Muse Transc
 (DIARIZATION), so the video never becomes a user turn; a user turn that repeats a line the
 video just said (speakers, no earphones) is dropped. Every ~12 s, or 4 s after a new line,
 Spark writes a 1–2 line memo from the new frames and lines and judges whether a friend would
-react out loud. Reactions: only while sharing, ≥ 30 s apart, not in the first 6 s, never while
+react out loud (11/3: every ~5 s while the screen changes). Reactions: only while sharing, ≥ 30 s apart, not in the first 6 s, never while
 the user or companion talks or the video's dialogue is running. A question while sharing gets
 the memo, the last 90 s of lines (with speaker names) and the newest 4 frames (≈ 6 s).
+11/3 realtime: the newest frame (≤ 1 s old while a video plays; the last image, "the screen right now") plus one ~2 s
+older. "Oh, it's Karina!": the companion goes along with the user's name and adds one thing visible on that person now
+(outfit, setting, action). It never identifies anyone from their face and adds no facts about a real person; with nobody
+on screen it says it can't spot them. While the video is mid-line, the echo check uses that line's partial transcript and
+only waits (≤ 1.5 s) when the partial is too short to tell. `npm run watch-sim -- --naming` measures it.
 
 Measured 11/2 (`npm run watch-sim`, local server, real vendors; T5 clips played in real time, then asked as typed turns):
 T5 set 38/50 correct (T5 video-file baseline 42/50; same judge re-run: 37 vs 42 strict, 39 vs 45 tone-tolerant — most misses are
