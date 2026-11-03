@@ -159,9 +159,11 @@ struct ScreenSharingRequestTests {
         request.invalidate()                 // A signs out while it is still on screen
         #expect(request.stalePicker)
         let b = request.begin()              // B opens a picker
-        #expect(request.beginCapture() == nil)   // A's late selection: dropped
+        let r1 = request.beginCapture()
+        #expect(r1 == nil)   // A's late selection: dropped
         #expect(request.isCurrent(b))            // B's request is untouched
-        #expect(request.beginCapture() == b)     // B's own selection starts B's capture
+        let r2 = request.beginCapture()
+        #expect(r2 == b)     // B's own selection starts B's capture
         #expect(!request.stalePicker)
     }
 
@@ -170,9 +172,11 @@ struct ScreenSharingRequestTests {
         request.begin()
         request.invalidate()
         let b = request.begin()
-        #expect(request.cancelPicker() == false)  // A's cancel: dropped
+        let r3 = request.cancelPicker()
+        #expect(r3 == false)  // A's cancel: dropped
         #expect(request.isCurrent(b))
-        #expect(request.cancelPicker() == true)   // B's own cancel
+        let r4 = request.cancelPicker()
+        #expect(r4 == true)   // B's own cancel
         #expect(request.current == nil)
     }
 
@@ -182,20 +186,25 @@ struct ScreenSharingRequestTests {
         request.invalidate()                     // logout, A's picker still open
         let b = request.begin()                  // B asks; the app waits 1.5 s, A never answers
         request.clearStalePicker(presentingAt: 100)
-        #expect(request.beginCapture(now: 100.3) == nil)     // A's in-flight selection: dropped
-        #expect(request.cancelPicker(now: 100.5) == false)   // A's in-flight cancel: dropped
+        let r5 = request.beginCapture(now: 100.3)
+        #expect(r5 == nil)     // A's in-flight selection: dropped
+        let r6 = request.cancelPicker(now: 100.5)
+        #expect(r6 == false)   // A's in-flight cancel: dropped
         #expect(request.isCurrent(b))
-        #expect(request.beginCapture(now: 101.4) == b)       // B's own pick
+        let r7 = request.beginCapture(now: 101.4)
+        #expect(r7 == b)       // B's own pick
     }
 
     @Test func stopWithoutAnOpenPickerLeavesNothingStale() {
         var request = ScreenSharingRequest()
         request.begin()
         let active = request.beginCapture()!
-        #expect(request.completeCapture(active))
+        let done = request.completeCapture(active)
+        #expect(done)
         request.invalidate()
         #expect(!request.stalePicker)
         let b = request.begin()
-        #expect(request.beginCapture() == b)
+        let r8 = request.beginCapture()
+        #expect(r8 == b)
     }
 }
