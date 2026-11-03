@@ -87,6 +87,9 @@ public final class FaceRenderer: @unchecked Sendable {
     /// With no active event nothing is drawn: plain speech keeps the still-face gates (eyes = the photo).
     nonisolated(unsafe) public static var expressionStills = true
     private var stills = ExpressionStills()
+    /// A reply starts (the driver calls this for its first event of any kind): the expression stills drop the old
+    /// reply's events and clock.
+    public func beginUtterance(_ id: Int) { lock.lock(); stills.begin(utterance: id); lock.unlock() }
     /// Weights of the expression stills drawn at the last frame (tests, QA logs).
     public var expressionStillWeights: [FaceExpression: Double] { lock.lock(); defer { lock.unlock() }; return stills.shown }
     /// Laugh events on lip-rig faces play as `smileopen` (demo setting; the laugh warp fights the rig).
@@ -267,7 +270,8 @@ public final class FaceRenderer: @unchecked Sendable {
         if Self.expressionStills {
             let shown: (weights: [FaceExpression: Double], rest: Double) = {
                 lock.lock(); defer { lock.unlock() }
-                return stills.step(at: t, audioMs: context?.audioMs, openness: open, available: Set(bases.keys))
+                // the reply's own clock: the lip lookahead is for the mouth only (codex P3)
+                return stills.step(at: t, audioMs: context.map { $0.audioMs - lipLookaheadMs }, openness: open, available: Set(bases.keys))
             }()
             for (e, w) in shown.weights.sorted(by: { $0.key.rawValue < $1.key.rawValue }) where w > 0.002 {
                 guard let still = bases[e] else { continue }

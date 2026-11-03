@@ -126,6 +126,8 @@ public final class FaceDriver: ObservableObject {
         timeline.reset()
         currentUtteranceId = id
         newestUtteranceId = id
+        let r = renderer
+        queue.async { r.beginUtterance(id) }
         return true
     }
 

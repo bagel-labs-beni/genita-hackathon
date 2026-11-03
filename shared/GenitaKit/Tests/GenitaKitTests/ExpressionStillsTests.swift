@@ -97,6 +97,33 @@ struct ExpressionStillsTests {
         #expect(run(&r, seconds: 2).allSatisfy { $0.w[.surprised] == nil })
     }
 
+    /// Codex P2 ×3: a next reply without events never brings the old one back on its restarted clock; an event that
+    /// arrives after its reply's audio keeps that reply's clock; a newer feeling the face has no still for ends the old one.
+    @Test func repliesKeepTheirOwnEventsAndClock() {
+        var s = ExpressionStills()
+        s.begin(utterance: 1)
+        s.add(FaceExpressionEvent(tag: "smile", intensity: 0.7, startMs: 0, endMs: 800), utterance: 1)
+        _ = run(&s, seconds: 5, audioUntil: 1.0)
+        s.begin(utterance: 2)   // the next reply's audio starts; it has no expression
+        var w: [FaceExpression: Double] = [:]
+        for i in 0...60 { let t = 5 + Double(i) / 30; w = s.step(at: t, audioMs: Double(i) / 30 * 1000, openness: 0.2, available: all).weights; #expect(w.isEmpty, "t=\(t)") }
+
+        var late = ExpressionStills()
+        late.begin(utterance: 4)
+        for i in 0...30 { _ = late.step(at: Double(i) / 30, audioMs: Double(i) / 30 * 1000, openness: 0.2, available: all) }
+        late.add(FaceExpressionEvent(tag: "surprised", intensity: 0.85, startMs: 200, endMs: 900), utterance: 4)   // after the audio
+        var shown = 0.0
+        for i in 31...60 { shown = max(shown, late.step(at: Double(i) / 30, audioMs: nil, openness: 0, available: all).weights[.surprised] ?? 0) }
+        #expect(shown > 0.9, "the reply's mood still shows after its audio")
+
+        var gone = ExpressionStills()
+        gone.add(FaceExpressionEvent(tag: "smile", intensity: 0.7, startMs: 0, endMs: 500), utterance: 1)
+        gone.add(FaceExpressionEvent(tag: "concerned", intensity: 0.6, startMs: 1000, endMs: 1500), utterance: 1)
+        let f = (0...75).map { i in gone.step(at: Double(i) / 30, audioMs: Double(i) / 30 * 1000, openness: 0.2, available: [.neutral, .smile, .warm]) }
+        #expect((f[20].weights[.smile] ?? 0) > 0.8)
+        #expect(f.last!.weights.isEmpty, "no still for concerned: the smile ends")
+    }
+
     @Test func cancelRelaxesSmoothly() {
         var s = ExpressionStills()
         s.add(FaceExpressionEvent(tag: "surprised", intensity: 0.85, startMs: 0, endMs: 5000), utterance: 1)

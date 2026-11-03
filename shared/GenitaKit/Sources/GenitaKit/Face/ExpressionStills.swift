@@ -56,8 +56,17 @@ struct ExpressionStills {
     /// Weights drawn at the last step.
     private(set) var shown: [FaceExpression: Double] = [:]
 
+    /// A new reply (any of its events reached the driver first): the old reply's events and audio clock go, so its
+    /// expression can't come back on the new reply's clock (codex P2). Same id again: nothing changes.
+    mutating func begin(utterance u: Int) {
+        guard u != utterance else { return }
+        events = []; offset = nil; utterance = u; replyEnded = nil; hadAudio = false
+    }
+
     mutating func add(_ e: FaceExpressionEvent, utterance u: Int?) {
-        if let u, u != utterance { events = []; offset = nil; utterance = u; replyEnded = nil; hadAudio = false }
+        // the driver begins every reply before its events; a caller that does not (the render tool) begins here.
+        // An event arriving after its reply's audio keeps that reply's clock (codex P2).
+        if let u { begin(utterance: u) }
         events.append(e)
     }
 
@@ -74,14 +83,15 @@ struct ExpressionStills {
         // the reply's mood holds while its audio plays and `replyHold` after it ends
         let replyOn = audioMs != nil || (replyEnded.map { t - $0 < Self.replyHold } ?? false)
 
-        // the latest-starting event whose window holds `now`
+        // the latest-starting event whose window holds `now`; a face without a still for it shows none (the
+        // earlier feeling does not linger on, codex P2)
         var target: FaceExpression?
         if let ms = now {
-            var best = -Double.infinity
-            for e in events where ms >= Double(e.startMs) - Self.lead * 1000 && Double(e.startMs) >= best
-                && (ms <= Double(e.endMs) + Self.moodHold * 1000 || replyOn) {
-                guard let k = FaceExpression.stills(forTag: e.tag, intensity: e.intensity).first(where: { available.contains($0) }) else { continue }
-                best = Double(e.startMs); target = k; level[k] = Self.holdLevel(e.intensity)
+            var latest: FaceExpressionEvent?
+            for e in events where ms >= Double(e.startMs) - Self.lead * 1000 && Double(e.startMs) >= Double(latest?.startMs ?? Int.min)
+                && (ms <= Double(e.endMs) + Self.moodHold * 1000 || replyOn) { latest = e }
+            if let e = latest, let k = FaceExpression.stills(forTag: e.tag, intensity: e.intensity).first(where: { available.contains($0) }) {
+                target = k; level[k] = Self.holdLevel(e.intensity)
             }
         }
         var keys = Set(presence.keys)
