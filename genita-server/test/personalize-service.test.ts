@@ -641,3 +641,20 @@ test("Codex #538 r4: two chips of one list in one save both go; a 'Not for you' 
   assert.ok(!after.includes("Dislikes seafood."), JSON.stringify(after));
   assert.ok(after.includes("Food: seafood."), "the like stays");
 });
+
+test("Codex #538 r5: clothes dislike chips leave 'Dislikes colorful, formal clothes.' one by one; 'Avoids seafood.' is a dislike too", async () => {
+  const { withoutMarked, withPendingRemoved } = await import("../src/personalize/service.ts");
+  const { skipStyleCard } = await import("../src/prep/importProfile.ts");
+  const r = skipStyleCard({ interests: [], replies: null, avoid: [], n3: { clothes: { like: ["Minimal"], no: ["Colorful", "Formal"] }, food: { like: [], no: [] }, chats: { like: [], no: [] } } });
+  assert.ok(r.ok);
+  const row = (c: typeof r.card, key: string) => c.display.find((d) => d.key === key)?.items.map((i) => i.text) ?? [];
+  assert.ok(row(r.card, "likes").some((t) => /Dislikes colorful, formal clothes/i.test(t)), JSON.stringify(row(r.card, "likes")));
+  const one = row(withoutMarked(r.card, ["Not for you: Colorful"], "taste"), "likes");
+  assert.ok(one.some((t) => /^Dislikes formal clothes\.$/i.test(t)), JSON.stringify(one));
+  const both = withPendingRemoved({ ...r.card, pendingCorrections: [{ cardId: "taste", items: ["Not for you: Colorful", "Not for you: Formal"], text: "", asOf: "1" }] });
+  assert.ok(!row(both, "likes").some((t) => /colorful|formal/i.test(t)), JSON.stringify(row(both, "likes")));
+  assert.ok(row(both, "likes").some((t) => /Minimal/.test(t)), "the like stays");
+  const card = { ...r.card, sections: { ...r.card.sections, likes: [...r.card.sections.likes, { text: "Avoids seafood.", label: "explicit", scope: "any" }] } } as typeof r.card;
+  card.display = card.display.map((d) => (d.key === "likes" ? { ...d, items: card.sections.likes.map((f) => ({ text: f.text, label: "explicit" })) } : d)) as typeof card.display;
+  assert.ok(!row(withoutMarked(card, ["Not for you: seafood"], "taste"), "likes").includes("Avoids seafood."));
+});

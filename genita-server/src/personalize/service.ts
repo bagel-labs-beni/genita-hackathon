@@ -14,7 +14,7 @@
 import type { SparkRequest } from "../meta/spark.ts";
 import { sparkJson } from "../meta/spark.ts";
 import { backgroundJson } from "../meta/sparkOpen.ts";
-import { looksLikeInjection, redactSensitive, styleProfileText, type DisplayRow, type Finding, type StyleCard } from "../prep/importProfile.ts";
+import { isDislike, looksLikeInjection, redactSensitive, styleProfileText, type DisplayRow, type Finding, type StyleCard } from "../prep/importProfile.ts";
 import type { PrepStore } from "../prep/store.ts";
 import { EYEBROWS, SOURCES, SPARK_STORY_IDS, STORY_IDS, buildStoryRequest, cardTexts, interimCard, optimisticCard, toStory, type SparkStoryId, type Story, type StoryCard, type StoryId, type UnknownItem } from "./story.ts";
 import { PROFILE_FIELDS, mergeUpdates, type AppliedUpdate, type ProfileField, type ProfileUpdate } from "./merge.ts";
@@ -51,10 +51,24 @@ type Edit = { drop: boolean; to?: string };
 function markedEdits(card: StyleCard, items: string[], cardId?: StoryId): Map<string, Edit> {
   // a finding's own label ("Style: Minimal.", "Media: …") is not part of what the user marked (Codex #538 r2)
   const label = (t: string) => t.match(/^\s*[A-Za-z][A-Za-z ]{1,20}:\s+/)?.[0] ?? "";
-  // a dislike: the finding "Dislikes seafood." and its chip "Not for you: seafood" (Codex #538 r4)
-  const DISLIKE = /^\s*(dislikes|not for (you|them|me))\b:?\s*/i;
-  const negative = (t: string) => DISLIKE.test(t);
-  const bare = (t: string) => t.replace(DISLIKE, "").slice(DISLIKE.test(t) ? 0 : label(t).length);
+  // a dislike finding is what the import calls one (isDislike: "Dislikes …", "Avoids …"); its chip reads
+  // "Not for you: seafood" (Codex #538 r4, r5)
+  const NOT_FOR = /^\s*not for (you|them|me):?\s*/i;
+  const DISLIKE_HEAD = /^\s*(?:dislikes?|avoids?|hates?|not into|no|never|doesn't like|does not like|can't stand)\s+/i;
+  const negative = (t: string) => NOT_FOR.test(t) || isDislike(t);
+  /**
+   * A finding the N3 chips came from, as head + items + tail (story.ts skipTasteTags): "Style: Minimal, Comfy.",
+   * "Dislikes colorful, formal clothes.", "Avoids seafood." — or null for a sentence.
+   */
+  const asList = (t: string): { head: string; items: string[]; tail: string } | null => {
+    let m = t.match(/^(\s*dislikes?\s+)(.+?)(\s+clothes\.?)$/i);
+    if (!m) m = t.match(/^(\s*(?:dislikes?|avoids?|hates?|not into|no|never|doesn't like|does not like|can't stand)\s+)(.+?)(\.?)$/i);
+    if (!m && label(t)) m = t.match(/^(\s*[A-Za-z][A-Za-z ]{1,20}:\s+)(.+?)(\.?)$/);
+    if (!m) return null;
+    const parts = m[2].split(/\s*,\s*|\s+and\s+/).filter(Boolean);
+    return parts.length ? { head: m[1], items: parts, tail: m[3] || "." } : null;
+  };
+  const bare = (t: string) => (NOT_FOR.test(t) ? t.replace(NOT_FOR, "") : isDislike(t) ? t.replace(DISLIKE_HEAD, "") : t.slice(label(t).length));
   const list = (t: string) => bare(t).toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\s+/).filter((w) => w.length > 2 && !STOP.has(w));
   const words = (t: string) => new Set(list(t));
   /** what the line is about: its last content word ("… outfits." vs "… recipes."), 5-letter stem */
@@ -66,21 +80,18 @@ function markedEdits(card: StyleCard, items: string[], cardId?: StoryId): Map<st
   const overlap = (a: Set<string>, b: Set<string>) => { let n = 0; for (const x of a) if (b.has(x)) n++; return n / Math.max(a.size, b.size); };
   const keys = new Set<string>(cardId && cardId !== "unknowns" ? SOURCES[cardId] : Object.keys(card.sections ?? {}));
   const candidates = Object.entries(card.sections ?? {}).flatMap(([k, v]) => (keys.has(k) && Array.isArray(v) ? v.map((f) => f.text) : []));
-  /** a list finding's items as they stand after this save's earlier chips */
-  const now = (t: string) => { const e = edits.get(t); return e?.drop ? "" : e?.to ?? t; };
-  const items_ = (t: string) => bare(now(t)).replace(/\.\s*$/, "").split(/\s*,\s*/).filter(Boolean);
+  /** a list finding as it stands after this save's earlier chips */
+  const now = (t: string) => { const e = edits.get(t); return e?.drop ? null : e?.to ?? t; };
   for (const m of marked) {
     const pool = candidates.filter((t) => negative(t) === m.neg);   // a dislike chip only for a dislike, a like for a like
-    // a chip inside a list finding ("Style: Minimal, Comfy."): only that chip goes; several chips of one save add up
+    // a chip of a list finding ("Style: Minimal, Comfy.", "Dislikes colorful, formal clothes."): only that chip goes;
+    // several chips of one save add up; the last one takes the finding
     const chip = norm(m.raw);
-    const listHit = pool.find((t) => {
-      const parts = items_(t);
-      return (parts.length > 1 || edits.has(t)) && parts.some((x) => norm(x) === chip);
-    });
+    const listHit = pool.find((t) => { const cur = now(t); const l = cur ? asList(cur) : null; return !!l && l.items.some((x) => norm(x) === chip); });
     if (listHit) {
-      const parts = items_(listHit).filter((x) => norm(x) !== chip);
-      const head = negative(listHit) ? (listHit.match(DISLIKE)?.[0] ?? "") : label(listHit);
-      edits.set(listHit, parts.length ? { drop: false, to: `${head}${parts.join(", ")}.` } : { drop: true });
+      const l = asList(now(listHit)!)!;
+      const parts = l.items.filter((x) => norm(x) !== chip);
+      edits.set(listHit, parts.length ? { drop: false, to: `${l.head}${parts.join(", ")}${l.tail}` } : { drop: true });
       continue;
     }
     // each marked line takes out at most ONE finding: the clear best match (≥ 60 % of the words, better than any other
