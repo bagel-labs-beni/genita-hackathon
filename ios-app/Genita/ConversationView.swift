@@ -163,11 +163,12 @@ struct ConversationView: View {
                                 .frame(width: sheet == .full ? 250 : full.size.width - 2 * CallHUDGrid.margin, alignment: sheet == .full ? .leading : .center)
                                 .position(x: sheet == .full ? 16 + 125 : full.size.width / 2,
                                           y: sheet == .full ? 122 + top : grid.chipCenterY(status: status, prepLine: model.callPrepIndicator != nil && !interpreting && !moveLine,
-                                                                                         fitsRow: ProfileChipView.width(chip, soft: call.profileChip == nil) <= grid.rowPillWidth))
+                                                                                         fitsRow: ProfileChipView.width(chip, soft: call.profileChip == nil) <= grid.rowPillWidth,
+                                                                                         prepFitsRow: model.callPrepIndicator.map { CallPrepLine.width($0) <= grid.rowPillWidth } ?? true))
                         }
                         // S09-PREP (228:543): the face is still being made while the call runs (S09-P, D28)
                         if !connecting && !interpreting && !moveLine && sheet != .full, let line = model.callPrepIndicator {
-                            CallPrepLine(text: line).position(x: full.size.width / 2, y: grid.prepLineCenterY(status: status)).transition(.opacity)
+                            CallPrepLine(text: line).position(x: full.size.width / 2, y: grid.prepLineCenterY(status: status, fitsRow: CallPrepLine.width(line) <= grid.rowPillWidth)).transition(.opacity)
                         }
                         }
                         if connecting {
@@ -469,6 +470,11 @@ struct CallGlassControl: View {
 /// (#179 draws the same pill from `CallController.prepStage`; this one reads the account's prep poll.)
 struct CallPrepLine: View {
     let text: String
+    /// 16 + arc 14 + 8 + text (14 medium) + 16 — the pill's room rule decides whether it may sit on the menu row.
+    static func width(_ text: String) -> CGFloat {
+        let font = UIFont(name: "PretendardVariable-Medium", size: 14) ?? .systemFont(ofSize: 14, weight: .medium)
+        return 16 + 14 + 8 + ceil((text as NSString).size(withAttributes: [.font: font]).width) + 16
+    }
     @State private var turn = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {

@@ -66,17 +66,19 @@ struct CallHUDGrid: Equatable {
     func lineBottom(_ line: StatusLine) -> CGFloat {
         line == .second ? secondLineY + CallPillMetrics.height / 2 : rowY + Self.button / 2
     }
-    /// S09-PREP line (36 tall): in the pill's place when there is no pill, otherwise 6 pt under the pill's line.
-    func prepLineCenterY(status: StatusLine) -> CGFloat {
-        status == .none ? rowY : lineBottom(status) + 6 + CallPillMetrics.prepHeight / 2
+    /// S09-PREP line (36 tall): in the pill's place when there is no pill and it fits the row (`fitsRow`, as the pill's
+    /// rule; else top on the second line), otherwise 6 pt under the pill's line.
+    func prepLineCenterY(status: StatusLine, fitsRow: Bool = true) -> CGFloat {
+        guard status == .none else { return lineBottom(status) + 6 + CallPillMetrics.prepHeight / 2 }
+        return fitsRow ? rowY : secondLineY - CallPillMetrics.height / 2 + CallPillMetrics.prepHeight / 2
     }
     /// The "Getting to know you" / "Noted" chip (30 tall) sits 6 pt under the lowest line above it.
     /// Alone (no pill, no prep line) it follows the pill's rule: on the row when it fits between the menu button and
     /// its mirror (`fitsRow`), else on the second line (top 8 under the menu button), never across it.
-    func chipCenterY(status: StatusLine, prepLine: Bool, fitsRow: Bool = false) -> CGFloat {
+    func chipCenterY(status: StatusLine, prepLine: Bool, fitsRow: Bool = false, prepFitsRow: Bool = true) -> CGFloat {
         if status == .none && !prepLine { return fitsRow ? rowY : secondLineY - CallPillMetrics.height / 2 + 15 }
         // 6 under the lowest piece above it — never above the menu row's bottom (the button)
-        let above = max(lineBottom(.row), prepLine ? prepLineCenterY(status: status) + CallPillMetrics.prepHeight / 2 : lineBottom(status == .none ? .row : status))
+        let above = max(lineBottom(.row), prepLine ? prepLineCenterY(status: status, fitsRow: prepFitsRow) + CallPillMetrics.prepHeight / 2 : lineBottom(status == .none ? .row : status))
         return above + 6 + 15
     }
 

@@ -22,6 +22,8 @@ final class CallHUDGridTests: XCTestCase {
         XCTAssertEqual(g.prepLineCenterY(status: .row), 92 + 22 + 6 + 18)
         XCTAssertEqual(g.chipCenterY(status: .row, prepLine: true), 92 + 22 + 6 + 36 + 6 + 15)
         XCTAssertEqual(g.prepLineCenterY(status: .none), 92, "no pill: the prep line takes the row")
+        XCTAssertEqual(g.prepLineCenterY(status: .none, fitsRow: false), 62 + 60 + 18, "too wide for the row (Codex P2, 320 pt): top on the second line")
+        XCTAssertEqual(g.chipCenterY(status: .none, prepLine: true, prepFitsRow: false), 62 + 60 + 36 + 6 + 15)
         XCTAssertEqual(g.chipCenterY(status: .none, prepLine: true), 92 + 22 + 6 + 15, "prep on the row: chip under the row's button")
         XCTAssertEqual(g.chipCenterY(status: .none, prepLine: false, fitsRow: true), 92, "alone and short: on the row, like the pill")
         XCTAssertEqual(g.chipCenterY(status: .none, prepLine: false), 62 + 60 + 15, "alone and wide: top on the second line (+60)")
