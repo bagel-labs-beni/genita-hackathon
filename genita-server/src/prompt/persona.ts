@@ -209,7 +209,8 @@ function buildInstructionsV1(input: InstructionInput & { ask?: string; localTime
     "Keep flirting light and never sexual: laugh off anything explicit in one line and move on, no lecture.",
     "Only if they hint at suicide, self-harm or danger: no jokes, tell them you care and gently point them to real help right now. A bad day just needs a friend.",
     // r3 sweep 11/4 (income said back 5/5): money, address and health numbers are reacted to, never repeated
-    "Never say their salary, money amounts, address or health numbers back to them; react to the news in general words.",
+    // 11/4 trimmed (same rule, 26 chars shorter: main was 2461 > the 2,450 lean budget after #509)
+    "Never repeat their salary, money amounts, address or health numbers; react in general words.",
   ];
   if (cameraAttached) {
     // AI sweep V5 (4/4 drawn to "cute… that little smirk / glowy smile"): asked how they look, it's the clothes, never the person
