@@ -60,6 +60,7 @@ struct ConversationView: View {
                             .opacity(sheet == .full || call.cameraOn ? 0 : 1)
                             .allowsHitTesting(!call.cameraOn)
                             .contentShape(Rectangle()).onTapGesture { faceTapped() }.accessibilityAction(named: "Interrupt") { call.interrupt() }
+                            .accessibilityIdentifier("companionFace")
                             .animation(.drawer, value: sheet)
                         if waitingCopy != nil { handoffScrim.frame(width: full.size.width, height: full.size.height).allowsHitTesting(false) }
                         Button { withAnimation(.easeInOut(duration: 0.22)) { model.menuOpen.toggle() } } label: {
@@ -69,10 +70,13 @@ struct ConversationView: View {
                             .opacity(sheet == .full ? 0 : 1).accessibilityHidden(sheet == .full)
                         if call.cameraOn && sheet != .full {
                             // r01 CAM-H `.pip`: right 20, top 120, 96 × 128, 2 px light border; moves left while the sheet is half up (the rail rises into its place)
-                            CompanionFaceView(still: companionImage, loop: loopURL).frame(width: 96, height: 128).clipShape(RoundedRectangle(cornerRadius: 16))
+                            // the camera's small window is the live, talking face too (Chelsea P1, build 7: a frozen upload photo)
+                            CompanionFaceView(still: companionImage, loop: loopURL, face: call.face, faceStill: call.faceStill, poster: call.facePoster).frame(width: 96, height: 128).clipShape(RoundedRectangle(cornerRadius: 16))
                                 .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(CallInk.onInk, lineWidth: 2)).shadow(color: CallInk.ink.opacity(0.18), radius: 12, y: 8)
                                 .position(x: sheet == .half || sheet == .rising ? 68 : full.size.width - 68, y: 184 + top)
-                                .onTapGesture { faceTapped() }.accessibilityLabel("\(call.companionName)").accessibilityIdentifier("cameraPip")
+                                .onTapGesture { faceTapped() }.accessibilityLabel("\(call.companionName)")
+                                .accessibilityValue(CompanionFaceView.layer(face: call.face != nil, poster: call.facePoster != nil, still: companionImage != nil))
+                                .accessibilityIdentifier("cameraPip")
                         }
                         if call.cameraOn, !connecting, let check = call.finds.noSee, sheet == .idle || sheet == .dismissed {
                             // FT-NOSEE (Figma 59:2): left 24, top 124; never over a sheet
@@ -386,9 +390,13 @@ struct ConversationView: View {
             Image(resource: "selfPreview").resizable().frame(width: 113, height: 211).accessibilityElement().accessibilityLabel("Your camera is off")
         }
     }
-    var companionImage: Image {
-        // the prep call scene (the generated face) before the upload photo: same framing as the face set
-        if let data = model.sceneImageData ?? model.setup.imageData, let image = UIImage(data: data) { return Image(uiImage: image) }
+    /// The still under the face: the prep call scene (the generated face, same framing as the face set). The upload
+    /// photo never shows on a call (Chelsea P1, build 7); until the scene or the face set lands it's the dark ground.
+    /// Unwired builds (UI tests, Appetize preview) keep their bundled fixture face.
+    var companionImage: Image? {
+        if let data = model.sceneImageData, let image = UIImage(data: data) { return Image(uiImage: image) }
+        guard !model.serverWired else { return nil }
+        if let data = model.setup.imageData, let image = UIImage(data: data) { return Image(uiImage: image) }
         return Image(resource: "companion")
     }
 }

@@ -37,6 +37,10 @@ final class CallScreenUITests: XCTestCase {
         }
 
         XCTAssertTrue(app.buttons["micToggle"].waitForExistence(timeout: 10))
+        // Chelsea P1: the call's first frame is a face layer of the companion (live / its poster / the scene), never the upload photo
+        let face = app.descendants(matching: .any)["companionFace"]
+        XCTAssertTrue(face.waitForExistence(timeout: 10))
+        XCTAssertTrue(["live", "poster", "still", "ground"].contains(face.value as? String ?? ""), "face layer: \(String(describing: face.value))")
         capture("S09-start")
         XCTAssertTrue(waitCue("Listening"), "S09-L"); capture("S09-L-listening")
         XCTAssertEqual(app.buttons["micToggle"].label, "Turn microphone off")
