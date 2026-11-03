@@ -54,6 +54,23 @@ public struct ImageCheck: Codable, Equatable, Sendable {
     public var type: String?
     public var checks: Checks?
     public var reasons: [Reason]
+    /// Photo polish (server flag GENITA_PHOTO_POLISH): true = polish this photo and show it for confirmation (V02-T).
+    /// nil / false (older server, flag off, public figure, no face) = today's V02-T / V02-F on this check.
+    public var polish: Bool? = nil
+}
+
+/// Photo polish (PREP_API.md "Photo polish"): the polished picture to confirm on V02-T ("Use this image" / "Try again").
+public struct PolishedImage: Codable, Equatable, Sendable {
+    public var imageId: String
+    public var sourceImageId: String
+    /// the polished picture passed the same check (and kept the subject type); only then can it make the companion
+    public var passed: Bool
+    public var type: String?
+    public var checks: ImageCheck.Checks?
+    public var reasons: [ImageCheck.Reason]
+    public var attempt: Int
+    /// "Try again" left for this photo (two at first)
+    public var retriesLeft: Int
 }
 
 public struct NameSuggestion: Codable, Equatable, Sendable {
@@ -243,6 +260,17 @@ public final class OnboardingClient: @unchecked Sendable {
     /// V01 "Use this image": ≤1024 px JPEG, with the rights line acknowledged (D26). Spark + SAM check, 2–5 s.
     public func checkImage(jpeg: Data) async throws -> ImageCheck {
         try await auth.send("POST", "/v1/companion/image", body: jpeg, contentType: "image/jpeg", query: "rights=1", timeout: 60)
+    }
+
+    /// Photo polish: one Muse Image edit + the same check on the result (≈15–20 s). "Try again" sends the same upload id.
+    /// 422 not_polishable / polish_refused = choose another photo · 429 polish_limit · 502 polish_failed (retryable).
+    public func polishImage(imageId: String) async throws -> PolishedImage {
+        try await auth.send("POST", "/v1/companion/image/polish", json: ["imageId": imageId], timeout: 90)
+    }
+
+    /// The user's own uploaded or polished image (V02-T shows the polished one).
+    public func imageBytes(imageId: String) async throws -> Data {
+        try await auth.sendData("GET", "/v1/companion/image/\(imageId.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? imageId)", timeout: 30)
     }
 
     /// NM01: one name from the photo + imported style (≤3 s p50; never fails for a Spark error).
