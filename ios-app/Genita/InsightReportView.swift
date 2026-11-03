@@ -125,7 +125,8 @@ struct InsightReportView: View {
     private var header: some View {
         HStack(spacing: 12) {
             Group {
-                if let data = model.setup.imageData ?? model.sceneImageData, let img = UIImage(data: data) {
+                // the companion's face (its generated scene), never the uploaded photo (AU-24); else the initial
+                if let data = model.sceneImageData, let img = UIImage(data: data) {
                     Image(uiImage: img).resizable().scaledToFill()
                 } else {
                     Circle().fill(InsightInk.blueSoft).overlay(Text(String(name.prefix(1)).uppercased()).insightText(15, .semibold, line: 20, color: InsightInk.blueText))
