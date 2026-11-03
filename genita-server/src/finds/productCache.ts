@@ -22,7 +22,8 @@ export type CachedProducts = {
   images?: Map<string, Buffer>;
 };
 
-const COLOR_WORD = /^(black|white|grey|gray|navy|blue|red|green|pink|purple|yellow|orange|beige|camel|tan|brown|cream|ivory|olive|burgundy|silver|gold)$/;
+const COLOR_WORD = /^(black|white|grey|gray|navy|blue|red|green|pink|purple|yellow|orange|beige|camel|tan|brown|cream|ivory|olive|burgundy|silver|gold|teal|khaki|charcoal|maroon|rust|mustard|lavender|mint|coral|taupe|nude|chocolate|cognac|sand|stone|oatmeal|ecru|wine|plum|lilac|turquoise|copper|bronze|bone|espresso|mocha|cherry|oxblood|indigo|denim)$/;
+const SHADE = /^(dark|light|pale|deep|bright|soft|muted|dusty|neon|pastel|off|hot|baby|forest|royal|navy)$/;
 const KINDS: Array<[string, RegExp]> = [
   ["boots", /\b(boots?|booties)\b/i],
   ["sneakers", /\b(sneakers?|trainers?)\b/i],
@@ -35,34 +36,54 @@ const KINDS: Array<[string, RegExp]> = [
   ["shoes", /\b(shoes?|oxfords?|derbys?|footwear)\b/i],
 ];
 const SHOE_KINDS = new Set(["boots", "sneakers", "loafers", "heels", "flats", "shoes"]);
-
 /**
- * The one kind of thing an ask is for ("boots", "sneakers", "shoes" …), or null when it names none or several
- * ("black shoes and a bag" is never served from or stored in the cache — Codex P1 #522).
+ * Every thing-to-buy word an ask can name (the finds label list and more): an ask whose words are not all of one
+ * kind ("black shoes and a blazer", "… and a belt") is never served from or stored in the cache (Codex #522 r2/r3).
  */
-/** anything else to buy named in the ask (a belt, a jacket …): then the ask is more than one kind */
-const OTHER_THINGS = /\b(belts?|jackets?|coats?|scarf|scarves|hats?|caps?|watch(?:es)?|sunglasses|jewelry|earrings?|necklaces?|bracelets?|wallets?|socks|gloves|dress(?:es)?|shirts?|pants|jeans|sweaters?|hoodies?|skirts?|accessor(?:y|ies)|lamps?|chairs?|mugs?|headphones|earbuds)\b/i;
+const THING = /\b(jackets?|coats?|blazers?|parkas?|vests?|dress(?:es)?|shirts?|overshirts?|tees?|t-shirts?|tops?|blouses?|sweaters?|cardigans?|hoodies?|skirts?|pants|trousers|jeans|shorts|leggings|suits?|ties?|gowns?|outfits?|pajamas|swimsuits?|bikinis?|socks|gloves|belts?|hats?|caps?|beanies?|scarf|scarves|watch(?:es)?|sunglasses|glasses|jewelry|rings?|earrings?|necklaces?|bracelets?|wallets?|umbrellas?|perfume|makeup|lipstick|accessor(?:y|ies)|lamps?|chairs?|mugs?|headphones|earbuds|phones?|cases?|laptops?|gifts?|sandals?|slippers?|slides|mules?|clogs?|flip[- ]?flops?|boots?|booties|sneakers?|trainers?|loafers?|heels?|pumps?|flats|ballet|totes?|backpacks?|rucksacks?|bags?|purses?|clutch|crossbody|shoes?|oxfords?|derbys?|footwear)\b/gi;
 
+const kindOfWord = (w: string) => KINDS.find(([, re]) => re.test(w))?.[0] ?? null;
+
+/** The one kind of thing an ask is for ("boots", "sneakers", "shoes" …), or null when it names none, several, or anything else. */
 export function categoryOf(text: string): string | null {
-  if (OTHER_THINGS.test(text)) return null;
-  const hits = KINDS.filter(([, re]) => re.test(text)).map(([k]) => k);
-  if (hits.length !== 1) return hits.length === 2 && hits.includes("shoes") && hits.every((k) => SHOE_KINDS.has(k)) ? hits.find((k) => k !== "shoes")! : null;
-  return hits[0];
+  const words = text.match(THING) ?? [];
+  if (!words.length) return null;
+  const kinds = new Set<string>();
+  for (const w of words) {
+    const k = kindOfWord(w);
+    if (!k) return null;                       // a blazer, a belt, sandals …: not a cached kind
+    kinds.add(k);
+  }
+  const hits = [...kinds];
+  if (hits.length === 1) return hits[0];
+  // "boots (shoes)": the narrower shoe kind
+  return hits.length === 2 && hits.includes("shoes") && hits.every((k) => SHOE_KINDS.has(k)) ? hits.find((k) => k !== "shoes")! : null;
 }
 
-/** every product is the kind asked for: a "shoes" ask takes any shoe, "boots" only boots, never a bag */
+/** every product is the kind asked for — named so in its own name ("a shoes ask" takes any shoe); a product of no known kind (a belt) never passes (Codex #522 r3) */
 export function cardIsKind(card: FindCard, kind: string): boolean {
   const products = card.products ?? [];
   return products.length > 0 && products.every((p) => {
-    const k = KINDS.find(([, re]) => re.test(p.name))?.[0];
-    if (!k) return kind !== "bags" ? SHOE_KINDS.has(kind) && kind === "shoes" : false;
-    return kind === "shoes" ? SHOE_KINDS.has(k) : k === kind;
+    const name = p.name.replace(/[-_/]+/g, " ");
+    const words = name.match(THING) ?? [];
+    if (!words.length) return false;
+    const ks = words.map(kindOfWord);
+    if (ks.some((k) => !k)) return false;   // "Leather Belt", "Slide Sandal"
+    return ks.every((k) => (kind === "shoes" ? SHOE_KINDS.has(k!) : k === kind));
   });
 }
 
 /** base color words of an ask ("dark brown" → brown) */
 export function colorsOf(text: string): string[] {
   return [...new Set((text.toLowerCase().match(/[a-z]+/g) ?? []).filter((w) => COLOR_WORD.test(w)))].sort();
+}
+
+/** the colors as asked, shades kept ("dark brown", "light brown" are different keys — Codex #522 r3) */
+export function colorPhrases(text: string): string[] {
+  const w = text.toLowerCase().match(/[a-z]+/g) ?? [];
+  const out = new Set<string>();
+  w.forEach((x, i) => { if (COLOR_WORD.test(x)) out.add(i > 0 && SHADE.test(w[i - 1]) && w[i - 1] !== x ? `${w[i - 1]} ${x}` : x); });
+  return [...out].sort();
 }
 
 const tasteKey = (taste: string) => taste.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 2000);

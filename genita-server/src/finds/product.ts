@@ -326,13 +326,17 @@ export function sparkSearchMax(env: NodeJS.ProcessEnv = process.env): number {
   return Number.isInteger(n) && n >= 1 && n <= 64 ? n : 8;
 }
 const slots = { used: 0, fg: [] as Array<() => void>, bg: [] as Array<() => void> };
+/** slots background searches may use: all but two (one with a limit of 2; none with a limit of 1) */
+const backgroundMax = () => Math.max(0, sparkSearchMax() - Math.min(2, sparkSearchMax() - 1));
 function tryTake(background: boolean): boolean {
-  // a background search leaves two slots for the people in calls
-  if (slots.used < sparkSearchMax() - (background ? 2 : 0)) { slots.used++; return true; }
+  // a background search leaves slots for the people in calls
+  if (slots.used < (background ? backgroundMax() : sparkSearchMax())) { slots.used++; return true; }
   return false;
 }
 function take(background: boolean, signal: AbortSignal): Promise<boolean> {
   if (tryTake(background)) return Promise.resolve(true);
+  // no background slot at this limit: give up at once rather than wait forever (Codex #522 r3)
+  if (background && backgroundMax() === 0) return Promise.resolve(false);
   return new Promise((resolve) => {
     const q = background ? slots.bg : slots.fg;
     const go = () => { signal.removeEventListener("abort", stop); resolve(true); };
@@ -343,7 +347,7 @@ function take(background: boolean, signal: AbortSignal): Promise<boolean> {
 }
 function give(): void {
   // hand the slot straight to the next waiter (calls first), else free it
-  const next = slots.fg.shift() ?? (slots.used <= sparkSearchMax() - 2 ? slots.bg.shift() : undefined);
+  const next = slots.fg.shift() ?? (slots.used <= backgroundMax() ? slots.bg.shift() : undefined);
   if (next) next();
   else slots.used = Math.max(0, slots.used - 1);
 }

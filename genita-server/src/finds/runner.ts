@@ -12,7 +12,7 @@ import type { FindCard, FindKind, ServerEvent } from "../protocol.ts";
 import { classifyTurn, isLinksAsk, isProductAsk } from "./intent.ts";
 import { PRODUCT_COUNT, SEARCH_TITLE, guessLabel, runProduct, shortLabel } from "./product.ts";
 import { confirmItem, runLink, runOutfit, runRecipe, type PipelineCtx, type PipelineResult } from "./pipeline.ts";
-import { cacheGet, cacheKey, cachePut, cardFitsColors, cardIsKind, categoryOf, claimWarm, colorsOf, releaseWarm, type CachedProducts } from "./productCache.ts";
+import { cacheGet, cacheKey, cachePut, cardFitsColors, cardIsKind, categoryOf, claimWarm, colorPhrases, colorsOf, releaseWarm, type CachedProducts } from "./productCache.ts";
 import { ownerKey, type FindsStore } from "./store.ts";
 import type { FindsVendors } from "./vendors.ts";
 
@@ -185,12 +185,11 @@ export class FindsRunner {
   }
 
   /**
-   * What a cached card is shared under: the exact taste text (identical imports, e.g. demo accounts), or this account
-   * alone when it has none (Codex P1 #522: every account without a profile shared one cache).
+   * What a cached card is kept under: this account and its taste text. Never shared between accounts: a search's
+   * taste chips and evidence can quote the account's own memories (Codex #522 r3 P1).
    */
   private tasteText(): string {
-    const t = (this.profile ?? "").trim();
-    return t ? t : `account:${this.owner ?? "none"}`;
+    return `account:${this.owner ?? "none"}|${(this.profile ?? "").trim()}`;
   }
 
   private async warmProducts(): Promise<void> {
@@ -198,7 +197,7 @@ export class FindsRunner {
     const taste = this.tasteText();
     // all colors at once: background searches yield to calls, and the ask comes ~20 s after the call starts
     await Promise.all(warmColors(taste).map(async (phrase) => {
-      const key = cacheKey("shoes", colorsOf(phrase), taste);
+      const key = cacheKey("shoes", colorPhrases(phrase), taste);
       if (cacheGet(key, Date.now()) || !claimWarm(key, Date.now())) return;
       const card = await this.searchInBackground(`Find ${phrase} shoes that match their style.`, `warm-${randomUUID()}`).catch(() => null);
       if (card && cardIsKind(card.card, "shoes") && cardFitsColors(card.card, colorsOf(phrase))) cachePut(key, card);
@@ -329,7 +328,7 @@ export class FindsRunner {
       if (r.card && intent.kind === "product" && !r.timings.cached && this.deps.productCache === true) {
         const cat = categoryOf(t.text);
         const colors = colorsOf(t.text);
-        if (cat && cardIsKind(r.card, cat) && cardFitsColors(r.card, colors)) cachePut(cacheKey(cat, colors, this.tasteText()), { at: Date.now(), card: r.card, sourceFindId: findId });
+        if (cat && colors.length && cardIsKind(r.card, cat) && cardFitsColors(r.card, colors)) cachePut(cacheKey(cat, colorPhrases(t.text), this.tasteText()), { at: Date.now(), card: r.card, sourceFindId: findId });
       }
       this.hooks.log("find.done", { findId, kind: intent.kind, ok: !!r.card, ...r.timings });
       return r;
@@ -415,7 +414,9 @@ export class FindsRunner {
     const named = [...lower.matchAll(/\b([a-z]+)\b/g)].map((m) => m[1]);
     if (EXCLUDE.test(lower) || named.some((w) => MATERIAL.test(w)) || /\$\s?\d|\bunder \d|\bcheap|\bsize\b|\b\d{1,2}(\.5)?\b|\b(wide|narrow|petite|plus)\b/.test(lower) || brandsIn(text).length) return null;
     const colors = colorsOf(text);
-    const hit = cacheGet(cacheKey(cat, colors, this.tasteText()), Date.now());
+    // no color word we know ("teal" once was none): never served from the cache (Codex #522 r3)
+    if (!colors.length) return null;
+    const hit = cacheGet(cacheKey(cat, colorPhrases(text), this.tasteText()), Date.now());
     return hit && cardIsKind(hit.card, cat) && cardFitsColors(hit.card, colors) ? hit : null;
   }
 
@@ -431,10 +432,12 @@ export class FindsRunner {
     for (const p of entry.card.products ?? []) {
       // another call's situation (what someone said there) never travels with the card
       const q = { ...p, situation: "" };
-      if (p.image?.status === "ready") {
+      // the picture's bytes, wherever the card's own status stopped (a background search sends no image events, so
+      // its card still says "pending" — Codex #522 r3): there → ready here; not there → failed (nothing will follow)
+      if (p.image) {
         const bytes = entry.images?.get(p.image.slot) ?? (entry.sourceFindId ? (await this.deps.store.getImage(entry.sourceFindId, p.image.slot).catch(() => null))?.bytes : undefined);
         if (bytes) {
-          try { q.image = { ...p.image, url: await c.putImage(p.image.slot, bytes) }; } catch { q.image = { slot: p.image.slot, status: "failed" }; }
+          try { q.image = { slot: p.image.slot, status: "ready", url: await c.putImage(p.image.slot, bytes) }; } catch { q.image = { slot: p.image.slot, status: "failed" }; }
         } else q.image = { slot: p.image.slot, status: "failed" };
       }
       products.push(q);
@@ -455,7 +458,7 @@ export class FindsRunner {
     const cardMs = Math.round(c.now() - t0);
     // refresh behind it (yields to calls), for the next ask
     const kind = categoryOf(t.text) ?? "shoes";
-    const key = cacheKey(kind, colorsOf(t.text), this.tasteText());
+    const key = cacheKey(kind, colorPhrases(t.text), this.tasteText());
     void this.searchInBackground(t.text, `refresh-${randomUUID()}`).then((fresh) => { if (fresh && cardIsKind(fresh.card, kind) && cardFitsColors(fresh.card, colorsOf(t.text))) cachePut(key, fresh); }).catch(() => {});
     return { card, timings: { cardMs, cached: 1 } };
   }

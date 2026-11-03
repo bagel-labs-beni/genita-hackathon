@@ -91,17 +91,60 @@ test("S5 cache: an ask whose color the cached picks don't prove, or a different 
   a.r.close(); b.r.close();
 });
 
-test("S5 cache: the same taste on another account (a second demo account) gets the cached card", async () => {
+test("S5 cache (Codex #522 r3 P1): another account never gets this account's card, even with the identical import", async () => {
   clearProductCache();
   const { v } = vendors(10);
   const a = runner(v, "demo-1");
   await sleep(200);
   const b = runner(v, "demo-2");
+  await sleep(1); // b's own warm-up has started, not finished
   const s = b.r.onTurn({ text: "Can you find me some dark brown shoes?", frames: [], utteranceId: 1, replyText: Promise.resolve(null) });
-  await sleep(5);
-  const created = b.events.find((e) => e.type === "find.created" && e.findId === s!.findId) as { card: FindCard } | undefined;
-  assert.ok(created, "identical import: cached card");
+  await sleep(1);
+  assert.ok(!b.events.some((e) => e.type === "find.created" && e.findId === s!.findId), "a's card (its chips can quote a's memories) stays a's");
+  await b.r.settle();
   a.r.close(); b.r.close();
+});
+
+test("Codex #522 r3: other things named, unknown-kind products, shades and unknown colors, pictures from a background search", async () => {
+  const { categoryOf, cardIsKind, colorPhrases } = await import("../src/finds/productCache.ts");
+  for (const ask of ["Find black shoes and a black blazer", "Find black shoes and a parka", "black boots and a cardigan"]) assert.equal(categoryOf(ask), null, ask);
+  assert.equal(categoryOf("Find me black boots"), "boots");
+  const card = (names: string[]) => ({ products: names.map((name) => ({ name, taste: "", situation: "" })) }) as unknown as FindCard;
+  assert.equal(cardIsKind(card(["Black Chelsea Boot", "Black Leather Belt"]), "shoes"), false, "a belt never sits in the shoes cache");
+  assert.equal(cardIsKind(card(["Black Chelsea Boot", "Samba OG"]), "shoes"), false, "a product of no known kind never passes");
+  assert.notDeepEqual(colorPhrases("dark brown shoes"), colorPhrases("light brown shoes"));
+  assert.deepEqual(colorPhrases("Find me some dark brown shoes"), ["dark brown"]);
+  // an ask with no known color ("aqua") is never served from the cache
+  clearProductCache();
+  const { v, searches } = vendors(10);
+  const a = runner(v);
+  await sleep(200);
+  const before = searches.length;
+  const s = a.r.onTurn({ text: "Find me some aqua shoes", frames: [], utteranceId: 2, replyText: Promise.resolve(null) });
+  await sleep(5);
+  assert.ok(!a.events.some((e) => e.type === "find.created" && e.findId === s!.findId));
+  await a.r.settle();
+  assert.ok(searches.length > before);
+  // the warm-up's pictures (kept in memory, no image events) show on the replayed card
+  const hit = a.r.onTurn({ text: "Can you find me some dark brown shoes?", frames: [], utteranceId: 3, replyText: Promise.resolve(null) });
+  await sleep(20);
+  const created = a.events.find((e) => e.type === "find.created" && e.findId === hit!.findId) as { card: FindCard } | undefined;
+  assert.ok(created);
+  assert.ok(created!.card.products!.every((p) => !p.image || p.image.status !== "pending"), JSON.stringify(created!.card.products!.map((p) => p.image)));
+  await a.r.settle();
+  a.r.close();
+});
+
+test("Spark search slots (Codex #522 r3): with a limit of 1 a background search gives up at once instead of waiting forever", async (t) => {
+  const prev = process.env.GENITA_SPARK_SEARCH_MAX;
+  process.env.GENITA_SPARK_SEARCH_MAX = "1";
+  t.after(() => { if (prev === undefined) delete process.env.GENITA_SPARK_SEARCH_MAX; else process.env.GENITA_SPARK_SEARCH_MAX = prev; });
+  let calls = 0;
+  const v = { async spark() { calls++; return { text: "{}", output: [] }; } } as unknown as FindsVendors;
+  const r = await hedgedSearch(v, "p", 1, new AbortController().signal, [], { background: true });
+  assert.equal(r, null);
+  assert.equal(calls, 0);
+  assert.equal(searchSlotsUsed(), 0);
 });
 
 test("Spark search slots: never more than GENITA_SPARK_SEARCH_MAX in flight across searches; extra lanes only when free", async (t) => {
