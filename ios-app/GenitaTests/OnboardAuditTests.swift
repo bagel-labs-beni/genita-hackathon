@@ -239,6 +239,16 @@ import UIKit
         await b.companionTask?.value
         XCTAssertEqual(posts.value, 1 + b.resetRetries)
         XCTAssertNotEqual(b.setup.companionCreated, true, "reset_in_progress is not 'already exists'")
+        // another sign-in while it waits: no more tries under the new account's token, nothing applied to it
+        posts.value = 0
+        let d = model(busyFor: 99, then: (200, companion))
+        d.resetRetryDelay = .milliseconds(200)
+        d.useCheckedImage()
+        for _ in 0..<100 where posts.value == 0 { try await Task.sleep(for: .milliseconds(10)) }
+        d.signedIn(userId: "u2", consented: true)
+        try await Task.sleep(for: .milliseconds(600))   // past two of the old retry gaps
+        XCTAssertEqual(posts.value, 1, "the old account's create stops at the sign-in")
+        XCTAssertNotEqual(d.setup.companionCreated, true)
         // a real companion_exists still means it exists
         posts.value = 0
         let c = model(busyFor: 0, then: (409, Data(#"{"error":"companion_exists"}"#.utf8)))

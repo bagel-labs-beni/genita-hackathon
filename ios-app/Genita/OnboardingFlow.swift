@@ -511,6 +511,8 @@ extension AppState {
                 prep = c.prep
             } catch GenitaAuthError.server(409, "reset_in_progress", _) {
                 // still starting over after the retries: nothing exists yet, NM01 Continue creates it (#514)
+            } catch is CancellationError {
+                // another account now: nothing of this one's create applies
             } catch GenitaAuthError.server(409, _, _) {
                 setup.companionCreated = true   // one companion per user; it already exists
             } catch { flowError = Self.errorLine(error); route(error) }
@@ -525,10 +527,18 @@ extension AppState {
     /// nothing exists yet, not "already made": wait a moment and ask again, a few times (handover b9-6).
     @discardableResult
     func createCompanionAfterReset(imageId: String, voiceId: String? = nil, name: String? = nil) async throws -> CompanionInfo {
+        // another sign-in (or sign-out) meanwhile: never send this account's photo and name under the next one's
+        // token, and never apply the answer to it (Codex P2)
+        let generation = authGeneration
+        func stillOurs() throws { if authGeneration != generation || Task.isCancelled { throw CancellationError() } }
         var tries = 0
         while true {
-            do { return try await onboarding.createCompanion(imageId: imageId, voiceId: voiceId, name: name) }
-            catch GenitaAuthError.server(409, "reset_in_progress", _) where tries < resetRetries {
+            try stillOurs()
+            do {
+                let c = try await onboarding.createCompanion(imageId: imageId, voiceId: voiceId, name: name)
+                try stillOurs()
+                return c
+            } catch GenitaAuthError.server(409, "reset_in_progress", _) where tries < resetRetries {
                 tries += 1
                 try await Task.sleep(for: resetRetryDelay)
             }
@@ -589,6 +599,8 @@ extension AppState {
                 nameError = "Try a different name."
             } catch GenitaAuthError.server(409, "reset_in_progress", _) {
                 nameError = Self.resetBusyLine
+            } catch is CancellationError {
+                // another account now: this NM01's answer doesn't belong to it
             } catch { nameError = Self.errorLine(error); route(error) }
         }
     }
