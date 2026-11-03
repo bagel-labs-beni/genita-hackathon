@@ -311,8 +311,9 @@ jobs:
           fi
           rm -f "$RUNNER_TEMP/AuthKey.p8" "$ZIP"
           test "$STATUS" = "Accepted"
-          for i in 1 2 3 4; do xcrun stapler staple "$APP" && break; [ "$i" = 4 ] && exit 1; sleep $((i * 15)); done
-          xcrun stapler validate "$APP"
+          # stapler talks to Apple's ticket CDN (CloudKit): retry staple + validate together on its network flakes (error 68)
+          ok=; for i in 1 2 3 4 5 6; do xcrun stapler staple "$APP" && xcrun stapler validate "$APP" && { ok=1; break; }; sleep $((i * 20)); done
+          test -n "$ok"
           codesign --verify --deep --strict --verbose=2 "$APP"
 
       - name: Build and sign DMG
@@ -347,8 +348,9 @@ jobs:
           rm -f "$RUNNER_TEMP/AuthKey.p8"
           test "$STATUS" = "Accepted"
           # stapler fetches the ticket from Apple's CDN; retry its network flakes (error 68)
-          for i in 1 2 3 4; do xcrun stapler staple "$DMG" && break; [ "$i" = 4 ] && exit 1; sleep $((i * 15)); done
-          xcrun stapler validate "$DMG"
+          # stapler talks to Apple's ticket CDN (CloudKit): retry staple + validate together on its network flakes (error 68)
+          ok=; for i in 1 2 3 4 5 6; do xcrun stapler staple "$DMG" && xcrun stapler validate "$DMG" && { ok=1; break; }; sleep $((i * 20)); done
+          test -n "$ok"
 
       - name: Verify Gatekeeper
         run: |

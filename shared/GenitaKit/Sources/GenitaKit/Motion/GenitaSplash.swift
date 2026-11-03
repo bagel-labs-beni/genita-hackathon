@@ -4,12 +4,17 @@ import SwiftUI
 /// draws in warm white, a faint blue dot circles the orbit once, a corona rises slowly behind the G's round
 /// counter (a total eclipse: dark disc, thin warm rim, soft noisy rays) and blooms ×1.2 over 0.8 s while it
 /// breathes ±3 %; one light haptic at 1.9 s; the wordmark (the same `logo` asset as A02) rises; then the disc
-/// grows into the head of the real A02 photo (sine in-out, 1.9–2.7 s), the corona survives only on the photo's
+/// grows into the head of the real A02 photo (sine in-out, 2.5–3.3 s), the corona survives only on the photo's
 /// bright backlight, the wordmark fades out where it is and A02 — rendered underneath all along — shows through.
-/// 2.7 s to A02; a tap jumps to the end state and hands over in 0.38 s. Tilt (iPhone) / pointer (Mac) brightens
-/// the rim on that side. Reduce Motion: a still lit frame (0.2 s fade in), crossfade to A02 at 0.7 s (0.4 s).
+/// A still hold 1.9–2.5 s, hand-off 2.5–3.3 s: 3.3 s from its first frame to A02; a tap (before 2.5 s) jumps to the end state and hands over in 0.38 s. Tilt (iPhone) / pointer (Mac) brightens
+/// the rim on that side. Reduce Motion: a still lit frame (0.3 s in, hold, 0.4 s crossfade from 1.1 s: 1.5 s).
+/// Signed-in relaunch (a saved session): the still lit frame for 0.9 s. Warm resume: no splash (shown once per launch).
 /// UI tests skip it unless `--splash-demo`. No Metal: layered gradients + noisy angular rays (see `CoronaView`).
 public struct GenitaSplash: View {
+    /// `full` = A′ (first launch, signed out); `short` = a signed-in relaunch: the still lit mark for 0.9 s.
+    public enum Mode: Sendable { case full, short }
+    var mode: Mode = .full
+    var onStart: (Date) -> Void = { _ in }
     var onFinished: () -> Void
 
     @State private var start: Date?
@@ -20,16 +25,33 @@ public struct GenitaSplash: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let timeline = Self.makeTimeline()
 
-    /// `origin` = when the splash was put up (the overlay's creation ≈ launch): the budget runs from there, so a
-    /// late first frame skips ahead instead of holding A02 back.
-    public init(origin: Date = Date(), onFinished: @escaping () -> Void) {
+    /// The clock starts when the splash is first on screen (the run-loop turn after it appears), not at launch:
+    /// on a phone the first frame comes late, and a launch-anchored clock skipped most of A′ (Chelsea 11/3: "too
+    /// fast"). Nothing else holds it: it ends on its own timeline (full 3.3 s, short 0.9 s, Reduce Motion 1.5 s).
+    public init(mode: Mode = .full, onStart: @escaping (Date) -> Void = { _ in }, onFinished: @escaping () -> Void) {
+        self.mode = mode
+        self.onStart = onStart
         self.onFinished = onFinished
-        _start = State(initialValue: origin)
     }
 
-    // MARK: timing (motion page A′ table)
-    static let handoffAt = 1.9
-    static let handoff = 0.70     // → A02 at 2.60 s: a timer also ends it there, leaving room for a busy main thread under the 2.7 s budget
+    /// Still-frame timing (Reduce Motion, short): the lit mark fades in (ease-out), holds, the scene crossfades
+    /// (smoothstep) to the first screen. 춘식이 11/4 spec: a readable 600–800 ms hold.
+    struct Still: Equatable { var fadeIn: Double; var outAt: Double; var out: Double; var end: Double { outAt + out } }
+    /// Reduce Motion: 0.3 s in, hold to 1.1 s, 0.4 s crossfade → 1.5 s
+    static let calmStill = Still(fadeIn: 0.3, outAt: 1.1, out: 0.4)
+    /// signed-in relaunch: 0.2 s in, hold 0.35 s, 0.35 s crossfade → 0.9 s
+    static let shortStill = Still(fadeIn: 0.2, outAt: 0.55, out: 0.35)
+    /// How long the splash stays up from its first frame, untouched (no tap).
+    static func onScreen(mode: Mode, reduceMotion: Bool) -> Double {
+        if mode == .short { return shortStill.end }
+        if reduceMotion { return calmStill.end }
+        return handoffAt + handoff
+    }
+    private var still: Still? { mode == .short ? Self.shortStill : reduceMotion ? Self.calmStill : nil }
+
+    // MARK: timing (motion page A′ table; 춘식이 11/4: wordmark 1.3–1.9 s, a still hold 1.9–2.5 s, hand-off 2.5–3.3 s)
+    static let handoffAt = 2.5
+    static let handoff = 0.80     // → A02 at 3.30 s from the first frame; a timer also ends it there
     static let skipHandoff = 0.38
     static let hapticAt = 1.9
 
@@ -39,7 +61,7 @@ public struct GenitaSplash: View {
         var body = 0.0     // 0.80–1.25 mark body + rim
         var amp = 0.0      // 0.50–1.50 corona rise
         var bloom = 1.0    // 1.10–1.90 ×1 → ×1.2
-        var word = 0.0     // 1.20–1.70 wordmark
+        var word = 0.0     // 1.30–1.90 wordmark
         var disc = 0.0     // 0.50–1.10 the white disc brightens
         var halo = 0.45    // 1.10–1.90 warm edge halo .45 → .9
         static let finished = Frame(outline: 1, orbit: 1, body: 1, amp: 1, bloom: 1.2, word: 1, disc: 1, halo: 0.9)
@@ -73,8 +95,9 @@ public struct GenitaSplash: View {
                 CubicKeyframe(0.9, duration: 0.8)
             }
             KeyframeTrack(\.word) {
-                LinearKeyframe(0, duration: 1.2)
-                CubicKeyframe(1, duration: 0.5)
+                LinearKeyframe(0, duration: 1.3)
+                // ease-out (timingCurve 0.16, 1, 0.3, 1), 1.3–1.9 s
+                LinearKeyframe(1, duration: 0.6, timingCurve: .bezier(startControlPoint: UnitPoint(x: 0.16, y: 1), endControlPoint: UnitPoint(x: 0.3, y: 1)))
             }
         }
     }
@@ -106,6 +129,10 @@ public struct GenitaSplash: View {
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { skip() }
         .accessibilityIdentifier("splash")
+        .onAppear {
+            // the next run-loop turn ≈ the first frame on screen
+            DispatchQueue.main.async { if start == nil { let now = Date(); start = now; onStart(now) } }
+        }
         .task { await run() }
         .onDisappear { leanSource.stop() }
     }
@@ -113,12 +140,13 @@ public struct GenitaSplash: View {
     // MARK: drawing
 
     private var endTime: Double {
-        if reduceMotion { return 1.1 }
+        if let still { return still.end }
         return (skipAt ?? Self.handoffAt) + (skipAt == nil ? Self.handoff : Self.skipHandoff)
     }
 
     @ViewBuilder private func scene(t: Double, size: CGSize, top: CGFloat) -> some View {
-        let calm = reduceMotion
+        let calm = still != nil
+        let st = still ?? Self.calmStill
         let hStart = skipAt ?? Self.handoffAt
         let hDur = skipAt == nil ? Self.handoff : Self.skipHandoff
         // hand-off progress on a sine in-out (timingCurve 0.37, 0, 0.63, 1)
@@ -135,15 +163,19 @@ public struct GenitaSplash: View {
         let r = lerp(31.8, 260, h)
         let breathe = calm ? 1 : 1 + 0.03 * sin(t / 3.2 * 2 * .pi)
         let amp = f.amp * f.bloom * breathe * (1 - h)
-        // Reduce Motion: fade in 0.2 s, crossfade to A02 at 0.7 s over 0.4 s
-        let calmAlpha = calm ? clamp(t / 0.2) * (1 - clamp((t - 0.7) / 0.4)) : 1
+        // still (Reduce Motion / short): the dark ground is there from the first frame, the lit mark fades in,
+        // then the whole scene crossfades to the first screen
+        let calmAlpha = 1 - Self.smooth(clamp((t - st.outAt) / st.out))
         // last part of the hand-off: the overlay thins out so A02's copy and buttons come through
         let sceneAlpha = calm ? calmAlpha : 1 - Self.smooth(clamp((t - hStart - hDur * 0.45) / (hDur * 0.55)))
-        let markAlpha = 1 - clamp(h / 0.15)
-        // wordmark: out in place during the first 30 % of the hand-off (1.90–2.14 s); A02 logo in at its spot 2.26–2.66 s.
-        // Reduce Motion: out over 0.18 s when the crossfade starts (0.7 s), logo in 0.2 s later over 0.2 s.
-        let wordAlpha = calm ? 1 - clamp((t - 0.7) / 0.18) : f.word * (1 - clamp((t - hStart) / (hDur * 0.3)))
-        let logoAlpha = calm ? clamp((t - 0.88) / 0.2) : clamp((t - hStart - hDur * 0.45) / (hDur * 0.5))
+        // the mark fades over the first ~280 ms of the hand-off while the disc grows (was h / 0.15: read as a jump)
+        let markAlpha = calm ? Self.easeOut(clamp(t / st.fadeIn)) : 1 - clamp(h / 0.35)
+        // wordmark: out in place during the first 30 % of the hand-off (2.50–2.74 s); A02 logo in at its spot 2.86–3.26 s.
+        // Reduce Motion: in with the mark, out over 0.18 s when the crossfade starts, A02's logo in 0.18 s later.
+        // Short (signed in: the call is underneath, not A02): no A02 logo, the wordmark leaves with the scene.
+        let wordAlpha = calm ? Self.easeOut(clamp(t / st.fadeIn)) * (mode == .short ? 1 : 1 - clamp((t - st.outAt) / 0.18))
+                             : f.word * (1 - clamp((t - hStart) / (hDur * 0.3)))
+        let logoAlpha = mode == .short ? 0 : calm ? clamp((t - st.outAt - 0.18) / 0.2) : clamp((t - hStart - hDur * 0.45) / (hDur * 0.5))
 
         ZStack(alignment: .topLeading) {
             Color(red: 7 / 255, green: 7 / 255, blue: 7 / 255)
@@ -218,7 +250,7 @@ public struct GenitaSplash: View {
         if let logo = genitaBundleImage("logo") {
             logo.resizable()
                 .frame(width: 96, height: 96 * 22.626 / 63.142)
-                .position(x: x, y: y + 8 * (1 - f.word))
+                .position(x: x, y: y + 6 * (1 - f.word))
                 .opacity(alpha)
         }
     }
@@ -227,13 +259,15 @@ public struct GenitaSplash: View {
 
     @MainActor private func run() async {
         if Self.frozenAt != nil { return } // review shot: hold the frame until tapped
-        if !reduceMotion {
+        while start == nil { try? await Task.sleep(for: .milliseconds(10)) } // the clock starts at the first frame
+        if still == nil {
             leanSource.start { l in withAnimation(.interactiveSpring(response: 0.35, dampingFraction: 0.85)) { lean = l } }
         }
         let elapsed = start.map { Date().timeIntervalSince($0) } ?? 0
-        let wait = (reduceMotion ? 0.2 : Self.hapticAt) - elapsed
+        let wait = (still?.fadeIn ?? Self.hapticAt) - elapsed
         if wait > 0 { try? await Task.sleep(for: .milliseconds(Int(wait * 1000))) }
-        if skipAt == nil { GenitaHaptic.impact(soft: false, intensity: 1) } // one light haptic as the bloom settles
+        // one light haptic as the bloom settles (none on a signed-in relaunch)
+        if skipAt == nil, mode == .full { GenitaHaptic.impact(soft: false, intensity: 1) }
         // hard deadline: late frames on a busy device / simulator must not hold A02 back
         let left = endTime - (start.map { Date().timeIntervalSince($0) } ?? 0)
         if left > 0 { try? await Task.sleep(for: .milliseconds(Int(left * 1000))) }
@@ -241,7 +275,7 @@ public struct GenitaSplash: View {
     }
 
     @MainActor private func skip() {
-        guard !finished, skipAt == nil, let start, !reduceMotion else { if reduceMotion { finish() }; return }
+        guard !finished, skipAt == nil, let start, still == nil else { if still != nil { finish() }; return }
         let now = Self.frozenAt ?? Date().timeIntervalSince(start)
         guard now < Self.handoffAt else { return } // already handing over
         skipAt = now
@@ -257,7 +291,7 @@ public struct GenitaSplash: View {
     }
 
     private func follow(_ point: CGPoint?, in size: CGSize) {
-        guard !reduceMotion, !finished else { return }
+        guard still == nil, !finished else { return }
         let target: CGSize = point.map {
             CGSize(width: max(-1, min(1, ($0.x - size.width / 2) / (size.width / 2))),
                    height: max(-1, min(1, ($0.y - size.height / 2) / (size.height / 2))))
@@ -280,6 +314,7 @@ public struct GenitaSplash: View {
         #endif
     }
     static func smooth(_ x: Double) -> Double { x * x * (3 - 2 * x) }
+    static func easeOut(_ x: Double) -> Double { 1 - (1 - x) * (1 - x) }
 
     nonisolated(unsafe) static var unfreeze = false
 
@@ -291,6 +326,14 @@ public struct GenitaSplash: View {
         #else
         return nil
         #endif
+    }
+
+    /// Signed in (a saved session in the keychain) → short. DEBUG `GENITA_SPLASH_MODE=short|full` for UI tests.
+    static func launchMode() -> Mode {
+        #if DEBUG
+        if let m = ProcessInfo.processInfo.environment["GENITA_SPLASH_MODE"] { return m == "short" ? .short : .full }
+        #endif
+        return KeychainTokenStore().load() != nil ? .short : .full
     }
 
     /// Show at launch? Not in UI tests / review screenshots (unless `--splash-demo`), not for the handoff demo.
@@ -462,26 +505,52 @@ struct CoronaView: View {
 struct SplashOverlayModifier: ViewModifier {
     var enabled: Bool
     @State private var visible = GenitaSplash.shouldShowAtLaunch
+    /// decided once at launch: a saved session = a relaunch into the conversation → the short splash
+    @State private var mode = GenitaSplash.launchMode()
     @State private var shownAt = Date()
     @State private var elapsedMs: Int?
+    /// when the splash was first on screen (the run loop turn after it appeared) and how long it stayed there
+    @State private var firstFrameAt: Date?
+    @State private var visibleMs: Int?
     func body(content: Content) -> some View {
+        #if DEBUG
+        let _ = Self.simulateLateFirstFrameOnce()
+        #endif
         content.overlay {
             if enabled && visible {
-                GenitaSplash(origin: shownAt) {
+                GenitaSplash(mode: mode) {
                     elapsedMs = Int(Date().timeIntervalSince(shownAt) * 1000)
+                    visibleMs = firstFrameAt.map { Int(Date().timeIntervalSince($0) * 1000) }
                     visible = false
                 }
+                .onAppear { DispatchQueue.main.async { if firstFrameAt == nil { firstFrameAt = Date() } } }
             }
         }
         #if DEBUG
-        // UI test reads how long the splash held A02 back (≤ 2700 ms)
+        // UI tests read how long the splash held the first screen back since launch, and how long it was on screen
         .overlay(alignment: .topLeading) {
-            if let elapsedMs {
-                Text(String(elapsedMs)).font(.system(size: 2)).opacity(0.02).allowsHitTesting(false).accessibilityIdentifier("splashElapsedMs")
+            VStack {
+                if let elapsedMs {
+                    Text(String(elapsedMs)).font(.system(size: 2)).opacity(0.02).allowsHitTesting(false).accessibilityIdentifier("splashElapsedMs")
+                }
+                if let visibleMs {
+                    Text(String(visibleMs)).font(.system(size: 2)).opacity(0.02).allowsHitTesting(false).accessibilityIdentifier("splashVisibleMs")
+                }
             }
         }
         #endif
     }
+
+    #if DEBUG
+    nonisolated(unsafe) private static var lateFirstFrameDone = false
+    /// UI test `GENITA_SPLASH_LATE_FIRST_FRAME=<s>`: block the main thread once before the first frame, like a heavy
+    /// cold launch on a device (fonts, design JSON, keychain, AppState).
+    private static func simulateLateFirstFrameOnce() {
+        guard !lateFirstFrameDone, let s = ProcessInfo.processInfo.environment["GENITA_SPLASH_LATE_FIRST_FRAME"].flatMap(Double.init) else { return }
+        lateFirstFrameDone = true
+        Thread.sleep(forTimeInterval: s)
+    }
+    #endif
 }
 
 public extension View {

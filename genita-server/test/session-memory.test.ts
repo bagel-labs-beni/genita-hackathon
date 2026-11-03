@@ -694,3 +694,123 @@ test("Codex 11/3 (#443): recall keys never carry a forget request, and the recal
   assert.deepEqual(Object.keys(out.memories[0]).sort(), ["id", "text"]);
   call.close(); await memory.drain();
 });
+
+test("P1 FILM 11/3: a quick call-back after a hang-up has the call that just ended even while its summary is still being written", { timeout: 20_000 }, async (t) => {
+  const never: Summarizer = () => new Promise(() => {}); // the background summary is slow (Spark Open reasoning)
+  const { deps, requests } = setup(never);
+  const logs: string[] = [];
+  const server = await startServer({ ...config, sessionToken: "test-token" }, (e) => { logs.push(e); }, { ...deps, log: (e) => { logs.push(e); } }, {}, null);
+  t.after(() => new Promise<void>((r) => server.close(() => r())));
+  const addr = server.address(); assert.ok(addr && typeof addr === "object");
+  const headers = { authorization: "Bearer test-token", "x-genita-user": "acct-a" };
+  const sockets: WebSocket[] = [];
+  const open = (device: string) => new Promise<{ ws: WebSocket; replies: () => number }>((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${addr.port}/v1/session?device=${device}`, { headers });
+    sockets.push(ws);
+    let n = 0;
+    ws.on("message", (d, bin) => { if (bin) return; const m = JSON.parse(String(d)); if (m.type === "reply") n++; });
+    ws.once("open", () => resolve({ ws, replies: () => n })); ws.once("error", reject);
+  });
+  const start = (c: { ws: WebSocket }) => c.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  const c1 = await open("iphone"); start(c1); await waitFor(() => c1.replies() >= 1);
+  for (const line of ["White or black for the Halloween party?", "Black it is.", "Remind me to get dark brown shoes."]) {
+    const n = c1.replies(); c1.ws.send(JSON.stringify({ type: "text", text: line })); await waitFor(() => c1.replies() > n);
+  }
+  c1.ws.send(JSON.stringify({ type: "stop" })); await waitFor(() => logs.includes("session.close"));
+  requests.length = 0;
+  const back = await open("iphone"); start(back); await waitFor(() => back.replies() >= 1);
+  const inst = requests[0].instructions ?? "";
+  assert.match(inst, /ended moments ago/);
+  assert.match(inst, /Black it is/); assert.match(inst, /dark brown shoes/);
+  // the next reply keeps it too (recall question), not just the greeting
+  const n = back.replies(); back.ws.send(JSON.stringify({ type: "text", text: "What did I decide?" })); await waitFor(() => back.replies() > n);
+  assert.match(requests.at(-1)!.instructions ?? "", /Black it is/);
+  for (const w of sockets) w.terminate();
+});
+
+test("Codex 11/3 (#447): a hung-up call with a forget request in it sends no raw lines; a mid-call summary doesn't hide the later decision", async () => {
+  const { memory } = setup();
+  const c = new MemoryCall(memory, "acct-a", "back"); await c.open(false);
+  c.setLastCall([{ role: "user", text: "I picked the leather jacket." }, { role: "assistant", text: "Nice." }, { role: "user", text: "Forget the leather thing." }], "t1", 2);
+  assert.equal(c.lastCall, null, "nothing from that call rides along until its safe summary exists");
+  c.setLastCall([{ role: "user", text: "White or black?" }, { role: "assistant", text: "Black." }, { role: "user", text: "Black it is, final." }], "t2", 13);
+  c.summaries = [{ thread_id: "t2", turns: 12, created_at: 0, updated_at: 0, topics: ["Choosing white vs black"], mood: null, open_threads: ["White or black"], promises: [], asks: [] }];
+  const reqs: SparkRequest[] = [];
+  const src = async function* (req: SparkRequest) { reqs.push(req); yield { type: "text", delta: "ok" } as const; yield { type: "done", responseId: "r", text: "", status: "completed" } as const; };
+  for await (const _ of c.stream({ input: "hi" }, new AbortController().signal, src as never, "hi", null)) { /* drain */ }
+  assert.match(reqs[0].instructions ?? "", /Black it is, final/, "the 12-turn summary doesn't cover turn 13");
+  c.close(); await memory.drain();
+});
+
+test("Codex 11/3 (#447 r2): a forget request early in the call (outside the last lines) still keeps all raw lines out of the call-back", { timeout: 20_000 }, async (t) => {
+  const never: Summarizer = () => new Promise(() => {});
+  const { deps, requests } = setup(never);
+  const logs: string[] = [];
+  const server = await startServer({ ...config, sessionToken: "test-token" }, (e) => { logs.push(e); }, { ...deps, log: (e) => { logs.push(e); } }, {}, null);
+  t.after(() => new Promise<void>((r) => server.close(() => r())));
+  const addr = server.address(); assert.ok(addr && typeof addr === "object");
+  const headers = { authorization: "Bearer test-token", "x-genita-user": "acct-a" };
+  const sockets: WebSocket[] = [];
+  const open = () => new Promise<{ ws: WebSocket; replies: () => number }>((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${addr.port}/v1/session?device=iphone`, { headers });
+    sockets.push(ws);
+    let n = 0;
+    ws.on("message", (d, bin) => { if (bin) return; const m = JSON.parse(String(d)); if (m.type === "reply") n++; });
+    ws.once("open", () => resolve({ ws, replies: () => n })); ws.once("error", reject);
+  });
+  const start = (c: { ws: WebSocket }) => c.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  const c1 = await open(); start(c1); await waitFor(() => c1.replies() >= 1);
+  for (const line of ["Don't remember anything from this call.", "I bought an amber pendant.", "It was on sale.", "The chain is gold.", "I wore it today."]) {
+    const n = c1.replies(); c1.ws.send(JSON.stringify({ type: "text", text: line })); await waitFor(() => c1.replies() > n);
+  }
+  c1.ws.send(JSON.stringify({ type: "stop" })); await waitFor(() => logs.includes("session.close"));
+  requests.length = 0;
+  const back = await open(); start(back); await waitFor(() => back.replies() >= 1);
+  assert.doesNotMatch(requests[0].instructions ?? "", /amber pendant|ended moments ago/);
+  for (const w of sockets) w.terminate();
+});
+
+test("Codex 11/3 (#447 r3): a forget request travels with the conversation to the other device", { timeout: 20_000 }, async (t) => {
+  const never: Summarizer = () => new Promise(() => {});
+  const { deps, requests } = setup(never);
+  const logs: string[] = [];
+  const server = await startServer({ ...config, sessionToken: "test-token" }, (e) => { logs.push(e); }, { ...deps, log: (e) => { logs.push(e); } }, {}, null);
+  t.after(() => new Promise<void>((r) => server.close(() => r())));
+  const addr = server.address(); assert.ok(addr && typeof addr === "object");
+  const headers = { authorization: "Bearer test-token", "x-genita-user": "acct-a" };
+  const sockets: WebSocket[] = [];
+  const open = (device: string) => new Promise<{ ws: WebSocket; replies: () => number; ready: () => boolean }>((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${addr.port}/v1/session?device=${device}`, { headers });
+    sockets.push(ws);
+    let n = 0; let ok = false;
+    ws.on("message", (d, bin) => { if (bin) return; const m = JSON.parse(String(d)); if (m.type === "reply") n++; if (m.type === "ready") ok = true; });
+    ws.once("open", () => resolve({ ws, replies: () => n, ready: () => ok })); ws.once("error", reject);
+  });
+  const start = (c: { ws: WebSocket }) => c.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  const say = async (c: { ws: WebSocket; replies: () => number }, text: string) => { const n = c.replies(); c.ws.send(JSON.stringify({ type: "text", text })); await waitFor(() => c.replies() > n); };
+  const phone = await open("iphone"); start(phone); await waitFor(() => phone.replies() >= 1);
+  await say(phone, "Don't remember anything from this call.");
+  for (let i = 0; i < 8; i++) await say(phone, i === 7 ? "I bought an amber pendant." : `Small talk line ${i}.`);
+  const mac = await open("mac"); start(mac); await waitFor(mac.ready); // inherits; the request is outside its kept lines
+  await say(mac, "On the Mac now.");
+  phone.ws.send(JSON.stringify({ type: "stop" }));
+  mac.ws.send(JSON.stringify({ type: "stop" })); await waitFor(() => logs.filter((e) => e === "session.close").length >= 2);
+  requests.length = 0;
+  const back = await open("mac"); start(back); await waitFor(() => back.replies() >= 1);
+  assert.doesNotMatch(requests[0].instructions ?? "", /amber pendant|ended moments ago/);
+  for (const w of sockets) w.terminate();
+});
+
+test("Codex 11/4 (hotfix merge): a 'forget that …' said in the call-back clears the matching line of the call that just ended", async () => {
+  const { memory } = setup();
+  const c = new MemoryCall(memory, "acct-a", "back"); await c.open(false);
+  c.setLastCall([{ role: "user", text: "I like leather accessories." }, { role: "assistant", text: "Leather suits you." }, { role: "user", text: "Black it is." }], "t1", 2);
+  c.setAvoid([{ text: "I like leather accessories", forget: true }]);
+  const reqs: SparkRequest[] = [];
+  const src = async function* (req: SparkRequest) { reqs.push(req); yield { type: "text", delta: "ok" } as const; yield { type: "done", responseId: "r", text: "", status: "completed" } as const; };
+  for await (const _ of c.stream({ input: "What should I wear?" }, new AbortController().signal, src as never, "What should I wear?", undefined)) { /* drain */ }
+  const inst = reqs[0].instructions ?? "";
+  assert.doesNotMatch(inst, /leather/i);
+  assert.match(inst, /Black it is/, "the rest of the last call stays");
+  c.close(); await memory.drain();
+});
