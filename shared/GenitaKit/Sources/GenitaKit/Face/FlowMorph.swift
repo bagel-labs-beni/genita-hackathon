@@ -612,7 +612,8 @@ final class FlowMorph: @unchecked Sendable {
         // bottom — so neck, collar, chest fur and the beard below the jaw stay the still photo.
         if Self.chinStop, let face, data.roi.height > 0 {
             let kys = Double(height) / Double(data.roi.height)
-            let chin = (Double(face.maxY) - Double(data.roi.minY)) * kys
+            // the open keys drop the lower lip and jaw below the neutral chin line: leave room for that (codex P2)
+            let chin = (Double(face.maxY) + Self.jawRoom * Double(face.height) - Double(data.roi.minY)) * kys
             let feather = max(2, 0.05 * Double(face.height) * kys)
             let top = chin - feather
             for y in 0..<height where Double(y) > top {
@@ -626,7 +627,7 @@ final class FlowMorph: @unchecked Sendable {
         if Self.chinStop, let face, let mouth, data.roi.width > 0, data.roi.height > 0 {
             let kxs = Double(width) / Double(data.roi.width), kys = Double(height) / Double(data.roi.height)
             let top = (Double(mouth.minY) - Double(mouth.height) - Double(data.roi.minY)) * kys
-            let bottom = (Double(face.maxY) - Double(data.roi.minY)) * kys
+            let bottom = (Double(face.maxY) + Self.jawRoom * Double(face.height) - Double(data.roi.minY)) * kys
             let cx = (Double(mouth.midX) - Double(data.roi.minX)) * kxs, cy = (top + bottom) / 2
             let rx = max(4, 0.36 * Double(face.width) * kxs), ry = max(4, (bottom - top) / 2)
             for y in 0..<height { for x in 0..<width {
@@ -742,6 +743,8 @@ final class FlowMorph: @unchecked Sendable {
     private var rigMouth: CGRect?
     /// The blend mask fades out across the chin line (rollback: false)
     nonisolated(unsafe) public static var chinStop = true
+    /// how far below the neutral chin (share of the face height) an open jaw may still move
+    nonisolated(unsafe) public static var jawRoom = 0.10
     /// v60: the magnifier's strength, low-passed (its peaks jumped: jerk 1.8 vs the reference 0.8)
     private var openKS: Float = 0, openKT: Double?
     private var stillH: Double = 0
