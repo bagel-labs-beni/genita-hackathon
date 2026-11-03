@@ -356,7 +356,7 @@ test("searching lines fit one line at 390 pt: short title, whole-word labels, sh
   assert.equal(shortLabel("Light jacket"), "Light jacket");
   assert.equal(shortLabel("Featherless quilted utility jacket"), "Featherless");
   // every failure message is "Title. Body" with a title that fits next to Stop/Retry (≤ 28 chars) and a body ≤ 40
-  for (const m of ["Couldn’t find a good match. Try a color or a price, or ask me again.", "Something went wrong. Ask me again in a moment.", "Couldn’t find a recipe. Ask me again in a moment.", "Can’t tell them apart. Hold them up one at a time?", "Couldn’t read that link. Check it, or send another one.", "I couldn't look just now. Ask me again?"]) {
+  for (const m of ["Couldn’t find a good match. Try a color or a price.", "Something went wrong. Ask me again in a moment.", "Couldn’t find a recipe. Ask me again in a moment.", "Can’t tell them apart. Hold them up one at a time?", "Couldn’t read that link. Check it, or send another one.", "I couldn't look just now. Ask me again?"]) {
     const [title, body] = [m.slice(0, m.indexOf(". ")), m.slice(m.indexOf(". ") + 2)];
     assert.ok(title.length <= 28 && body.length <= 40, m);
   }
