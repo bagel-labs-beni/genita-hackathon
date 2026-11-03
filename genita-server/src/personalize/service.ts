@@ -551,7 +551,8 @@ export class Personalize {
     }
     // removed already: the call's profile and taste follow now, even if Spark has nothing more to change (Codex r9)
     const forgotUpdate = async (): Promise<VoiceUpdate | null> => {
-      if (!forgot?.applied.length) return null;
+      // a forget that only touched the SUM insight report (a "not me" correction) still changes the call's profile (Codex r5)
+      if (!forgot || (!forgot.applied.length && !forgot.kept)) return null;
       const latest = (await this.store.getStyle(userId)) ?? card;
       return { events: [{ text: `Updated: forgot ${forgot.kept}`.slice(0, 60), fields: [...new Set(forgot.applied.map((a) => a.field))] }], applied: forgot.applied, answered: false, profile: styleProfileText(latest, 2000, { toConfirm: false }), taste: tasteLines(latest) };
     };
