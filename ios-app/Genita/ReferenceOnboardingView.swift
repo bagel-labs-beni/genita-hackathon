@@ -455,8 +455,8 @@ import UniformTypeIdentifiers
             let cardWidth = (width - 90) / 2
             let left = label.x < 200 ? CGFloat(38) : 51 + cardWidth
             Button {
-                var updated = selectedIDs
-                if updated.contains(key) { updated.remove(key) } else { updated.insert(key) }
+                let updated = PresenceChips.toggle(selectedIDs, key)
+                guard updated != selectedIDs else { return }
                 model.setup.presenceCardIDs = updated
                 model.setup.presence = Set(labels.filter { updated.contains("\($0.x)-\($0.y)") }.compactMap(\.characters))
             } label: {
@@ -640,5 +640,16 @@ struct ReferencePhotoPicker: UIViewControllerRepresentable {
                 DispatchQueue.main.async { self.parent.received(data) }
             }
         }
+    }
+}
+
+/// P "Describe their presence" (PRD B10): at most two chips. A third tap while two are on does nothing (AU-31: the
+/// server kept only two, so SUM listed a third that the persona never got).
+enum PresenceChips {
+    static let max = 2
+    static func toggle(_ selected: Set<String>, _ key: String) -> Set<String> {
+        var updated = selected
+        if updated.contains(key) { updated.remove(key) } else if updated.count < max { updated.insert(key) }
+        return updated
     }
 }

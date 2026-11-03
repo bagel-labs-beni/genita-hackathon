@@ -102,4 +102,12 @@ import XCTest
         model.signedIn(userId: "u2", consented: false)
         XCTAssertFalse(model.accountDeletedNotice, "a new sign-in never shows it")
     }
+
+    /// AU-31 · PP-01 step 4: Presence takes at most two chips; a third tap changes nothing, untapping still works.
+    func testPresenceChipsStopAtTwo() {
+        var on: Set<String> = []
+        on = PresenceChips.toggle(on, "witty"); on = PresenceChips.toggle(on, "warm")
+        XCTAssertEqual(PresenceChips.toggle(on, "calm"), ["witty", "warm"], "no third chip")
+        XCTAssertEqual(PresenceChips.toggle(on, "warm"), ["witty"])
+    }
 }
