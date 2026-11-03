@@ -12,6 +12,8 @@ struct CameraStage: View {
     let topInset: CGFloat
     /// HUD r01 A: where the menu button, status pill and rail sit (labels keep clear of them)
     let grid: CallHUDGrid
+    /// the status pill where ConversationView draws it (menu row, or the line under it), from the same placement
+    let statusRect: CGRect
 
     var body: some View {
         ZStack {
@@ -31,13 +33,6 @@ struct CameraStage: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Your camera")
         .accessibilityIdentifier("cameraStage")
-    }
-
-    /// The status pill where ConversationView draws it: the menu row, or the line under it (PF-1 Finds line at left 24, measured).
-    private var statusRect: CGRect {
-        let finds = call.finds.pillText
-        let line = ConversationView.statusLine(cue: call.cue, findsLine: finds != nil, moveLine: false, shown: true)
-        return CameraBoxes.statusRect(grid: grid, line: line, leadingWidth: finds.map { CallCueView.pillWidth(text: $0) })
     }
 
     /// FT-NOSEE card (24, 124): boxes under it are left out.

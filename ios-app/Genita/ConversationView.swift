@@ -45,13 +45,21 @@ struct ConversationView: View {
                 // interpretation bubbles and hold rail are hidden, and they come back when it closes.
                 let unclear = !connecting && sheet == .searching && call.finds.current?.isUnclear == true
                 let findsOpen = !connecting && sheet != .idle && sheet != .dismissed && !unclear
+                let moveLine = !connecting && handoffEnabled && (handoff.moving || handoff.moveFailed)
+                let findsPill = call.finds.pillText
+                // the pill shows the Finds line (PF-1) unless the call is reconnecting or the answer failed (CallCueView)
+                let showingFinds = findsPill != nil && call.cue != .reconnecting && call.cue != .answerFailed
+                // HUD r01 A: which line the status pill is on, so the prep line, the chip and camera labels stack around it
+                let status = Self.statusLine(cue: call.cue, findsLine: findsPill != nil, moveLine: moveLine && !findsTabOpen && !interpreting && !unclear,
+                                             moveFailed: !handoff.moving && handoff.moveFailed, shown: !findsTabOpen && !connecting && !interpreting && !unclear)
                 ZStack(alignment: .topLeading) {
                     ZStack(alignment: .topLeading) {
                         // r03 / PF-1: the call sits on ink — the band above a full sheet (and the edges of a
                         // stepped-back face) are dark, not the window's white
                         CallInk.ink.frame(width: full.size.width, height: full.size.height).accessibilityHidden(true)
                         // F5-U-CAM CAM-H: with the camera on it is the stage, the face becomes a small window
-                        if call.cameraOn { CameraStage(call: call, size: full.size, topInset: top, grid: grid).blur(radius: unclear ? 8 : 0).transition(.opacity) }
+                        if call.cameraOn { CameraStage(call: call, size: full.size, topInset: top, grid: grid,
+                                                       statusRect: CameraBoxes.statusRect(grid: grid, line: status, leadingWidth: showingFinds && status == .second ? findsPill.map { CallCueView.pillWidth(text: $0) } : nil)).blur(radius: unclear ? 8 : 0).transition(.opacity) }
                         // F10-U-SHEET r03: the face steps back as the sheet rises (half .814, rising .895) and
                         // becomes a 96 × 128 window when the sheet is full.
                         CompanionFaceView(still: companionImage, loop: loopURL, face: connecting ? nil : call.face, faceStill: call.faceStill).frame(width: full.size.width, height: full.size.height).clipped()
@@ -134,17 +142,12 @@ struct ConversationView: View {
                         }
                         // The call cue belongs to S09. Keep it below the Finds tab so it cannot cover that
                         // screen's title or subtitle; closing Finds immediately resumes the current call cue.
-                        let moveLine = !connecting && handoffEnabled && (handoff.moving || handoff.moveFailed)
-                        let findsPill = call.finds.pillText
-                        // HUD r01 A: which line the status pill is on, so the prep line and the chip stack under it
-                        let status = Self.statusLine(cue: call.cue, findsLine: findsPill != nil, moveLine: moveLine && !findsTabOpen && !interpreting && !unclear,
-                                                     moveFailed: !handoff.moving && handoff.moveFailed, shown: !findsTabOpen && !connecting && !interpreting && !unclear)
                         if moveLine && !findsTabOpen && !interpreting && !unclear {
                             // MV-1 / MV-E take the call's status line slot
                             HandoffMoveStatusLine().position(x: grid.pillCenter.x, y: grid.statusY(status))
                         } else if !findsTabOpen && !connecting && !interpreting && !unclear {
                             CallCueView(cue: call.cue, name: call.companionName, findsText: findsPill, retry: call.retryAnswer, openSettings: openAppSettings, rowWidth: grid.rowPillWidth)
-                                .frame(width: sheet == .full ? 250 : full.size.width - 48, alignment: sheet == .full || findsPill != nil ? .leading : .center)
+                                .frame(width: sheet == .full ? 250 : full.size.width - 48, alignment: sheet == .full || showingFinds ? .leading : .center)
                                 // HUD r01 A: the call cue sits on the menu row (same centre line). A Finds line (PF-1, Figma) and a
                                 // cue with a button take the line under it; beside the face window when the sheet is full.
                                 .position(x: sheet == .full ? 16 + 125 : grid.pillCenter.x, y: sheet == .full ? 82 + top : grid.statusY(status))
@@ -154,9 +157,10 @@ struct ConversationView: View {
                                 .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: Self.cueHidden(sheet: sheet, findsLine: findsPill != nil, cue: call.cue))
                         }
                         // CC-1 wins over GK-1 (a "Noted: …" answers the question)
-                        if !connecting, let chip = call.profileChip ?? call.askingChip {
+                        // not over the Finds tab (its back button and title sit on the menu row)
+                        if !connecting && !findsTabOpen, let chip = call.profileChip ?? call.askingChip {
                             ProfileChipView(text: chip, soft: call.profileChip == nil).id(chip)
-                                .frame(width: sheet == .full ? 250 : full.size.width, alignment: sheet == .full ? .leading : .center)
+                                .frame(width: sheet == .full ? 250 : full.size.width - 2 * CallHUDGrid.margin, alignment: sheet == .full ? .leading : .center)
                                 .position(x: sheet == .full ? 16 + 125 : full.size.width / 2,
                                           y: sheet == .full ? 122 + top : grid.chipCenterY(status: status, prepLine: model.callPrepIndicator != nil && !interpreting && !moveLine))
                         }

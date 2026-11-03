@@ -21,7 +21,8 @@ final class CallHUDGridTests: XCTestCase {
         XCTAssertEqual(g.chipCenterY(status: .row, prepLine: true), 92 + 16 + 6 + 36 + 6 + 15)
         XCTAssertEqual(g.prepLineCenterY(status: .none), 92, "no pill: the prep line takes the row")
         XCTAssertEqual(g.chipCenterY(status: .none, prepLine: true), 92 + 18 + 6 + 15)
-        XCTAssertEqual(g.chipCenterY(status: .none, prepLine: false), 92, "alone: the chip takes the row")
+        XCTAssertEqual(g.chipCenterY(status: .none, prepLine: false), 92 + 16 + 6 + 15, "alone: under the row, never on it (Codex P2: a wide chip covered the button)")
+        XCTAssertGreaterThanOrEqual(g.chipCenterY(status: .none, prepLine: false) - 15, g.menuCenter.y + CallHUDGrid.button / 2, "clear of the menu button")
         XCTAssertEqual(g.prepLineCenterY(status: .second), 160 + 16 + 6 + 18, "under a Finds line, not on it (Codex P2)")
         XCTAssertEqual(g.chipCenterY(status: .second, prepLine: true), 160 + 16 + 6 + 36 + 6 + 15)
     }
