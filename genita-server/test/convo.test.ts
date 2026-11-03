@@ -807,3 +807,26 @@ test("hold cap (prod 11/3): a held pre-tool line never keeps the turn silent pas
   assert.doesNotMatch(String(reply.text), /I'll check/);
   session.close();
 });
+
+test("Codex #384: a hold beat is never the answer — an announcement-only turn still retries", { skip: !v1 }, async () => {
+  const client = new Client();
+  let n = 0;
+  const session = new Session("hb2", client, {
+    config, openAsr: () => { throw new Error("no asr"); },
+    async *spark(): AsyncGenerator<SparkStreamEvent> {
+      n++;
+      if (n === 1) {
+        yield { type: "text", delta: "<curious> I'll check what you told me about your sister. " };
+        await new Promise((r) => setTimeout(r, 1700));
+      } else yield { type: "text", delta: "<warm> You said she just moved to Busan." };
+      yield { type: "done", responseId: "r", text: "", status: "completed" };
+    },
+    async *tts() {},
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "what do you remember about my sister" }));
+  const reply = await client.waitFor((m) => m.type === "reply", 6000);
+  assert.equal(n, 2, "retried");
+  assert.match(String(reply.text), /You said she just moved to Busan\./);
+  session.close();
+});
