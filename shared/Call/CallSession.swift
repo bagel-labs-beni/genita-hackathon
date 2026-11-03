@@ -545,6 +545,14 @@ enum CallStop: Equatable {
     /// E01/E02 sheet closed (Mac).
     func dismissDenied() { micDenied = false; cameraDenied = false }
 
+    /// Settings → Voice preview during a call (11/4): the clip isn't in the echo canceller's reference, so the mic
+    /// rests while it plays and opens again after. The user's own toggle (and `micWasOn`) is left as it was.
+    private var micHeldForPreview = false
+    func holdMicForPreview(_ hold: Bool) {
+        if hold, micOn, !micHeldForPreview { micHeldForPreview = true; setMic(false) }
+        else if !hold, micHeldForPreview { micHeldForPreview = false; if !userEnded, ownsConversation { setMic(true) } }
+    }
+
     private func setMic(_ on: Bool) {
         if on {
             #if DEBUG

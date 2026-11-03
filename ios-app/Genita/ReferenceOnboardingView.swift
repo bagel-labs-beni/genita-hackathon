@@ -396,29 +396,8 @@ import UniformTypeIdentifiers
     /// until the server answers (and in the reference snapshot) the curated four per look are drawn greyed
     var voiceList: [OnboardingClient.CompanionVoice] { player.voices.isEmpty ? VoicePlayer.fallback(kind: model.setup.imageType) : player.voices }
     func voiceCard(_ v: OnboardingClient.CompanionVoice, index i: Int, waking: Bool) -> some View {
-        let playing = player.playing == v.id
-        let picked = model.setup.voice == i
-        let detail = playing ? "Playing · \(v.blurb)" : picked ? "Selected · \(v.blurb)" : v.blurb
-        let detailColor = playing ? Color(red: 0, green: 99.0 / 255, blue: 159.0 / 255) : picked ? Color(white: 115.0 / 255) : Color(white: 183.0 / 255)
-        return ZStack {
-            RoundedRectangle(cornerRadius: 12).fill(.white)
-                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color("Ink"), lineWidth: picked || playing ? 1.5 : 0))
-            Button { player.stop(); selectVoice(i) } label: { Color.clear.contentShape(Rectangle()) }.disabled(waking)
-                .accessibilityLabel("\(v.name), \(detail)").accessibilityAddTraits(picked ? .isSelected : []).accessibilityIdentifier("voice\(i)")
-            VStack(alignment: .leading, spacing: 4) {
-                Text(v.name).font(.custom("PretendardVariable-SemiBold", fixedSize: 18)).foregroundStyle(Color("Ink"))
-                Text(detail).font(.custom("PretendardVariable-Medium", fixedSize: 12)).foregroundStyle(detailColor)
-            }.padding(.leading, 21).padding(.top, 13).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).allowsHitTesting(false)
-            Button { selectVoice(i); player.preview(v, client: model.onboarding) } label: {
-                ZStack {
-                    Circle().fill(Color("Ink")).frame(width: 32, height: 32)
-                    if playing { HStack(spacing: 4) { RoundedRectangle(cornerRadius: 1).frame(width: 3, height: 11); RoundedRectangle(cornerRadius: 1).frame(width: 3, height: 11) }.foregroundStyle(.white) }
-                    else if player.fetching == v.id { ProgressView().controlSize(.small).tint(.white) }
-                    else { Image(systemName: "play.fill").font(.system(size: 11)).foregroundStyle(.white).offset(x: 1) }
-                }.frame(width: 44, height: 44)
-            }.disabled(waking).accessibilityLabel(playing ? "Stop \(v.name)" : "Play \(v.name)").accessibilityIdentifier("play\(i)")
-                .frame(maxWidth: .infinity, alignment: .trailing).padding(.trailing, 14)
-        }.opacity(waking ? 0.5 : 1).buttonStyle(.plain)
+        VoiceCardView(voice: v, index: i, picked: model.setup.voice == i, playing: player.playing == v.id, fetching: player.fetching == v.id, waking: waking,
+                      onSelect: { player.stop(); selectVoice(i) }, onPlay: { selectVoice(i); player.preview(v, client: model.onboarding) })
     }
     func selectVoice(_ i: Int) {
         guard i < player.voices.count else { return }   // greyed placeholders are never picked

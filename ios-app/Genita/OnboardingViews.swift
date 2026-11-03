@@ -91,7 +91,9 @@ struct RootView: View {
     }
 
     /// Play (or stop) one clip. A 503 / offline turns the list grey instead of showing an error.
-    func preview(_ voice: OnboardingClient.CompanionVoice, client: OnboardingClient) {
+    /// `keepSession`: Settings → Voice during a call (11/4) plays on the call's own audio session instead of switching
+    /// it to .playback (which would stop the call's mic and echo canceller).
+    func preview(_ voice: OnboardingClient.CompanionVoice, client: OnboardingClient, keepSession: Bool = false) {
         if playing == voice.id || fetching == voice.id { stop(); return }
         stop()
         fetching = voice.id
@@ -100,8 +102,10 @@ struct RootView: View {
                 let data: Data
                 if let hit = cache[voice.id] { data = hit } else { data = try await client.voicePreview(id: voice.id); cache[voice.id] = data }
                 guard !Task.isCancelled, fetching == voice.id else { return }
-                try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
-                try? AVAudioSession.sharedInstance().setActive(true)
+                if !keepSession {
+                    try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+                    try? AVAudioSession.sharedInstance().setActive(true)
+                }
                 let p = try AVAudioPlayer(data: data)
                 p.delegate = self
                 // UI tests run on a simulator with no audio route: play() can say no there, the clip length still drives the state
