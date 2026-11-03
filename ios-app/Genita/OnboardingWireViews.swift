@@ -66,7 +66,10 @@ struct ImageCheckView: View {
     @State private var reveal = 0.0
     /// the uploaded photo's size (orientation applied), for mapping the points onto the `scaledToFill` frame
     @State private var photoSize = CGSize.zero
-    @State private var overlayOpacity = 1.0
+    /// when the bar reached 100 % (the overlay's hold, breathing and fade count from here)
+    @State private var doneAt: Date?
+    /// one .success haptic when a passed scan reaches 100 %
+    @State private var successTick = 0
     /// V03 stays up after the answer for the finish (bar to 100 %, hold, fade) before V02-T / V02-F
     @State private var finished = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -87,8 +90,9 @@ struct ImageCheckView: View {
             if analyzing || !finished || model.reviewScan != nil { analyzingPage } else { resultPage }
         }
         .onAppear { if !analyzing { finished = true } }   // reopened on V02 (back, review): no replay
+        .sensoryFeedback(.success, trigger: successTick)
         .onChange(of: analyzing) { was, now in
-            if !was && now { finished = false; overlayOpacity = 1; reveal = mesh == nil ? 0 : 1 }   // "Try again": scan again (polish keeps the mesh)
+            if !was && now { finished = false; doneAt = nil; reveal = mesh == nil ? 0 : 1 }   // "Try again": scan again (polish keeps the mesh)
             if was && !now { Task { await finish() } }
         }
         .onChange(of: result?.imageId, initial: true) { _, _ in showMesh() }
@@ -100,18 +104,22 @@ struct ImageCheckView: View {
         mesh = FaceMesh.make(outline: r.faceOutline, points: r.facePoints, headBox: r.headBox)
         guard mesh != nil else { return }
         photoSize = model.setup.imageData.flatMap { UIImage(data: $0)?.size } ?? .zero
-        if reduceMotion { reveal = 1 } else { withAnimation(.easeOut(duration: 0.4)) { reveal = 1 } }
+        if reduceMotion { reveal = 1 } else { withAnimation(Self.finishCurve) { reveal = 1 } }
     }
 
-    /// Answer in: the line runs to the bottom (0.4 s), a passed scan holds 1 s, the overlay fades (0.25 s) back to the
-    /// plain photo for 0.3 s, then V02-T / V02-F. An error skips straight to V02-F.
+    /// r01: the answer takes the bar from where it is to 100 % in 0.4 s on an ease-in-out
+    static let finishCurve = Animation.timingCurve(0.65, 0, 0.35, 1, duration: 0.4)
+
+    /// Answer in: the line runs to the bottom (0.4 s); a passed scan with a net gets one .success haptic, holds 1 s
+    /// (the faces breathe) and fades (0.3 s); then V02-T / V02-F. A failed check skips the hold; an error goes straight on.
     private func finish() async {
         guard model.imageCheckError == nil else { finished = true; return }
-        withAnimation(.easeOut(duration: 0.4)) { progress = 1 }
+        withAnimation(Self.finishCurve) { progress = 1; reveal = 1 }
         try? await Task.sleep(for: .milliseconds(400))
-        if passed && mesh != nil { try? await Task.sleep(for: .milliseconds(1000)) }
-        withAnimation(.easeOut(duration: 0.25)) { overlayOpacity = 0 }
-        try? await Task.sleep(for: .milliseconds(550))
+        guard !analyzing else { return }
+        doneAt = Date()
+        if passed { successTick += 1 }
+        try? await Task.sleep(for: .milliseconds(passed && mesh != nil ? 1300 : 150))
         guard !analyzing else { return }
         finished = true
     }
@@ -122,8 +130,8 @@ struct ImageCheckView: View {
             photo(width: width).frame(width: width - 48, height: 240)
                 .overlay {
                     // V03 face scan: the line follows the bar; the net comes with the check answer
-                    FaceScanOverlay(progress: reduceMotion && reveal > 0 ? 1 : progress, reveal: reveal, overlayOpacity: overlayOpacity,
-                                    mesh: mesh, imageSize: photoSize, reduceMotion: reduceMotion || model.reviewScan != nil)
+                    FaceScanOverlay(progress: progress, reveal: reveal, mesh: mesh, imageSize: photoSize, doneAt: doneAt,
+                                    reduceMotion: reduceMotion || model.reviewScan != nil)
                         .accessibilityIdentifier("faceScan")
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -138,14 +146,16 @@ struct ImageCheckView: View {
         }
         .task {
             if let held = model.reviewScan { progress = held; reveal = held > 0 ? 1 : 0; return }   // screen review
-            progress = 0.08   // a "Try again" starts the bar over
-            // The check takes 2–5 s (PREP_API.md); the bar eases toward 90 % and the answer finishes it.
-            // Photo polish adds ~15–20 s (Muse Image edit + the same check): the bar slows down so it doesn't sit at 90 %.
+            progress = 0   // a "Try again" starts the bar over
+            // r01: p = 0.92 (1 − e^(−t / 3.2 s)) while the check runs (2–5 s, PREP_API.md); the answer finishes it.
+            // Photo polish adds ~15–20 s (Muse Image edit + the same check): a slower τ (9 s) so it doesn't sit at 92 %.
+            let start = Date()
             while analyzing && !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(120))
                 guard analyzing, !Task.isCancelled else { break }   // the answer came in during the sleep: finish() owns the bar now
-                let rate = polishFlow ? 0.012 : 0.05
-                withAnimation(.linear(duration: 0.12)) { progress = min(0.9, progress + (0.92 - progress) * rate) }
+                let tau = polishFlow ? 9.0 : 3.2
+                let target = 0.92 * (1 - exp(-Date().timeIntervalSince(start) / tau))
+                withAnimation(.linear(duration: 0.12)) { progress = max(progress, target) }
             }
         }
     }

@@ -10,6 +10,7 @@ import { DEFAULT_VOICES } from "../src/prep/voices.ts";
 import { encodeOneBit } from "../src/meta/samMask.ts";
 import type { SamBox } from "../src/meta/sam.ts";
 import { fakePng } from "./helpers/fakeMedia.ts";
+import { configureOps } from "../src/ops/limits.ts";
 
 /** a SAM box in a w × h image, no mask */
 const box = (x1: number, y1: number, x2: number, y2: number, w = 1000, h = 1000): SamBox =>
@@ -141,4 +142,36 @@ test("checkImage: the Spark check is requested before the optional face-scan SAM
   assert.equal(rec.faceOutline?.length, 32, "the outline that did come back is kept");
   assert.equal(rec.facePoints, null, "no eyes = no feature points");
   assert.deepEqual(order.slice(0, 2), ["the person's head", "spark"], "head box and the check reserve their Meta budget first");
+});
+
+test("checkImage: near the daily Meta cap the face scan is skipped (the check and its retry keep the budget); slow scan calls share one 1.5 s grace", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "genita-face-geo-cap-"));
+  const realFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = realFetch; configureOps({}); rmSync(dir, { recursive: true, force: true }); });
+  const prompts: string[] = [];
+  let hang = false;
+  globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
+    const body = JSON.parse(String(init!.body));
+    const prompt = body.model === "sam-3.1" ? body.input[0].content[0].text as string : "spark";
+    prompts.push(prompt);
+    if (hang && prompt !== "spark" && prompt !== "the person's head") {
+      return new Promise<Response>((_, reject) => init!.signal?.addEventListener("abort", () => reject(new Error("aborted"))));
+    }
+    const text = prompt === "spark"
+      ? JSON.stringify({ subject: "person", face_count: 1, front_facing: true, face_covered: false, sharp: true, well_lit: true, text_on_image: false, public_figure: false, any_public_figure: false, species: "", character_style: "none" })
+      : "<|box;x1=250;y1=300;x2=750;y2=1400;w=1000;h=2000|>";
+    return Response.json({ output: [{ type: "message", content: [{ type: "output_text", text }] }] });
+  }) as typeof fetch;
+  const d: PrepDeps = { metaKey: "k", store: new FileStore(dir), voices: DEFAULT_VOICES, log: () => {} };
+  configureOps({ metaDailyCalls: 7 });   // head + Spark leave 5: below the scan's floor
+  const rec = await checkImage(d, "u1", fakePng(1000, 2000, "face-geo-cap"), true);
+  assert.equal(rec.check.passed, true);
+  assert.deepEqual(prompts.sort(), ["spark", "the person's head"], "no face-scan SAM calls near the cap");
+  assert.equal(rec.faceOutline, null);
+  configureOps({});
+  hang = true;
+  const t0 = performance.now();
+  await checkImage(d, "u1", fakePng(1000, 2000, "face-geo-cap-2"), true);
+  const ms = performance.now() - t0;
+  assert.ok(ms < 2500, `face, eyes and mouth all hung: one shared 1.5 s grace, answered in ${Math.round(ms)} ms`);
 });

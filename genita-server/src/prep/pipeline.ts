@@ -6,6 +6,7 @@
 import { randomUUID } from "node:crypto";
 import { sparkJson, type SparkRequest } from "../meta/spark.ts";
 import { museImageEdit, samDetect } from "../meta/media.ts";
+import { getOps } from "../ops/limits.ts";
 import { buildClassifyRequest, headPrompt, interpretCheck, pickHeadBox, sniffImage, type ClassifyRaw } from "./classify.ts";
 import { EYES_PROMPT, MOUTH_PROMPT, facePointsFromSam, facePrompt, outlineFromSam } from "./faceGeometry.ts";
 import { buildImportRequest, checkPaste, importFormat, redactSensitive, toStyleCard, type ImportRaw, type StyleCard } from "./importProfile.ts";
@@ -56,11 +57,13 @@ export const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 /** V03 face scan SAM calls: hard cap, and how long the check answer waits for them once Spark and the head box are in */
 export const FACE_SCAN_TIMEOUT_MS = 15_000;
 export const FACE_SCAN_GRACE_MS = 1_500;
+/** the scan's 3–4 SAM calls start only if at least this many Meta calls are left today (Spark retry + head re-ask first) */
+export const FACE_SCAN_MIN_CALLS_LEFT = 8;
 
-/** `p`, or `fallback` if it hasn't settled `ms` from now (the timer never keeps the process alive) */
+/** `p`, or `fallback` if it hasn't settled `ms` from now (the timer is cleared as soon as `p` settles) */
 function within<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<T>((resolve) => { timer = setTimeout(() => resolve(fallback), ms); timer.unref?.(); });
+  const late = new Promise<T>((resolve) => { timer = setTimeout(() => resolve(fallback), ms); });
   return Promise.race([p, late]).finally(() => clearTimeout(timer));
 }
 
@@ -84,18 +87,20 @@ export async function checkImage(d: PrepDeps, userId: string, bytes: Buffer, rig
   // The check itself goes first, so its Meta budget is reserved before the optional face-scan calls below.
   const sparkCheck = sparkJson<ClassifyRaw>(d.metaKey, buildClassifyRequest(url));
   // V03 face scan (11/4): face silhouette + eye and mouth boxes for the app's mesh, all SAM in parallel with the
-  // Spark check. Optional: a failure, an exhausted budget or a slow answer only means no mesh, never a slower check.
+  // Spark check. Optional: they start only with Meta budget to spare (the check's retry and a non-human head re-ask
+  // come first), and a failure or a slow answer only means no mesh, never a slower check.
+  const scan = getOps().metaCallsLeft() >= FACE_SCAN_MIN_CALLS_LEFT;
   const optional = AbortSignal.timeout(FACE_SCAN_TIMEOUT_MS);
-  const samFaceOf = (kind: Parameters<typeof facePrompt>[0]) =>
-    samDetect(d.metaKey, url, facePrompt(kind), optional, { masks: true }).then((b) => outlineFromSam(b), () => null);
-  const samBoxes = (prompt: string) => samDetect(d.metaKey, url, prompt, optional).catch(() => [] as Awaited<ReturnType<typeof samDetect>>);
-  const samFace = samFaceOf("human");
+  const samFaceOf = (kind: Parameters<typeof facePrompt>[0]) => !scan ? Promise.resolve(null)
+    : samDetect(d.metaKey, url, facePrompt(kind), optional, { masks: true }).then((b) => outlineFromSam(b), () => null);
+  const samBoxes = (prompt: string) => !scan ? Promise.resolve([])
+    : samDetect(d.metaKey, url, prompt, optional).catch(() => [] as Awaited<ReturnType<typeof samDetect>>);
   const samFeatures = Promise.all([samBoxes(EYES_PROMPT), samBoxes(MOUTH_PROMPT)]);
+  let samFace = samFaceOf("human");
   const raw = await sparkCheck;
   const checkMs = since(t0);
   const check = interpretCheck(raw);
   let head = await samPerson;
-  let faceOutline: Awaited<typeof samFace>;
   if (check.passed && check.type && check.type !== "human") {
     const t1 = performance.now();
     const kind = check.type;
@@ -104,13 +109,13 @@ export async function checkImage(d: PrepDeps, userId: string, bytes: Buffer, rig
       (b) => ({ boxes: b, ms: checkMs + since(t1) }),
       () => null,
     );
-    const samKindFace = samFaceOf(kind);
+    samFace = samFaceOf(kind);
     head = await samHead;
-    faceOutline = await within(samKindFace, FACE_SCAN_GRACE_MS, null);
-  } else {
-    faceOutline = await within(samFace, FACE_SCAN_GRACE_MS, null);
   }
-  const [eyes, mouth] = await within(samFeatures, FACE_SCAN_GRACE_MS, [[], []]);
+  // one shared deadline: the answer waits at most FACE_SCAN_GRACE_MS for the scan once the check and head box are in
+  const deadline = performance.now() + FACE_SCAN_GRACE_MS;
+  const left = () => Math.max(0, deadline - performance.now());
+  const [faceOutline, [eyes, mouth]] = await Promise.all([within(samFace, left(), null), within(samFeatures, left(), [[], []])]);
   const rec: ImageRecord = {
     id: randomUUID().replace(/-/g, ""),
     userId,
