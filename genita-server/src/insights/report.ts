@@ -128,12 +128,21 @@ function isEcho(claim: string, quotes: string[]): boolean {
 
 export const similarClaim = (a: string, b: string) => sameish(a, b);
 
+/** lines from the design / old prompt examples: a model that copies one is not reading this person (eval 11/4) */
+const EXAMPLE_LINES = [
+  "You want two good options, a laugh, and the final say.", "You know a good option when you see one.", "Three options can turn into thirty.",
+  "I'll cap it at two and say my pick.", "You compare before you commit.", "So you want choices, not lectures.", "So I'll bring two options and my pick.",
+  "You pick from good options, keep it light, and keep the final say.", "You decide by comparing, not by being told.", "Clean on the outside, loud on the plate.",
+];
+const copied = (s: string) => EXAMPLE_LINES.some((e) => sameish(e, s));
+
 /** sensitive, creepy or a minor's detail — never stored as a correction or shown as a quote */
 /** an age under 18 said about oneself ("I'm 15", "15 yo") */
 const MINOR_AGE = /\b(?:i'?m|i am|im|age|aged)\s+(?:1[0-7]|[1-9])\b|\b(?:1[0-7]|[1-9])\s*(?:yo|y\/o|yrs?|years?)\b/i;
 
 export function privateDetail(s: string): boolean {
-  return isSensitiveDetail(s) || CREEPY.test(s) || MINOR.test(s) || MINOR_AGE.test(s);
+  const t = s.replace(/[‘’ʼ`]/g, "'"); // "I’m 15" (Codex r3)
+  return isSensitiveDetail(t) || CREEPY.test(t) || MINOR.test(t) || MINOR_AGE.test(t);
 }
 
 /** shares at least two content words with one of these claims (a line stitched from a removed trait) */
@@ -190,7 +199,23 @@ export function scrubRemoved<R extends InsightReport>(r: R, removed: Array<{ tex
     .filter((o) => [o.claim, o.use_in_call, ...o.evidence.map((e) => e.quote), ...(o.chips ?? []).map((c) => c.label)].some((t) => mentionsAvoided(t, keys)))
     .map((o) => o.id);
   const out = withoutObservations(r, gone);
-  return { ...out, mix: out.mix.filter((m) => !mentionsAvoided(m.evidence.quote, keys)), learning: out.learning.filter((l) => !mentionsAvoided(l.label, keys)) };
+  const said = (t: string | undefined) => !!t && mentionsAvoided(t, keys);
+  // the lines stitched over all traits, and the "not me" list (Codex r3: it went on to the call profile as "Not true …")
+  const first = out.observations[0];
+  const denied = (out as { denied?: Array<{ claim: string; correction?: string }> }).denied;
+  return {
+    ...out,
+    headline: said(out.headline) ? first?.claim ?? FALLBACK_HEADLINE : out.headline,
+    usage: said(out.usage) ? (first ? `In our calls, ${first.use_in_call}` : FALLBACK_USAGE) : out.usage,
+    chain: out.chain && [out.chain.you_are, out.chain.so_you, out.chain.so_ill].some(said) ? null : out.chain,
+    type: out.type && [out.type.name, out.type.line, ...out.type.signature].some(said) ? null : out.type,
+    share: out.type && [out.type.name, out.type.line, ...out.type.signature].some(said) ? null : out.share,
+    strengths: out.strengths.filter((s) => !said(s.text)),
+    watchouts: out.watchouts.filter((w) => !said(w.text) && !said(w.fix)),
+    mix: out.mix.filter((m) => !said(m.evidence.quote)),
+    learning: out.learning.filter((l) => !said(l.label)),
+    ...(denied ? { denied: denied.filter((d) => !said(d.claim) && !said(d.correction)) } : {}),
+  };
 }
 
 function sameish(a: string, b: string): boolean {
@@ -343,7 +368,7 @@ export function toReport(raw: unknown, inputs: InsightInputs, meta: { at: string
   for (const u of inputs.unknowns ?? []) if (u.length <= 50 && !insightProblem(u)) learn(`u-${insightId("unknown", u).slice(0, 6)}`, u);
 
   let headline = claimOf(r.headline);
-  if (!/^You(?:\b|['’])/.test(headline) || headline.length > HEADLINE_MAX || insightProblem(headline)) headline = observations[0]?.claim ?? FALLBACK_HEADLINE;
+  if (!/^You(?:\b|['’])/.test(headline) || headline.length > HEADLINE_MAX || insightProblem(headline) || copied(headline)) headline = observations[0]?.claim ?? FALLBACK_HEADLINE;
   headline = sentence(headline);
   let usage = str(r.usage, 300);
   if (!/^In our calls\b/i.test(usage) || usage.length > USAGE_MAX || insightProblem(usage)) {
@@ -360,17 +385,24 @@ export function toReport(raw: unknown, inputs: InsightInputs, meta: { at: string
     const t = sentence(str(v, 200));
     return t.length >= 8 && t.length <= max && (!re || re.test(t)) && !insightProblem(t) ? t : null;
   };
+  // a strength / watch-out must reuse a concrete word of its trait (claim, quotes, chips) — not a compliment that fits anyone
+  const tied = (text: string, id: string) => {
+    const o = observations.find((x) => x.id === id);
+    if (!o) return false;
+    const own = new Set(stems([o.claim, ...o.evidence.map((e) => e.quote), ...(o.chips ?? []).map((c) => c.label)].join(" ")));
+    return stems(text).some((w) => own.has(w));
+  };
   const strengths: InsightStrength[] = [];
   for (const n of Array.isArray(r.strengths) ? r.strengths : []) {
     const x = n && typeof n === "object" ? (n as Record<string, unknown>) : {};
     const text = line(x.text, STRENGTH_MAX), basis = basisOf(x.trait);
-    if (text && basis && !strengths.some((y) => sameish(y.text, text))) strengths.push({ text, basis });
+    if (text && basis && tied(text, basis) && !copied(text) && !strengths.some((y) => sameish(y.text, text))) strengths.push({ text, basis });
   }
   const watchouts: InsightWatchout[] = [];
   for (const n of Array.isArray(r.watchouts) ? r.watchouts : []) {
     const x = n && typeof n === "object" ? (n as Record<string, unknown>) : {};
     const text = line(x.text, WATCH_MAX), fix = useOf(x.fix), basis = basisOf(x.trait);
-    if (text && fix && fix.length <= FIX_MAX && basis && !watchouts.some((y) => sameish(y.text, text))) watchouts.push({ text, fix, basis });
+    if (text && fix && fix.length <= FIX_MAX && basis && tied(`${text} ${fix}`, basis) && !copied(text) && !watchouts.some((y) => sameish(y.text, text))) watchouts.push({ text, fix, basis });
   }
   let type: InsightType | null = null;
   const t = r.type && typeof r.type === "object" ? (r.type as Record<string, unknown>) : {};
@@ -378,13 +410,13 @@ export function toReport(raw: unknown, inputs: InsightInputs, meta: { at: string
   const tline = line(t.line, TYPE_LINE_MAX, /^You(?:\b|['’])/);
   const signature = (Array.isArray(t.signature) ? t.signature : []).map((x) => str(x, 30).replace(/[.]$/, "")).filter((x) => x.length >= 2 && x.length <= SIGNATURE_MAX && !insightProblem(x));
   const basis = [...new Set((Array.isArray(t.basis) ? t.basis : []).map(basisOf).filter((x): x is string => !!x))];
-  if (observations.length && name.length >= 4 && name.length <= TYPE_NAME_MAX && /^The\s/.test(name) && !insightProblem(name) && tline && signature.length === 3 && basis.length >= 1) {
+  if (observations.length && name.length >= 4 && name.length <= TYPE_NAME_MAX && /^The\s/.test(name) && !insightProblem(name) && tline && !copied(tline) && signature.length === 3 && basis.length >= 1) {
     type = { name, line: tline, signature, basis };
   }
   let chain: InsightChain | null = null;
   const c = r.chain && typeof r.chain === "object" ? (r.chain as Record<string, unknown>) : {};
   const youAre = line(c.you_are, CHAIN_MAX, /^You(?:\b|['’])/), soYou = line(c.so_you, CHAIN_MAX, /^So you\b/), soIll = useOf(String(c.so_ill ?? "").replace(/^so,?\s+/i, ""));
-  if (observations.length && youAre && soYou && soIll && soIll.length + 4 <= CHAIN_ILL_MAX) chain = { you_are: youAre, so_you: soYou, so_ill: `So ${soIll}` };
+  if (observations.length && youAre && soYou && soIll && soIll.length + 4 <= CHAIN_ILL_MAX && ![youAre, soYou, `So ${soIll}`].some(copied)) chain = { you_are: youAre, so_you: soYou, so_ill: `So ${soIll}` };
 
   return {
     version: 1, headline, observations, type, mix: mixFrom(inputs.picks), strengths: strengths.slice(0, 3), watchouts: watchouts.slice(0, 2), chain,
@@ -488,8 +520,8 @@ Steps (think, then write):
 2. Name the type those combinations make.
 
 Fields:
-- type: name = "The " + adjective + noun, at most 24 characters, a playful one-of-a-kind identity built from two of the observations ("The Playful Editor", "The Two-Option Night Owl"); line = one sentence starting with "You", at most 80 characters, defining the type ("You pick from good options, keep it light, and keep the final say."); signature = exactly 3 words or short phrases, each at most 12 characters ("Options", "Light", "Final say"); basis = the 0-based indexes of the observations it comes from. Never a real typology (no MBTI letters, no introvert/extrovert, no zodiac), never compliment-only.
-- headline: one line, at most 70 characters, starts with "You", stitches the strongest 2-3 reads ("You want two good options, a laugh, and the final say.").
+- type: name = "The " + adjective + noun, at most 24 characters, a playful one-of-a-kind identity built from two of the observations (for a different person: "The Sunday Batch Cook"); line = one sentence starting with "You", at most 80 characters, defining the type from their own details; signature = exactly 3 words or short phrases, each at most 12 characters, taken from their material; basis = the 0-based indexes of the observations it comes from. Never a real typology (no MBTI letters, no introvert/extrovert, no zodiac), never compliment-only.
+- headline: one line, at most 70 characters, starts with "You", stitches the strongest 2-3 reads (for a different person: "You plan the week on Sunday and wing everything else.").
 - observations (the key traits; write 4-6, the server keeps the best 3-5). Each:
   - claim: one sentence, second person, present tense, starts with "You", at most 60 characters. NOT an echo of one line ("You like spicy food" is an echo — put that in chips). It connects two or more signals, or reads one in an unexpected but defensible way. If it would be true of most people, do not write it.
   - evidence: 1-2 items. source "import" = a quote copied WORD FOR WORD from pasted_reply (at most 80 characters, one contiguous span, no ellipsis, no paraphrase). source "answer" = exactly one label from picks. highlight = the 1-5 words inside the quote that prove the point (copied exactly), or "" for an answer. Never invent a quote. No evidence → no observation.
@@ -498,9 +530,10 @@ Fields:
   - category: talk | think | humor | taste | help | boundary | rhythm | interest. Mix categories. One may be a playful prediction ("You'll …") about how they'll use you, clearly grounded.
   - use_in_call: starts with "I'll", at most 70 characters, a concrete thing you will do in calls because of it.
   - chips: only for taste/interest: short labels from the material (polarity like/dislike). Otherwise [].
-- strengths: 2-3 lines, at most 60 characters, what this type is great at ("You know a good option when you see one."); trait = the 0-based index of the observation it comes from.
-- watchouts: 1-2 playful, kind lines (text at most 70 characters, the funny flip side of a trait, never a flaw diagnosis: "Three options can turn into thirty.") with fix = what you'll do about it, starting with "I'll", at most 60 characters ("I'll cap it at two and say my pick."); trait = the observation index.
-- chain: the reading's logic in three steps: you_are (starts "You", at most 50 characters: "You compare before you commit.") → so_you (starts "So you", at most 50: "So you want choices, not lectures.") → so_ill (starts "So I'll", at most 60: "So I'll bring two options and my pick.").
+- strengths: 0-3 lines, at most 60 characters, what this person is great at BECAUSE of one observation's evidence; trait = that observation's 0-based index. It must reuse a concrete detail from that evidence. Write none rather than a compliment that fits anyone.
+- watchouts: 0-2 playful, kind lines (text at most 70 characters): the funny flip side of one observation, using its concrete detail, never a flaw diagnosis; fix = what you'll do about it, starting with "I'll", at most 60 characters; trait = the observation index.
+- chain: the reading's logic in three steps, built only from the observations: you_are (starts "You", at most 50 characters) → so_you (starts "So you", at most 50) → so_ill (starts "So I'll", at most 60).
+Strengths, watch-outs, the type, the headline and the chain add NO new facts: no habits, numbers, durations, places or skills that the material doesn't state.
 - usage: one line, at most 90 characters, starts with "In our calls", how you'll use all this.
 - learning: 2-4 short topics you still don't know (labels like "How long you like answers"), only things the material doesn't cover.
 
