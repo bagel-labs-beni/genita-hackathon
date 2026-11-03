@@ -143,7 +143,9 @@ jobs:
           read[kSecMatchLimit as String] = kSecMatchLimitOne
           var out: CFTypeRef?
           let found = SecItemCopyMatching(read as CFDictionary, &out)
-          print("SecItemAdd=\(added) SecItemCopyMatching=\(found)")
+          let line = "SecItemAdd=\(added) SecItemCopyMatching=\(found)"
+          FileHandle.standardError.write(Data((line + "\n").utf8))
+          try? line.write(toFile: NSHomeDirectory() + "/Documents/keychain-probe.txt", atomically: true, encoding: .utf8)
           EOF
           xcrun -sdk iphonesimulator swiftc -target arm64-apple-ios17.0-simulator "$D/probe.swift" -o "$P/probe" \
             -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __entitlements -Xlinker "$RUNNER_TEMP/simulator.entitlements"
@@ -159,12 +161,15 @@ jobs:
           xcrun simctl boot "$UDID" || true
           xcrun simctl bootstatus "$UDID" -b >/dev/null
           xcrun simctl install "$UDID" "$P"
-          PROBE="$(perl -e 'alarm 90; exec @ARGV' xcrun simctl launch --console "$UDID" ai.thebeni.genita.probe 2>&1 | grep SecItem || true)"
+          xcrun simctl launch "$UDID" ai.thebeni.genita.probe || true
+          sleep 5
+          PROBE="$(cat "$(xcrun simctl get_app_container "$UDID" ai.thebeni.genita.probe data)/Documents/keychain-probe.txt" 2>/dev/null || true)"
           echo "keychain probe (signed as the app): $PROBE"
           xcrun simctl install "$UDID" build-output/app/Genita.app
           xcrun simctl launch "$UDID" ai.thebeni.genita
           sleep 10
           RUNNING="$(xcrun simctl spawn "$UDID" launchctl list | grep -c 'ai.thebeni.genita$\|UIKitApplication:ai.thebeni.genita\[' || true)"
+          echo "Genita processes after 10 s: $RUNNING"
           xcrun simctl io "$UDID" screenshot "$RUNNER_TEMP/launch.png" >/dev/null 2>&1 || true
           xcrun simctl shutdown "$UDID" || true
           echo "Simulator: keychain probe \`$PROBE\`; Genita running after 10 s: $RUNNING" >> "$GITHUB_STEP_SUMMARY"
