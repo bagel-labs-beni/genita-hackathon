@@ -210,6 +210,8 @@ public struct InterpretHoldButton: View {
     var level: (() -> Float)?
     @State private var down = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// INT-4: space between the panel's bottom (h − 168) and the button's top (h − 64 − 80) on the call overlay
+    static let barsGap: CGFloat = 24
     public init(board: InterpretBoard, level: (() -> Float)? = nil, onHold: @escaping (Bool) -> Void) {
         self.board = board
         self.level = level
@@ -248,9 +250,11 @@ public struct InterpretHoldButton: View {
             .overlay(alignment: .top) {
                 if details {
                     // your voice, floating over the button while it is held
+                    // centred in the 24 pt gap between the panel's last line (h − 168) and the button's top (h − 144):
+                    // the box's middle sits 12 pt above the button (Chelsea 11/4: exactly halfway, symmetric)
                     MotionLevelBars(active: held, level: level, color: InterpretInk.onInk)
                         .opacity(held ? 1 : 0)
-                        .offset(y: -30)
+                        .offset(y: -(InterpretHoldButton.barsGap / 2) - MotionLevelBars.boxHeight / 2)
                         .allowsHitTesting(false)
                 }
             }
@@ -318,7 +322,7 @@ public struct InterpretOverlay: View {
                 InterpretBarView(board: board, onClose: onClose)
                     .padding(.horizontal, 24).offset(y: 124 + top)
                 InterpretHoldButton(board: board, level: level, onHold: onHold)
-                    .padding(.horizontal, 38).frame(maxHeight: .infinity, alignment: .bottom).padding(.bottom, 64)
+                    .padding(.horizontal, 24).frame(maxHeight: .infinity, alignment: .bottom).padding(.bottom, 64)
             }
             .frame(width: geo.size.width, height: h, alignment: .top)
         }

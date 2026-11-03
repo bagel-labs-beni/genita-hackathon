@@ -246,16 +246,20 @@ public struct MotionLevelBars: View {
         TimelineView(.animation(minimumInterval: 1 / 30, paused: !moving)) { tl in
             let t = tl.date.timeIntervalSinceReferenceDate
             let v = moving ? Double(max(0, min(1, level?() ?? 0))) : 0
-            HStack(alignment: .bottom, spacing: 3) {
+            // Chelsea 11/4: bars grow up and down from their middle (vertically symmetric), never from a baseline
+            HStack(alignment: .center, spacing: 3) {
                 ForEach(0..<5, id: \.self) { i in
                     RoundedRectangle(cornerRadius: 1.5).fill(color)
                         .frame(width: 3, height: Self.height(bar: i, time: t, level: v, moving: moving, live: level != nil))
                 }
             }
-            .frame(height: 22, alignment: .bottom)
+            .frame(height: Self.boxHeight, alignment: .center)
         }
         .accessibilityHidden(true)
     }
+
+    /// The bars' box (tallest bar 20 pt + 1 pt each side).
+    public static let boxHeight: CGFloat = 22
 
     static func height(bar i: Int, time t: Double, level: Double, moving: Bool, live: Bool) -> CGFloat {
         guard moving else { return [5, 8, 6, 9, 5][i] }
