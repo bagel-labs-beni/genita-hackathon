@@ -85,13 +85,19 @@ import Observation
     private func watchLock() {
         let distributed = DistributedNotificationCenter.default()
         let workspace = NSWorkspace.shared.notificationCenter
-        let away: (Notification) -> Void = { [weak self] _ in MainActor.assumeIsolated { self?.screenAway() } }
-        let back: (Notification) -> Void = { [weak self] _ in MainActor.assumeIsolated { self?.screenBack() } }
         lockObservers = [
-            distributed.addObserver(forName: .init("com.apple.screenIsLocked"), object: nil, queue: .main, using: away),
-            distributed.addObserver(forName: .init("com.apple.screenIsUnlocked"), object: nil, queue: .main, using: back),
-            workspace.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main, using: away),
-            workspace.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main, using: back),
+            distributed.addObserver(forName: .init("com.apple.screenIsLocked"), object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.screenAway() }
+            },
+            distributed.addObserver(forName: .init("com.apple.screenIsUnlocked"), object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.screenBack() }
+            },
+            workspace.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.screenAway() }
+            },
+            workspace.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.screenBack() }
+            },
         ]
     }
     private var lockObservers: [NSObjectProtocol] = []
