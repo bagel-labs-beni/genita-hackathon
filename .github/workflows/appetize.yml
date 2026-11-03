@@ -253,7 +253,7 @@ jobs:
     steps:
       - name: Open the real app, tap through to sign-in
         env:
-          URL: https://appetize.io/app/${{ needs.appetize.outputs.key }}?device=iphone17pro&osVersion=26.0&autoplay=true&grantPermissions=true
+          URL: https://appetize.io/app/${{ needs.appetize.outputs.key }}?device=iphone17pro&osVersion=26.0&autoplay=true&grantPermissions=true&codec=jpeg
         run: |
           mkdir -p check && cd check
           npm init -y >/dev/null
@@ -261,12 +261,13 @@ jobs:
           npx playwright install --with-deps chromium >/dev/null
           cat > check.mjs <<'EOF'
           import { chromium } from "playwright";
-          const browser = await chromium.launch();
+          // headless Chromium has no GPU video path: JPEG frames (codec=jpeg) + software GL
+          const browser = await chromium.launch({ args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--autoplay-policy=no-user-gesture-required"] });
           const page = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
           await page.goto(process.env.URL, { waitUntil: "domcontentloaded", timeout: 60000 });
           // the device stream: the biggest video or canvas on the page
           const screenBox = async () => page.evaluate(() => {
-            const els = [...document.querySelectorAll("video, canvas, iframe")].map(e => e.getBoundingClientRect())
+            const els = [...document.querySelectorAll("video, canvas, img")].map(e => e.getBoundingClientRect())
               .filter(r => r.width > 150 && r.height > 300).sort((a, b) => b.width * b.height - a.width * a.height);
             return els[0] ? { x: els[0].x, y: els[0].y, width: els[0].width, height: els[0].height } : null;
           });
@@ -274,10 +275,10 @@ jobs:
           await page.screenshot({ path: "welcome.png" });
           const box = await screenBox();
           console.log("device screen box:", JSON.stringify(box));
-          if (box) {
-            await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-            await page.waitForTimeout(10000);
-          }
+          // no element found: the centre of the device frame at this viewport (Auto scale)
+          const at = box ? { x: box.x + box.width / 2, y: box.y + box.height / 2 } : { x: 736, y: 516 };
+          await page.mouse.click(at.x, at.y);
+          await page.waitForTimeout(10000);
           await page.screenshot({ path: "signin.png" });
           await browser.close();
           EOF
