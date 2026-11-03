@@ -162,27 +162,42 @@ export function fallbackLine(cls: GuardClass): string | null {
 
 /**
  * Third-person narration about the user (QA r3 #354, S4 outfit 3/3): "She's holding up the trench…" — Spark describing
- * the camera frame instead of talking to the person. The lead subject is rewritten to "you" (and that sentence's
- * her/his/their to "your"), so the reply addresses her. Only a person-action verb counts ("They're perfect with the
- * trench" is about the clothes and stays).
+ * the camera frame instead of talking to the person. Rewritten to "you" only when it is surely the user (Codex r9):
+ * a camera turn, the reply's first sentence, a she/he/the user/<name> subject with a person-action verb, and the
+ * user's own line names no other person. Possessives change only inside that first clause after a preposition
+ * ("in her left hand" → "in your left hand"); objects ("showing her") and other clauses are left as they are.
  */
-const ACTION = "(?:holding|wearing|standing|showing|smiling|looking|trying|sitting|posing|pointing|waving|turning|modeling|modelling|checking|deciding|comparing|asking|picking|lifting|raising|hanging|putting|getting|choosing|thinking|wondering|leaning|facing|stepping|moving|laughing|frowning)";
-const THIRD_LEAD = new RegExp(String.raw`^(\s*(?:(?:\[[^\]]*\]|<[^>]*>)\s*)*)(?:she|he|they|the user)\s*(?:'s|’s|'re|’re| is| are)\s+(${ACTION}\b)`, "i");
-const SIMPLE: Record<string, string> = { looks: "look", seems: "seem", has: "have", wants: "want", needs: "need", likes: "like", wears: "wear", holds: "hold" };
-const THIRD_SIMPLE = new RegExp(String.raw`^(\s*(?:(?:\[[^\]]*\]|<[^>]*>)\s*)*)(?:she|he)\s+(${Object.keys(SIMPLE).join("|")})\b`, "i");
+const ACTION = "(?:holding|wearing|standing|showing|smiling|trying|sitting|posing|pointing|waving|turning|modeling|modelling|deciding|comparing|asking|picking|lifting|raising|putting|choosing|thinking|wondering|leaning|facing|stepping|laughing|frowning)";
+const TAGS = String.raw`(\s*(?:(?:\[[^\]]*\]|<[^>]*>)\s*)*)`;
+const SIMPLE: Record<string, string> = { looks: "look", seems: "seem", wants: "want", needs: "need" };
+const OTHER_PERSON = /\b(?:she|he|her|him|his|they|them|sister|brother|mom|mum|dad|mother|father|friend|boyfriend|girlfriend|partner|wife|husband|son|daughter|kid|kids|baby|coworker|boss|roommate|cousin|aunt|uncle|grandma|grandpa|neighbou?r|model|guy|girl|man|woman|someone|somebody|person)\b/i;
+const CLAUSE_END = /,|;|\s(?:while|and|but|because|so|whereas|though)\s/i;
 
-export function thirdPersonAboutUser(sentence: string, userName?: string): boolean {
-  const named = userName ? new RegExp(String.raw`^\s*(?:(?:\[[^\]]*\]|<[^>]*>)\s*)*${userName.replace(/[^\p{L}\p{N} '-]/gu, "")}\s*(?:'s|’s| is)\s+${ACTION}\b`, "iu") : null;
-  return THIRD_LEAD.test(sentence) || THIRD_SIMPLE.test(sentence) || !!named?.test(sentence);
+function subjectRe(userName?: string): { cont: RegExp; simple: RegExp } {
+  const name = userName ? `|${userName.replace(/[^\p{L}\p{N} '-]/gu, "").trim()}` : "";
+  return {
+    cont: new RegExp(String.raw`^${TAGS}(?:she|he|the user${name})\s*(?:'s|’s| is)\s+(${ACTION}\b)`, "iu"),
+    simple: new RegExp(String.raw`^${TAGS}(?:she|he${name})\s+(${Object.keys(SIMPLE).join("|")})\b`, "iu"),
+  };
 }
 
-/** "She's holding up the trench in her hand." → "You're holding up the trench in your hand." (unchanged if not third person) */
-export function addressUser(sentence: string, userName?: string): string {
-  let out = sentence;
-  const named = userName ? new RegExp(String.raw`^(\s*(?:(?:\[[^\]]*\]|<[^>]*>)\s*)*)${userName.replace(/[^\p{L}\p{N} '-]/gu, "")}\s*(?:'s|’s| is)\s+(${ACTION}\b)`, "iu") : null;
-  if (THIRD_LEAD.test(out)) out = out.replace(THIRD_LEAD, (_m, lead: string, verb: string) => `${lead}You're ${verb}`);
-  else if (named?.test(out)) out = out.replace(named, (_m, lead: string, verb: string) => `${lead}You're ${verb}`);
-  else if (THIRD_SIMPLE.test(out)) out = out.replace(THIRD_SIMPLE, (_m, lead: string, verb: string) => `${lead}You ${SIMPLE[verb.toLowerCase()]}`);
-  else return sentence;
-  return out.replace(/\b(?:her|his|their)\b(?=\s+\p{L})/giu, "your").replace(/\b(?:herself|himself|themselves)\b/gi, "yourself");
+export type AddressContext = { camera: boolean; first: boolean; userText: string; userName?: string };
+
+export function thirdPersonAboutUser(sentence: string, ctx: AddressContext): boolean {
+  if (!ctx.camera || !ctx.first || OTHER_PERSON.test(ctx.userText)) return false;
+  const { cont, simple } = subjectRe(ctx.userName);
+  return cont.test(sentence) || simple.test(sentence);
+}
+
+/** "She's holding the white one in her left hand." → "You're holding the white one in your left hand." */
+export function addressUser(sentence: string, ctx: AddressContext): string {
+  if (!thirdPersonAboutUser(sentence, ctx)) return sentence;
+  const { cont, simple } = subjectRe(ctx.userName);
+  const out = cont.test(sentence)
+    ? sentence.replace(cont, (_m, lead: string, verb: string) => `${lead}You're ${verb}`)
+    : sentence.replace(simple, (_m, lead: string, verb: string) => `${lead}You ${SIMPLE[verb.toLowerCase()]}`);
+  const cut = out.search(CLAUSE_END);
+  const head = cut < 0 ? out : out.slice(0, cut);
+  const tail = cut < 0 ? "" : out.slice(cut);
+  return head.replace(/\b(in|with|on|at|from|over|under|around|across|against|into|onto|near|by|to)\s+(?:her|his)\b(?=\s+\p{L})/giu, "$1 your") + tail;
 }

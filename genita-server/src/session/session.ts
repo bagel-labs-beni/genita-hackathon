@@ -1351,7 +1351,7 @@ export class Session {
         }
         // v1: never narrate the user in the third person ("She's holding up the trench…" → "You're holding…", QA #354)
         if (this.v1 && !interpret && !self) {
-          const addressed = addressUser(tts, this.user?.name);
+          const addressed = addressUser(tts, { camera: guardCtx.camera, first: !sentences.some((x) => !isInterjectionOnly(x.display)), userText: guardCtx.userText, userName: this.user?.name });
           if (addressed !== tts) { tts = addressed; this.log("convo.addressed_user", { utteranceId }); }
         }
         if (this.v1 && !keepOpener && !interpret && !self) {

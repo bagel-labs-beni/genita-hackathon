@@ -502,24 +502,25 @@ test("narration (real Spark probe 11/3, round 2): 'Checking Seoul's forecast for
 });
 
 // ───────────── third-person narration about the user (QA r3 #354, S4 outfit 3/3) ─────────────
-test("hard fail: 'She's holding up the trench…' becomes 'You're…'; clothes and other people stay", async () => {
-  const { addressUser, thirdPersonAboutUser } = await import("../src/convo/guard.ts");
+test("hard fail: 'She's holding up the trench…' becomes 'You're…' on a camera turn's first sentence; others stay (Codex r9)", async () => {
+  const { addressUser } = await import("../src/convo/guard.ts");
+  const ctx = { camera: true, first: true, userText: "Which one looks better on me?", userName: "Summer" };
   const cases: Array<[string, string]> = [
     ["She's holding up the trench and asking which one works.", "You're holding up the trench and asking which one works."],
     ["<curious> She’s holding the white one in her left hand.", "<curious> You're holding the white one in your left hand."],
     ["He's trying on the black blazer.", "You're trying on the black blazer."],
     ["The user is wearing a beige trench coat.", "You're wearing a beige trench coat."],
-    ["They're comparing two jackets in front of the mirror.", "You're comparing two jackets in front of the mirror."],
     ["She looks great in the black one.", "You look great in the black one."],
     ["Summer is holding up two coats.", "You're holding up two coats."],
+    ["The user is holding the coat while her friend is wearing her own jacket.", "You're holding the coat while her friend is wearing her own jacket."],
+    ["She's showing her the blazer.", "You're showing her the blazer."],
   ];
-  for (const [inp, out] of cases) {
-    assert.ok(thirdPersonAboutUser(inp, "Summer"), inp);
-    assert.equal(addressUser(inp, "Summer"), out);
-  }
-  for (const keep of ["They're perfect with that trench.", "She sounds like a great friend.", "You're holding the trench, go black.", "It's a trench, honestly a classic."]) {
-    assert.equal(addressUser(keep, "Summer"), keep, keep);
-  }
+  for (const [inp, out] of cases) assert.equal(addressUser(inp, ctx), out, inp);
+  for (const keep of ["They're perfect with that trench.", "They're hanging on the rack behind you.", "You're holding the trench, go black."]) assert.equal(addressUser(keep, ctx), keep, keep);
+  // her sister's outfit, no camera, or a later sentence: never rewritten
+  assert.equal(addressUser("She's wearing the red dress.", { ...ctx, userText: "What do you think of my sister's outfit?" }), "She's wearing the red dress.");
+  assert.equal(addressUser("She's holding up the trench.", { ...ctx, camera: false }), "She's holding up the trench.");
+  assert.equal(addressUser("She's holding up the trench.", { ...ctx, first: false }), "She's holding up the trench.");
 });
 
 test("session v1 (S4 outfit with camera): the reply addresses her as you", { skip: !v1 }, async () => {
