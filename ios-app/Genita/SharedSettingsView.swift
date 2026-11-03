@@ -10,6 +10,10 @@ struct SettingsView: View {
     @State private var confirmDelete = false
     @State private var working = false
     @State private var accountError: String?
+    /// M02 "Make a new companion" (11/4): the same confirm style as M02-D; the account and what Genita knows stay
+    @State private var confirmReset = false
+    @State private var resetting = false
+    @State private var resetError: String?
     /// RP-1 (D37): Report on M02
     @State private var reportOpen = false
     /// model.onboarding.auth (not a fresh GenitaAuthClient) so the --stub-signin UI-test session counts too
@@ -38,8 +42,10 @@ struct SettingsView: View {
         guard let rows = model.setup.styleRows, !rows.isEmpty else { return model.setup.response }
         return ImportedStyle(rows: rows, partial: false, toConfirm: [], profile: "", source: "").displayText
     }
+    /// The account's voice: the V04 pick on this phone, else the companion's saved voice from the server (another
+    /// phone, a reinstall: build 7 Appetize showed "Default" after picking Leah, 11/4).
     private var voiceName: String {
-        model.setup.voiceName ?? "Default"
+        model.setup.voiceName ?? CuratedVoices.name(model.setup.voiceId) ?? "Default"
     }
     var body: some View {
         NavigationStack {
@@ -52,13 +58,17 @@ struct SettingsView: View {
                         Text("Demo companion").font(.footnote).foregroundStyle(.secondary).accessibilityIdentifier("demoCompanionLabel")
                     }
                     LabeledContent("Voice", value: voiceName)
+                    if signedIn {
+                        Button(resetting ? "Starting over…" : "Make a new companion") { confirmReset = true }
+                            .disabled(resetting || working).accessibilityIdentifier("makeNewCompanion")
+                    }
                 }
                 Section("Your preferences") {
                     if !styleText.isEmpty {
                         VStack(alignment: .leading, spacing: 2) {
                             ForEach(Array(Self.styleLines(styleText).enumerated()), id: \.offset) { i, line in
                                 Text(line.text)
-                                    .font(.custom(line.heading ? "PretendardVariable-Medium" : "PretendardVariable-Regular", fixedSize: line.heading ? 13 : 15))
+                                    .font(.custom(line.heading ? "PretendardVariable-Medium" : "PretendardVariable-Regular", size: line.heading ? 13 : 15, relativeTo: line.heading ? .footnote : .subheadline))
                                     .foregroundStyle(line.heading ? .secondary : .primary)
                                     .padding(.top, line.heading && i > 0 ? 10 : 0)
                                     .fixedSize(horizontal: false, vertical: true)
@@ -72,8 +82,8 @@ struct SettingsView: View {
                     // F1-L8: sign out and in-app account deletion (App Review 5.1.1(v))
                     Section("Account") {
                         Button("Report a problem") { reportOpen = true }.accessibilityIdentifier("settingsReport")
-                        Button("Sign out") { signOut() }.disabled(working).accessibilityIdentifier("signOut")
-                        Button(working ? "Deleting…" : "Delete account", role: .destructive) { confirmDelete = true }.disabled(working).accessibilityIdentifier("deleteAccount")
+                        Button("Sign out") { signOut() }.disabled(working || resetting).accessibilityIdentifier("signOut")
+                        Button(working ? "Deleting…" : "Delete account", role: .destructive) { confirmDelete = true }.disabled(working || resetting).accessibilityIdentifier("deleteAccount")
                     }
                 }
                 Section {
@@ -90,6 +100,13 @@ struct SettingsView: View {
                 Button("Delete account", role: .destructive) { deleteAccount() }
                 Button("Cancel", role: .cancel) {}
             } message: { Text("This deletes your companion, your conversation, memories and Finds on your iPhone and Mac. It can’t be undone.") }
+            .confirmationDialog("Start over with someone new?", isPresented: $confirmReset, titleVisibility: .visible) {
+                Button("Start over", role: .destructive) { resetCompanion() }
+                Button("Cancel", role: .cancel) {}
+            } message: { Text(Self.resetMessage(model.setup.companionName)) }
+            .alert("Couldn’t start over", isPresented: Binding(get: { resetError != nil }, set: { if !$0 { resetError = nil } })) {
+                Button("OK", role: .cancel) {}
+            } message: { Text(resetError ?? "") }
             .alert("Couldn’t delete your account", isPresented: Binding(get: { accountError != nil }, set: { if !$0 { accountError = nil } })) {
                 Button("OK", role: .cancel) {}
             } message: { Text(accountError ?? "") }
@@ -101,6 +118,40 @@ struct SettingsView: View {
         #endif
     }
 
+    /// "{Name}, their face, voice and your chats together will be removed. What Genita knows about you stays."
+    static func resetMessage(_ companionName: String?) -> String {
+        let n = CompanionName.clean(companionName ?? "")
+        return "\(n.isEmpty ? "Your companion" : n), their face, voice and your chats together will be removed. What Genita knows about you stays."
+    }
+    private func resetCompanion() {
+        resetting = true
+        // the account this was asked for: a late answer after a sign-out / another sign-in must not touch the new one (Codex P2)
+        let asked = model.launchAuthSnapshot
+        let resets = model.companionResets
+        Task { @MainActor in
+            defer { resetting = false }
+            do {
+                try await model.onboarding.resetCompanion()
+                guard asked.accepts(model.launchAuthSnapshot) else { return }
+                // the call's 4410 reset this phone already: the user may have picked a new photo or started a new
+                // call since — this late answer touches nothing, not even the call (Codex #514 r2)
+                guard model.companionResets == resets else { return }
+                CallController.shared.end()
+                dismiss()
+                model.companionResetAnswered(since: resets)
+            } catch GenitaAuthError.unauthorized where asked.generation == model.authGeneration {
+                // this request's 401 cleared the token (same sign-in): A02, as everywhere else
+                dismiss()
+                model.signedOut()
+            } catch _ where !asked.accepts(model.launchAuthSnapshot) {
+                return
+            } catch GenitaAuthError.server(status: 429, _, _) {
+                resetError = "You’ve started over a lot today. Try again tomorrow."
+            } catch {
+                resetError = "Try again in a moment. Nothing was removed."
+            }
+        }
+    }
     private func signOut() {
         working = true
         Task { @MainActor in
@@ -124,9 +175,25 @@ struct SettingsView: View {
                 FindFrameStore.removeAll(owner: frameOwner, ids: ids)
                 dismiss()
                 model.accountDeleted()
+            } catch GenitaAuthError.unauthorized {
+                // the session is gone: the account may have been deleted (an earlier try) or the session expired.
+                // Either way A02, and this phone keeps nothing of an account its owner asked to delete; no "deleted"
+                // notice, that needs the server's answer.
+                dismiss(); model.leftAfterDeleteRequest()
             } catch {
-                accountError = "Try again in a moment. Nothing was deleted."
+                // AU-06: a slow answer (or a step that failed after the files went) may still have deleted the
+                // account. A 401 on /me now means the session is gone (deleted or expired, the server can't say
+                // which): as above. Otherwise the account is still there.
+                if case .expired = await model.onboarding.auth.sessionState() { dismiss(); model.leftAfterDeleteRequest() }
+                else { accountError = "Try again in a moment." }
             }
         }
     }
+}
+
+/// The four V04 voices' names by server id (genita-server src/prep/voices.ts DEFAULT_VOICES). Lives here, not in the
+/// iOS-only OnboardingViews.swift, because the GenitaMac target compiles this file too.
+enum CuratedVoices {
+    static let names = ["72": "Tara", "9": "Leah", "19": "Leo", "26": "Dan"]
+    static func name(_ id: String?) -> String? { id.flatMap { names[$0] } }
 }
