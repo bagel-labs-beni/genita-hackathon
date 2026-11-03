@@ -278,7 +278,7 @@ import ARKit
         case "connected":
             lastPing=Date().timeIntervalSince1970
             snapshotCall()
-            var hello:[String:Any]=["type":"hello","image":snapshot,"profile":model?.setup.imageData?.base64EncodedString() ?? "","register":registering && proximitySupported]
+            var hello:[String:Any]=["type":"hello","image":snapshot,"profile":model?.companionFaceData?.base64EncodedString() ?? "","register":registering && proximitySupported]
             if let size=PhoneDisplayGeometry.meters {hello["phoneHeight"]=size.height;hello["phoneWidth"]=size.width}
             link.send(hello)
             ownership.publishCurrent()

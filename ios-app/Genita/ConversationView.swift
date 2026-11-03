@@ -52,7 +52,7 @@ struct ConversationView: View {
                         if call.cameraOn { CameraStage(call: call, size: full.size, topInset: top).blur(radius: unclear ? 8 : 0).transition(.opacity) }
                         // F10-U-SHEET r03: the face steps back as the sheet rises (half .814, rising .895) and
                         // becomes a 96 × 128 window when the sheet is full.
-                        CompanionFaceView(still: companionImage, loop: loopURL, face: connecting ? nil : call.face, faceStill: call.faceStill).frame(width: full.size.width, height: full.size.height).clipped()
+                        CompanionFaceView(still: companionImage, loop: loopURL, face: connecting ? nil : call.face, faceStill: call.faceStill, poster: call.facePoster).frame(width: full.size.width, height: full.size.height).clipped()
                             // S07 veiled → S09 the veil lifts (motion lane); never in the handoff snapshot (ImageRenderer, no onAppear)
                             .genitaFaceReveal(veiled: connecting, enabled: handoffEnabled)
                             .grayscale(sheetOffline ? 1 : 0).brightness(sheetOffline ? -0.25 : 0).blur(radius: unclear ? 8 : 0)
@@ -60,6 +60,7 @@ struct ConversationView: View {
                             .opacity(sheet == .full || call.cameraOn ? 0 : 1)
                             .allowsHitTesting(!call.cameraOn)
                             .contentShape(Rectangle()).onTapGesture { faceTapped() }.accessibilityAction(named: "Interrupt") { call.interrupt() }
+                            .accessibilityIdentifier("companionFace")
                             .animation(.drawer, value: sheet)
                         if waitingCopy != nil { handoffScrim.frame(width: full.size.width, height: full.size.height).allowsHitTesting(false) }
                         Button { withAnimation(.easeInOut(duration: 0.22)) { model.menuOpen.toggle() } } label: {
@@ -69,10 +70,13 @@ struct ConversationView: View {
                             .opacity(sheet == .full ? 0 : 1).accessibilityHidden(sheet == .full)
                         if call.cameraOn && sheet != .full {
                             // r01 CAM-H `.pip`: right 20, top 120, 96 × 128, 2 px light border; moves left while the sheet is half up (the rail rises into its place)
-                            CompanionFaceView(still: companionImage, loop: loopURL).frame(width: 96, height: 128).clipShape(RoundedRectangle(cornerRadius: 16))
+                            // the camera's small window is the live, talking face too (Chelsea P1, build 7: a frozen upload photo)
+                            CompanionFaceView(still: companionImage, loop: loopURL, face: call.face, faceStill: call.faceStill, poster: call.facePoster).frame(width: 96, height: 128).clipShape(RoundedRectangle(cornerRadius: 16))
                                 .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(CallInk.onInk, lineWidth: 2)).shadow(color: CallInk.ink.opacity(0.18), radius: 12, y: 8)
                                 .position(x: sheet == .half || sheet == .rising ? 68 : full.size.width - 68, y: 184 + top)
-                                .onTapGesture { faceTapped() }.accessibilityLabel("\(call.companionName)").accessibilityIdentifier("cameraPip")
+                                .onTapGesture { faceTapped() }.accessibilityLabel("\(call.companionName)")
+                                .accessibilityValue(CompanionFaceView.layer(face: call.face != nil, poster: call.facePoster != nil, still: companionImage != nil))
+                                .accessibilityIdentifier("cameraPip")
                         }
                         if call.cameraOn, !connecting, let check = call.finds.noSee, sheet == .idle || sheet == .dismissed {
                             // FT-NOSEE (Figma 59:2): left 24, top 124; never over a sheet
@@ -114,7 +118,7 @@ struct ConversationView: View {
                         if sheet == .full {
                             // r03 `.pip`: the face as a 96 × 128 window; tap → back to half
                             Button { withAnimation(.drawer) { call.finds.pipTapped() } } label: {
-                                CompanionFaceView(still: companionImage, loop: loopURL, face: call.face, faceStill: call.faceStill).frame(width: 96, height: 128).clipShape(RoundedRectangle(cornerRadius: 16))
+                                CompanionFaceView(still: companionImage, loop: loopURL, face: call.face, faceStill: call.faceStill, poster: call.facePoster).frame(width: 96, height: 128).clipShape(RoundedRectangle(cornerRadius: 16))
                                     .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(CallInk.onInk, lineWidth: 2)).shadow(color: CallInk.ink.opacity(0.18), radius: 12, y: 8)
                             }.buttonStyle(PressScale()).position(x: full.size.width - 64, y: 112 + top)
                                 .accessibilityLabel("Back to half height").accessibilityIdentifier("findsPip").transition(.opacity)
@@ -207,7 +211,8 @@ struct ConversationView: View {
         }
         #endif
         // L4: the Meta face animates only while the call screen is up and the app is active (UI review: one frame)
-        .onAppear { if !connecting { showFace() } }
+        // S07: fetch the face set while connecting, so S09 opens on the generated face (build 6: upload photo ~4 s, then a jump)
+        .onAppear { if connecting { call.prepareFace(reduceMotion: reduceMotion || CallMotion.reviewStill) } else { showFace() } }
         .onDisappear { if !connecting { call.hideFace() } }
         .onChange(of: scenePhase) { _, phase in if !connecting { if phase == .active { showFace() } else { call.hideFace() } } }
         .onChange(of: reduceMotion) { _, on in call.setFaceReduceMotion(on || CallMotion.reviewStill) }
@@ -215,6 +220,8 @@ struct ConversationView: View {
         .sheet(isPresented: $model.settingsOpen) { SettingsView(model: model) }
         .reportFlow(isPresented: $reportOpen, surface: "call", auth: model.onboarding.auth) { call.lastReplyText }
         .task(id: model.setup.imageData) { loopURL = model.companionLoopURL }
+        // the prep call scene is the still under the face (also after a relaunch, when PREP-1 didn't load it)
+        .task(id: model.prep?.sceneURL) { await model.loadScene() }
         // S09-P (D28): the face is still being made while the call runs; keep `model.prep` fresh so the in-call
         // indicator (`model.callPrepIndicator`, S09-PREP 228:543) follows scene → expressions → mouth.
         // keyed on the status too: a PREP-1e Try again answered after the call started (failed → running) polls again
@@ -383,9 +390,12 @@ struct ConversationView: View {
             Image(resource: "selfPreview").resizable().frame(width: 113, height: 211).accessibilityElement().accessibilityLabel("Your camera is off")
         }
     }
-    var companionImage: Image {
-        if let data = model.setup.imageData, let image = UIImage(data: data) { return Image(uiImage: image) }
-        return Image(resource: "companion")
+    /// The still under the face: the prep call scene (the generated face, same framing as the face set). The upload
+    /// photo never shows on a call (Chelsea P1, build 7); until the scene or the face set lands it's the dark ground.
+    /// Unwired builds (UI tests, Appetize preview) keep their bundled fixture face.
+    var companionImage: Image? {
+        if let data = model.companionFaceData, let image = UIImage(data: data) { return Image(uiImage: image) }
+        return model.serverWired ? nil : Image(resource: "companion")
     }
 }
 

@@ -313,7 +313,8 @@ struct CompanionNameView: View {
     }
 
     @ViewBuilder private var avatar: some View {
-        if let data = model.setup.imageData, let image = UIImage(data: data) { Image(uiImage: image).resizable().scaledToFill() }
+        // after V02 the upload isn't drawn (Chelsea 11/4): the generated scene, else the neutral circle
+        if let data = model.companionFaceData, let image = UIImage(data: data) { Image(uiImage: image).resizable().scaledToFill() }
         else { Color(white: 0.9) }
     }
 }
@@ -713,7 +714,9 @@ struct BringingView: View {
     }
 
     @ViewBuilder private var uploaded: some View {
-        if let data = model.setup.imageData, let image = UIImage(data: data) { Image(uiImage: image).resizable().scaledToFill() }
+        // PREP-1 before the scene lands: the dark ground, not the upload (Chelsea 11/4); unwired builds keep the fixture
+        if let data = model.companionFaceData, let image = UIImage(data: data) { Image(uiImage: image).resizable().scaledToFill() }
+        else if model.serverWired { PrepStyle.background }
         else { Image(resource: "companion").resizable().scaledToFill() }
     }
 }
