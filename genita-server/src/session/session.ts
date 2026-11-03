@@ -253,7 +253,7 @@ const EXPLICIT_REMEMBER = /\b(?:remember|don'?t forget|keep in mind|note) (?:tha
 export const CRISIS_HELP_LINE = "<sad> Please reach out right now: call or text a crisis line, like 988 in the US, or your local emergency number, or someone you trust. I'm right here.";
 /** real help outside the call — "reach out to me" is not one (Codex #423 final P1) */
 const HELP_POINTER = /\b(?:988|911|112|999|nine eight eight|nine one one|crisis (?:line|text line)|hotline|emergency (?:services|number|room)|someone you trust|samaritans|lifeline|a doctor|a counselor)\b/i;
-const QUESTION_START = /^(?:(?:hey|hi|okay|ok|so|wait|yo)\b[^,.!?]{0,20},?\s*)?(?:so,?\s*)?(?:(?:how|what|when|where|who|why|which)(?:'s|'re|'d| is| are| was| were| did| do| does| has| have| had| will| would| can| could)\b|(?:did|do|does|are|is|was|were|have|has|can|could|will|would) (?:you|it|they|we|that|this|he|she)\b|you (?:feeling|ready|nervous|excited)\b)/i;
+const QUESTION_START = /^(?:(?:hey|hi|okay|ok|so|wait|yo)\b[^,.!?]{0,20},?\s*)?(?:so,?\s*)?(?:(?:how|what|when|where|who|why|which)(?:'s|'re|'d| is| am| are| was| were| did| do| does| has| have| had| will| would| can| could| should)\b|(?:did|do|does|are|is|was|were|have|has|can|could|will|would) (?:you|it|they|we|that|this|he|she)\b|you (?:feeling|ready|nervous|excited)\b)/i;
 /** Demo S4 (QA P2: Spark ignored SUGGEST_MAC_LINE 1/4 and gave outfit advice in 8.5 s): the iPhone's outfit ask with the
  * Mac open always gets this line, at once (no Spark); rotates by utterance */
 const SUGGEST_MAC_TAIL = "<happy> Can you move our call to your Mac? I want to see your whole outfit.";

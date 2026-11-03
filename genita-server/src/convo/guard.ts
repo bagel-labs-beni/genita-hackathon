@@ -34,7 +34,7 @@ const CLASSES: Array<[GuardClass, RegExp]> = [
   // AI sweep 11/3 (3/4 with the camera ON): their face, skin, hair, smile or body, rated — never, camera or not
   // (DESIGN §8.2/§8.5). The clothes themselves are fine ("that blazer is sharp").
   ["appearance", /\b(?:your|that|those|this) (?:[a-z-]+ ){0,2}(?:smile|smirk|grin|face|skin|hair|eyes|lips|body|figure|glow|complexion|cheeks|jawline|curves|freckles|brows|eyebrows|teeth)\b|\b(?:cute|hot|pretty|gorgeous|beautiful|handsome|sexy|stunning) as hell\b|\byou(?:'re| are| look(?:s|ing)?)\s+(?:so |really |totally |kinda )?(?:cute|hot|pretty|gorgeous|beautiful|handsome|glowy|glowing|sexy|stunning|adorable|radiant)\b|\b(?:cozy and glowy|glowy|glowing skin)\b/i],
-  ["unseen", /\b(?:you (?:totally |really |so |just |kinda )?look(?:s|ing)?\b|i can see (?:you|that you)|you seem (?:tired|sleepy|exhausted|sad|happy) (?:on|from) (?:camera|here))/i],
+  ["unseen", /\b(?:you (?:totally |really |so |just |kinda |always |never |still )?look(?:s|ing)?\b|i can see (?:you|that you)|you seem (?:tired|sleepy|exhausted|sad|happy) (?:on|from) (?:camera|here))/i],
 ];
 
 /**
