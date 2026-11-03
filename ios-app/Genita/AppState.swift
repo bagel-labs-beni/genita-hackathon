@@ -301,8 +301,6 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     /// M02 account deleted: nothing of it stays on this iPhone.
     func accountDeleted() {
         resetLocalProfile()
-        // the fridge / outfit frames kept for reopened Finds are this account's camera pictures (AU-75)
-        FindFrameStore.removeAll()
         storage.removeObject(forKey: Self.userKey)
         signedOut()
     }

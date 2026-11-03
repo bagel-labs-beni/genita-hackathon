@@ -514,6 +514,8 @@ export class Session {
   private bargeCfg: { bargeInMinMs: number; bargeInMinWords: number };
   private readonly client: ClientSink;
   private finds: FindsRunner | null = null;
+  /** FD-01: the in-flight read of a card named by find.focus; a typed turn waits for it */
+  private focusLoad: Promise<void> = Promise.resolve();
   /** lane 개인화: this call's one still-to-confirm question (first ASK_TURNS user turns) */
   private ask: { line: string; item: string; topic: UnknownItem | null; asked: boolean } | null = null;
   /** the companion just asked this call's question: the next user line is checked for the answer */
@@ -649,6 +651,8 @@ export class Session {
           this.log("finds.ask_ignored_interpreting", { findId: msg.findId.slice(0, 64) });
           return;
         }
+        // a card "Talk about this" just named may still be loading from Finds: this turn is about it (Codex P2)
+        await this.focusLoad;
         if (typeof msg.findId === "string") await this.finds?.focus(msg.findId.slice(0, 64));
         this.client.sendJson({ type: "transcript", final: true, text, source: "text" });
         if (this.interp) return this.interp.typed(text);
@@ -691,7 +695,11 @@ export class Session {
         return;
       case "find.focus":
         // FD-01 "Talk about this on a call": later turns are about this card (one from an earlier call too)
-        if (typeof msg.findId === "string") await this.finds?.focus(msg.findId.slice(0, 64));
+        if (typeof msg.findId === "string") {
+          const load = this.finds?.focus(msg.findId.slice(0, 64)) ?? Promise.resolve();
+          this.focusLoad = load.catch(() => {});
+          await load;
+        }
         return;
       default:
         return this.error("unknown_type", `Unknown message type ${String(type).slice(0, 40)}`, false);

@@ -413,7 +413,7 @@ enum CallStop: Equatable {
     @ObservationIgnored var onCameraChange: (() -> Void)?
 
     func toggleCamera() {
-        if cameraOn { camera.stop(); cameraOn = false; finds.boxes.clear(); finds.latestFrames = []; onCameraChange?(); return }
+        if cameraOn { camera.stop(); cameraOn = false; finds.boxes.clear(); onCameraChange?(); return }
         guard !userEnded, ownsConversation else { return }
         cameraDenied = false
         let generation = capturePermissions.generation
@@ -740,6 +740,9 @@ enum CallStop: Equatable {
                 firstFrame = frame
                 finds.latestFrames = [frame]
                 socket?.send(.frames(.init(images: [frame])))
+            } else {
+                // a question asked with the camera off has no frames: an earlier question's never ride along (AU-75)
+                finds.latestFrames = []
             }
         case .speechEnd:
             speechEndAt = Date()

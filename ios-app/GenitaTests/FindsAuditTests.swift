@@ -81,18 +81,21 @@ import XCTest
         XCTAssertNil(kept["shoes"])
     }
 
-    /// AU-75: account deletion takes the kept frames with it.
-    func testRemoveAllDeletesEveryKeptFrame() throws {
+    /// AU-75: account deletion takes that account's kept frames with it, and never another account's (Codex P1).
+    func testRemoveAllDeletesOnlyThatAccountsFrames() throws {
         let saved = FindFrameStore.directory
         defer { FindFrameStore.directory = saved }
         FindFrameStore.directory = FileManager.default.temporaryDirectory.appending(path: "find-frames-\(UUID().uuidString)")
-        FindFrameStore.save(id: "abcdef12-0001", frames: [Data([1]), Data([2])])
-        FindFrameStore.save(id: "abcdef12-0002", frames: [Data([3])])
-        XCTAssertEqual(FindFrameStore.load(id: "abcdef12-0001").count, 2)
-        FindFrameStore.removeAll()
-        XCTAssertTrue(FindFrameStore.load(id: "abcdef12-0001").isEmpty)
-        XCTAssertTrue(FindFrameStore.load(id: "abcdef12-0002").isEmpty)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: FindFrameStore.directory.path))
+        FindFrameStore.save(id: "abcdef12-0001", frames: [Data([1]), Data([2])], owner: "acct-a")
+        FindFrameStore.save(id: "abcdef12-0002", frames: [Data([3])], owner: "acct-b")
+        // a frame saved before 11/4, loose in the folder with no owner
+        try Data([9]).write(to: FindFrameStore.directory.appending(path: "abcdef12-0003-0.jpg"))
+        XCTAssertEqual(FindFrameStore.load(id: "abcdef12-0001", owner: "acct-a").count, 2)
+        XCTAssertEqual(FindFrameStore.load(id: "abcdef12-0003", owner: "acct-a").count, 1, "old loose frames still open")
+        FindFrameStore.removeAll(owner: "acct-a")
+        XCTAssertTrue(FindFrameStore.load(id: "abcdef12-0001", owner: "acct-a").isEmpty)
+        XCTAssertTrue(FindFrameStore.load(id: "abcdef12-0003", owner: "acct-a").isEmpty, "loose frames go with any deletion")
+        XCTAssertEqual(FindFrameStore.load(id: "abcdef12-0002", owner: "acct-b").count, 1, "the other account keeps its frames")
     }
 
     /// AU-62 / AU-72: the socket dropped mid-search. The new session never sends that result: the search fails with

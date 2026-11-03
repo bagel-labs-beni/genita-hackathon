@@ -112,10 +112,14 @@ struct SettingsView: View {
     }
     private func deleteAccount() {
         working = true
+        // whose camera frames these are, read before the token goes away with the account
+        let frameOwner = FindFrameStore.owner()
         Task { @MainActor in
             defer { working = false }
             do {
                 _ = try await model.onboarding.auth.deleteAccount()
+                // the fridge / outfit frames kept for reopened Finds are this account's camera pictures (AU-75)
+                FindFrameStore.removeAll(owner: frameOwner)
                 dismiss()
                 model.accountDeleted()
             } catch {

@@ -60,32 +60,53 @@ struct HTTPFindsAPI: FindsAPI {
 
 /// The camera frames a find was made from. The server never keeps them (PROTOCOL.md), so the app keeps its own copy
 /// on the phone — only for finds the user made — to show "what the camera saw" when a card is reopened. Removed
-/// with the find.
+/// with the find, and with the account (each account has its own folder, so deleting one never touches another's).
 enum FindFrameStore {
     static var directory: URL = URL.applicationSupportDirectory.appending(path: "Genita/find-frames")
+    /// The signed-in account (session JWT `sub`), nil when signed out.
+    nonisolated(unsafe) static var owner: () -> String? = { CallController.tokenSubject(CallEndpoint.current().token) }
 
-    static func save(id: String, frames: [Data]) {
-        guard !frames.isEmpty, id.range(of: #"^[A-Za-z0-9-]{8,64}$"#, options: .regularExpression) != nil else { return }
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        for (i, data) in frames.enumerated() { try? data.write(to: directory.appending(path: "\(id)-\(i).jpg"), options: .atomic) }
+    /// This account's folder; frames saved before 11/4 sit loose in `directory` (read, and removed on any deletion).
+    static func folder(_ owner: String?) -> URL {
+        let name = (owner ?? "").unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) || $0 == "-" || $0 == "_" }.prefix(64)
+        return directory.appending(path: name.isEmpty ? "anon" : "a-" + String(String.UnicodeScalarView(name)))
+    }
+    private static func valid(_ id: String) -> Bool { id.range(of: #"^[A-Za-z0-9-]{8,64}$"#, options: .regularExpression) != nil }
+
+    static func save(id: String, frames: [Data], owner: String? = owner()) {
+        guard !frames.isEmpty, valid(id) else { return }
+        let dir = folder(owner)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        for (i, data) in frames.enumerated() { try? data.write(to: dir.appending(path: "\(id)-\(i).jpg"), options: .atomic) }
     }
 
-    static func load(id: String) -> [Data] {
-        var out: [Data] = []
-        while let data = try? Data(contentsOf: directory.appending(path: "\(id)-\(out.count).jpg")) { out.append(data) }
-        return out
+    static func load(id: String, owner: String? = owner()) -> [Data] {
+        guard valid(id) else { return [] }
+        for dir in [folder(owner), directory] {
+            var out: [Data] = []
+            while let data = try? Data(contentsOf: dir.appending(path: "\(id)-\(out.count).jpg")) { out.append(data) }
+            if !out.isEmpty { return out }
+        }
+        return []
     }
 
-    /// Account deleted (M02): every kept camera frame goes with it (AU-75).
-    static func removeAll() {
-        try? FileManager.default.removeItem(at: directory)
+    static func remove(id: String, owner: String? = owner()) {
+        guard valid(id) else { return }
+        for dir in [folder(owner), directory] {
+            var i = 0
+            while FileManager.default.fileExists(atPath: dir.appending(path: "\(id)-\(i).jpg").path) {
+                try? FileManager.default.removeItem(at: dir.appending(path: "\(id)-\(i).jpg"))
+                i += 1
+            }
+        }
     }
 
-    static func remove(id: String) {
-        var i = 0
-        while FileManager.default.fileExists(atPath: directory.appending(path: "\(id)-\(i).jpg").path) {
-            try? FileManager.default.removeItem(at: directory.appending(path: "\(id)-\(i).jpg"))
-            i += 1
+    /// Account deleted (M02): its folder goes, and the loose pre-11/4 frames (no owner recorded) with it (AU-75).
+    static func removeAll(owner: String?) {
+        let fm = FileManager.default
+        try? fm.removeItem(at: folder(owner))
+        for url in (try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? [] where url.pathExtension == "jpg" {
+            try? fm.removeItem(at: url)
         }
     }
 }
@@ -136,8 +157,8 @@ struct FindsSection: Identifiable, Equatable {
     @ObservationIgnored var calendar = Calendar.current
     @ObservationIgnored var undoWindow: Duration = .seconds(5)
     /// Frames the app kept for a find (camera box "at that moment").
-    @ObservationIgnored var frames: (String) -> [Data] = FindFrameStore.load
-    @ObservationIgnored var purge: (String) -> Void = FindFrameStore.remove
+    @ObservationIgnored var frames: (String) -> [Data] = { FindFrameStore.load(id: $0) }
+    @ObservationIgnored var purge: (String) -> Void = { FindFrameStore.remove(id: $0) }
     @ObservationIgnored private var toastTask: Task<Void, Never>?
     @ObservationIgnored private var inFlight: [String: Task<Void, Error>] = [:]
 
