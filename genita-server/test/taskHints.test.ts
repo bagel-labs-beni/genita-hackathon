@@ -51,3 +51,15 @@ test("a loss told plainly gets 'name that person' (intel eval sad-grandma attent
 test("never on a real crisis line: 'how many pills would it take' is not a math ask", () => {
   for (const t of ["how many of my pills would it take", "I want to kill myself, how long would it take", "my dog died and I don't want to be alive anymore"]) assert.equal(taskHint(t, []), null, t);
 });
+
+test("Codex #546 P1: after a crisis line in the call, a follow-up 'how long would it take?' gets no work-it-out line", () => {
+  assert.equal(taskHint("how long would it take?", [h("user", "I want to kill myself."), h("assistant", "Please call 988.")]), null);
+  assert.equal(taskHint("how long would it take?", [], true), null);
+});
+
+test("Codex #546 P2: a person named in this line, a missing (not dead) dog, a negated diet", () => {
+  assert.equal(taskHint("My boyfriend Jake forgot my birthday. Should I text him?", []), null);
+  assert.doesNotMatch(taskHint("I lost my dog at the park ten minutes ago, what should I do?", []) ?? "", /someone they lost/);
+  assert.doesNotMatch(taskHint("I miss my mom so much since she moved to Spain", []) ?? "", /someone they lost/);
+  assert.doesNotMatch(taskHint("I am not vegan. What should I cook?", []) ?? "", /vegan/);
+});

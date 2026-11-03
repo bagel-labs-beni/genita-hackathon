@@ -29,19 +29,26 @@ export function repeatedWords(history: Line[]): string[] {
   return [...count].filter(([w, n]) => n >= 2 && !user.has(w)).map(([w]) => w).slice(0, 3);
 }
 
-const LOSS = /\b(?:my|our) (?:\w+ )?(?:mom|dad|mother|father|grandma|grandpa|grandmother|grandfather|nana|brother|sister|aunt|uncle|cousin|friend|best friend|dog|cat|pet) (?:just |recently )?(?:died|passed(?: away)?)\b|\blost (?:my|our) (?:\w+ )?(?:mom|dad|mother|father|grandma|grandpa|grandmother|grandfather|nana|brother|sister|aunt|uncle|cousin|friend|best friend|dog|cat|pet)\b|\bfuneral\b|\bwould'?ve been (?:my|our) (?:\w+ )?(?:mom|dad|mother|father|grandma|grandpa|grandmother|grandfather|nana|brother|sister|aunt|uncle|cousin|friend|best friend|dog|cat|pet)'?s birthday\b|\bmy (?:\w+ )?(?:mom|dad|mother|father|grandma|grandpa|grandmother|grandfather|nana|brother|sister|aunt|uncle|cousin|friend|best friend|dog|cat|pet)'?s (?:birthday|anniversary) would'?ve been\b|\bmiss(?:ing)? my (?:\w+ )?(?:mom|dad|mother|father|grandma|grandpa|grandmother|grandfather|nana|brother|sister|aunt|uncle|cousin|friend|best friend|dog|cat|pet) so\b/i;
+// Codex #546 P2: only a death ("lost my dog at the park" is a missing dog, "miss my mom" may just be far away)
+const LOSS = /\b(?:my|our) (?:\w+ )?(?:mom|dad|mother|father|grandma|grandpa|grandmother|grandfather|nana|brother|sister|aunt|uncle|cousin|friend|best friend|dog|cat|pet) (?:just |recently )?(?:died|passed(?: away)?)\b|\bfuneral\b|\bwould'?ve been (?:my|our) (?:\w+ )?(?:mom|dad|mother|father|grandma|grandpa|grandmother|grandfather|nana|brother|sister|aunt|uncle|cousin|friend|best friend|dog|cat|pet)'?s birthday\b|\bmy (?:\w+ )?(?:mom|dad|mother|father|grandma|grandpa|grandmother|grandfather|nana|brother|sister|aunt|uncle|cousin|friend|best friend|dog|cat|pet)'?s (?:birthday|anniversary) would'?ve been\b|\b(?:since|after) (?:my|our) (?:\w+ )?(?:mom|dad|mother|father|grandma|grandpa|grandmother|grandfather|nana|brother|sister|aunt|uncle|cousin|friend|best friend|dog|cat|pet) (?:died|passed)\b/i;
 // a food constraint said earlier in the call (ctx-vegan-sister 3/5: egg, cheese and fish sauce in a "vegan" pick)
 const CONSTRAINT = /\b(?:vegan|vegetarian|pescatarian|gluten[- ]free|dairy[- ]free|lactose[- ]intolerant|halal|kosher|keto|(?:nut|peanut|shellfish|egg|dairy|gluten) allergy|allergic to [a-z]+|(?:doesn'?t|don'?t|can'?t|won'?t) eat [a-z]+(?: [a-z]+)?|no (?:pork|beef|meat|dairy|gluten|nuts|shellfish))\b/i;
 const FOOD_ASK = /\b(?:make|cook|eat|order|dinner|lunch|breakfast|brunch|recipe|snack|bake|grab food|food)\b/i;
 export function constraintFrom(userText: string, history: Line[]): string | null {
   if (!FOOD_ASK.test(userText)) return null;
-  for (const h of [...history.slice(-10).filter((x) => x.role === "user").map((x) => x.text), userText].reverse()) { const m = CONSTRAINT.exec(h); if (m) return m[0].toLowerCase(); }
+  for (const h of [...history.slice(-10).filter((x) => x.role === "user").map((x) => x.text), userText].reverse()) {
+    const m = CONSTRAINT.exec(h);
+    // Codex #546 P2: "I am not vegan", "she's no longer vegetarian", "I quit keto" are not constraints
+    if (m && !/\b(?:not|no longer|isn'?t|aren'?t|wasn'?t|never|stopped being|quit|gave up|used to be|anymore)\b[^.!?]{0,20}$/i.test(h.slice(0, m.index)) && !/\banymore\b/i.test(h.slice(m.index))) return m[0].toLowerCase();
+  }
   return null;
 }
 
-export function taskHint(userText: string, history: Line[]): string | null {
+export function taskHint(userText: string, history: Line[], crisisInCall = history.some((h) => h.role === "user" && realCrisisSignal(h.text))): string | null {
   const out: string[] = [];
   const t = userText.trim();
+  // Codex #546 P1: after a crisis line anywhere in the call, "how long would it take?" is never homework
+  if (crisisInCall) return null;
   // never on a real crisis line ("how many of my pills would it take" is not a math ask): the crisis rules alone
   if (realCrisisSignal(t) || SELF_HARM_WORDS.test(t)) return null;
   // sad-grandma (attentive 2.0/5: "That's rough, I'm here" with no grandma, no birthday): a loss told plainly
@@ -49,7 +56,9 @@ export function taskHint(userText: string, history: Line[]): string | null {
   const need = constraintFrom(t, history);
   if (need) out.push(`They said "${need}" earlier: whatever you pick has to fit that, every ingredient.`);
   if (WORK.test(t)) out.push("They want you to work something out: give the real answer with the actual numbers, times or steps in order (up to four short spoken sentences), then your take.");
-  if (PRONOUN_ASK.test(t) && !history.slice(-8).some((h) => h.role === "user" && PERSON.test(h.text))) {
+  // Codex #546 P2: "My boyfriend Jake forgot… should I text him?" names him in this very line
+  const beforeAsk = t.slice(0, t.search(PRONOUN_ASK));
+  if (PRONOUN_ASK.test(t) && !PERSON.test(beforeAsk) && !history.slice(-8).some((h) => h.role === "user" && PERSON.test(h.text))) {
     out.push("You don't know who they mean yet: don't guess or advise blind; ask one short question about who or what happened.");
   }
   const rep = repeatedWords(history);

@@ -1550,7 +1550,7 @@ export class Session {
       }) ?? undefined;
     }
     // intel eval 11/4: plan / math / how-to asks get the real work, an unknown "him" gets a question, a reused word is named
-    const task = !turn.greeting && !turn.cue && userText ? taskHint(userText, this.history) ?? undefined : undefined;
+    const task = !turn.greeting && !turn.cue && userText ? taskHint(userText, this.history, this.crisisInCall) ?? undefined : undefined;
     return { style: "v1", opener, initiative: turn.cue?.block, perception, perceptionHint, turn: turnLine, task };
   }
 
