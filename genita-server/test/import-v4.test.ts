@@ -1,0 +1,93 @@
+/**
+ * Import prompt v4 (11/3 20:29): section 2 "How I come across in conversation" → tendencies, indirect tastes as
+ * "Leans toward … (direction only)", no language preference on cards, and an all-empty reply is an empty
+ * profile (not "couldn't read").
+ */
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { buildImportRequest, directionLine, importFormat, isLanguagePreference, toStyleCard } from "../src/prep/importProfile.ts";
+import { importStyle, type PrepDeps } from "../src/prep/pipeline.ts";
+import { FileStore } from "../src/prep/store.ts";
+import { toStory } from "../src/personalize/story.ts";
+
+const ELEVEN = `1. Thinking style
+- Decides fast once options are side by side. [Observed]
+
+2. How I come across in conversation
+- Quick, dry humor; moves fast and cares about small visual details. [Observed]
+
+3. Communication style
+- Direct and plain, no padding. [Explicit]
+
+8. Likes and dislikes
+- Food: leans toward quick, low-effort weeknight meals (direction only) [Observed]
+
+11. Preferences still to confirm
+- Music for focus.`;
+
+const EMPTY = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+  .map((n, i) => `${n}. ${["Thinking style", "How I come across in conversation", "Communication style", "Response preferences", "How Genita can help", "Support, feedback, and disagreement", "Interests", "Likes and dislikes", "Boundaries and initiative", "Recommended companion approach", "Preferences still to confirm"][i]}\nNot enough information.`)
+  .join("\n\n");
+
+test("importFormat: v4 (11 sections) by its new heading and shifted numbers; v3 and old replies unchanged", () => {
+  assert.equal(importFormat(ELEVEN), "eleven");
+  assert.equal(importFormat(EMPTY), "eleven");
+  assert.equal(importFormat("3. Communication style\n- Warm. [Explicit]\n\n8. Likes and dislikes\n- Loves ramen. [Explicit]"), "eleven");
+  assert.equal(importFormat("2. Communication style\n- Warm. [Explicit]\n\n7. Likes and dislikes\n- Loves ramen. [Explicit]"), "ten");
+});
+
+test("import request (v4): 2 → tendencies as conversation behavior, 8 → likes, 11 → to_confirm; directions kept; no language", () => {
+  const t = String(buildImportRequest(ELEVEN).instructions);
+  assert.match(t, /2 \(how they come across in conversation\) → tendencies/);
+  assert.match(t, /never a personality type or trait label/);
+  assert.match(t, /8 → likes/);
+  assert.match(t, /10 → approach/);
+  assert.match(t, /11 → to_confirm/);
+  assert.match(t, /\(direction only\)/);
+  assert.match(t, /leave out which language/);
+});
+
+test("direction only: the marker never reaches a card; the line reads as a lean", () => {
+  assert.equal(directionLine("Food: leans toward quick weeknight meals (direction only)"), "Food: leans toward quick weeknight meals");
+  assert.equal(directionLine("Food: quick weeknight meals (direction only)."), "Food: leans toward quick weeknight meals.");
+  assert.equal(directionLine("Clean, minimal design (direction only)"), "Leans toward clean, minimal design");
+  assert.equal(directionLine("Loves ramen."), "Loves ramen.");
+  const card = toStyleCard({ sections: { tendencies: [], communication: [], response: [], help: [], support: [], interests: [], likes: [{ text: "Food: quick weeknight meals (direction only)", label: "observed", scope: "any" }], boundaries: [], approach: [] }, rules: [], to_confirm: [] });
+  assert.equal(card.sections.likes[0].text, "Food: leans toward quick weeknight meals");
+});
+
+test("language preference (QA 11/3 P2): dropped from talk-type sections, food tastes keep their cuisine", () => {
+  assert.ok(isLanguagePreference("Casual Korean, same as her messages."));
+  assert.ok(!isLanguagePreference("Direct and plain, no padding."));
+  const card = toStyleCard({
+    sections: { tendencies: [], communication: [{ text: "Casual Korean replies.", label: "explicit", scope: "any" }, { text: "Direct and plain.", label: "explicit", scope: "any" }], response: [], help: [], support: [], interests: [], likes: [{ text: "Food: Korean home cooking.", label: "explicit", scope: "any" }], boundaries: [], approach: [] },
+    rules: [],
+    to_confirm: [],
+  });
+  assert.deepEqual(card.sections.communication.map((f) => f.text), ["Direct and plain."]);
+  assert.deepEqual(card.sections.likes.map((f) => f.text), ["Food: Korean home cooking."]);
+  const { cards } = toStory({ cards: [{ id: "talk", headline: "Casual and direct.", items: [{ text: "You want replies in casual Korean.", evidence: "explicit" }, { text: "You want it direct and plain.", evidence: "explicit" }], promise: "So I'll reply in casual Korean.", evidence: "explicit", tags: [], help: [] }], topics: [] }, card);
+  const talk = cards.find((c) => c.id === "talk")!;
+  assert.deepEqual(talk.items.map((i) => i.text), ["You want it direct and plain."]);
+  assert.equal(talk.promise, undefined);
+});
+
+test("QA 11/3 P1: an all-'Not enough information' reply is an empty profile (200 + 'still getting to know you'), never 'couldn't read'", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "import-v4-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const store = new FileStore(dir);
+  const empty = { sections: { tendencies: [], communication: [], response: [], help: [], support: [], interests: [], likes: [], boundaries: [], approach: [] }, rules: [], to_confirm: [] };
+  const d = { metaKey: "k", store, voices: [], log: () => {}, spark: async () => empty } as unknown as PrepDeps;
+  const card = await importStyle(d, "u1", "```text\n" + EMPTY + "\n```");
+  assert.equal(card.itemCount, 0);
+  assert.equal((await store.getStyle("u1"))!.itemCount, 0);
+  const { cards } = toStory(null, card);
+  assert.deepEqual(cards.map((c) => c.id), ["unknowns"]);
+  assert.equal(cards[0].headline, "Most of you, I'll learn as we talk.");
+  assert.ok(cards[0].unknowns!.length > 0);
+  // text we can't place at all is still 422
+  await assert.rejects(importStyle(d, "u1", "x".repeat(300)), /couldn't read/);
+});

@@ -22,7 +22,7 @@
  */
 import type { SparkRequest } from "../meta/spark.ts";
 import { SENSITIVE_RULE, isSensitiveDetail } from "./sensitive.ts";
-import { looksLikeInjection, redactSensitive, type EvidenceLabel, type Finding, type StyleCard } from "../prep/importProfile.ts";
+import { isLanguagePreference, looksLikeInjection, redactSensitive, type EvidenceLabel, type Finding, type StyleCard } from "../prep/importProfile.ts";
 import { shortTaste } from "./reasons.ts";
 
 export const STORY_IDS = ["think", "talk", "taste", "help", "lines", "unknowns"] as const;
@@ -174,6 +174,7 @@ export function storyInstructions(only?: SparkStoryId[]): string {
     `Write only these cards: ${ids.join(", ")}. One object per card.`,
     ...ids.map((id) => CARD_GUIDE[id]),
     "headline: at most 8 words, ends with a period. items: each text is 1-2 short sentences to the user as \"you\" (e.g. \"You like a friendly tone, but you want the answer up front. Long replies lose you.\"), restating what the profile says in plain words, with the evidence of the lines behind it: explicit (they said it), observed (a repeated pattern), memory (a memory summary). A [Suggested] line is not a fact about them: never write it as one.",
+    "Genita talks in English: never mention which language the user speaks or wants, in any card. A line marked \"(direction only)\" is a lean, not a fact: say it as one (\"You seem to lean toward …\") and never as their stated taste.",
     "promise: one short sentence starting \"So I'll\" for think and talk; \"\" for the others. evidence: the strongest evidence behind the card.",
     "Never name a personality type or trait label, never diagnose, never praise or flatter, never guess beyond the profile. If the profile has nothing for a card, return it with headline \"\", items [], tags [], help [].",
     "topics: for each still-to-confirm item, {item: copied exactly, topic: what to learn in 3-6 words (\"How chatty calls should be\"), sub: a short either/or question (\"Quiet company, or lots of talk?\")}.",
@@ -232,7 +233,7 @@ function promiseOf(v: unknown): string | undefined {
   p = p.replace(/^so,?\s+i\s*(?:'|’|wi)ll\b/i, "So I'll").replace(/^i\s*(?:'|’|wi)ll\b/i, "So I'll");
   if (!/^So I'll\b/.test(p)) return undefined;
   if (!/[.!?]$/.test(p)) p += ".";
-  if (p.split(/(?<=[.!?])\s+/).length > 1 || p.length > 160 || storyTextProblem(p)) return undefined;
+  if (p.split(/(?<=[.!?])\s+/).length > 1 || p.length > 160 || storyTextProblem(p) || isLanguagePreference(p)) return undefined;
   return p;
 }
 
@@ -285,7 +286,8 @@ export function openUnknowns(card: StyleCard): UnknownItem[] {
 }
 
 export function unknownsCard(card: StyleCard, missing: SparkStoryId[] = [], topics: UnknownItem[] = card.story?.topics ?? []): StoryCard {
-  const head = UNKNOWN_HEAD[card.source === "skip" ? "skip" : "import"];
+  // an import that said nothing (a new assistant user, every section "Not enough information") reads like a skip
+  const head = UNKNOWN_HEAD[card.source === "skip" || !card.itemCount ? "skip" : "import"];
   const unknowns = unknownItems(card, missing, topics);
   return {
     id: "unknowns",
@@ -403,7 +405,8 @@ function sparkCard(id: SparkStoryId, r: RawCard, card: StyleCard, best: Evidence
         const ev = text ? lineEvidence(text, card, id) : null;
         return { text, evidence: ev ? clamp(i?.evidence, ev) : null };
       })
-      .filter((i): i is StoryItem => !!i.text && !!i.evidence && !storyTextProblem(i.text))
+      // Genita talks in English: no "casual Korean" promise on a card (QA 11/3 P2)
+      .filter((i): i is StoryItem => !!i.text && !!i.evidence && !storyTextProblem(i.text) && !isLanguagePreference(i.text))
       .slice(0, id === "lines" ? 4 : 2);
     if (!items.length) return null;
     sc.items = items;

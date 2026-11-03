@@ -59,6 +59,19 @@ function safe(text: string): boolean {
   return !!text && !looksLikeInjection(text) && !isSensitiveDetail(text) && redactSensitive(text) === text && !/\[(?:email|link|number|phone|secret)\]/.test(text);
 }
 
+/**
+ * A shopping price range is a taste (Chelsea 11/3): it always lands in likes as one "Budget: …" line, never in
+ * interests or elsewhere (QA K-test P3: "Interests: Prefers clothes usually under $100" next to the Taste line).
+ */
+const PRICE = /(?:[$€£₩¥]\s?\d|\d+\s?(?:dollars|bucks|usd|eur|euros|won|krw)\b)/i;
+const SHOPPING = /\b(?:budget|spend\w*|price\w*|under|below|less than|max(?:imum)?|clothes|clothing|outfits?|shoes|shopping|buy\w*)\b/i;
+export function asBudget(u: ProfileUpdate): ProfileUpdate {
+  if (!u.text || !PRICE.test(u.text) || !SHOPPING.test(u.text)) return u;
+  if (u.field === "likes" && /^\s*budget:/i.test(u.text)) return u;
+  const body = u.text.replace(/^\s*(?:budget|prefers?|likes?|usually|tends to)\s*:?\s*/i, "").replace(/^(?:clothes|clothing)\s+/i, "");
+  return { ...u, field: "likes", text: `Budget: ${body[0].toLowerCase()}${body.slice(1)}` };
+}
+
 export function mergeUpdates(card: StyleCard, updates: ProfileUpdate[], at: string): { card: StyleCard; applied: AppliedUpdate[]; staleCards: StoryId[] } {
   const sections = Object.fromEntries(Object.entries(card.sections).map(([k, v]) => [k, (v as Finding[]).map((x) => ({ ...x }))])) as StyleCard["sections"];
   let toConfirm = [...(card.toConfirm ?? [])];
@@ -68,7 +81,8 @@ export function mergeUpdates(card: StyleCard, updates: ProfileUpdate[], at: stri
   // only removals from before this batch guard it: one correction's own replace must not block its own rewrite (Codex round 4)
   const priorTombs = [...(card.removed ?? [])];
   const tombs = [...priorTombs];
-  for (const u of updates) {
+  for (const raw of updates) {
+    const u = raw ? asBudget(raw) : raw;
     if (!u || !PROFILE_FIELDS.includes(u.field) || (u.label !== "explicit" && u.label !== "observed")) continue;
     // said before the current profile was imported: belongs to an older profile
     if (u.asOf && card.importedAt && card.importedAt > u.asOf) continue;

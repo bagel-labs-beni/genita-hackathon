@@ -13,14 +13,23 @@ test("scene edits preserve likeness, portrait framing and non-human appearance",
   assert.match(SCENE_PROMPT.character, /original art style/);
 });
 
-test("import prompt v3: docs, server asset and iOS bundle copy are byte-identical", () => {
-  const docs = readFileSync(repo("docs/profile-import/prompt-v3.txt"));
+test("import prompt v4: docs, server asset and iOS bundle copy are byte-identical", () => {
+  const docs = readFileSync(repo("docs/profile-import/prompt-v4.txt"));
   const server = readFileSync(repo("genita-server/src/prep/assets/import-prompt.txt"));
   const ios = readFileSync(repo("ios-app/Genita/Resources/import-prompt.txt"));
-  assert.ok(docs.equals(server), "server asset drifted from docs/profile-import/prompt-v3.txt");
-  assert.ok(docs.equals(ios), "iOS bundle copy drifted from docs/profile-import/prompt-v3.txt");
+  assert.ok(docs.equals(server), "server asset drifted from docs/profile-import/prompt-v4.txt");
+  assert.ok(docs.equals(ios), "iOS bundle copy drifted from docs/profile-import/prompt-v4.txt");
   assert.equal(IMPORT_PROMPT, docs.toString("utf8"));
-  assert.match(IMPORT_PROMPT, /^10\. Preferences still to confirm$/m);
-  assert.match(IMPORT_PROMPT, /^7\. Likes and dislikes$/m);
+  assert.match(IMPORT_PROMPT, /^11\. Preferences still to confirm$/m);
+  assert.match(IMPORT_PROMPT, /^8\. Likes and dislikes$/m);
+  assert.match(IMPORT_PROMPT, /^2\. How I come across in conversation$/m);
+  // Claude actually searches: its past-chat tools by name; ChatGPT: saved memories + chat history
+  assert.match(IMPORT_PROMPT, /conversation_search/);
+  assert.match(IMPORT_PROMPT, /recent_chats/);
+  assert.match(IMPORT_PROMPT, /Reference chat history/);
+  assert.match(IMPORT_PROMPT, /\(direction only\)/);
+  // no personality analysis (hackathon: not a "Personality Analyzer"), no language preference (Genita talks in English)
+  assert.match(IMPORT_PROMPT, /not a personality type, trait label, or diagnosis/);
+  assert.doesNotMatch(IMPORT_PROMPT, /languages I use with AI/);
 });
 
