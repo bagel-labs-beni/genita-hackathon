@@ -296,7 +296,7 @@ test("report: the type read (춘식이 r02) — type, strengths, watch-outs, cha
     ...RAW,
     type: { name: "The Playful Editor", line: "You shortlist fast, joke about prices, and sign off last.", signature: ["Options", "Light", "Final say"], basis: [0, 1, 7] },
     strengths: [{ text: "Two or three options and you're already deciding.", trait: 0 }, { text: "You value deep connections.", trait: 1 }, { text: "Ghost trait strength here.", trait: 9 }],
-    watchouts: [{ text: "A third option can turn into thirty.", fix: "I'll stop at two options and name my favorite.", trait: 0 }, { text: "Menus are your villain origin story.", fix: "Pick one.", trait: 0 }],
+    watchouts: [{ text: "A long menu of options can freeze the whole night.", fix: "I'll stop at two options and name my favorite.", trait: 0 }, { text: "Menus are your villain origin story.", fix: "Pick one.", trait: 0 }],
     chain: { you_are: "You line options up before you commit.", so_you: "So you want a shortlist, not a lecture.", so_ill: "So I'll bring a shortlist and my favorite." },
   };
   const inputs = { ...INPUTS, picks: [...INPUTS.picks, { question: "How you like replies", label: "Show me options" }, { question: "pace", label: "Quick-leaning" }] };
