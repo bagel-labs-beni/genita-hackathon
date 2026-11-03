@@ -255,11 +255,17 @@ struct MacConversationView: View {
     private func menuLine(_ title: String, icon: AnyView, dim: Bool = false, trailing: String? = nil, height: CGFloat = 48, top: CGFloat = 0, id: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 12) {
-                icon.foregroundStyle(ink).frame(width: 20, height: 20)
-                Text(title).font(MacSheetInk.sans(17)).foregroundStyle(ink)
+                HStack(spacing: 12) {
+                    icon.foregroundStyle(ink).frame(width: 20, height: 20)
+                    Text(title).font(MacSheetInk.sans(17)).foregroundStyle(ink)
+                }.opacity(dim ? 0.4 : 1)
                 Spacer(minLength: 0)
-                if let trailing { Text(trailing).font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.mute) }
-            }.padding(.leading, 32).padding(.trailing, 24).padding(.top, top).frame(width: 299, height: height).opacity(dim ? 0.4 : 1).contentShape(Rectangle())
+                // "Soon" / the Finds count as a padded capsule badge (was bare 14 pt text, dimmed to 0.4 with the row)
+                if let trailing {
+                    Text(trailing).font(MacSheetInk.sans(12, .medium)).foregroundStyle(MacSheetInk.mute).monospacedDigit()
+                        .padding(.horizontal, 8).frame(minWidth: 22, minHeight: 22).background(MacSheetInk.chip, in: Capsule())
+                }
+            }.padding(.leading, 32).padding(.trailing, 24).padding(.top, top).frame(width: 299, height: height).contentShape(Rectangle())
         }.buttonStyle(.plain).accessibilityIdentifier(id)
     }
     private var permissionPanel: some View {
