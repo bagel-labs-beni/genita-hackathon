@@ -414,7 +414,7 @@ test("expression: Spark's [smile] → one event for that clause, the tag never r
   const ex = client.of("expression");
   assert.equal(ex.length, 1, JSON.stringify(ex));
   const audio0 = client.of("audio").find((a) => a.sentence === 0)!;
-  assert.deepEqual(ex[0], { type: "expression", utteranceId: audio0.utteranceId, sentence: 0, tag: "smile", intensity: 0.7, startMs: 10, endMs: 35 + 30 * (calls[0].text.split(" ").length - 1) });
+  assert.deepEqual(ex[0], { type: "expression", utteranceId: audio0.utteranceId, sentence: 0, tag: "smile", intensity: process.env.GENITA_CONVO_V1 === "0" ? 0.7 : 0.5 /* v1: a curious reply gets a soft smile (DESIGN §7.2) */, startMs: 10, endMs: 35 + 30 * (calls[0].text.split(" ").length - 1) });
   assert.ok(client.json.indexOf(ex[0]) > client.json.indexOf(audio0), "after the clause's audio");
   session.close();
 });
