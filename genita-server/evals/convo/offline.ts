@@ -19,12 +19,16 @@ export function loadFixtures(path = DEFAULT_FIXTURES): Transcript[] {
   return list;
 }
 
-export type OfflineResult = { scored: Scored[]; checks: { id: string; ok: boolean; why: string }[]; md: string; ok: boolean };
+export type OfflineResult = { scored: Scored[]; checks: { id: string; ok: boolean; why: string }[]; errored: string[]; md: string; ok: boolean };
 
 export function runOffline(transcripts: Transcript[], label = "fixtures"): OfflineResult {
-  const scored = transcripts.map(scoreTranscript);
-  const checks = transcripts.map((t, i) => ({ id: t.id, ...matchesExpectation(t, scored[i]) }));
-  return { scored, checks, md: rubricMd(label, scored, checks), ok: checks.every((c) => c.ok) };
+  // a run that broke on a vendor error is not a clean call: listed, never scored or counted as a pass (Codex #499 P2)
+  const errored = transcripts.filter((t) => t.error);
+  const ok = transcripts.filter((t) => !t.error);
+  const scored = ok.map(scoreTranscript);
+  const checks = ok.map((t, i) => ({ id: t.id, ...matchesExpectation(t, scored[i]) }));
+  const skipped = errored.length ? `\n## Not scored (run errored)\n\n${errored.map((t) => `- ${t.id}: ${t.error}`).join("\n")}\n` : "";
+  return { scored, checks, errored: errored.map((t) => t.id), md: rubricMd(label, scored, checks) + skipped, ok: checks.every((c) => c.ok) };
 }
 
 /** shape of a live report's step (run.ts) — only what the rubric needs */
@@ -38,6 +42,7 @@ export function fromReport(report: ReportLike, scenarios: Scenario[]): Transcrip
     const sc = scenarios.find((x) => x.id === s.id);
     s.runs.forEach((run, k) => {
       const lines: Line[] = [];
+      const err = run.steps.find((st) => st.error)?.error;
       for (const h of run.prior ?? []) lines.push(h.role === "user" ? { role: "user", text: h.text } : { role: "companion", text: h.text.replace(/<[^>]*>|\[[^\]]*\]/g, " ").replace(/\s+/g, " ").trim() });
       for (const st of run.steps) {
         if (st.error) break;
@@ -54,6 +59,7 @@ export function fromReport(report: ReportLike, scenarios: Scenario[]): Transcrip
         crisis: sc?.expect.crisis ?? false,
         camera: false, // scripted calls send no frames
         lines,
+        ...(err ? { error: err } : {}),
       });
     });
   }
