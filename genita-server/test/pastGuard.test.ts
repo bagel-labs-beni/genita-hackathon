@@ -36,3 +36,8 @@ test("CV-01 r2 (eval v2 after, 14 left): 'still' with no past; 'like usual' even
   assert.equal(unbackedPast("Still raining there?", none()), "Still raining there?");
   assert.equal(unbackedPast("Late again, like usual.", { past: true, userText: "late like usual lol" }), "Late again, like usual.");
 });
+
+test("'still' with a plain fact stays (session test: 'You still have that interview tomorrow.')", () => {
+  assert.equal(unbackedPast("You still have that interview tomorrow.", none()), "You still have that interview tomorrow.");
+  assert.equal(unbackedPast("Are you still making that kimchi thing?", none()), "Are you making that kimchi thing?");
+});

@@ -32,7 +32,9 @@ const ALWAYS_HABIT = /,?\s*\b(?:as usual|like usual|per usual|as always|like alw
 /** the user said it themselves: fair to echo */
 const USER_HABIT = /\b(?:again|as usual|like usual|per usual|as always|like always)\b/i;
 // "you still on that aespa phase?" with no past: "still" claims they were before
-const STILL = /\b(you(?:'re| are)?|u|are you|you guys)\s+still\b\s*/giu;
+// only a claimed ongoing habit / phase ("still on that", "still obsessed", "still making"), never a plain fact the
+// call itself gave ("You still have that interview tomorrow" — session test, Codex #423)
+const STILL = /\b(you(?:'re| are)?|u|are you|you guys)\s+still\b\s*(?=(?:on|into|obsessed|stuck|hooked|doing|making|listening|watching|playing|eating|cooking|up|awake|at it|in your|in that|going|living)\b|[a-z]+ing\b)/giu;
 
 export function unbackedPast(sentence: string, ctx: PastContext): string {
   if (!sentence.trim()) return sentence;
