@@ -1612,7 +1612,7 @@ test("#545 Codex r3 contract: help the model wrote is never deleted (detector or
 
 test("integration 11/4: a detector miss whose reply already points to help still ends with a number; an idiom with no help pointer gets nothing", { skip: !v1 }, async () => {
   const { crisisFollowUpFor, CRISIS_NUMBER_LINE } = await import("../src/session/session.ts");
-  assert.equal(crisisFollowUpFor("thinking of ending everything tonight", ["I care about you, please reach out to someone you trust right now."]), CRISIS_NUMBER_LINE);
+  assert.equal(crisisFollowUpFor("thinking of ending everything tonight", ["I care about you, please call a crisis line right now."]), CRISIS_NUMBER_LINE);
   assert.equal(crisisFollowUpFor("thinking of ending everything tonight", ["Please call nine eight eight right now."]), null);
   assert.equal(crisisFollowUpFor("hanging myself out to dry with this deadline", ["Ugh, deadlines are the worst."]), null);
   assert.equal(crisisFollowUpFor("I'm kinda tired today", ["Wanna just chill on the call?"]), null);
@@ -1623,6 +1623,15 @@ test("Codex r4: medical advice on a kitchen cut never gets 988; a plain low-mood
   const { plainLowMood } = await import("../src/memory/call.ts");
   assert.equal(crisisFollowUp(["Run it under cold water and see a doctor if it won't stop bleeding."]), null);
   assert.equal(crisisFollowUpFor("I cut myself while chopping onions, what should I do?", ["Press on it and see a doctor if it keeps bleeding."]), null, "pointer is medical: no 988 (main adds nothing either)");
-  for (const t of ["I'm kinda tired today", "meh, rough day", "feeling down and lonely tonight"]) assert.ok(plainLowMood(t), t);
+  for (const t of ["I'm kinda tired today", "meh, rough day", "sad today"]) assert.ok(plainLowMood(t), t);
   for (const t of ["", "I want to kill myself.", "swallowed a bottle of bleach", "thinking of ending everything tonight", "what should I cook tonight"]) assert.ok(!plainLowMood(t), t);
+});
+
+test("Codex r5: a detector miss with only 'someone you trust' gets no 988; 'tired and about to suffocate…' is not plain low mood; goodbye letters are a real signal", async () => {
+  const { crisisFollowUpFor } = await import("../src/session/session.ts");
+  const { plainLowMood } = await import("../src/memory/call.ts");
+  assert.equal(crisisFollowUpFor("nervous about jumping back into dating", ["Talk it over with someone you trust."]), null);
+  assert.ok(!plainLowMood("I'm tired and about to suffocate using a plastic bag"));
+  assert.ok(realCrisisSignal("I wrote goodbye letters tonight"));
+  for (const t of ["writing farewell notes before leaving my job", "I wrote a goodbye letter for my coworker"]) assert.ok(!realCrisisSignal(t), t);
 });

@@ -59,10 +59,12 @@ export function memoryPrompt(items: Memory[], opening = false, notes = false): s
  * Codex r4 P2: the no-hotlines check-in rides only a line that is plainly ordinary low mood (an allow-list word, short,
  * nothing near harm). Anything else — an empty query, "swallowed a bottle of bleach", a new hint — gets no such line.
  */
-const LOW_MOOD = /\b(?:tired|exhausted|sleepy|drained|meh|down|sad|bored|stressed|low|blah|lonely|off|rough day|bad day|long day|not great|kinda|okay|ok|fine)\b/i;
+// Codex r5 P2: the WHOLE line must be one of these plain low-mood shapes; anything else (a method, a plan, a question,
+// "tired and about to…") gets no "no hotlines" line
+const LOW_MOOD_LINE = /^(?:(?:ugh|honestly|eh|yeah|idk|lol|so|ok|okay|hmm|meh)[,.!]?\s+)*(?:(?:i'?m|i am|im|feeling|i feel|just|kinda|been)\s+)*(?:so |kinda |a bit |a little |pretty |really |super |just )?(?:tired|exhausted|sleepy|drained|meh|down|sad|bored|stressed|low|blah|lonely|off|not great|not feeling great|not my best|okay i guess|fine i guess)(?:\s+(?:today|lately|tonight|rn|right now|this week|honestly|lol|tbh))*[.!…]*$|^(?:(?:ugh|honestly|eh|yeah|meh)[,.!]?\s+)?(?:(?:it'?s been|had|having|just)\s+)?(?:a\s+)?(?:rough|long|bad|meh|slow|weird|blah)\s+(?:day|week|night|one)(?:\s+(?:today|honestly|lol|tbh))*[.!…]*$/i;
 export function plainLowMood(text: string): boolean {
   const t = text.trim();
-  return !!t && t.split(/\s+/).length <= 14 && LOW_MOOD.test(t) && !mayBeSelfHarm(t) && !/\b(?:swallow\w*|bleach|drank|took|bottle|poison\w*|knife|gun|rope)\b/i.test(t);
+  return !!t && LOW_MOOD_LINE.test(t) && !mayBeSelfHarm(t);
 }
 export const PRIOR_CRISIS_LINE = "\nThey had a really hard moment in that call. If it fits, check in warmly in your own words (how they're holding up); no hotlines, numbers or crisis questions unless what they say now hints at danger.\n";
 

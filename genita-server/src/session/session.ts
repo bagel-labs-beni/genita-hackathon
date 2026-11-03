@@ -280,6 +280,7 @@ export const CRISIS_NUMBER_LINE = "<sad> You can call or text 988 any time in th
 /** what a real crisis reply still needs: the whole help line (no pointer at all), just the number line, or nothing */
 /** Codex r4 P1: crisis support, not medical care ("see a doctor", "urgent care" for a kitchen cut never gets 988) */
 const CRISIS_SUPPORT = /\b(?:988|nine[- ]eight[- ]eight|crisis (?:text )?line|hotline|helpline|lifeline|samaritans|suicide|someone you trust|emergency (?:services|number))\b/i;
+const EXPLICIT_CRISIS = /\b(?:988|nine[- ]eight[- ]eight|crisis (?:text )?line|hotline|helpline|lifeline|suicide|emergency services)\b/i;
 export function crisisFollowUp(said: string[]): string | null {
   if (!said.some((x) => HELP_POINTER.test(x))) return CRISIS_HELP_LINE;
   return said.some((x) => HELP_NUMBER.test(x)) || !said.some((x) => CRISIS_SUPPORT.test(x)) ? null : CRISIS_NUMBER_LINE;
@@ -292,7 +293,9 @@ export function crisisFollowUp(said: string[]): string | null {
  */
 export function crisisFollowUpFor(userText: string, said: string[]): string | null {
   if (realCrisisSignal(userText)) return crisisFollowUp(said);
-  if (mayBeSelfHarm(userText) && said.some((x) => CRISIS_SUPPORT.test(x)) && !said.some((x) => HELP_NUMBER.test(x))) return CRISIS_NUMBER_LINE;
+  // Codex r5 P1: on a detector miss only an explicit crisis pointer counts ("talk it over with someone you trust" about
+  // dating nerves is not one)
+  if (mayBeSelfHarm(userText) && said.some((x) => EXPLICIT_CRISIS.test(x)) && !said.some((x) => HELP_NUMBER.test(x))) return CRISIS_NUMBER_LINE;
   return null;
 }
 const QUESTION_START = /^(?:(?:hey|hi|okay|ok|so|wait|yo)\b[^,.!?]{0,20},?\s*)?(?:so,?\s*)?(?:(?:how|what|when|where|who|why|which)(?:'s|'re|'d| is| am| are| was| were| did| do| does| has| have| had| will| would| can| could| should)\b|(?:did|do|does|are|is|was|were|have|has|can|could|will|would) (?:you|it|they|we|that|this|he|she)\b|you (?:feeling|ready|nervous|excited)\b)/i;
