@@ -1735,9 +1735,7 @@ export class Session {
     let droppedOpener = false;
     // a she/he in the reply is the user only when their own line is about themselves (the v1 address check)
     const narration = new NarrationJudge(!interpret && !self, { thirdPersonIsUser: !synthetic && thirdPersonCouldBeUser(text, this.user?.name) });
-    // the model's own words were the hold beat's (Codex #427): the beat (still a beat for every check) is the answer
-    let echoed = false;
-    const hasAnswer = () => (echoed && !said().length) || narration.hasAnswer(said().map(({ display }) => display));
+    const hasAnswer = () => narration.hasAnswer(said().map(({ display }) => display));
     let onlyOpener: string | null = null;
     // v1 sentence guard (src/convo/guard.ts): the first dropped sentence, spoken only if nothing else is
     const guarded: { first: { raw: string; cls: GuardClass } | null; narration: boolean; tool: boolean } = { first: null, narration: false, tool: false };
@@ -1746,7 +1744,6 @@ export class Session {
     // (read from the request itself: it was built before this turn was counted)
     const askTurn = !synthetic && !interpret && !!this.ask && (req.instructions ?? "").includes(this.ask.line);
     const guardCtx = { camera: (built?.images.length ?? 0) > 0, userText: synthetic ? "" : text, askTurn };
-    let beatEcho: string | null = null;
     const enqueueSentences = (list: string[], keepOpener = false) => {
       for (const raw of list) {
         const p = parseTaggedSentence(raw);
@@ -1754,19 +1751,6 @@ export class Session {
         // Delivery/emotion tags alone cannot be displayed or spoken. Do not
         // enqueue a blank sentence (or call TTS with just "[laughs]").
         if (!p.displayText) continue;
-        // the model opens with the hold beat's own words ("Ooh, okay." / "Ooh," + "okay." after the cap's "Ooh, okay."):
-        // compared before any opener rewrite, clause by clause; the beat counts as the model's start (Codex P2 ×2 #427)
-        if (this.v1 && !interpret && !self && !keepOpener && beatEcho !== "" && (beatEcho !== null || (sentences.length > 0 && sentences.every((x) => x.beat)))) {
-          const clause = normTranscript(p.displayText);
-          beatEcho ??= normTranscript(sentences.map((x) => x.display).join(" "));
-          if (clause && (beatEcho === clause || beatEcho.startsWith(`${clause} `))) {
-            beatEcho = beatEcho.slice(clause.length).trim();
-            echoed = true;
-            this.log("convo.beat_was_answer", { utteranceId });
-            continue;
-          }
-          beatEcho = ""; // the model said something else: no more echo checks this reply
-        }
         let tts = p.ttsText;
         // a hold beat is not the reply's first sentence (Codex P2 #427): the model's first one still gets these checks
         const modelFirst = !sentences.some((x) => !x.beat);
@@ -1778,7 +1762,8 @@ export class Session {
         }
         // v1: "Hmm. Hmm, okay so…" (QA r5, 1/6: a hold beat then Spark's own "Hmm,"): a sentence that opens with the
         // interjection the previous sentence was made of drops it ("Hmm." + "Hmm, okay so…" → "Hmm." + "Okay so…")
-        const prevSaid = sentences.at(-1)?.display;
+        // a hold beat is audio only and never the model's: the model's own "Hmm." after a beat "Hmm." is kept (Codex #427)
+        const prevSaid = [...sentences].reverse().find((x) => !x.beat)?.display;
         // only a standalone interjection ("Hmm," / "Oh!"), never a word in use ("Well water…", "Oh Sehun…", Codex P2)
         const lead = /^(?:\s*\[[^\]]*\]\s*)*([\p{L}']+)[,.!?…—-]/u.exec(tts)?.[1]?.toLowerCase();
         const prevLead = /[\p{L}']+/u.exec(prevSaid ?? "")?.[0]?.toLowerCase();
@@ -1786,7 +1771,6 @@ export class Session {
           const once = avoidRepeatedOpener(tts, [prevSaid]);
           // the model's whole answer was the beat's own word ("Hmm." after the cap's "Hmm."): the beat becomes the answer
           // instead of an empty reply and a retry (Codex P2 #427)
-          if (once !== tts && !parseTaggedSentence(once).displayText && sentences.at(-1)?.beat) { echoed = true; this.log("convo.beat_was_answer", { utteranceId }); continue; }
           if (once !== tts) { tts = once; this.log("convo.interjection_dropped", { utteranceId }); }
         }
         if (!tts || !parseTaggedSentence(tts).displayText) {
@@ -1959,15 +1943,15 @@ export class Session {
           releaseAskHold();
           // A bare "Yes!"/"Okay." is a valid answer. Defer a dropped eager
           // opener until EOF so "Oh, the rest" still loses the repeated Oh.
-          if (!said().length && !echoed && guarded.first && !neverSpoken(guarded.first.cls)) {
+          if (!said().length && guarded.first && !neverSpoken(guarded.first.cls)) {
             // never an empty reply: a style drop speaks its sentence; a safety drop says the fallback line
             const fb = fallbackLine(guarded.first.cls);
             enqueueSentences(fb ? [fb] : [guarded.first.raw], true);
           }
-          if (!said().length && !echoed && onlyOpener) enqueueSentences([onlyOpener], true);
+          if (!said().length && onlyOpener) enqueueSentences([onlyOpener], true);
           // the retry also only announced a lookup and NO tool ran: say so honestly. With a tool, never "not sure"
           // right before (or instead of) the real result — say nothing (main 11/3: Scene 4 map, Scene 5 products)
-          if (!said().length && !echoed && attempt === 1 && guarded.narration && !guarded.tool) enqueueSentences([NO_ANSWER_LINE], true);
+          if (!said().length && attempt === 1 && guarded.narration && !guarded.tool) enqueueSentences([NO_ANSWER_LINE], true);
           // the only real sentence was the question watch together took back: a short reaction instead of a retry
           if (!said().length && droppedAsk) enqueueSentences([WATCH_ASK_FALLBACK], true);
           if (hasAnswer()) { sparkError = attemptError; break; }
@@ -1975,9 +1959,6 @@ export class Session {
           if (attempt === 0) this.log("spark.empty_retry", { utteranceId, cause: emptyCause, status });
           if (attempt === 1) sparkError = attemptError;
           splitter = new SentenceSplitter(splitOptions);
-          // a retry with nothing said yet checks for a beat echo again (Codex r3 #427)
-          beatEcho = null;
-          echoed = false;
           askHold = [];
           onlyOpener = null;
           guarded.first = null;
@@ -2159,8 +2140,7 @@ export class Session {
     await producer;
     if (signal.aborted || this.reply !== reply) return;
 
-    // a beat is audio only (not in spoken); an echoed beat was the model's whole answer
-    if ((!reply.spoken.join(" ").trim() && !echoed) || !hasAnswer()) {
+    if (!reply.spoken.join(" ").trim() || !hasAnswer()) {
       resolveSaid(null);
       this.error("spark_unavailable", "The companion could not answer. Try again.", true);
       this.log("spark.empty", { utteranceId, cause: self ? "self_filtered_only_content" : emptyCause ?? "upstream_error_before_text" });
@@ -2178,8 +2158,7 @@ export class Session {
       ttsModelUsed = ttsModelUsed ? `${ttsModelUsed}+device` : "device";
       reply.audioMs += reply.chars ? deviceSpeechEstimateMs(reply.chars) : 0;
     }
-    // the model's whole answer was the hold beat's words (echoed): that beat is the reply's text
-    const full = (reply.spoken.join(" ").trim() || (echoed ? sentences.filter((x) => x.beat).map((x) => x.display).join(" ") : "")).trim();
+    const full = reply.spoken.join(" ").trim();
     resolveSaid(full || null);
     // self speech (card line, watch reaction) stays in the chat history but is never a memory source:
     // its script would otherwise be extracted as something the user said
