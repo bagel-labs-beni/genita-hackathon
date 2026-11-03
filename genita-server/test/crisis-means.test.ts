@@ -91,3 +91,12 @@ test("evalAdapter: like the session, no mood hint on a crisis turn or after one 
   const after = [...history, { role: "user" as const, text: "I want to kill myself." }, { role: "assistant" as const, text: "<sad> Please call 988 right now." }];
   assert.doesNotMatch(ask("whatever", after), /Your mood right now is/);
 });
+
+test("Codex 11/4 crisis-means r1: a kitchen or a screen in one clause never cancels a real threat in another; everyday ledges, razors, ropes, pill organizers and games stay ordinary", () => {
+  for (const line of ["I'm cutting bread and my stalker is outside with a knife", "I'm on a video call and my ex is outside with a gun", "I'm watching a movie but I'm about to swallow all these pills"]) {
+    assert.ok(realCrisisSignal(line), `miss: ${line}`);
+  }
+  for (const line of ["I loaded my gun in the game", "The villain made a noose in the movie", "I've got my pills ready for my prescribed dose", "I counted out my meds into my weekly pill organizer", "I'm sitting on the edge of my bed putting on socks", "I'm holding a razor to shave my beard", "I'm holding a rope for the hammock", "I'm sitting on the ledge with my coffee", "I'm holding a knife to cut the tape on this box"]) {
+    assert.ok(!realCrisisSignal(line), `false alarm: ${line}`);
+  }
+});

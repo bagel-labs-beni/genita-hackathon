@@ -141,7 +141,7 @@ function deniesAi(sentence: string, userText: string): boolean {
 // a quantity no routine dose comes in ("all my meds" alone is a routine; see the "all" lines below)
 const QTY = String.raw`(?:a bunch of|a handful of|a whole (?:bottle|pack|box|strip) of|the whole (?:bottle|pack|box|strip)(?: of)?|the rest of|too many|way too many|so many|all of|\d{2,}|twenty|thirty|forty|fifty|a hundred)`;
 /** "gonna take all my meds before bed" is a routine, not a crisis */
-const ROUTINE = String.raw`(?![^.!?]*\b(?:before bed|at night|with (?:food|breakfast|lunch|dinner|water)|this morning|in the morning|for the day|on time|like (?:a good|i'?m supposed)|prescribed|my doctor|the doctor|refill|pharmacy|vitamins?)\b)`;
+const ROUTINE = String.raw`(?![^.!?]*\b(?:before bed|at night|with (?:food|breakfast|lunch|dinner|water)|this morning|in the morning|for the (?:day|week|trip)|on time|like (?:a good|i'?m supposed)|prescribed|my doctor|the doctor|refill|pharmacy|vitamins?|organi[sz]er|pill ?box|dose|doses|dosage|weekly|daily|travel|trip)\b)`;
 const PILLS = String.raw`(?:(?:these|those|the|my|his|her)\s+)?(?:(?:mom|dad|mother|father|grandma|grandpa|roommate|sister|brother)'?s\s+)?(?:sleeping\s+)?(?:pills|tablets|meds|medication|medicine|painkillers|tylenol|advil|xanax|ambien|benadryl)`;
 const CRISIS_MEANS = new RegExp([
   // pills: about to / going to / just took — a quantity, or the whole bottle
@@ -149,10 +149,11 @@ const CRISIS_MEANS = new RegExp([
   String.raw`\b(?:about to|going to|gonna|ready to|trying to|want to|wanna)\s+(?:swallow|take|down)\s+all\s+(?:of\s+)?${PILLS}\b${ROUTINE}`,
   String.raw`\bswallow(?:ed|ing)?\s+all\s+(?:of\s+)?(?:these|those|the)\s+(?:sleeping\s+)?(?:pills|tablets|meds|painkillers)\b${ROUTINE}`,
   String.raw`\b(?:swallow(?:ed|ing)?|took|downed)\s+(?:a|the)\s+whole\s+(?:bottle|pack|box|strip)\b`,
-  String.raw`\b(?:i'?ve|i have|i'?ve got|i got)\s+(?:all\s+)?(?:the|my)\s+(?:pills|tablets|meds)\s+(?:ready|lined up|counted(?: out)?|in my hand)\b`,
-  String.raw`\bcount(?:ed|ing)\s+out\s+(?:all\s+)?(?:the|my)\s+(?:pills|tablets|meds)\b`,
+  String.raw`\b(?:i'?ve|i have|i'?ve got|i got)\s+(?:all\s+)?(?:the|my)\s+(?:pills|tablets|meds)\s+(?:ready|lined up|counted(?: out)?|in my hand)\b${ROUTINE}`,
+  String.raw`\bcount(?:ed|ing)\s+out\s+(?:all\s+)?(?:the|my)\s+(?:pills|tablets|meds)\b${ROUTINE}`,
   // heights: a ledge / railing / edge, or a jump off a height
-  String.raw`\b(?:i'?m|i am)\s+(?:standing|sitting|leaning|hanging)\s+(?:on|over|at|off)\s+(?:the|a|this)\s+(?:edge|ledge|railing|rail)\b`,
+  // a bare "edge" is a bed or a pool; a ledge or a railing with nothing everyday around it
+  String.raw`\b(?:i'?m|i am)\s+(?:standing|sitting|leaning|hanging)\s+(?:on|over|at|off)\s+(?:the|a|this)\s+(?:ledge|railing|rail)\b(?![^.!?]*\b(?:reading|coffee|tea|book|lunch|eating|drinking|sunbath\w*|photo|pic|selfie|view|cat|dog|garden|plants?|window|stretch\w*|bus|train|subway|metro|stairs?|yoga|ballet|barre)\b)`,
   String.raw`\b(?:i'?m|i am)\s+(?:right\s+)?(?:on|at|by|over|standing on|sitting on|standing at)\s+the\s+(?:edge|ledge|railing|rail)\s+of\s+(?:the|a|this|my)\s+(?:bridge|roof|rooftop|building|cliff|balcony|overpass|parking garage)\b`,
   String.raw`\b(?:climb(?:ed|ing)?|got|getting)\s+(?:over|onto|on)\s+(?:the|a)\s+(?:railing|rail|ledge)\b`,
   String.raw`\b(?:i'?m|i am)\s+(?:about to|going to|gonna|ready to|trying to)\s+jump\s+(?:off|from)\s+(?:the|a|this|my)\s+(?:bridge|roof|rooftop|building|balcony|cliff|ledge|overpass|window|parking garage)\b`,
@@ -162,27 +163,47 @@ const CRISIS_MEANS = new RegExp([
   String.raw`\b(?:rope|cord|belt)\s+(?:around|round)\s+my\s+neck\b`,
   String.raw`\bnoose\b`,
   String.raw`\b(?:tied|tying|made|making|hung|hanging)\s+(?:up\s+)?(?:a|the)\s+rope\b(?![^.!?]*\b(?:swing|hammock|boat|tent|tarp|clothesline|laundry|climb\w*|knot practice)\b)`,
-  String.raw`\b(?:i'?m|i am)\s+(?:holding|gripping)\s+(?:a|the|my|his|her)\s+(?:knife|blade|razor|gun|pistol|rope)\b`,
+  String.raw`\b(?:i'?m|i am)\s+(?:holding|gripping)\s+(?:a|the|my|his|her)\s+(?:knife|blade|gun|pistol)\b(?!\s+(?:to|for)\s+(?:cut|slice|chop|open|spread|carve|peel|whittle|fix|cook|clean|shave|trim))(?![^.!?]*\b(?:range|hunting|cleaning|cook\w*|kitchen|recipe|prop|costume|cosplay|toy|nerf|water gun|glue gun|hot glue)\b)`,
   String.raw`\bloaded\s+(?:the|my|his|her|a)\s+(?:(?:dad|father|mom|mother|grandpa|brother)'?s\s+)?(?:gun|pistol|rifle|revolver)\b`,
 ].join("|"), "i");
 
 /** food prep / a cake: "I'm holding a knife, chopping onions" is a kitchen, not a crisis (11/1 rule) */
 const KITCHEN_KNIFE = /\b(?:chop|dic(?:e|ing)|slic|minc|peel|cut|carv|spread|butter)\w*\b[^.!?]{0,40}\b(?:onions?|garlic|veg\w*|carrots?|potato\w*|tomato\w*|steak|meat|chicken|bread|fruit|apples?|herbs|peppers?|cucumbers?|cabbage|kimchi|tofu|cake|pizza|cheese|toast|bagel|avocado|lemon|lime|mango|watermelon|pumpkin)\b|\b(?:butter|bread|steak|chef'?s|paring|kitchen|cake)\s+knife\b/i;
-const WEAPON_AT_ME = /\b(?:at|on|to|against)\s+(?:me|my)\b|\bthreaten|\bpulled\b|\b(?:he|she|they|someone|a guy|a man|this guy)\b/i;
+const HOLD_KNIFE = /\b(?:i'?m|i am)\s+(?:holding|gripping)\s+(?:a|the|my|his|her)\s+(?:knife|blade)\b/gi;
+const WEAPON = /\b(?:has|with|holding|pulled) a (?:knife|gun|weapon)\b/gi;
+/** on a screen or in a story: a game, a film, a villain (not "in the movie theater") */
+const SCREEN = /\b(?:in|on) (?:the|a|this|that|my) (?:movie|film|show|series|episode|game|video ?game|trailer|anime|book|novel|scene|comic|manga)\b(?!\s+theat(?:er|re))|\b(?:villain|character|protagonist|npc)\b/i;
+const AIMED = /\b(?:at|on|to|against)\s+(?:me|my)\b|\bthreaten/i;
+const SOMEONE = /\b(?:he|she|they|someone|somebody|a guy|a man|a woman|this guy|my (?:ex|stalker|husband|wife|boyfriend|girlfriend|dad|father|mom|mother|roommate|neighbou?r|partner|brother|sister))\b/i;
+
+/** each clause on its own, so a kitchen or a screen in one never cancels a real threat in another (Codex 11/4) */
+const clausesOf = (t: string) => t.split(/[.!?;,]+|\s+(?:and|but|while|so|because|then|when)\s+/i).map((c) => c.trim()).filter(Boolean);
+
+/** a knife or a gun with an everyday job ("a knife to cut the tape") */
+const PURPOSE = /\b(?:knife|blade|gun)\s+(?:to|for)\s+(?:cut|slice|chop|open|spread|carve|peel|whittle|fix|cook|clean|shave|trim)\b/i;
+
+function clauseMeans(c: string, line: string): boolean {
+  if (SCREEN.test(c) && !AIMED.test(c)) return false;
+  // "I'm holding a knife, dicing onions": the kitchen may sit in the next clause; any other means still counts
+  const kitchen = KITCHEN_KNIFE.test(line) && !/\b(?:wrists?|throat|neck|skin|arms?)\b/i.test(c);
+  return CRISIS_MEANS.test(kitchen ? c.replace(HOLD_KNIFE, " ") : c);
+}
+
+function clauseWeapon(c: string, line: string): boolean {
+  if (!c.match(WEAPON)) return false;
+  if (AIMED.test(c)) return true;
+  if (SOMEONE.test(c)) return !SCREEN.test(c);
+  // the user's own knife in a kitchen or with an everyday job (the kitchen may sit in the next clause)
+  if (/\bknife\b/i.test(c) && (KITCHEN_KNIFE.test(line) || PURPOSE.test(c))) return false;
+  return !SCREEN.test(c);
+}
 
 export function realCrisisSignal(text: string): boolean {
   // curly apostrophes from the keyboard / ASR ("I don’t see the point…", Codex #441 P1)
-  const t = text.replace(/[\u2018\u2019\u02BC]/g, "'");
-  // "I'm holding a knife, dicing onions" alone is a kitchen; any other means in the line still counts
-  const kitchen = KITCHEN_KNIFE.test(t) && !/\b(?:wrists?|throat|neck|skin|arms?)\b/i.test(t);
-  if (CRISIS_MEANS.test(kitchen ? t.replace(/\b(?:i'?m|i am)\s+(?:holding|gripping)\s+(?:a|the|my|his|her)\s+(?:knife|blade)\b/gi, " ") : t)) return true;
-  if (!REAL_CRISIS.test(t)) return false;
-  // "I'm dicing onions with a knife": the weapon alternation alone, in a kitchen, with nobody aiming it (11/4)
-  const weaponOnly = !REAL_CRISIS.test(t.replace(/\b(?:has|with|holding|pulled) a (?:knife|gun|weapon)\b/gi, " "));
-  if (!weaponOnly) return true;
-  // the weapon alternation alone, in a kitchen with nobody aiming it, or on a screen ("in the movie"): not this user's danger
-  if (/\bknife\b/i.test(t) && KITCHEN_KNIFE.test(t) && !WEAPON_AT_ME.test(t)) return false;
-  return WEAPON_AT_ME.test(t.replace(/\b(?:he|she|they|someone|a guy|a man|this guy)\b/gi, " ")) || !/\b(?:in|on) (?:the|a|this|that) (?:movie|film|show|series|episode|game|video|trailer|anime|book|scene)\b(?!\s+theat(?:er|re))/i.test(t);
+  const t = text.replace(/[‘’ʼ]/g, "'");
+  // everything but the weapon alternation reads the whole line (its lookaheads run to the sentence end)
+  if (REAL_CRISIS.test(t.replace(WEAPON, " "))) return true;
+  return clausesOf(t).some((c) => clauseMeans(c, t) || clauseWeapon(c, t));
 }
 
 /** emergency help in the reply itself is never dropped, whatever the user's line said (Codex round 2 P1) */
