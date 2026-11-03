@@ -12,7 +12,7 @@ import type { FindCard, FindKind, ServerEvent } from "../protocol.ts";
 import { classifyTurn, isLinksAsk, isProductAsk } from "./intent.ts";
 import { PRODUCT_COUNT, SEARCH_TITLE, guessLabel, runProduct, shortLabel } from "./product.ts";
 import { confirmItem, runLink, runOutfit, runRecipe, type PipelineCtx, type PipelineResult } from "./pipeline.ts";
-import { cacheGet, cacheKey, cachePut, cardFitsColors, cardIsKind, categoryOf, claimWarm, colorPhrases, colorsOf, plainAsk, releaseWarm, type CachedProducts } from "./productCache.ts";
+import { cacheGet, cacheKey, cachePut, cardFitsColors, cardIsKind, categoryOf, claimWarm, colorAsks, colorPhrases, colorsOf, plainAsk, releaseWarm, type CachedProducts } from "./productCache.ts";
 import { ownerKey, type FindsStore } from "./store.ts";
 import type { FindsVendors } from "./vendors.ts";
 
@@ -330,7 +330,7 @@ export class FindsRunner {
       // a real search's card answers the same ask next time at once (same taste only)
       if (r.card && intent.kind === "product" && !r.timings.cached && this.deps.productCache === true) {
         const cat = categoryOf(t.text);
-        const colors = colorsOf(t.text);
+        const colors = colorAsks(t.text);
         if (cat && colors.length && tasteAtStart === this.tasteText() && plainAsk(t.text) && cardIsKind(r.card, cat) && cardFitsColors(r.card, colors)) cachePut(cacheKey(cat, colorPhrases(t.text), tasteAtStart), { at: Date.now(), card: r.card, sourceFindId: findId });
       }
       this.hooks.log("find.done", { findId, kind: intent.kind, ok: !!r.card, ...r.timings });
@@ -416,7 +416,7 @@ export class FindsRunner {
     const lower = text.toLowerCase();
     const named = [...lower.matchAll(/\b([a-z]+)\b/g)].map((m) => m[1]);
     if (EXCLUDE.test(lower) || named.some((w) => MATERIAL.test(w)) || /\$\s?\d|\bunder \d|\bcheap|\bsize\b|\b\d{1,2}(\.5)?\b|\b(wide|narrow|petite|plus)\b/.test(lower) || brandsIn(text).length) return null;
-    const colors = colorsOf(text);
+    const colors = colorAsks(text);
     // no color word we know ("teal" once was none): never served from the cache (Codex #522 r3)
     if (!colors.length) return null;
     const hit = cacheGet(cacheKey(cat, colorPhrases(text), this.tasteText()), Date.now());
@@ -463,7 +463,7 @@ export class FindsRunner {
     const kind = categoryOf(t.text) ?? "shoes";
     const taste = this.tasteText();
     const key = cacheKey(kind, colorPhrases(t.text), taste);
-    void this.searchInBackground(t.text, `refresh-${randomUUID()}`).then((fresh) => { if (fresh && this.tasteText() === taste && cardIsKind(fresh.card, kind) && cardFitsColors(fresh.card, colorsOf(t.text))) cachePut(key, fresh); }).catch(() => {});
+    void this.searchInBackground(t.text, `refresh-${randomUUID()}`).then((fresh) => { if (fresh && this.tasteText() === taste && cardIsKind(fresh.card, kind) && cardFitsColors(fresh.card, colorAsks(t.text))) cachePut(key, fresh); }).catch(() => {});
     return { card, timings: { cardMs, cached: 1 } };
   }
 
