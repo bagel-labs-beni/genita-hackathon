@@ -309,11 +309,11 @@ extension AppState {
         // the face is fixed once the companion exists (B7): no second check, no new face
         if setup.companionCreated == true { go(.voice); return }
         guard let data = setup.imageData, rightsAcked else { return }
-        imageCheck = nil; imageCheckError = nil
+        imageCheck = nil; imageCheckError = nil; imageCheckRetryable = false
         polished = nil; polishedImage = nil; polishError = nil; polishing = false; polishRetriesLeft = 0; polishAttempts = 0
         imageCheckTask?.cancel()
         let ticket = UUID(); imageCheckTicket = ticket
-        go(.imageCheck)
+        if stage != .imageCheck { go(.imageCheck) }   // V02-F "Try again" (AU-26) checks again in place
         guard serverWired else {
             // screen review / UI tests without a server: V02-T as a passed person
             imageCheck = ImageCheck(imageId: "local", passed: true, type: "human",
@@ -336,7 +336,9 @@ extension AppState {
                 } else if r.passed { setup.imageId = r.imageId; setup.imageType = r.type }
             } catch {
                 guard imageCheckTicket == ticket, !Task.isCancelled else { return }
-                imageCheckError = Self.imageErrorLine(error); route(error)
+                imageCheckError = Self.imageErrorLine(error)
+                imageCheckRetryable = Self.isTransient(error)
+                route(error)
             }
         }
     }
@@ -399,6 +401,15 @@ extension AppState {
         }
         guard polishRetriesLeft > 0 else { return }
         imageCheckTask = Task { await polish(source: source, ticket: ticket) }
+    }
+
+    /// The request failed on the way, not on the photo: offline, a timeout or a server error (AU-26).
+    static func isTransient(_ error: Error) -> Bool {
+        switch error as? GenitaAuthError {
+        case .offline?: return true
+        case let .server(status, _, _)?: return status >= 500
+        default: return false
+        }
     }
 
     /// V02-F copy for upload errors: an unreadable photo is "choose another", not "try again".

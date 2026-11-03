@@ -94,6 +94,9 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     var pasteFocusRequested = false
     var checkingImage = false
     var imageCheck: ImageCheck?
+    /// AU-26: the check failed on the way (offline, timeout, server error), not on the photo: V02-F offers
+    /// "Try again" with the same photo instead of clearing it.
+    var imageCheckRetryable = false
     /// V01 "I have the right to use this image" (D26 / SUB-8): off for every new image, must be on to check it. Transient.
     var rightsAcked = false
     var imageCheckError: String?

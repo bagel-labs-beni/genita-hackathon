@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 @testable import Genita
 
 /// Audit 11/4 (onboard lane): routing right after CS01 and a name that never reached the server.
@@ -130,5 +131,32 @@ import XCTest
         XCTAssertEqual(model.setup.imageId, "p1", "Use this image still makes the companion from it")
         XCTAssertEqual(model.polishRetriesLeft, 0)
         XCTAssertEqual(model.polishError, "The style changed too much")
+    }
+
+    /// AU-26 · PU-01 NET: the V03 check fails on the way (offline / 5xx). V02-F offers "Try again" with the same photo
+    /// and rights tick; a refusal of the photo itself still means choosing another.
+    func testAnImageCheckThatFailedOnTheWayCanBeTriedAgainWithTheSamePhoto() async throws {
+        let calls = Box(0)
+        let pass = Data(#"{"imageId":"img1","passed":true,"type":"human","reasons":[]}"#.utf8)
+        let (model, _) = makeModel { req in
+            guard (req.url?.path ?? "").hasSuffix("/v1/companion/image") else { return (404, Data()) }
+            calls.value += 1
+            return calls.value == 1 ? (503, Data(#"{"error":"unavailable"}"#.utf8)) : (200, pass)
+        }
+        let photo = UIGraphicsImageRenderer(size: CGSize(width: 8, height: 8)).pngData { ctx in UIColor.gray.setFill(); ctx.fill(CGRect(x: 0, y: 0, width: 8, height: 8)) }
+        model.setup.imageData = photo; model.rightsAcked = true
+        model.go(.image)
+        model.checkImage()
+        await model.imageCheckTask?.value
+        XCTAssertNotNil(model.imageCheckError)
+        XCTAssertTrue(model.imageCheckRetryable, "a 503 is not about the photo")
+        XCTAssertEqual(model.setup.imageData, photo)
+        model.checkImage()   // V02-F "Try again"
+        await model.imageCheckTask?.value
+        XCTAssertNil(model.imageCheckError)
+        XCTAssertEqual(model.setup.imageId, "img1")
+        XCTAssertEqual(model.stage, .imageCheck)
+        XCTAssertEqual(model.history.filter { $0 == .imageCheck }.count, 0, "checked again in place, no second V03 in Back")
+        XCTAssertFalse(AppState.isTransient(GenitaAuthError.server(status: 422, code: "unreadable_image")))
     }
 }
