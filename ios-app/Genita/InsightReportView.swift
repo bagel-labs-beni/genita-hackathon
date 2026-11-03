@@ -51,7 +51,8 @@ enum InsightCopy {
         return t.prefix(1).uppercased() + t.dropFirst()
     }
     static func quote(_ e: InsightEvidence, ai: String?) -> String {
-        e.source == "answer" ? "You picked “\(e.quote)”" : "“\(e.quote)”" + (e.source == "import" ? " · \(ai ?? "your reply")" : " · our call")
+        // the server's label for answers: "You picked" / "You said no to" (AU-22)
+        e.source == "answer" ? "\(e.sourceLabel.isEmpty ? "You picked" : e.sourceLabel) “\(e.quote)”" : "“\(e.quote)”" + (e.source == "import" ? " · \(ai ?? "your reply")" : " · our call")
     }
 }
 
