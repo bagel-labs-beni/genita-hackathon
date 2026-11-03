@@ -1132,7 +1132,7 @@ test("K-test 11/3 guard: no clothes / looks talk with the camera off unless they
   assert.equal(guardSentence("You're in the black blazer, go with it.", { camera: true, userText: "which one?" }), null);
   assert.equal(guardSentence("Eighty five K, you're doing solid.", none), "sensitive");
   assert.equal(guardSentence("How's the therapy going?", none), "sensitive");
-  assert.equal(guardSentence("Eighty five K is solid.", { camera: false, userText: "I make 85k now" }), null);
+  assert.equal(guardSentence("Eighty five K is solid.", { camera: false, userText: "I make 85k now" }), "sensitive", "r3 11/4: never said back, even when they just said it");
   assert.equal(guardSentence("Those black Chelsea boots, one twenty nine.", none), null, "a product price stays");
 });
 
@@ -1393,5 +1393,24 @@ test("QA build 5 P3 recount (real Spark): 'when am I finally getting…' greetin
   await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 0, user: { name: "Summer", profile: "Likes: ramen." } }));
   const greet = await client.waitFor((m) => m.type === "reply");
   assert.equal(greet.text, "Okay Summer, when am I finally getting a taste of that kimchi grilled cheese?");
+  session.close();
+});
+
+test("r3 sweep 11/4: money / health / address numbers they said are never said back; clothes are no opener topic; a plain lower-case start is capitalised", { skip: !v1 }, async () => {
+  const u = "guess what, I got a raise, I make 85k now";
+  assert.equal(guardSentence("No way, eighty five k is huge, congrats!", { camera: false, userText: u }), "sensitive");
+  assert.equal(guardSentence("That raise is huge, congrats!", { camera: false, userText: u }), null);
+  assert.equal(guardSentence("please call your doctor about that one fifty over ninety five soon.", { camera: false, userText: "my blood pressure was 150 over 95 today" }), "sensitive");
+  assert.equal(guardSentence("Oh nice, fourteen twenty three Maple, a fresh start!", { camera: false, userText: "the new place is 1423 Maple Street" }), "sensitive");
+  assert.equal(guardSentence("Those boots are one twenty nine.", { camera: false, userText: "find me boots under 150" }), null, "a shopping turn keeps prices");
+  assert.equal(guardSentence("That dark brown leather jacket of yours, you better be rocking it tonight.", { camera: false, userText: "" }), "unseen");
+  const { profileHooks } = await import("../src/convo/opener.ts");
+  assert.deepEqual(profileHooks("Taste: dark brown leather jackets\nTaste: minimal monochrome fashion\nInto: aespa, late-night ramen"), ["aespa", "late-night ramen"]);
+  assert.match(buildInstructions({ persona: mina, mode: "chat", style: "v1" }), /Never say their salary, money amounts, address or health numbers back/);
+  const { client, session } = setup(["<happy> finally, you actually did it."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "I moved!" }));
+  const r = await client.waitFor((m) => m.type === "reply");
+  assert.equal(r.text, "Finally, you actually did it.");
   session.close();
 });
