@@ -29,6 +29,11 @@ export const BASETEN_BASE = "https://inference.baseten.co/v1";
 const MUSE_NAME = "muse-spark-1.3";
 /** Spark Open's own budget in the background path; reasoning is always on, so generous */
 const OPEN_TIMEOUT_MS = 45_000;
+/** sparkJson's 5xx hop to Spark Open never waits longer than this, callers without a signal included (GENITA_SPARK_OPEN_HOP_MS) */
+export function openHopTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number(env.GENITA_SPARK_OPEN_HOP_MS);
+  return Number.isFinite(n) && n > 0 ? n : 30_000;
+}
 /** reasoning tokens share max_tokens, so never cap a structured answer below this */
 const MIN_MAX_TOKENS = 4096;
 
@@ -111,12 +116,28 @@ export function schemaProblem(v: unknown, schema: Schema, at = "$"): string | nu
   return null;
 }
 
+type FailKind = "http" | "no_json" | "schema" | "paused";
+/** A Spark Open failure. The message is a fixed kind + status / finish reason / schema path: no vendor text. */
+export class SparkOpenError extends UpstreamError {
+  readonly kind: FailKind;
+  constructor(kind: FailKind, status: number | null, detail = "") {
+    super("meta", status, `spark open ${kind}${detail ? `: ${detail}` : ""}`);
+    this.kind = kind;
+  }
+}
+/** For logs: what failed, never a vendor message (timeouts/aborts and network errors by name only). */
+function errorKind(err: unknown): string {
+  if (err instanceof SparkOpenError) return err.kind === "schema" || err.kind === "no_json" ? err.message.slice(0, 160) : err.kind;
+  if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) return "timeout";
+  return err instanceof Error ? `network:${err.name}` : "unknown";
+}
+
 /**
  * One structured call to Muse Spark Open on Baseten. Throws UpstreamError (vendor "meta", it is a Meta
  * model) on HTTP errors, a reply without JSON, or JSON that breaks the schema.
  */
 export async function sparkOpenJson<T>(key: string, req: StructuredRequest, signal?: AbortSignal): Promise<T> {
-  if (getOps().isPaused("spark_open")) throw new UpstreamError("meta", null, "spark open: generation paused");
+  if (getOps().isPaused("spark_open")) throw new SparkOpenError("paused", null);
   const body = {
     model: SPARK_OPEN_MODEL,
     messages: messages(req),
@@ -133,17 +154,19 @@ export async function sparkOpenJson<T>(key: string, req: StructuredRequest, sign
       body: JSON.stringify(body),
       signal,
     });
-    if (!r.ok) throw new UpstreamError("meta", r.status, `spark open: ${await r.text().catch(() => "")}`);
+    // never the response body: an error page can echo the request (Codex P1) — status only
+    if (!r.ok) { await r.body?.cancel().catch(() => {}); throw new SparkOpenError("http", r.status); }
     const d = (await r.json()) as { choices?: Array<{ message?: { content?: string | null }; finish_reason?: string }>; usage?: { completion_tokens?: number } };
     const content = d.choices?.[0]?.message?.content ?? "";
     let value: unknown;
-    try { value = extractJson(content); } catch { throw new UpstreamError("meta", null, `spark open: no JSON in reply (${d.choices?.[0]?.finish_reason ?? "?"}): ${content.slice(0, 120)}`); }
+    // never the reply text either (it can carry what the user said): kind + finish reason / schema path only
+    try { value = extractJson(content); } catch { throw new SparkOpenError("no_json", null, d.choices?.[0]?.finish_reason ?? "?"); }
     const problem = schemaProblem(value, req.schema as Schema);
-    if (problem) throw new UpstreamError("meta", null, `spark open: reply breaks schema ${req.schemaName}: ${problem}`);
+    if (problem) throw new SparkOpenError("schema", null, problem);
     done(true, d.usage?.completion_tokens ? { tokens: d.usage.completion_tokens } : {});
     return value as T;
   } catch (err) {
-    done(false, { status: err instanceof UpstreamError ? err.status : null, error: String(err instanceof Error ? err.message : err).slice(0, 160) });
+    done(false, { status: err instanceof UpstreamError ? err.status : null, error: errorKind(err) });
     throw err;
   }
 }

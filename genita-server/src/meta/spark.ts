@@ -7,7 +7,7 @@
 import { META_BASE, UpstreamError, metaHeaders, metaJson } from "./http.ts";
 import { getOps } from "../ops/limits.ts";
 import { SseParser } from "./sse.ts";
-import { SPARK_OPEN_NAME, logLlm, openFallbackFor, sparkOpenJson } from "./sparkOpen.ts";
+import { SPARK_OPEN_NAME, openHopTimeoutMs, logLlm, openFallbackFor, sparkOpenJson } from "./sparkOpen.ts";
 
 export const SPARK_MODEL = "muse-spark-1.3";
 
@@ -164,6 +164,8 @@ export async function sparkJson<T>(...args: Parameters<typeof museJson>): Promis
     const openKey = openFallbackFor(err, req, signal);
     if (!openKey) throw err;
     logLlm("llm.fallback", { from: SPARK_MODEL, to: SPARK_OPEN_NAME, purpose: req.schemaName, status: err instanceof UpstreamError ? err.status : null });
-    return sparkOpenJson<T>(openKey, req, signal).catch(() => { throw err; });
+    // its own budget even when the caller passed none (Codex P2): an outage must still end in the original error
+    const budget = AbortSignal.timeout(openHopTimeoutMs());
+    return sparkOpenJson<T>(openKey, req, signal ? AbortSignal.any([signal, budget]) : budget).catch(() => { throw err; });
   }
 }

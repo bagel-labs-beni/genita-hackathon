@@ -26,9 +26,21 @@ type Seen = { host: string; path: string; auth: string | null; body: Record<stri
 type Reply = (s: Seen) => Response | Promise<Response>;
 
 /** Fake fetch for both vendors; BASETEN_API_KEY set unless `key: null`. Restores everything after. */
+const restoring = new WeakSet<TestContext>();
 function fake(t: TestContext, o: { open?: Reply; meta?: Reply; key?: string | null; flag?: string } = {}) {
-  const env = { key: process.env.BASETEN_API_KEY, flag: process.env.GENITA_SPARK_OPEN };
-  const original = globalThis.fetch;
+  // originals saved once per test: a second fake() in the same test must not "restore" the first fake (Codex P2)
+  if (!restoring.has(t)) {
+    restoring.add(t);
+    const env = { key: process.env.BASETEN_API_KEY, flag: process.env.GENITA_SPARK_OPEN, hop: process.env.GENITA_SPARK_OPEN_HOP_MS };
+    const original = globalThis.fetch;
+    t.after(() => {
+      globalThis.fetch = original;
+      setLlmLog(null);
+      for (const [name, v] of [["BASETEN_API_KEY", env.key], ["GENITA_SPARK_OPEN", env.flag], ["GENITA_SPARK_OPEN_HOP_MS", env.hop]] as const) {
+        if (v === undefined) delete process.env[name]; else process.env[name] = v;
+      }
+    });
+  }
   const seen: Seen[] = [];
   const logs: Array<{ event: string; data: Record<string, unknown> }> = [];
   if (o.key === null) delete process.env.BASETEN_API_KEY; else process.env.BASETEN_API_KEY = o.key ?? "test-baseten";
@@ -47,12 +59,6 @@ function fake(t: TestContext, o: { open?: Reply; meta?: Reply; key?: string | nu
     // like real fetch: an abort rejects a pending request
     return Promise.race([reply, new Promise<never>((_, rej) => signal?.addEventListener("abort", () => rej(signal.reason ?? new Error("aborted")), { once: true }))]);
   }) as typeof fetch;
-  t.after(() => {
-    globalThis.fetch = original;
-    setLlmLog(null);
-    if (env.key === undefined) delete process.env.BASETEN_API_KEY; else process.env.BASETEN_API_KEY = env.key;
-    if (env.flag === undefined) delete process.env.GENITA_SPARK_OPEN; else process.env.GENITA_SPARK_OPEN = env.flag;
-  });
   return { seen, logs, hosts: () => seen.map((s) => s.host) };
 }
 /** Baseten chat completion; Spark Open always reasons, so content may carry a think block. */
@@ -216,4 +222,31 @@ test("routing: after-call profile growth (endCall) uses the background client; i
   assert.deepEqual(live, []);
   await p.voiceCorrection("u1", "Actually I don't like coffee anymore");
   assert.ok(!bg.includes(live[0] ?? "-"), "voice correction never goes to the background client");
+});
+
+test("fake(): two fakes in one test restore the real fetch and env once, at the end", async (t) => {
+  const real = globalThis.fetch;
+  const key = process.env.BASETEN_API_KEY;
+  await t.test("inner", (tt) => { fake(tt); fake(tt, { key: "second" }); assert.notEqual(globalThis.fetch, real); });
+  assert.equal(globalThis.fetch, real);
+  assert.equal(process.env.BASETEN_API_KEY, key);
+});
+
+test("logs and errors never carry the key or vendor/reply text (Codex P1)", async (t) => {
+  const f = fake(t, { open: (s) => new Response(`invalid key ${s.auth}`, { status: 401 }) });
+  await assert.rejects(sparkOpenJson("sk-secret-123", REQ), (e: unknown) => e instanceof UpstreamError && e.status === 401 && !String(e).includes("sk-secret-123") && !String(e).includes("invalid key"));
+  fake(t, { open: () => Response.json({ choices: [{ message: { content: "I have diabetes and live at 12 Main St" }, finish_reason: "stop" }] }) });
+  await assert.rejects(sparkOpenJson("sk-secret-123", REQ), (e: unknown) => !String(e).includes("diabetes"));
+  fake(t, { open: () => openOk({ memories: [{ text: "I have diabetes", kind: "secret-kind" }] }) });
+  await assert.rejects(sparkOpenJson("sk-secret-123", REQ), (e: unknown) => !String(e).includes("diabetes"));
+  const all = JSON.stringify(f.logs);
+  assert.ok(f.logs.length >= 1 && !all.includes("sk-secret-123") && !all.includes("invalid key") && !all.includes("diabetes"), all);
+});
+
+test("sparkJson hop: Spark Open hanging after a Muse 503 still ends in the original error when the caller passed no signal (Codex P2)", async (t) => {
+  const f = fake(t, { meta: () => new Response("down", { status: 503 }), open: (s) => new Promise(() => void s) });
+  process.env.GENITA_SPARK_OPEN_HOP_MS = "50";
+  await assert.rejects(sparkJson("test-meta", REQ), (e: unknown) => e instanceof UpstreamError && e.status === 503);
+  assert.deepEqual(f.hosts(), ["api.meta.ai", "inference.baseten.co"]);
+  assert.equal(f.logs.find((l) => l.event === "llm.call")?.data.error, "timeout");
 });
