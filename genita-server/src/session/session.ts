@@ -278,9 +278,11 @@ const HELP_POINTER = /\b(?:988|911|112|999|nine eight eight|nine one one|crisis 
 const HELP_NUMBER = /\b(?:988|911|112|999|000|nine[- ]eight[- ]eight|nine[- ]one[- ]one|one[- ]one[- ]two|triple nine|nine nine nine)\b/i;
 export const CRISIS_NUMBER_LINE = "<sad> You can call or text 988 any time in the US, or your local emergency number.";
 /** what a real crisis reply still needs: the whole help line (no pointer at all), just the number line, or nothing */
+/** Codex r4 P1: crisis support, not medical care ("see a doctor", "urgent care" for a kitchen cut never gets 988) */
+const CRISIS_SUPPORT = /\b(?:988|nine[- ]eight[- ]eight|crisis (?:text )?line|hotline|helpline|lifeline|samaritans|suicide|someone you trust|emergency (?:services|number))\b/i;
 export function crisisFollowUp(said: string[]): string | null {
   if (!said.some((x) => HELP_POINTER.test(x))) return CRISIS_HELP_LINE;
-  return said.some((x) => HELP_NUMBER.test(x)) ? null : CRISIS_NUMBER_LINE;
+  return said.some((x) => HELP_NUMBER.test(x)) || !said.some((x) => CRISIS_SUPPORT.test(x)) ? null : CRISIS_NUMBER_LINE;
 }
 /**
  * The follow-up for this turn: on a real signal (detector) the full rule above; otherwise, when the user's words come
@@ -290,7 +292,7 @@ export function crisisFollowUp(said: string[]): string | null {
  */
 export function crisisFollowUpFor(userText: string, said: string[]): string | null {
   if (realCrisisSignal(userText)) return crisisFollowUp(said);
-  if (mayBeSelfHarm(userText) && said.some((x) => HELP_POINTER.test(x)) && !said.some((x) => HELP_NUMBER.test(x))) return CRISIS_NUMBER_LINE;
+  if (mayBeSelfHarm(userText) && said.some((x) => CRISIS_SUPPORT.test(x)) && !said.some((x) => HELP_NUMBER.test(x))) return CRISIS_NUMBER_LINE;
   return null;
 }
 const QUESTION_START = /^(?:(?:hey|hi|okay|ok|so|wait|yo)\b[^,.!?]{0,20},?\s*)?(?:so,?\s*)?(?:(?:how|what|when|where|who|why|which)(?:'s|'re|'d| is| am| are| was| were| did| do| does| has| have| had| will| would| can| could| should)\b|(?:did|do|does|are|is|was|were|have|has|can|could|will|would) (?:you|it|they|we|that|this|he|she)\b|you (?:feeling|ready|nervous|excited)\b)/i;
@@ -1768,7 +1770,10 @@ export class Session {
         (e) => e.type === "function_call");
     };
     const last = typeof req.input === "string" ? req.input : req.input.at(-1);
-    const query = typeof last === "string" ? last : last && "role" in last && typeof last.content === "string" ? last.content : "";
+    // Codex r4 P2: a camera turn's content is an array (input_text + images) — its text is the query too
+    const content = last && typeof last !== "string" && "role" in last ? last.content : undefined;
+    const query = typeof last === "string" ? last : typeof content === "string" ? content
+      : Array.isArray(content) ? content.map((p) => (p && typeof p === "object" && "type" in p && p.type === "input_text" && "text" in p ? String(p.text) : "")).join(" ").trim() : "";
     return this.memoryCall && useMemory ? this.memoryCall.stream(req, signal, source, query, opening, confirmed, memoryRetry) : source(req, signal);
   }
 

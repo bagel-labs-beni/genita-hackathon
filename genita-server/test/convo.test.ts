@@ -1617,3 +1617,12 @@ test("integration 11/4: a detector miss whose reply already points to help still
   assert.equal(crisisFollowUpFor("hanging myself out to dry with this deadline", ["Ugh, deadlines are the worst."]), null);
   assert.equal(crisisFollowUpFor("I'm kinda tired today", ["Wanna just chill on the call?"]), null);
 });
+
+test("Codex r4: medical advice on a kitchen cut never gets 988; a plain low-mood line is the only one that gets the no-hotlines check-in", async () => {
+  const { crisisFollowUp, crisisFollowUpFor } = await import("../src/session/session.ts");
+  const { plainLowMood } = await import("../src/memory/call.ts");
+  assert.equal(crisisFollowUp(["Run it under cold water and see a doctor if it won't stop bleeding."]), null);
+  assert.equal(crisisFollowUpFor("I cut myself while chopping onions, what should I do?", ["Press on it and see a doctor if it keeps bleeding."]), null, "pointer is medical: no 988 (main adds nothing either)");
+  for (const t of ["I'm kinda tired today", "meh, rough day", "feeling down and lonely tonight"]) assert.ok(plainLowMood(t), t);
+  for (const t of ["", "I want to kill myself.", "swallowed a bottle of bleach", "thinking of ending everything tonight", "what should I cook tonight"]) assert.ok(!plainLowMood(t), t);
+});

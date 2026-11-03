@@ -55,6 +55,15 @@ export function memoryPrompt(items: Memory[], opening = false, notes = false): s
  * Prod 11/4: right after a crisis call, "I'm kinda tired today" got "please call nine one one or nine eight eight". With a
  * real hint in the last call's lines and none in this turn: a warm check-in at most, no help lines (Chelsea 11/1 rule).
  */
+/**
+ * Codex r4 P2: the no-hotlines check-in rides only a line that is plainly ordinary low mood (an allow-list word, short,
+ * nothing near harm). Anything else — an empty query, "swallowed a bottle of bleach", a new hint — gets no such line.
+ */
+const LOW_MOOD = /\b(?:tired|exhausted|sleepy|drained|meh|down|sad|bored|stressed|low|blah|lonely|off|rough day|bad day|long day|not great|kinda|okay|ok|fine)\b/i;
+export function plainLowMood(text: string): boolean {
+  const t = text.trim();
+  return !!t && t.split(/\s+/).length <= 14 && LOW_MOOD.test(t) && !mayBeSelfHarm(t) && !/\b(?:swallow\w*|bleach|drank|took|bottle|poison\w*|knife|gun|rope)\b/i.test(t);
+}
 export const PRIOR_CRISIS_LINE = "\nThey had a really hard moment in that call. If it fits, check in warmly in your own words (how they're holding up); no hotlines, numbers or crisis questions unless what they say now hints at danger.\n";
 
 /** Per-call batching: only NEW completed pairs enter extraction, never old history. */
@@ -287,7 +296,7 @@ export class MemoryCall {
           + "\nYou are the same companion picking it back up: use what was decided or asked there, never recite these lines or say you have notes.\n"
         : "";
       // Chelsea 11/1 + lead 11/4: a hard moment in the call that just ended is no reason for hotlines on a low-mood line now
-      const afterCrisis = last && process.env.GENITA_PRIOR_CRISIS_LINE !== "0" && !mayBeSelfHarm(query) && lastLines.some((l) => l.role === "user" && realCrisisSignal(l.text)) ? PRIOR_CRISIS_LINE : "";
+      const afterCrisis = last && process.env.GENITA_PRIOR_CRISIS_LINE !== "0" && plainLowMood(query) && lastLines.some((l) => l.role === "user" && realCrisisSignal(l.text)) ? PRIOR_CRISIS_LINE : "";
       const notes = summaryPrompt(this.clearSummaries(this.summaries), this.service.now()) + last + afterCrisis;
       const pinned = this.clearOf(this.pinned);
       const pinnedIds = new Set(pinned.map((m) => m.id));
