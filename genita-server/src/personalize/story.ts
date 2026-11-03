@@ -478,6 +478,27 @@ export function cardsForField(field: keyof StyleCard["sections"]): StoryId[] {
 }
 
 /** Every text on a card the user can mark as "off" in C1 (items, tags, tiles, topics). */
+/**
+ * PATCH /v1/profile answers before Spark rewrites the card (S1: 9.6–14.8 s → one Spark call): the card as shown,
+ * minus the lines the user marked, plus the new facts the correction put in the profile (the plain fallback
+ * wording for those lines only). The Spark rewrite replaces it in the store moments later.
+ */
+export function interimCard(shown: StoryCard, marked: string[], before: StyleCard, card: StyleCard): StoryCard | null {
+  if (shown.id === "unknowns") return shown;
+  const fb = fallbackCard(shown.id as SparkStoryId, card);
+  if (!fb) return null;
+  // only the lines the correction brought in (the plain wording of facts that were there before stays out)
+  const old = fallbackCard(shown.id as SparkStoryId, before);
+  const had = new Set([...cardTexts(shown), ...(old ? cardTexts(old) : [])]);
+  const gone = new Set(marked);
+  const tagText = (t: StoryTag) => (t.dislike ? `Not for you: ${t.text.toLowerCase()}` : t.text);
+  const items = [...shown.items.filter((i) => !gone.has(i.text)), ...fb.items.filter((i) => !had.has(i.text))].slice(0, shown.id === "lines" ? 4 : 3);
+  const tags = shown.tags || fb.tags ? [...(shown.tags ?? []).filter((t) => !gone.has(tagText(t))), ...(fb.tags ?? []).filter((t) => !had.has(tagText(t)))] : undefined;
+  const help = shown.help || fb.help ? [...(shown.help ?? []).filter((h) => !gone.has(h.label)), ...(fb.help ?? []).filter((h) => !had.has(h.label))].slice(0, 3) : undefined;
+  if (!items.length && !tags?.length && !help?.length) return null;
+  return { ...shown, items, ...(tags ? { tags } : {}), ...(help ? { help } : {}) };
+}
+
 export function cardTexts(c: StoryCard): string[] {
   return [
     ...c.items.map((i) => i.text),

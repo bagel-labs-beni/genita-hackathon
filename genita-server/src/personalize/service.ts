@@ -15,7 +15,7 @@ import type { SparkRequest } from "../meta/spark.ts";
 import { sparkJson } from "../meta/spark.ts";
 import { styleProfileText, type StyleCard, type DisplayRow } from "../prep/importProfile.ts";
 import type { PrepStore } from "../prep/store.ts";
-import { EYEBROWS, SPARK_STORY_IDS, STORY_IDS, buildStoryRequest, cardTexts, toStory, type SparkStoryId, type Story, type StoryCard, type StoryId, type UnknownItem } from "./story.ts";
+import { EYEBROWS, SPARK_STORY_IDS, STORY_IDS, buildStoryRequest, cardTexts, interimCard, toStory, type SparkStoryId, type Story, type StoryCard, type StoryId, type UnknownItem } from "./story.ts";
 import { mergeUpdates, type AppliedUpdate, type ProfileUpdate } from "./merge.ts";
 import { askLine, beginCall } from "./unknowns.ts";
 import { FORGET, buildCorrectionRequest, mightBeCorrection, toAnswer, toCorrectionUpdates } from "./corrections.ts";
@@ -52,6 +52,8 @@ export class Personalize {
   private readonly storyJobs = new Map<string, Promise<void>>();
   /** a failed story write isn't retried for STORY_BACKOFF_MS (each try is a Spark call) */
   private readonly storyFailedAt = new Map<string, number>();
+  /** C3 rewrites still running after PATCH /v1/profile answered */
+  private readonly rewrites = new Set<Promise<void>>();
 
   constructor(o: { store: PersonalizeStore; json?: JsonFn; metaKey?: string; log?: (event: string, data: Record<string, unknown>) => void; now?: () => Date }) {
     this.store = o.store;
@@ -253,29 +255,43 @@ export class Personalize {
           return { card: m.card, out: m.applied };
         })) ?? [])
       : [];
-    let latest = await this.store.getStyle(userId);
+    const latest = await this.store.getStyle(userId);
     if (!latest) throw new PersonalizeError(404, "no_profile");
-    // C3: the same card comes back rewritten now; other cards the change touched are rewritten on the next read
+    // C3: the answer doesn't wait for Spark to reword the card (S1 save took 9.6–14.8 s with both calls in a row):
+    // it carries the card as shown with the marked lines out and the new facts in; the reworded card lands in the
+    // store moments later (GET /v1/profile/story), other cards the change touched are rewritten on the next read
     if (applied.length && cardId !== "unknowns") {
-      try {
-        const basis = latest.updatedAt;
-        const raw = await this.timedJson<unknown>(buildStoryRequest({ card: latest }, [cardId]));
-        await this.update(userId, (c) => {
-          const prev = c.story?.version === 2 ? c.story : undefined;
-          const { cards, topics } = toStory(raw as { cards?: unknown }, c, prev?.cards, prev ? [cardId] : undefined);
-          const stale = c.updatedAt !== basis ? (prev?.stale ?? []) : (prev?.stale ?? []).filter((id) => id !== cardId);
-          return { card: { ...c, story: { version: 2, cards, topics, at: this.now().toISOString(), from: prev?.from ?? "card", ...(prev?.ms ? { ms: prev.ms } : {}), stale } }, out: true };
-        });
-      } catch (err) {
-        this.log("story.failed", { from: "correction", message: String(err).slice(0, 160) });
-      }
-      latest = (await this.store.getStyle(userId)) ?? latest;
+      const card = interimCard(shown, items, before, latest);
+      void this.rewriteCard(userId, cardId, latest.updatedAt);
+      const changed = card ? cardTexts(card).filter((t) => !texts.includes(t)) : [];
+      this.log("profile.corrected", { card: cardId, applied: applied.length, ms: Math.round(performance.now() - t0), rewrite: "background" });
+      return { card, ack: ACK, changed, profile: styleProfileText(latest), rows: latest.display };
     }
     const card = Personalize.current(latest).find((c) => c.id === cardId) ?? null;
     const changed = card ? cardTexts(card).filter((t) => !texts.includes(t)) : [];
     this.log("profile.corrected", { card: cardId, applied: applied.length, ms: Math.round(performance.now() - t0) });
     return { card, ack: ACK, changed, profile: styleProfileText(latest), rows: latest.display };
   }
+
+  /** C3 in the background: Spark rewords the corrected card; a newer change while it wrote keeps it stale. */
+  private rewriteCard(userId: string, cardId: SparkStoryId, basis: string | undefined): Promise<void> {
+    const job = (async () => {
+      const latest = await this.store.getStyle(userId);
+      if (!latest) return;
+      const raw = await this.timedJson<unknown>(buildStoryRequest({ card: latest }, [cardId]));
+      await this.update(userId, (c) => {
+        const prev = c.story?.version === 2 ? c.story : undefined;
+        const { cards, topics } = toStory(raw as { cards?: unknown }, c, prev?.cards, prev ? [cardId] : undefined);
+        const stale = c.updatedAt !== basis ? (prev?.stale ?? []) : (prev?.stale ?? []).filter((id) => id !== cardId);
+        return { card: { ...c, story: { version: 2, cards, topics, at: this.now().toISOString(), from: prev?.from ?? "card", ...(prev?.ms ? { ms: prev.ms } : {}), stale } }, out: true };
+      });
+      this.log("story.written", { from: "correction", cards: 1 });
+    })().catch((err) => this.log("story.failed", { from: "correction", message: String(err).slice(0, 160) }));
+    this.rewrites.add(job);
+    return job.finally(() => this.rewrites.delete(job));
+  }
+  /** tests / shutdown: wait for background card rewrites */
+  async drainRewrites(): Promise<void> { while (this.rewrites.size) await Promise.all([...this.rewrites]); }
 
   // ───────────── calls ─────────────
 

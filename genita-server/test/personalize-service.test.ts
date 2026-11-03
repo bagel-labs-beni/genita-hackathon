@@ -14,6 +14,7 @@ import { createPrepRoutes } from "../src/prep/routes.ts";
 import type { PrepDeps } from "../src/prep/pipeline.ts";
 import type { PrepRunner } from "../src/prep/runner.ts";
 import { Personalize } from "../src/personalize/service.ts";
+import { cardTexts } from "../src/personalize/story.ts";
 import { toStyleCard, type StyleCard } from "../src/prep/importProfile.ts";
 
 type Req = { schemaName: string; input: unknown; instructions?: string };
@@ -127,11 +128,18 @@ test("PATCH /v1/profile (C1→C3): marked lines + what's right → profile chang
   t.after(srv.close);
   const r = await fetch(`${srv.base}/v1/profile`, { method: "PATCH", body: JSON.stringify({ cardId: "taste", items: ["Clean, minimal"], text: "No logos, ever." }) });
   assert.equal(r.status, 200);
-  const body = (await r.json()) as { ack: string; card: { id: string; headline: string }; changed: string[]; profile: string; rows: Array<{ key: string }> };
+  const body = (await r.json()) as { ack: string; card: { id: string; headline: string; tags: Array<{ text: string }> }; changed: string[]; profile: string; rows: Array<{ key: string }> };
   assert.equal(body.ack, "Got it. I'll remember that.");
+  // S1 perf: the answer doesn't wait for the reword — the card as shown, the marked tag out, the new fact in
   assert.equal(body.card.id, "taste");
-  assert.equal(body.card.headline, "Plain, no logos.");
-  assert.deepEqual(body.changed, ["Plain basics", "Not for you: logos"]);
+  assert.equal(body.card.headline, "taste headline.", "headline kept until the reworded card lands");
+  assert.ok(!body.card.tags.some((t) => t.text === "Clean, minimal"), "the marked tag is gone");
+  assert.ok(body.changed.length > 0 && body.changed.every((c) => /logos/i.test(c)), JSON.stringify(body.changed));
+  // the Spark reword lands in the store right after; GET story shows it
+  await h.p.drainRewrites();
+  const reworded = (await h.p.story("u1")).cards.find((c) => c.id === "taste")!;
+  assert.equal(reworded.headline, "Plain, no logos.");
+  assert.deepEqual(cardTexts(reworded).filter((x) => /logos|Plain/.test(x)), ["Plain basics", "Not for you: logos"]);
   assert.match(body.profile, /Dislikes logos/);
   assert.doesNotMatch(body.profile, /Clean, minimal clothes/);
   const storyReq = h.calls.find((c) => c.schemaName === "story_cards")!;
@@ -298,4 +306,25 @@ test("S1: noteShorter saves an observed line, never over an explicit one about t
   assert.equal(r!.text, "Updated: shorter replies");
   const resp = (await h.store.getStyle("u1"))!.sections.response;
   assert.deepEqual([resp[0].text, resp[0].label], ["Short replies, one or two sentences.", "observed"]);
+});
+
+test("S1 perf: PATCH /v1/profile answers after the correction call, not after the card reword (slow Spark story)", async (t) => {
+  let storyCalls = 0;
+  const h = harness(async (req) => {
+    if (req.schemaName === "profile_correction") return { updates: [{ field: "likes", text: "Dislikes logos and loud prints.", replaces: ["Style: Clean, minimal clothes."], chip: "no logos" }], answered: { field: "", text: "", chip: "" } };
+    if (req.schemaName === "story_cards") {
+      if (++storyCalls > 1) await new Promise((r) => setTimeout(r, 1500)); // the reword after the import's story
+      return { cards: [card("taste", "Plain, no logos.")], topics: [] };
+    }
+    return null;
+  });
+  t.after(h.cleanup);
+  await withStory(h);
+  const t0 = performance.now();
+  const r = await h.p.correct("u1", { cardId: "taste", items: ["Clean, minimal"], text: "No logos, ever." });
+  const ms = performance.now() - t0;
+  assert.ok(ms < 500, `answered in ${Math.round(ms)} ms (the 1.5 s reword runs after)`);
+  assert.equal(r.card!.headline, "taste headline.");
+  await h.p.drainRewrites();
+  assert.equal((await h.p.story("u1")).cards.find((c) => c.id === "taste")!.headline, "Plain, no logos.");
 });
