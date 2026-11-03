@@ -93,7 +93,9 @@ export function mergeUpdates(card: StyleCard, updates: ProfileUpdate[], at: stri
     const target = (x: Finding) => x !== same && (replaces.has(norm(x.text)) || contradicts(x.text, text));
     if (u.label === "observed" && list.some((x) => x.label === "explicit" && target(x))) continue;
     // newer wins by when it was said: a late call analysis can't undo a correction saved after that call started
-    if (u.asOf && list.some((x) => target(x) && x.at && x.at > u.asOf!)) continue;
+    // duplicates count too: moving their timestamp backwards would let another older analysis overwrite them
+    const updateAt = u.asOf ?? at;
+    if (list.some((x) => (x === same || target(x)) && x.at && x.at > updateAt)) continue;
     // …nor bring back (or contradict) a line the user removed after it
     // (any wording: once the user removed something from a field, older analyses of that field are dropped — Codex round 3)
     if (u.asOf && text && priorTombs.some((t) => t.at > u.asOf! && (t.field === u.field || norm(t.text) === norm(text) || contradicts(t.text, text)))) continue;
@@ -102,7 +104,7 @@ export function mergeUpdates(card: StyleCard, updates: ProfileUpdate[], at: stri
     if (same) list.splice(list.indexOf(same), 1);
     const label = same?.label === "explicit" ? "explicit" : u.label;
     // `at` = when the user said it (order of what they said, not of when Spark finished) — Codex round 4
-    list.unshift({ text, label, scope: same?.scope ?? "any", at: u.asOf ?? at });
+    list.unshift({ text, label, scope: same?.scope ?? "any", at: updateAt });
     while (list.length > SECTION_MAX) {
       const drop = [...list].reverse().find((x) => x.label !== "explicit") ?? list[list.length - 1];
       list.splice(list.lastIndexOf(drop), 1);
