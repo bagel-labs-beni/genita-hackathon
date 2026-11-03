@@ -1,0 +1,23 @@
+{
+  "type": "ready",
+  "protocol": 1,
+  "sessionId": "5f0c2a8e-8a1e-4c55-9d38-2f3f7c1d9b10",
+  "mode": "chat",
+  "audio": {
+    "in": "pcm_s16le_24000_mono",
+    "out": "pcm_s16le_24000_mono",
+    "frameHeaderBytes": 8
+  },
+  "lip": {
+    "requested": "none",
+    "active": "none",
+    "reason": null
+  },
+  "voiceId": "seamless:0",
+  "bargeIn": {
+    "minMs": 400,
+    "minWords": 2
+  },
+  "tts": "server",
+  "perception": true
+}

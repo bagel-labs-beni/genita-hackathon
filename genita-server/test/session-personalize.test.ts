@@ -256,10 +256,12 @@ test("S1: two long replies cut off → Updated: shorter replies, the next reply 
   const ev = await s.client.waitFor((m) => m.type === "profile.updated");
   assert.deepEqual(ev, { type: "profile.updated", text: "Updated: shorter replies", fields: ["response"] });
   assert.equal(noted, 1);
-  assert.match(s.sparkCalls[2].instructions!, /cut you off twice/);
+  // silent adaptation (main 11/3 P0): shorter, never a line about the interruptions
+  assert.match(s.sparkCalls[2].instructions!, /one short sentence\. Never mention that they interrupted you/);
+  assert.doesNotMatch(s.sparkCalls[2].instructions!, /cut me off/);
   await sleep(500);
   await say(s, "Ok.", s.client.json.filter((m) => m.type === "reply").length + 1);
-  assert.doesNotMatch(s.sparkCalls.at(-1)!.instructions!, /cut you off twice/, "said once");
+  assert.doesNotMatch(s.sparkCalls.at(-1)!.instructions!, /Never mention that they interrupted you/, "the one-shot line is sent once");
   s.session.close();
 });
 
@@ -279,7 +281,7 @@ test("Codex round 6: short replies cut off don't count; 'forget' can empty the t
     await l.client.waitFor(() => l.client.json.filter((m) => m.type === "reply.delta").length >= i);
     await sleep(60);
   }
-  assert.ok(!l.sparkCalls.some((c) => /cut you off twice/.test(c.instructions!)));
+  assert.ok(!l.sparkCalls.some((c) => /Never mention that they interrupted you/.test(c.instructions!)));
   l.session.close();
 });
 

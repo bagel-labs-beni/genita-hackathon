@@ -25,6 +25,11 @@
  *            ./_qa-scripts/genita-watch-moments). Per clip: reacted?, delay
  *            after the salient moment, spoken over a video line (must be 0), and a
  *            Spark judge for "fits the action" and "invented details".
+ *   --remote=wss://host   run --naming or --moments against a deployed server instead of
+ *            a local one (bearer from GENITA_SESSION_TOKEN: a session JWT or the shared
+ *            dev token; never printed). No server logs there: --moments takes the
+ *            reaction from the watch socket's `reaction` event + its reply (client
+ *            clock), and via / over-dialogue / memo counts read "n/a".
  * Keys come from GENITA_ENV_FILE / ~/.config/genita/meta.env and are never printed.
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -92,7 +97,7 @@ class Call {
     this.url = url;
   }
   async open(): Promise<void> {
-    this.main = new WebSocket(`${this.url}/v1/session`);
+    this.main = new WebSocket(`${this.url}/v1/session`, { headers: AUTH });
     this.main.on("message", (d, bin) => {
       if (!bin) this.ev.push({ ...JSON.parse(d.toString()), _t: performance.now() });
     });
@@ -108,7 +113,7 @@ class Call {
     );
     const ready = await this.wait((e) => e.type === "ready");
     this.sessionId = String(ready.sessionId);
-    this.watch = new WebSocket(`${this.url}/v1/watch?session=${this.sessionId}`);
+    this.watch = new WebSocket(`${this.url}/v1/watch?session=${this.sessionId}`, { headers: AUTH });
     this.watch.on("message", (d, bin) => {
       if (!bin) this.wev.push({ ...JSON.parse(d.toString()), _t: performance.now() });
     });
@@ -215,12 +220,19 @@ class Call {
 
 const config = loadConfig();
 const logs: Record<string, unknown>[] = [];
-const server = await startServer({ ...config, port: 0 }, (event, data) => {
+const REMOTE = args.find((a) => a.startsWith("--remote="))?.slice(9).replace(/\/+$/, "") ?? null;
+const remoteToken = process.env.GENITA_SESSION_TOKEN?.trim();
+if (REMOTE && !remoteToken) throw new Error("--remote needs GENITA_SESSION_TOKEN (a session JWT or the shared dev token)");
+const remoteModes = ["--naming", "--moments"].filter((m) => args.some((a) => a === m || a.startsWith(`${m}=`)));
+if (REMOTE && (remoteModes.length !== 1 || args.some((a) => ["--qa", "--react", "--blank", "--funny"].includes(a)))) throw new Error("--remote runs exactly one of --naming or --moments (the other modes read server logs)");
+const AUTH: Record<string, string> = REMOTE ? { authorization: `Bearer ${remoteToken}` } : {};
+const server = REMOTE ? null : await startServer({ ...config, port: 0 }, (event, data) => {
   logs.push({ t: Math.round(performance.now()), event, ...data });
   if (event.startsWith("watch.") && !["watch.asr.status", "watch.open", "watch.close"].includes(event)) console.log(event, JSON.stringify(data).slice(0, 220));
 });
-const addr = server.address();
-const url = `ws://127.0.0.1:${typeof addr === "object" && addr ? addr.port : 8787}`;
+const addr = server?.address();
+const url = REMOTE ?? `ws://127.0.0.1:${typeof addr === "object" && addr ? addr.port : 8787}`;
+if (REMOTE) console.log(`remote: ${new URL(url).host}`);
 
 async function judge(truth: string, q: string, a: string): Promise<boolean> {
   for (let i = 0; i < 3; i++) {
@@ -466,7 +478,16 @@ if (args.some((a) => a === "--moments" || a.startsWith("--moments="))) {
     const reply = call.ev.find((e) => e.type === "reply" && (e._t as number) >= playAt);
     if (reply) call.main.send(JSON.stringify({ type: "playback_done", utteranceId: reply.utteranceId }));
     const mine = logs.slice(logFrom);
-    const react = mine.find((l) => l.event === "watch.react");
+    // remote (no server logs): the reaction = the watch socket's `reaction` event + that utterance's reply text,
+    // on the client clock (includes the network); via / over-dialogue / memo counts aren't knowable there
+    const remoteReact = (() => {
+      if (!REMOTE) return null;
+      const ev = call.wev.find((e) => e.type === "reaction" && (e._t as number) >= playAt);
+      if (!ev) return null;
+      const reply = call.ev.find((e) => e.type === "reply" && e.utteranceId === ev.utteranceId);
+      return { event: "watch.react", t: ev._t, utteranceId: ev.utteranceId, moment: ev.moment, line: reply?.text ?? "(reply text not seen)", via: "n/a (remote)", lineOpen: false, talkOver: null } as Record<string, unknown>;
+    })();
+    const react = REMOTE ? remoteReact : mine.find((l) => l.event === "watch.react");
     const startLog = mine.find((l) => l.event === "watch.start");
     // log times are performance.now() of the same process: the reaction's delay after the salient moment
     const playT = playAt;
@@ -485,7 +506,8 @@ if (args.some((a) => a === "--moments" || a.startsWith("--moments="))) {
         if (t <= from) open = l.on === true;
         else if (t <= to && l.on === true) open = true;
       }
-      overDialogue = open;
+      // commentary / crowd the model judged fine to talk over is allowed (talkOver)
+      overDialogue = open && react.talkOver !== true;
     }
     let verdict = { correct: false, invented: false };
     if (react) {
@@ -504,14 +526,15 @@ if (args.some((a) => a === "--moments" || a.startsWith("--moments="))) {
     }
     const memos = mine.filter((l) => l.event === "watch.memo");
     const row = {
-      clip: clip.id, kind: clip.kind, reacted: !!react, line: react?.line ?? null, moment: react?.moment ?? null, delaySec,
-      afterLineMs: react?.afterLineMs ?? null, lineOpen: (react?.lineOpen as boolean | undefined) || overDialogue, held: react?.held ?? false, ...verdict,
+      clip: clip.id, kind: clip.kind, reacted: !!react, via: react?.via ?? null, line: react?.line ?? null, moment: react?.moment ?? null, delaySec,
+      quickMs: mine.filter((l) => l.event === "watch.quick").map((l) => l.ms), quicks: mine.filter((l) => l.event === "watch.quick").map((l) => (l.react ? `${l.moment}:${l.line}` : "no")),
+      afterLineMs: react?.afterLineMs ?? null, lineOpen: (!!react?.lineOpen && react?.talkOver !== true) || overDialogue, talkOver: react?.talkOver ?? null, held: react?.held ?? false, ...verdict,
       memos: memos.length, memoMs: memos.map((l) => l.ms), salientMemos: memos.filter((l) => l.salient).length,
       moments: memos.map((l) => l.moment), blocked: mine.filter((l) => l.event === "watch.react.blocked").map((l) => l.why),
       shareStartedLogged: !!startLog,
     };
     rows.push(row);
-    console.log(`${react && verdict.correct && !verdict.invented && !row.lineOpen ? "✓" : "✗"} ${clip.id} (${clip.kind}) ${react ? `"${react.line}" ${delaySec}s after the moment${react.held ? ", held for a pause" : ""}` : "no reaction"}  memos=${memos.length} moments=${JSON.stringify(row.moments)} ${JSON.stringify(verdict)}`);
+    console.log(`${react && verdict.correct && !verdict.invented && !row.lineOpen ? "✓" : "✗"} ${clip.id} (${clip.kind}) ${react ? `"${react.line}" ${delaySec}s after the moment${react.held ? ", held for a pause" : ""}` : "no reaction"}${react ? ` via ${react.via}` : ""}  quick=${JSON.stringify(row.quicks)}  memos=${memos.length} moments=${JSON.stringify(row.moments)} ${JSON.stringify(verdict)}`);
     call.close();
     await sleep(500);
   }
@@ -519,6 +542,7 @@ if (args.some((a) => a === "--moments" || a.startsWith("--moments="))) {
   const delays = reacted.map((r) => r.delaySec as number).sort((a, b) => a - b);
   const memoMs = rows.flatMap((r) => r.memoMs as number[]).sort((a, b) => a - b);
   result.moments = {
+    remote: !!REMOTE,
     clips: rows.length,
     reacted: reacted.length,
     correct: reacted.filter((r) => r.correct).length,
@@ -527,6 +551,8 @@ if (args.some((a) => a === "--moments" || a.startsWith("--moments="))) {
     delayP50Sec: delays.length ? median(delays) : null,
     delayMaxSec: delays.length ? delays.at(-1) : null,
     memoP50Ms: memoMs.length ? median(memoMs) : null,
+    quickP50Ms: (() => { const q = rows.flatMap((r) => r.quickMs as number[]).sort((a, b) => a - b); return q.length ? median(q) : null; })(),
+    viaQuick: reacted.filter((r) => r.via === "quick").length,
     rows,
   };
 }
@@ -536,5 +562,5 @@ writeFileSync(file, JSON.stringify({ result, logs }, null, 1));
 const { rows: _r, ...qaSummary } = (result.qa ?? {}) as Record<string, unknown>;
 console.log("\nRESULT", JSON.stringify({ qa: result.qa ? qaSummary : undefined, react: result.react, blank: result.blank && { ...(result.blank as object), rows: undefined }, naming: result.naming && { ...(result.naming as object), rows: undefined }, moments: result.moments && { ...(result.moments as object), rows: undefined } }, null, 1));
 console.log("saved", file);
-server.close();
+server?.close();
 process.exit(0);

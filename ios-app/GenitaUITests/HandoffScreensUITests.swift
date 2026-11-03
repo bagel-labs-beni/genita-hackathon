@@ -49,6 +49,20 @@ final class HandoffScreensUITests: XCTestCase {
         XCTAssertTrue(app.textFields["pairingCode"].waitForExistence(timeout: 5))
         capture(app, "pairing-sheet")
     }
+    /// GENITA_PROXIMITY_HANDOFF (flag off, needs Chelsea's OK): the iPhone's half of a move made by bringing it close
+    /// to the Mac — the call screen gliding up toward the Mac, the toast, R1 behind. No Bluetooth in CI: the review
+    /// state plays the moment as if the server's `ownership {trigger: proximity}` had arrived.
+    func testProximityMoment() {
+        var app = open(["--proximity-moment", "glide"])
+        let toast = app.descendants(matching: .any)["proximityToast"]
+        XCTAssertTrue(toast.waitForExistence(timeout: 12))
+        capture(app, "PROX-iphone-glide")
+        app.terminate()
+        app = open(["--proximity-moment", "done"])
+        XCTAssertTrue(app.descendants(matching: .any)["proximityToast"].waitForExistence(timeout: 12))
+        XCTAssertTrue(app.staticTexts["Continue on your Mac."].waitForExistence(timeout: 5), "R1: the conversation is on the Mac now")
+        capture(app, "PROX-iphone-toast")
+    }
     func testRegistrationScreens() {
         // P03: any iPhone (A12+) looks for the MAC-REG picture; Cancel goes back to the call.
         var app = open(["--handoff-state", "p03"])

@@ -85,6 +85,7 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
         ownership.onChange = { [weak self] old,new in self?.ownerChanged(from:old,to:new) }
         link.onMessage = { [weak self] in self?.receive($0) }
         link.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in:&subscriptions)
+        DispatchQueue.main.async { MacProximity.shared.attach(self) }  // GENITA_PROXIMITY_HANDOFF: bring the iPhone close
         refreshSurface()
         timer=Timer.scheduledTimer(withTimeInterval:1/30,repeats:true){ [weak self] _ in Task { @MainActor in self?.tick() } }
     }
