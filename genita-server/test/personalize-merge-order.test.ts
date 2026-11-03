@@ -108,6 +108,59 @@ test("#368 P2: delayed explicit call evidence promotes a noteShorter observation
   assert.deepEqual(styles.get("u2"), untouched);
 });
 
+for (const answerText of ["I love jazz.", "i love jazz!"]) {
+  test(`#368 P2: a delayed duplicate still completes the call's Music answer (${answerText})`, { timeout: 5000 }, async () => {
+    const card = profile();
+    card.sections.tendencies = [finding("Compares two concrete options before deciding.")];
+    card.toConfirm = ["Music", "Weekend plans"];
+    const styles = new Map([["u1", card], ["u2", profile()]]);
+    const untouched = structuredClone(styles.get("u2"));
+    let finishAnalysis!: (value: unknown) => void;
+    let ready!: () => void;
+    const analysisStarted = new Promise<void>((resolve) => { ready = resolve; });
+    let now = OLDER;
+    const p = new Personalize({
+      store: {
+        getStyle: async (id) => structuredClone(styles.get(id) ?? null),
+        putStyle: async (id, card) => { styles.set(id, structuredClone(card)); },
+        getCompanion: async () => null,
+      },
+      now: () => new Date(now),
+      json: (async (req) => {
+        if (req.schemaName === "call_profile_updates") {
+          return new Promise<unknown>((resolve) => { finishAnalysis = resolve; ready(); });
+        }
+        assert.equal(req.schemaName, "profile_correction");
+        return { updates: [{ field: "interests", text: "I love jazz.", replaces: [], chip: "jazz" }] };
+      }) as JsonFn,
+    });
+    const start = await p.startCall("u1");
+    assert.equal(start!.askItem, "Music");
+    now = MIDDLE;
+    const delayed = p.endCall("u1", [
+      { role: "user", text: "I love jazz." }, { role: "user", text: "Jazz is my favorite music." },
+    ], start!.askItem!, OLDER);
+    await analysisStarted;
+    now = LATEST;
+    assert.ok(await p.voiceCorrection("u1", "Actually I love jazz."));
+    const corrected = structuredClone(styles.get("u1")!);
+    assert.deepEqual(corrected.sections.interests[0], finding("I love jazz.", LATEST));
+    assert.ok(corrected.toConfirm.includes("Music"));
+    assert.equal(corrected.growth!.asked[0].answered, undefined);
+
+    now = FRESH;
+    finishAnalysis({ updates: [], answered: { item: "Music", field: "interests", text: answerText } });
+    const applied = await delayed;
+    const stored = styles.get("u1")!;
+    assert.deepEqual(stored.toConfirm, ["Weekend plans"]);
+    assert.deepEqual(stored.growth, { calls: 1, asked: [{ item: "Music", at: OLDER, answered: true }] });
+    assert.deepEqual(stored.sections, corrected.sections);
+    assert.equal(stored.updatedAt, FRESH);
+    assert.equal(applied, 1);
+    assert.deepEqual(styles.get("u2"), untouched);
+  });
+}
+
 // Real Personalize service + in-memory store; only the structured analysis is faked.
 for (const duplicate of [false, true]) {
   test(`#368: delayed call analyses preserve a later voice correction (${duplicate ? "duplicate" : "control"})`, { timeout: 5000 }, async () => {

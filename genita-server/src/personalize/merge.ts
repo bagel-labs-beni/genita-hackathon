@@ -95,12 +95,19 @@ export function mergeUpdates(card: StyleCard, updates: ProfileUpdate[], at: stri
     // newer wins by when it was said: a late call analysis can't undo a correction saved after that call started
     const updateAt = u.asOf ?? at;
     if (list.some((x) => target(x) && x.at && x.at > updateAt)) continue;
-    // An older duplicate can still add explicit evidence; other old duplicates are no-ops.
-    const promotesEvidence = same && same.label !== "explicit" && u.label === "explicit";
-    if (same?.at && same.at > updateAt && !promotesEvidence) continue;
     // …nor bring back (or contradict) a line the user removed after it
     // (any wording: once the user removed something from a field, older analyses of that field are dropped — Codex round 3)
     if (u.asOf && text && priorTombs.some((t) => t.at > u.asOf! && (t.field === u.field || norm(t.text) === norm(text) || contradicts(t.text, text)))) continue;
+    // An older duplicate can still add explicit evidence or complete an answer.
+    const promotesEvidence = same && same.label !== "explicit" && u.label === "explicit";
+    if (same?.at && same.at > updateAt && !promotesEvidence) {
+      if (u.answers) {
+        toConfirm = toConfirm.filter((t) => norm(t) !== norm(u.answers!));
+        // Count the answer so the service persists confirmation/growth without rewriting the newer finding.
+        applied.push({ field: u.field, text: same.text, label: same.label === "explicit" ? "explicit" : u.label, removed: [], ...(u.chip ? { chip: u.chip } : {}) });
+      }
+      continue;
+    }
     for (let i = list.length - 1; i >= 0; i--) if (target(list[i])) removed.unshift(list.splice(i, 1)[0].text);
     for (const r of removed) tombs.push({ text: r, at: u.asOf ?? at, field: u.field });
     if (same) list.splice(list.indexOf(same), 1);
