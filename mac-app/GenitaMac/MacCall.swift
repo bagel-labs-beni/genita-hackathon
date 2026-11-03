@@ -245,9 +245,8 @@ import Foundation
         }
         handoffAccountID = accountID
         MacHandoff.shared.setAccount(accountID)
-        if changed, accountID != nil {
-            wantsCall = MacHandoff.shared.ownership.isOwner && MacHandoff.shared.ownership.state.epoch > 0
-        }
+        // MC-01 (lead 11/4): a restored account never starts the call by itself; MAC-4 "Continue here" does
+        // (MacHandoff.resumeHere → conversationArrived)
     }
 
     /// The conversation is on this Mac now (ownership → mac).
