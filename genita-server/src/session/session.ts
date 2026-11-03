@@ -247,7 +247,11 @@ export function holdCapMs(env: NodeJS.ProcessEnv = process.env): number {
   const n = Number(env.GENITA_HOLD_CAP_MS ?? 2200);
   return Number.isFinite(n) && n >= 0 && n <= 10_000 ? n : 2200;
 }
-const HOLD_BEATS = ["<curious> Hmm.", "<warm> Mm, okay.", "<curious> Ooh, okay."];
+/**
+ * Hold beats: audio only (never in captions, the reply text or history), short, and never the same one twice in a
+ * row in a call — "Hmm" is 1 of 6 (QA item 16: replies opening with "Hmm" ≤ 1/6; Chelsea: no Hmm/Oh repeats).
+ */
+export const HOLD_BEATS = ["<warm> Mm.", "<curious> Ooh.", "<warm> Yeah.", "<warm> Okay, so.", "<curious> Hmm.", "<warm> Mm-hm."];
 /** #387 follow-up: said instead of a reply whose only sentence was the question watch together took back */
 const WATCH_ASK_FALLBACK = "<happy> Ooh, okay. Let's watch.";
 const GREET_PROMPT = "The call just connected. Greet the user.";
@@ -354,6 +358,8 @@ export class Session {
   private bargeTimer: NodeJS.Timeout | null = null;
   private seq = 0;
   private lastWarmAt = -Infinity;
+  /** next hold beat (rotates through HOLD_BEATS, so two in a row are never the same) */
+  private beatIx = 0;
   /** replies whose first sound waits for the user to stop talking */
   private quietWaiters: (() => void)[] = [];
   private metrics: TurnMetrics = {};
@@ -1850,7 +1856,8 @@ export class Session {
         if (this.v1 && face?.tag === "laugh") face = laughs++ > 0 || emotion === "sad" ? null : face;
         sentences.push({ tts, display, emotion, face });
         // captions go out per sentence: the opener guard may rewrite the first one
-        if (display) this.client.sendJson({ type: "reply.delta", utteranceId, text: (sentences.length > 1 ? " " : "") + display });
+        // a hold beat is audio only: no caption (the answer's first caption word is the answer's own)
+        if (display && !beating) this.client.sendJson({ type: "reply.delta", utteranceId, text: (sentences.slice(0, -1).some((x) => !x.beat) ? " " : "") + display });
       }
       waiter.wake?.();
     };
@@ -1886,7 +1893,8 @@ export class Session {
         if (signal.aborted || this.reply !== reply || sentences.length) return;
         const before = sentences.length;
         beating = true;
-        try { enqueueSentences([HOLD_BEATS[utteranceId % HOLD_BEATS.length]], true); } finally { beating = false; }
+        const line = HOLD_BEATS[this.beatIx++ % HOLD_BEATS.length];
+        try { enqueueSentences([line], true); } finally { beating = false; }
         for (let i = before; i < sentences.length; i++) sentences[i].beat = true;
         this.log("convo.hold_beat", { utteranceId });
     };
@@ -2016,8 +2024,8 @@ export class Session {
     let sentEmotion: string | null | undefined;
     // The app speaks it: plain text (tags already stripped), no vendor call, no audio frames.
     // Device mode always; server mode when the voice service failed for this reply.
-    const sayOnDevice = (i: number, s: { display: string; emotion: string | null }, record = true) => {
-      if (record) reply.spoken.push(s.display);
+    const sayOnDevice = (i: number, s: { display: string; emotion: string | null; beat?: true }, record = true) => {
+      if (record && !s.beat) reply.spoken.push(s.display);
       if (!s.display) return;
       if (reply.firstAudioAt === null) {
         reply.firstAudioAt = this.now();
@@ -2047,7 +2055,7 @@ export class Session {
         continue;
       }
       if (ttsFailed) {
-        reply.spoken.push(s.display);
+        if (!s.beat) reply.spoken.push(s.display);
         continue;
       }
       startJob(i);
@@ -2110,7 +2118,7 @@ export class Session {
           reply.audioMs += durationMs;
         }
         if (!signal.aborted) {
-          reply.spoken.push(s.display);
+          if (!s.beat) reply.spoken.push(s.display);
           // after the clause's audio: its words' span (aligner) or else its audio span, same timeline as audio.offsetMs
           if (s.face && sentAudio && this.deps.config.voice?.expressions !== false) {
             const startMs = clauseWords?.s ?? Math.round(sentenceOffset);
@@ -2137,7 +2145,7 @@ export class Session {
             else {
               // the voice died mid-sentence: the device says the words that were not voiced yet
               // Timing chars are of the spoken form, so count against that; no timing (MMS) → say it all again.
-              reply.spoken.push(s.display);
+              if (!s.beat) reply.spoken.push(s.display);
               const spoken = spokenText(s.display, seamlessLang(speechLang(s.display, lang), s.display));
               const rest = sentChars.trim() ? unspokenRest(spoken, sentChars) : s.display;
               if (rest) sayOnDevice(i, { display: rest, emotion: s.emotion }, false);
@@ -2145,13 +2153,14 @@ export class Session {
             continue;
           }
         }
-        reply.spoken.push(s.display);
+        if (!s.beat) reply.spoken.push(s.display);
       }
     }
     await producer;
     if (signal.aborted || this.reply !== reply) return;
 
-    if (!reply.spoken.join(" ").trim() || !hasAnswer()) {
+    // a beat is audio only (not in spoken); an echoed beat was the model's whole answer
+    if ((!reply.spoken.join(" ").trim() && !echoed) || !hasAnswer()) {
       resolveSaid(null);
       this.error("spark_unavailable", "The companion could not answer. Try again.", true);
       this.log("spark.empty", { utteranceId, cause: self ? "self_filtered_only_content" : emptyCause ?? "upstream_error_before_text" });
@@ -2169,7 +2178,8 @@ export class Session {
       ttsModelUsed = ttsModelUsed ? `${ttsModelUsed}+device` : "device";
       reply.audioMs += reply.chars ? deviceSpeechEstimateMs(reply.chars) : 0;
     }
-    const full = reply.spoken.join(" ").trim();
+    // the model's whole answer was the hold beat's words (echoed): that beat is the reply's text
+    const full = (reply.spoken.join(" ").trim() || (echoed ? sentences.filter((x) => x.beat).map((x) => x.display).join(" ") : "")).trim();
     resolveSaid(full || null);
     // self speech (card line, watch reaction) stays in the chat history but is never a memory source:
     // its script would otherwise be extracted as something the user said

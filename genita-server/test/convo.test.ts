@@ -14,6 +14,8 @@ import type { Config } from "../src/config.ts";
 import type { SparkRequest, SparkStreamEvent } from "../src/meta/spark.ts";
 
 const v1 = process.env.GENITA_CONVO_V1 !== "0";
+/** a hold beat line (audio only), HOLD_BEATS without tags */
+const BEAT = /^(?:Mm\.|Ooh\.|Yeah\.|Okay, so\.|Hmm\.|Mm-hm\.)$/;
 const none = { camera: false, userText: "" };
 
 // ───────────── sentence guard ─────────────
@@ -803,7 +805,10 @@ test("hold cap (prod 11/3): a held pre-tool line never keeps the turn silent pas
   await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
   await session.onClientText(JSON.stringify({ type: "text", text: "what do you remember about my sister" }));
   const reply = await client.waitFor((m) => m.type === "reply", 5000);
-  assert.match(String(reply.text), /^(?:Hmm\.|Mm, okay\.|Ooh, okay\.) You said she just moved to Busan\.$/);
+  // the beat is audio only (said first), never in the reply text or captions
+  assert.equal(reply.text, "You said she just moved to Busan.");
+  assert.match(String(client.json.find((m) => m.type === "say")?.text), BEAT);
+  assert.ok(!client.json.some((m) => m.type === "reply.delta" && BEAT.test(String(m.text).trim())));
   assert.doesNotMatch(String(reply.text), /I'll check/);
   session.close();
 });
@@ -939,7 +944,8 @@ test("first-sound cap (sweep 11/3 P1): Spark silent past GENITA_HOLD_CAP_MS → 
   await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
   await session.onClientText(JSON.stringify({ type: "text", text: "tell me something fun about octopuses" }));
   const slow = await client.waitFor((m) => m.type === "reply", 5000);
-  assert.match(String(slow.text), /^(?:Hmm\.|Mm, okay\.|Ooh, okay\.) Octopuses have three hearts\.$/);
+  assert.equal(slow.text, "Octopuses have three hearts.");
+  assert.match(String(client.json.find((m) => m.type === "say")?.text), BEAT, "the beat was said first");
   wait = 0;
   client.json.length = 0;
   await new Promise((r) => setTimeout(r, 300));
@@ -964,7 +970,7 @@ test("first-sound cap (Codex P2 #427): after the beat, narration is still droppe
       if (mode === "narrate") {
         yield { type: "text", delta: calls === 1 ? "<curious> Let me pull up what you told me." : "<warm> You said she just moved to Busan." };
       } else {
-        const beat = String(client.json.find((m) => m.type === "reply.delta")?.text ?? "Hmm.");
+        const beat = String(client.json.find((m) => m.type === "say")?.text ?? "Hmm.");
         yield { type: "text", delta: `<curious> ${beat}` };
       }
       yield { type: "done", responseId: "r", text: "", status: "completed" };
@@ -982,7 +988,7 @@ test("first-sound cap (Codex P2 #427): after the beat, narration is still droppe
   await session.onClientText(JSON.stringify({ type: "text", text: "ok cool" }));
   const r2 = await client.waitFor((m) => (m.type === "reply" && m.final === true) || m.type === "error", 5000);
   assert.equal(r2.type, "reply", "no spark_unavailable");
-  assert.match(String(r2.text), /^(?:Hmm\.|Mm, okay\.|Ooh, okay\.)$/);
+  assert.match(String(r2.text), BEAT);
   // round 2: the same echo right after a reply that opened with it (the opener rewrite must not split it)
   for (let turn = 0; turn < 3; turn++) {
     client.json.length = 0;
@@ -990,7 +996,7 @@ test("first-sound cap (Codex P2 #427): after the beat, narration is still droppe
     await session.onClientText(JSON.stringify({ type: "text", text: `and then ${turn}` }));
     const r = await client.waitFor((m) => (m.type === "reply" && m.final === true) || m.type === "error", 5000);
     assert.equal(r.type, "reply");
-    assert.match(String(r.text), /^(?:Hmm\.|Mm, okay\.|Ooh, okay\.)$/, String(r.text));
+    assert.match(String(r.text), BEAT, String(r.text));
   }
   session.close();
 });
@@ -1017,7 +1023,7 @@ test("first-sound cap (Codex r3 #427): beat → narration dropped → the retry 
     async *spark(): AsyncGenerator<SparkStreamEvent> {
       calls++;
       await new Promise((r) => setTimeout(r, 300));
-      const beat = String(client.json.find((m) => m.type === "reply.delta")?.text ?? "Hmm.");
+      const beat = String(client.json.find((m) => m.type === "say")?.text ?? "Hmm.");
       yield { type: "text", delta: calls === 1 ? "<curious> Let me pull up what you told me." : `<curious> ${beat}` };
       yield { type: "done", responseId: "r", text: "", status: "completed" };
     },
@@ -1027,6 +1033,36 @@ test("first-sound cap (Codex r3 #427): beat → narration dropped → the retry 
   await session.onClientText(JSON.stringify({ type: "text", text: "what do you remember" }));
   const r = await client.waitFor((m) => (m.type === "reply" && m.final === true) || m.type === "error", 5000);
   assert.equal(r.type, "reply");
-  assert.match(String(r.text), /^(?:Hmm\.|Mm, okay\.|Ooh, okay\.)$/, String(r.text));
+  assert.match(String(r.text), BEAT, String(r.text));
+  session.close();
+});
+
+test("hold beats (coordinator 11/3): varied, never the same twice in a row, audio only", { skip: !v1 }, async (t) => {
+  const prev = process.env.GENITA_HOLD_CAP_MS;
+  process.env.GENITA_HOLD_CAP_MS = "60";
+  t.after(() => { if (prev === undefined) delete process.env.GENITA_HOLD_CAP_MS; else process.env.GENITA_HOLD_CAP_MS = prev; });
+  const client = new Client();
+  const session = new Session("beats", client, {
+    config, openAsr: () => { throw new Error("no asr"); },
+    async *spark(): AsyncGenerator<SparkStreamEvent> {
+      await new Promise((r) => setTimeout(r, 200));
+      yield { type: "text", delta: "<warm> Sure thing." };
+      yield { type: "done", responseId: "r", text: "", status: "completed" };
+    },
+    async *tts() {},
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  const beats: string[] = [];
+  for (let k = 0; k < 4; k++) {
+    client.json.length = 0;
+    await session.onClientText(JSON.stringify({ type: "text", text: `question ${k}` }));
+    const r = await client.waitFor((m) => m.type === "reply" && m.final === true, 5000);
+    assert.equal(r.text, "Sure thing.");
+    beats.push(String(client.json.find((m) => m.type === "say")?.text));
+    assert.ok(!client.json.some((m) => m.type === "reply.delta" && BEAT.test(String(m.text).trim())), "no caption");
+    await new Promise((res) => setTimeout(res, 100));
+  }
+  for (let k = 1; k < beats.length; k++) assert.notEqual(beats[k], beats[k - 1], beats.join(" | "));
+  assert.ok(beats.filter((b) => b === "Hmm.").length <= 1);
   session.close();
 });
