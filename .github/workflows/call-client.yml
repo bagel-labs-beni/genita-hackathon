@@ -67,6 +67,7 @@ jobs:
             -only-testing:GenitaUITests/CameraGuideUITests \
             -only-testing:GenitaUITests/UpdateBannerUITests \
             -only-testing:GenitaUITests/OnboardingUITests \
+            -only-testing:GenitaUITests/QASamplePhotoUITests \
             -skip-testing:GenitaUITests/OnboardingUITests/testV03MotionHuman \
             -skip-testing:GenitaUITests/OnboardingUITests/testV03MotionAnimal \
             -skip-testing:GenitaUITests/OnboardingUITests/testV03MotionCharacter \

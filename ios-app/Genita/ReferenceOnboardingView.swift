@@ -17,6 +17,8 @@ import UniformTypeIdentifiers
     @State private var progress = 0.0
     @State private var importing = false
     @State private var pickingPhoto = false
+    /// V01 "Use a test photo" sheet (device QA accounts only, QASamplePhotos.swift)
+    @State private var pickingSample = false
     @State private var imageError: String?
     @State private var player = VoicePlayer()
     @FocusState private var nameFocused: Bool
@@ -122,6 +124,9 @@ import UniformTypeIdentifiers
         .onChange(of: model.readingDone) { _, done in if done { withAnimation(.easeOut(duration: 0.2)) { progress = 1 } } }
         .sheet(isPresented: $pickingPhoto) {
             ReferencePhotoPicker(isPresented: $pickingPhoto) { data in if let data { accept(data) } else { imageError = "This image could not be opened." } }
+        }
+        .sheet(isPresented: $pickingSample) {
+            QASamplePhotoSheet { data in pickingSample = false; if let data { accept(data) } else { imageError = "This image could not be opened." } }
         }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.image]) { result in
             do { let url = try result.get(); let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }; accept(try Data(contentsOf: url)) } catch { imageError = "This image could not be opened." }
@@ -401,6 +406,15 @@ import UniformTypeIdentifiers
                 .position(x: width - 48, y: 250 + top).accessibilityLabel("Remove image").accessibilityIdentifier("removeImage")
         }
         rightsRow(width: width, top: top)
+        // device QA only (server-listed accounts): bundled sample pictures, so QA never opens a real photo library.
+        // Same accept() → V03 check → polish path as a library pick. Never in the reference / screenshot viewport.
+        if QASamplePhotos.visible(for: model) && !referenceViewport {
+            Button { pickingSample = true } label: {
+                Text("Use a test photo").font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.ink.opacity(0.55)).underline()
+                    .frame(width: width - 48, height: 36).contentShape(Rectangle())
+            }.buttonStyle(.plain).position(x: width / 2, y: 590 + top)
+                .accessibilityLabel("Use a test photo").accessibilityIdentifier(QASamplePhotos.entryID)
+        }
         // Alternate import uses the same upload surface; no extra product button is invented.
         Color.clear.frame(width: 1, height: 1).accessibilityHidden(true)
     }

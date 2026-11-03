@@ -76,6 +76,8 @@ const ACK = "Got it. I'll remember that.";
 // V04: the server's four voices for the look, the preview clip (WAV, 4 s tone: long enough that a loaded CI simulator still sees "Playing") and the saved pick.
 // POST /__voice {down:true|false} flips the voice service so the UI test can show the greyed list.
 let voiceDown = false;
+let qaPhotos = false;
+let lastImageBytes = 0;
 const VOICES = [["72", "Tara", "Warm, bright (female)"], ["9", "Leah", "Soft, easygoing (female)"], ["19", "Leo", "Calm, deep (male)"], ["26", "Dan", "Friendly, relaxed (male)"]]
   .map(([id, name, blurb]) => ({ id, name, blurb, label: `${name} · ${blurb.split(",")[0].toLowerCase()}`, previewUrl: `/v1/companion/voices/${id}/preview` }));
 function previewWav() {
@@ -133,7 +135,10 @@ createServer(async (req, res) => {
   const b = await body(req);
   log(req.method, p, Buffer.isBuffer(b) ? `${b.length} bytes` : JSON.stringify(b).slice(0, 120));
   if (p === "/healthz") return send(200, { ok: true });
-  if (req.method === "POST" && p === "/__reset") { companion = null; prepStartedAt = 0; failAt = null; FACE_MS = 1000; voiceDown = false; return send(200, { ok: true }); }
+  if (req.method === "POST" && p === "/__reset") { companion = null; prepStartedAt = 0; failAt = null; FACE_MS = 1000; voiceDown = false; qaPhotos = false; lastImageBytes = 0; return send(200, { ok: true }); }
+  // V01 "Use a test photo": /me lists this account for QA test photos (server GENITA_QA_SAMPLE_PHOTOS); GET reads the last upload's size
+  if (req.method === "POST" && p === "/__qa") { qaPhotos = b.on === true; return send(200, { qaPhotos }); }
+  if (req.method === "GET" && p === "/__last-image") return send(200, { bytes: lastImageBytes });
   // a returning account whose face is still being made (F12 / S09-P): companion exists, prep clock starts now, slow face
   if (req.method === "POST" && p === "/__companion") {
     companion = { id: "c1", type: "human", name: b.name ?? "Jin", voiceId: "72", imageId: "img1", createdAt: "t" };
@@ -150,7 +155,7 @@ createServer(async (req, res) => {
   if (!req.headers.authorization?.startsWith("Bearer ")) return send(401, { error: "unauthorized" });
 
   if (req.method === "GET" && p === "/me")
-    return send(200, { user: { id: "u1", provider: "apple", email: null, displayName: "Chelsea", aiConsentAt: "t", createdAt: "t" }, consented: true, hasCompanion: !!companion, prepStatus: companion ? prepView().status : "none", conversation: null });
+    return send(200, { user: { id: "u1", provider: "apple", email: null, displayName: "Chelsea", aiConsentAt: "t", createdAt: "t" }, consented: true, hasCompanion: !!companion, prepStatus: companion ? prepView().status : "none", conversation: null, ...(qaPhotos ? { qaSamplePhotos: true } : {}) });
   if (req.method === "PATCH" && p === "/me") return send(200, { user: { id: "u1", provider: "apple", displayName: b.displayName, createdAt: "t" }, consented: true, hasCompanion: !!companion, prepStatus: "none", conversation: null });
   if (req.method === "POST" && p === "/v1/import") { await sleep(1500); story = importStory(); storySource = "import"; return send(200, { ...style("import"), story }); }
   // skip users get their story from GET /v1/profile/story (as on the server)
@@ -180,6 +185,7 @@ createServer(async (req, res) => {
   }
 
   if (req.method === "POST" && p === "/v1/companion/image") {
+    lastImageBytes = Buffer.isBuffer(b) ? b.length : typeof b.image === "string" ? Buffer.from(b.image, "base64").length : 0;
     await sleep(1800);
     return send(200, { imageId: "img1", passed: true, type: "human", checks: { oneFaceFrontFacing: true, sharpAndLit: true, noText: true }, reasons: [], headBox: null, ms: 1800, ...COMPANION_FACE });
   }
