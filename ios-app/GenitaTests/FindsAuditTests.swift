@@ -150,4 +150,16 @@ import XCTest
         XCTAssertEqual(m.current?.card?.items.first?.tier, .have)
         XCTAssertEqual(m.current?.card?.status, "All set")
     }
+
+    /// Codex r5: ingredients still "checking" when the call dropped take the server's finished result from the list.
+    func testReopeningTakesTheListsResultForIngredientsStillChecking() throws {
+        let m = FindsModel()
+        m.apply(started("a", kind: .recipe)); m.apply(created("a", kind: .recipe)); m.force(.peek)
+        m.apply(try ServerEvent.decode(#"{"type":"find.items","findId":"a","checking":true,"items":[{"id":"i1","name":"kimchi","tier":"checking","from":"camera"}]}"#))
+        m.interrupted()
+        var listed = card("a", kind: .recipe)
+        listed.items = [FindItem(id: "i1", name: "kimchi", tier: .have, from: .camera)]
+        m.openSaved(listed, frames: [])
+        XCTAssertEqual(m.current?.card?.items.first?.tier, .have)
+    }
 }

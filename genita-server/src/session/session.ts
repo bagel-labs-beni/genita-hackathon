@@ -653,13 +653,17 @@ export class Session {
           this.log("finds.ask_ignored_interpreting", { findId: msg.findId.slice(0, 64) });
           return;
         }
-        // a card "Talk about this" just named may still be loading from Finds: this turn is about it (Codex P2)
-        if (this.focusLoads.size) {
-          const barge = this.bargeSeq;
-          await this.focusSettled();
-          if (this.closed || barge !== this.bargeSeq) return;
-        }
+        // a card "Talk about this" just named may still be loading from Finds: this turn is about it (Codex P2);
+        // interrupted, closed or switched to interpreting meanwhile → this question is over (Codex r4/r5)
+        const barge = this.bargeSeq;
+        const waited = this.focusLoads.size > 0 || typeof msg.findId === "string";
+        if (this.focusLoads.size) await this.focusSettled();
         if (typeof msg.findId === "string") await this.finds?.focus(msg.findId.slice(0, 64));
+        if (waited && (this.closed || barge !== this.bargeSeq)) return;
+        if (waited && this.interp && typeof msg.findId === "string") {
+          this.log("finds.ask_ignored_interpreting", { findId: msg.findId.slice(0, 64) });
+          return;
+        }
         this.client.sendJson({ type: "transcript", final: true, text, source: "text" });
         if (this.interp) return this.interp.typed(text);
         return this.dispatch({ type: "text", text });

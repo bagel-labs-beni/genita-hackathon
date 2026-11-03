@@ -356,6 +356,10 @@ struct FindEntry: Identifiable, Equatable {
     /// with a picture the list has ready where the live one is still pending or was cut off by a reconnect (Codex r3/r4).
     static func merged(_ listed: FindCard, keeping live: FindCard?) -> FindCard {
         guard var c = live else { return listed }
+        // ingredients still being checked when the call lost the server: the server finished them, the list has that (Codex r5)
+        if live?.items.contains(where: { $0.tier == .checking }) == true {
+            c.items = listed.items; c.subtitle = listed.subtitle; c.status = listed.status
+        }
         let pick = { (mine: FindImage?, theirs: FindImage?) -> FindImage? in mine?.status != .ready && theirs?.status == .ready ? theirs : mine }
         c.hero = pick(c.hero, listed.hero)
         for s in c.steps.indices where listed.steps.indices.contains(s) { c.steps[s].image = pick(c.steps[s].image, listed.steps[s].image) }

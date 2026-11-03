@@ -1063,3 +1063,29 @@ test("AU-70 (Codex r4): overlapping focus reads (slow A, fast B) settle, the typ
   assert.ok(!client.json.slice(n).some((m) => m.type === "find.started"), "dropped");
   s2.close();
 });
+
+test("AU-70 (Codex r5): an Ask chip on an earlier card, barged in or switched to interpreting while it loads, is dropped", async () => {
+  const { client, session } = setup();
+  const { MemoryFindsStore, ownerKey } = await import("../src/finds/store.ts");
+  class SlowStore extends MemoryFindsStore {
+    override async get(owner: string, id: string) {
+      await sleep(60);
+      return super.get(owner, id);
+    }
+  }
+  const store = new SlowStore();
+  const mk = (id: string) => ({ id, kind: "recipe" as const, createdAt: "2026-11-03T10:00:00Z", eyebrow: "", title: "Stew", subtitle: "", items: [], steps: [], options: [], why: [], ask: [], sources: [], how: [] });
+  await store.put(ownerKey("dev-1"), mk("33333333-aaaa-4bbb-8ccc-0000000000c1"));
+  const vendors = { async spark() { return { text: "", output: [] }; }, async *sparkStream() {}, async sam() { return []; }, async image() { return null; } };
+  const s2 = new Session("f6", client, { ...(session as unknown as { deps: SessionDeps }).deps, finds: { vendors, store, images: false, imageBase: "/v1/finds" } as never, userId: "dev-1" });
+  session.close();
+  await s2.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  const n = client.json.length;
+  const p = s2.onClientText(JSON.stringify({ type: "text", text: "Can you find me black boots?", findId: "33333333-aaaa-4bbb-8ccc-0000000000c1" }));
+  await sleep(5);
+  await s2.onClientText(JSON.stringify({ type: "barge_in" }));
+  await p;
+  await sleep(30);
+  assert.ok(!client.json.slice(n).some((m) => m.type === "transcript" || m.type === "find.started"), "dropped");
+  s2.close();
+});
