@@ -483,14 +483,15 @@ export class Personalize {
    * profile's own words the request named — those passed every filter once, so no new detail ("asthma when
    * running") is stored or sent on (Codex r5–r7). Returns whether anything was kept.
    */
-  private async rememberForget(userId: string, card: StyleCard, target: string): Promise<boolean> {
+  private async rememberForget(userId: string, card: StyleCard, target: string): Promise<{ applied: AppliedUpdate[]; kept: string } | null> {
     const keys = avoidKeys([{ text: target, forget: true }]);
     const lines = Object.values(card.sections ?? {}).flatMap((l) => (l as Array<{ text: string }>).map((f) => f.text));
     const named = [...new Set(keys.flatMap((k) => k.keys).filter((stem) => lines.some((t) => keyWords(t).includes(stem))))];
     const words = [...new Set(lines.flatMap((t) => (t.match(/[\p{L}\p{N}-]{3,}/gu) ?? []).filter((w) => named.includes(w.toLowerCase().slice(0, 5)))))].map((w) => w.toLowerCase());
     const kept = words.join(" ").slice(0, 80);
-    if (!kept) return false;
+    if (!kept) return null;
     const at = this.now().toISOString();
+    let applied: AppliedUpdate[] = [];
     const targetKeys = keys.flatMap((k) => k.keys);
     await this.update(userId, (c) => {
       // the profile lines the request is about go now (more than half of the request's words are in the line), so
@@ -504,10 +505,12 @@ export class Personalize {
         }).map((f) => f.text);
         if (hit.length && (PROFILE_FIELDS as readonly string[]).includes(field)) updates.push({ field: field as ProfileField, text: "", replaces: hit, label: "explicit", asOf: at });
       }
-      const merged = updates.length ? mergeUpdates(c, updates, at).card : c;
+      const m = updates.length ? mergeUpdates(c, updates, at) : null;
+      applied = m?.applied ?? [];
+      const merged = m ? m.card : c;
       return { card: { ...merged, removed: [...(merged.removed ?? []), { text: kept, at, forget: true as const }].slice(-40) }, out: true };
     });
-    return true;
+    return { applied, kept };
   }
 
   /**
@@ -520,26 +523,33 @@ export class Personalize {
     if (!card) return null;
     const t0 = performance.now();
     const asOf = this.now().toISOString();
+    let forgot: { applied: AppliedUpdate[]; kept: string } | null = null;
     // "forget that …": its target is kept out of everything from now on, whatever Spark makes of the line
     // checked on the whole line too: stripping punctuation can hide an email ("alice@example com", Codex P1)
     if (isForgetRequest(line) && !isSensitiveDetail(line) && redactSensitive(line) === line && !looksLikeInjection(line)) {
       const target = forgetTarget(line);
       // a sensitive target (health, money, …) is never stored or sent on: the memory filters drop it anyway (Codex P1)
       // a target with a number in it (an address, a phone, an account) is never kept, whatever its shape
-      await this.rememberForget(userId, card, target);
+      forgot = await this.rememberForget(userId, card, target);
     }
+    // removed already: the call's profile and taste follow now, even if Spark has nothing more to change (Codex r9)
+    const forgotUpdate = async (): Promise<VoiceUpdate | null> => {
+      if (!forgot?.applied.length) return null;
+      const latest = (await this.store.getStyle(userId)) ?? card;
+      return { events: [{ text: `Updated: forgot ${forgot.kept}`.slice(0, 60), fields: [...new Set(forgot.applied.map((a) => a.field))] }], applied: forgot.applied, answered: false, profile: styleProfileText(latest, 2000, { toConfirm: false }), taste: tasteLines(latest) };
+    };
     const raw = await this.json<{ updates?: unknown; answered?: unknown }>(buildCorrectionRequest(card, line, lastAssistant, asked), signal);
     const answer = asked ? toAnswer(raw, asked.item) : null;
     // "forget that…" may remove a line by voice (removal-only updates are otherwise only from the profile screen)
     const updates = [...(answer ? [answer] : []), ...toCorrectionUpdates(raw, { allowRemove: FORGET.test(line) })].map((u) => ({ ...u, asOf }));
-    if (!updates.length || signal?.aborted) { this.log("profile.voice_checked", { applied: 0, ms: Math.round(performance.now() - t0) }); return null; }
+    if (!updates.length || signal?.aborted) { this.log("profile.voice_checked", { applied: 0, ms: Math.round(performance.now() - t0) }); return signal?.aborted ? null : forgotUpdate(); }
     const out = await this.update(userId, (latest) => {
       const m = mergeUpdates(latest, updates, this.now().toISOString());
       if (!m.applied.length) return null;
       if (answer && m.card.growth) m.card.growth = { ...m.card.growth, asked: m.card.growth.asked.map((a) => (a.item === asked!.item ? { ...a, answered: true } : a)) };
       return { card: m.card, out: { m, card: m.card } };
     });
-    if (!out) return null;
+    if (!out) return forgotUpdate();
     const events: Array<{ text: string; fields: string[] }> = [];
     const noted = out.m.applied.filter((a) => answer && a.text === answer.text);
     const rest = out.m.applied.filter((a) => !noted.includes(a));

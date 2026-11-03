@@ -529,3 +529,14 @@ test("Codex r8: the sheet's 'forget that I like leather accessories' really remo
   assert.deepEqual(likes, ["Likes running."]);
   assert.doesNotMatch((await h.p.startCall("u1"))?.profile ?? "", /leather accessories\./);
 });
+
+test("Codex r9: a voice forget that removed the line up front still updates the call (profile, taste, chip) when Spark changes nothing more", async (t) => {
+  const h = harness(() => ({ updates: [{ field: "likes", text: "", replaces: ["Likes leather accessories."], chip: "forgot leather" }], answered: { field: "", text: "", chip: "" } }));
+  t.after(h.cleanup);
+  await h.store.putStyle("u1", toStyleCard({ ...IMPORT_RAW, sections: { ...IMPORT_RAW.sections, likes: [f("Likes leather accessories.")] } }, "import"));
+  const r = await h.p.voiceCorrection("u1", "Actually, forget that I like leather accessories.");
+  assert.ok(r, "an update comes back");
+  assert.doesNotMatch(r!.profile, /leather accessories\./);
+  assert.ok(!r!.taste.some((x) => /leather/.test(x.text)));
+  assert.match(r!.events[0].text, /^Updated: forgot/);
+});
