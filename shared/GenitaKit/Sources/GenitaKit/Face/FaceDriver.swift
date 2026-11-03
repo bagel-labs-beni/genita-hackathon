@@ -13,11 +13,17 @@ import CoreGraphics
 import Combine
 import Foundation
 import QuartzCore
+import os
 
 @MainActor
 public final class FaceDriver: ObservableObject {
     /// The latest rendered frame (outputSize pixels).
     @Published public private(set) var frame: CGImage?
+    /// Frames actually shown per second (5 s window), for device QA; also logged as `FACE_FPS live=…`
+    /// (subsystem ai.genita, category face) every 5 s while the face animates.
+    @Published public private(set) var liveFPS: Double = 0
+    private var fpsCount = 0, fpsSince = CACurrentMediaTime()
+    private static let log = Logger(subsystem: "ai.genita", category: "face")
 
     public let timeline = LipTimeline()
     /// Lip lookahead of this face (read once; the renderer itself lives on the render queue).
@@ -93,6 +99,13 @@ public final class FaceDriver: ObservableObject {
         newestUtteranceId = nil
     }
 
+    /// Server `expression` (per clause, reply audio clock). Behind `FaceRenderer.expressionLayer`.
+    public func handle(expression tag: String, intensity: Double, startMs: Int, endMs: Int, utteranceId: Int) {
+        guard switchUtterance(utteranceId) else { return }
+        let r = renderer, e = FaceExpressionEvent(tag: tag, intensity: intensity, startMs: startMs, endMs: endMs)
+        queue.async { r.addExpression(e) }
+    }
+
     public func setEmotion(_ emotion: String?) {
         let r = renderer, t = now()
         queue.async { r.setEmotion(emotion, at: t) }
@@ -147,19 +160,29 @@ public final class FaceDriver: ObservableObject {
 
     private func now() -> Double { CACurrentMediaTime() - startedAt }
 
+    private func countFrame() {
+        fpsCount += 1
+        let now = CACurrentMediaTime(), span = now - fpsSince
+        guard span >= 5 else { return }
+        liveFPS = Double(fpsCount) / span
+        Self.log.notice("FACE_FPS live=\(self.liveFPS, format: .fixed(precision: 1), privacy: .public)")
+        fpsCount = 0; fpsSince = now
+    }
+
     private func tick() {
         guard !rendering else { return }   // drop a frame rather than queue them up
         rendering = true
         let ms = currentUtteranceId == nil ? nil : playbackClock()
         let lip = ms.map { timeline.sample(atMs: $0 + lookaheadMs) } ?? .rest
         let ahead = aheadMs > 0 ? ms.map { timeline.sample(atMs: $0 + lookaheadMs + aheadMs) } : nil
+        let ctx = ms.map { LipContext(audioMs: $0 + lookaheadMs, timeline: timeline) }
         let r = renderer, t = now()
         queue.async { [weak self] in
-            let image = r.render(at: t, lip: lip, ahead: ahead)
+            let image = r.render(at: t, lip: lip, ahead: ahead, lipContext: ctx)
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.rendering = false
-                if let image { self.frame = image }
+                if let image { self.frame = image; self.countFrame() }
             }
         }
     }

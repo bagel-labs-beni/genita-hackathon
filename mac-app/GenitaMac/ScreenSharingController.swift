@@ -43,14 +43,25 @@ import CoreMedia
     func requestSharing() {
         if isSharing { stop(); return }
         if !UserDefaults.standard.bool(forKey: Self.noticeKey) { noticeVisible = true; return }
-        guard CGPreflightScreenCaptureAccess() else { permissionRequired = true; return }
+        guard Self.screenAccess() else { permissionRequired = true; return }
         showPicker()
     }
+    /// First run: macOS lists Genita under Screen Recording only after the app asks once. Without this request
+    /// "Open Settings" lands on a list with no Genita in it. The system prompt shows once; later calls just answer.
+    private static func screenAccess() -> Bool {
+        if CGPreflightScreenCaptureAccess() { return true }
+        if !UserDefaults.standard.bool(forKey: askedKey) {
+            UserDefaults.standard.set(true, forKey: askedKey)
+            return CGRequestScreenCaptureAccess()
+        }
+        return false
+    }
+    private static let askedKey = "genita.watch.screenAccessAsked"
     /// MS-1 "Choose what to share".
     func acceptNotice() {
         UserDefaults.standard.set(true, forKey: Self.noticeKey)
         noticeVisible = false
-        guard CGPreflightScreenCaptureAccess() else { permissionRequired = true; return }
+        guard Self.screenAccess() else { permissionRequired = true; return }
         showPicker()
     }
     func showPicker() {
@@ -109,18 +120,9 @@ import CoreMedia
                 let filter = await Self.excludingGenita(picked)
                 guard captureRequest.isStarting(request) else { return }
                 let name = Self.sourceName(of: picked)
-                let config = SCStreamConfiguration()
-                // long side ≤ 1024 px (uploads are ≤1024 JPEG); frames are sampled ~2 fps and sent only when changed
-                let px = CGSize(width: picked.contentRect.width * CGFloat(picked.pointPixelScale), height: picked.contentRect.height * CGFloat(picked.pointPixelScale))
-                let fit = min(1, 1024 / max(px.width, px.height, 1))
-                config.width = max(2, Int(px.width * fit)); config.height = max(2, Int(px.height * fit))
-                config.minimumFrameInterval = CMTime(value: 1, timescale: 2)
-                config.showsCursor = false
-                // the shared screen's sound, never Genita's own voice
-                config.capturesAudio = true
-                config.excludesCurrentProcessAudio = true
-                config.sampleRate = 24_000
-                config.channelCount = 1
+                let config = Self.configuration(for: picked)
+                // Reselection gets the new source's size and uplink name with a fresh,
+                // request-bound stream so queued media from the old source stays isolated.
                 let newStream = SCStream(filter: filter, configuration: config, delegate: self)
                 let output = WatchStreamOutput(stream: newStream, request: request)
                 wireCapture(output)
@@ -150,13 +152,28 @@ import CoreMedia
             }
         }
     }
+    private static func configuration(for picked: SCContentFilter) -> SCStreamConfiguration {
+        let config = SCStreamConfiguration()
+        // long side ≤ 768 px; sampled 4 fps, sent ≤3 fps and only when changed (motion-aware watching, 11/3)
+        let px = CGSize(width: picked.contentRect.width * CGFloat(picked.pointPixelScale), height: picked.contentRect.height * CGFloat(picked.pointPixelScale))
+        let fit = min(1, 768 / max(px.width, px.height, 1))
+        config.width = max(2, Int(px.width * fit)); config.height = max(2, Int(px.height * fit))
+        config.minimumFrameInterval = CMTime(value: 1, timescale: 4)
+        config.showsCursor = false
+        // the shared screen's sound, never Genita's own voice
+        config.capturesAudio = true
+        config.excludesCurrentProcessAudio = true
+        config.sampleRate = 24_000
+        config.channelCount = 1
+        return config
+    }
     private func wireCapture(_ output: WatchStreamOutput) {
         let request = output.request
         let capture = output.capture
-        capture.onFrame = { [weak self] jpeg, blank in
+        capture.onFrame = { [weak self] jpeg, blank, motion in
             Task { @MainActor in
                 guard let self, self.captureRequest.acceptsSamples(request), self.isSharing else { return }
-                self.uplink?.sendFrame(jpeg, blank: blank)
+                self.uplink?.sendFrame(jpeg, blank: blank, motion: motion)
             }
         }
         capture.onAudio = { [weak self] pcm in
