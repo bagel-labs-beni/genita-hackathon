@@ -1753,7 +1753,8 @@ export class Session {
     if (self) built = { req: { input: "" }, interpret: false, detected: null, images: [], lang: this.language };
     // the greeting started during the D21 wait: its stream is already running (or done)
     const preGreet = greeting && !self && text === GREET_PROMPT ? this.preGreet : null;
-    this.preGreet = null;
+    // a card / watch line spoken during the wait keeps the pre-started greeting (Codex r2 #461); any other turn ends it
+    if (!self) this.preGreet = null;
     if (preGreet && !preGreet.abort.signal.aborted && !pre) {
       preGreet.confirm();
       // barge-in, mode switch, Forget or close stop the adopted stream too (Codex P1 #461)
