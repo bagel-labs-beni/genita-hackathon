@@ -413,7 +413,8 @@ import UniformTypeIdentifiers
         let detailColor = playing ? Color(red: 0, green: 99.0 / 255, blue: 159.0 / 255) : picked ? Color(white: 115.0 / 255) : Color(white: 183.0 / 255)
         return ZStack {
             RoundedRectangle(cornerRadius: 12).fill(.white)
-                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color("Ink"), lineWidth: picked || playing ? 1.5 : 0))
+                // Figma voice.json: 1 pt #E3E3E3 edge (white card on #FDFDFD had no visible edge on device, design review 11/4)
+                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(picked || playing ? Color("Ink") : Color(red: 0xE3 / 255, green: 0xE3 / 255, blue: 0xE3 / 255), lineWidth: picked || playing ? 1.5 : 1))
             Button { player.stop(); selectVoice(i) } label: { Color.clear.contentShape(Rectangle()) }.disabled(waking)
                 .accessibilityLabel("\(v.name), \(detail)").accessibilityAddTraits(picked ? .isSelected : []).accessibilityIdentifier("voice\(i)")
             VStack(alignment: .leading, spacing: 4) {
