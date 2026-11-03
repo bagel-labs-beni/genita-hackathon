@@ -25,7 +25,8 @@ final class SplashUITests: XCTestCase {
     }
 
     func testSplashFrames() throws {
-        for t in ["0.0", "0.3", "0.7", "1.1", "1.5", "1.9", "2.0", "2.08", "2.2", "2.4", "2.55"] { // the hand-off ends at 2.6 s
+        // 춘식이 11/4: build-up, the still hold 1.9–2.5 s, the hand-off 2.5–3.3 s
+        for t in ["0.3", "0.9", "1.5", "1.9", "2.2", "2.5", "2.7", "2.9", "3.1", "3.25"] {
             let app = launch(at: t)
             XCTAssertTrue(app.descendants(matching: .any)["splash"].waitForExistence(timeout: 10), "splash at \(t)")
             shot(app, "call-splash-t\(Int((Double(t) ?? 0) * 1000))ms") // no "." in the name: the export cuts there
@@ -33,16 +34,16 @@ final class SplashUITests: XCTestCase {
         }
     }
 
-    /// On screen 2.6 s from its own first frame (not from launch: Chelsea 11/3 "too fast"), then A02.
-    func testSplashHandsOverToA02About2600msAfterItsFirstFrame() throws {
+    /// On screen 3.3 s from its own first frame (not from launch: Chelsea 11/3 "too fast"), then A02.
+    func testSplashHandsOverToA02About3300msAfterItsFirstFrame() throws {
         let app = launch()
         let visible = app.descendants(matching: .any)["splashVisibleMs"]
         XCTAssertTrue(visible.waitForExistence(timeout: 15))
         let ms = Int(visible.label) ?? .max
         let total = app.descendants(matching: .any)["splashElapsedMs"].label
         print("splash on screen \(ms) ms; since launch \(total) ms")
-        XCTAssertGreaterThanOrEqual(ms, 2400, "the whole of A′ is seen")
-        XCTAssertLessThanOrEqual(ms, 2900, "and hands over to A02 at its end")
+        XCTAssertGreaterThanOrEqual(ms, 3100, "the whole of A′ is seen, with its hold")
+        XCTAssertLessThanOrEqual(ms, 3600, "and hands over to A02 at its end")
         XCTAssertFalse(app.descendants(matching: .any)["splash"].exists)
         shot(app, "call-splash-first-screen")
     }
@@ -64,23 +65,23 @@ final class SplashUITests: XCTestCase {
         let ms = Int(visible.label) ?? 0
         print("splash was on screen for \(ms) ms (first frame 1.5 s late)")
         XCTAssertGreaterThanOrEqual(ms, 1200, "splash on screen at least 1.2 s")
-        XCTAssertLessThanOrEqual(ms, 2900, "and not dragged past its own timeline")
+        XCTAssertLessThanOrEqual(ms, 3600, "and not dragged past its own timeline")
     }
 
-    /// Signed-in relaunch: the still lit mark for 0.6 s, then the conversation.
+    /// Signed-in relaunch: the still lit mark for 0.9 s, then the conversation.
     func testSignedInRelaunchSplashIsShort() throws {
         let app = launch(mode: "short")
         let visible = app.descendants(matching: .any)["splashVisibleMs"]
         XCTAssertTrue(visible.waitForExistence(timeout: 15))
         let ms = Int(visible.label) ?? .max
         print("short splash on screen \(ms) ms")
-        XCTAssertGreaterThanOrEqual(ms, 500)
-        XCTAssertLessThanOrEqual(ms, 1000)
+        XCTAssertGreaterThanOrEqual(ms, 800)
+        XCTAssertLessThanOrEqual(ms, 1100)
     }
 
-    /// Evidence frames of the short relaunch splash: fade in 0.15 s, hold, crossfade 0.25–0.6 s.
+    /// Evidence frames of the short relaunch splash: in 0.2 s, hold to 0.55 s, crossfade to 0.9 s.
     func testShortSplashFrames() throws {
-        for t in ["0.0", "0.08", "0.15", "0.25", "0.4", "0.55"] {
+        for t in ["0.1", "0.3", "0.55", "0.75", "0.85"] {
             let app = launch(at: t, mode: "short")
             XCTAssertTrue(app.descendants(matching: .any)["splash"].waitForExistence(timeout: 10), "short splash at \(t)")
             shot(app, "call-splash-short-t\(Int((Double(t) ?? 0) * 1000))ms")

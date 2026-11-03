@@ -4,14 +4,14 @@ import SwiftUI
 /// draws in warm white, a faint blue dot circles the orbit once, a corona rises slowly behind the G's round
 /// counter (a total eclipse: dark disc, thin warm rim, soft noisy rays) and blooms ×1.2 over 0.8 s while it
 /// breathes ±3 %; one light haptic at 1.9 s; the wordmark (the same `logo` asset as A02) rises; then the disc
-/// grows into the head of the real A02 photo (sine in-out, 1.9–2.7 s), the corona survives only on the photo's
+/// grows into the head of the real A02 photo (sine in-out, 2.5–3.3 s), the corona survives only on the photo's
 /// bright backlight, the wordmark fades out where it is and A02 — rendered underneath all along — shows through.
-/// 2.6 s from its first frame to A02; a tap jumps to the end state and hands over in 0.38 s. Tilt (iPhone) / pointer (Mac) brightens
-/// the rim on that side. Reduce Motion: a still lit frame (0.3 s in, hold, 0.35 s crossfade from 0.85 s: 1.2 s).
-/// Signed-in relaunch (a saved session): the still lit frame for 0.6 s.
+/// A still hold 1.9–2.5 s, hand-off 2.5–3.3 s: 3.3 s from its first frame to A02; a tap (before 2.5 s) jumps to the end state and hands over in 0.38 s. Tilt (iPhone) / pointer (Mac) brightens
+/// the rim on that side. Reduce Motion: a still lit frame (0.3 s in, hold, 0.4 s crossfade from 1.1 s: 1.5 s).
+/// Signed-in relaunch (a saved session): the still lit frame for 0.9 s. Warm resume: no splash (shown once per launch).
 /// UI tests skip it unless `--splash-demo`. No Metal: layered gradients + noisy angular rays (see `CoronaView`).
 public struct GenitaSplash: View {
-    /// `full` = A′ (first launch, signed out); `short` = a signed-in relaunch: the still lit mark for 0.6 s.
+    /// `full` = A′ (first launch, signed out); `short` = a signed-in relaunch: the still lit mark for 0.9 s.
     public enum Mode: Sendable { case full, short }
     var mode: Mode = .full
     var onStart: (Date) -> Void = { _ in }
@@ -27,20 +27,20 @@ public struct GenitaSplash: View {
 
     /// The clock starts when the splash is first on screen (the run-loop turn after it appears), not at launch:
     /// on a phone the first frame comes late, and a launch-anchored clock skipped most of A′ (Chelsea 11/3: "too
-    /// fast"). Nothing else holds it: it ends on its own timeline (full 2.6 s, short 0.6 s, Reduce Motion 1.2 s).
+    /// fast"). Nothing else holds it: it ends on its own timeline (full 3.3 s, short 0.9 s, Reduce Motion 1.5 s).
     public init(mode: Mode = .full, onStart: @escaping (Date) -> Void = { _ in }, onFinished: @escaping () -> Void) {
         self.mode = mode
         self.onStart = onStart
         self.onFinished = onFinished
     }
 
-    /// Still-frame timing (Reduce Motion, short): the lit mark fades in, holds, the scene crossfades to the first screen.
+    /// Still-frame timing (Reduce Motion, short): the lit mark fades in (ease-out), holds, the scene crossfades
+    /// (smoothstep) to the first screen. 춘식이 11/4 spec: a readable 600–800 ms hold.
     struct Still: Equatable { var fadeIn: Double; var outAt: Double; var out: Double; var end: Double { outAt + out } }
-    /// at least 1.2 s on screen: 0.3 s in, hold, 0.35 s crossfade
-    static let calmStill = Still(fadeIn: 0.3, outAt: 0.85, out: 0.35)
-    /// signed-in relaunch: 0.6 s
-    static let shortStill = Still(fadeIn: 0.15, outAt: 0.25, out: 0.35)
-    static let minimumOnScreen = 1.2
+    /// Reduce Motion: 0.3 s in, hold to 1.1 s, 0.4 s crossfade → 1.5 s
+    static let calmStill = Still(fadeIn: 0.3, outAt: 1.1, out: 0.4)
+    /// signed-in relaunch: 0.2 s in, hold 0.35 s, 0.35 s crossfade → 0.9 s
+    static let shortStill = Still(fadeIn: 0.2, outAt: 0.55, out: 0.35)
     /// How long the splash stays up from its first frame, untouched (no tap).
     static func onScreen(mode: Mode, reduceMotion: Bool) -> Double {
         if mode == .short { return shortStill.end }
@@ -49,9 +49,9 @@ public struct GenitaSplash: View {
     }
     private var still: Still? { mode == .short ? Self.shortStill : reduceMotion ? Self.calmStill : nil }
 
-    // MARK: timing (motion page A′ table)
-    static let handoffAt = 1.9
-    static let handoff = 0.70     // → A02 at 2.60 s: a timer also ends it there, leaving room for a busy main thread under the 2.7 s budget
+    // MARK: timing (motion page A′ table; 춘식이 11/4: wordmark 1.3–1.9 s, a still hold 1.9–2.5 s, hand-off 2.5–3.3 s)
+    static let handoffAt = 2.5
+    static let handoff = 0.80     // → A02 at 3.30 s from the first frame; a timer also ends it there
     static let skipHandoff = 0.38
     static let hapticAt = 1.9
 
@@ -61,7 +61,7 @@ public struct GenitaSplash: View {
         var body = 0.0     // 0.80–1.25 mark body + rim
         var amp = 0.0      // 0.50–1.50 corona rise
         var bloom = 1.0    // 1.10–1.90 ×1 → ×1.2
-        var word = 0.0     // 1.20–1.70 wordmark
+        var word = 0.0     // 1.30–1.90 wordmark
         var disc = 0.0     // 0.50–1.10 the white disc brightens
         var halo = 0.45    // 1.10–1.90 warm edge halo .45 → .9
         static let finished = Frame(outline: 1, orbit: 1, body: 1, amp: 1, bloom: 1.2, word: 1, disc: 1, halo: 0.9)
@@ -95,8 +95,9 @@ public struct GenitaSplash: View {
                 CubicKeyframe(0.9, duration: 0.8)
             }
             KeyframeTrack(\.word) {
-                LinearKeyframe(0, duration: 1.2)
-                CubicKeyframe(1, duration: 0.5)
+                LinearKeyframe(0, duration: 1.3)
+                // ease-out (timingCurve 0.16, 1, 0.3, 1), 1.3–1.9 s
+                LinearKeyframe(1, duration: 0.6, timingCurve: .bezier(startControlPoint: UnitPoint(x: 0.16, y: 1), endControlPoint: UnitPoint(x: 0.3, y: 1)))
             }
         }
     }
@@ -167,11 +168,12 @@ public struct GenitaSplash: View {
         let calmAlpha = 1 - Self.smooth(clamp((t - st.outAt) / st.out))
         // last part of the hand-off: the overlay thins out so A02's copy and buttons come through
         let sceneAlpha = calm ? calmAlpha : 1 - Self.smooth(clamp((t - hStart - hDur * 0.45) / (hDur * 0.55)))
-        let markAlpha = calm ? clamp(t / st.fadeIn) : 1 - clamp(h / 0.15)
-        // wordmark: out in place during the first 30 % of the hand-off (1.90–2.14 s); A02 logo in at its spot 2.26–2.66 s.
+        // the mark fades over the first ~280 ms of the hand-off while the disc grows (was h / 0.15: read as a jump)
+        let markAlpha = calm ? Self.easeOut(clamp(t / st.fadeIn)) : 1 - clamp(h / 0.35)
+        // wordmark: out in place during the first 30 % of the hand-off (2.50–2.74 s); A02 logo in at its spot 2.86–3.26 s.
         // Reduce Motion: in with the mark, out over 0.18 s when the crossfade starts, A02's logo in 0.18 s later.
         // Short (signed in: the call is underneath, not A02): no A02 logo, the wordmark leaves with the scene.
-        let wordAlpha = calm ? clamp(t / st.fadeIn) * (mode == .short ? 1 : 1 - clamp((t - st.outAt) / 0.18))
+        let wordAlpha = calm ? Self.easeOut(clamp(t / st.fadeIn)) * (mode == .short ? 1 : 1 - clamp((t - st.outAt) / 0.18))
                              : f.word * (1 - clamp((t - hStart) / (hDur * 0.3)))
         let logoAlpha = mode == .short ? 0 : calm ? clamp((t - st.outAt - 0.18) / 0.2) : clamp((t - hStart - hDur * 0.45) / (hDur * 0.5))
 
@@ -248,7 +250,7 @@ public struct GenitaSplash: View {
         if let logo = genitaBundleImage("logo") {
             logo.resizable()
                 .frame(width: 96, height: 96 * 22.626 / 63.142)
-                .position(x: x, y: y + 8 * (1 - f.word))
+                .position(x: x, y: y + 6 * (1 - f.word))
                 .opacity(alpha)
         }
     }
@@ -312,6 +314,7 @@ public struct GenitaSplash: View {
         #endif
     }
     static func smooth(_ x: Double) -> Double { x * x * (3 - 2 * x) }
+    static func easeOut(_ x: Double) -> Double { 1 - (1 - x) * (1 - x) }
 
     nonisolated(unsafe) static var unfreeze = false
 
