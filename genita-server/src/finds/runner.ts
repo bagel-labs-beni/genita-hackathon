@@ -643,7 +643,8 @@ export class FindsRunner {
     const c = this.focusId ? this.cards.get(this.focusId) : undefined;
     if (!c) return undefined;
     const old = this.tasteForgottenAt !== null && ((c.createdAt ?? "") <= this.tasteForgottenAt || this.tasteForgottenIds.has(c.id));
-    const parts = [`${c.title}${c.subtitle ? ` (${c.subtitle})` : ""}`];
+    // an outfit card's subtitle is written from their taste ("You prefer minimal clothes."): not after a forget (Codex #583 r8)
+    const parts = [`${c.title}${c.subtitle && !old ? ` (${c.subtitle})` : ""}`];
     if (c.kind === "recipe") {
       const by = (t: string) => c.items.filter((i) => i.tier === t).map((i) => i.name).join(", ");
       if (by("have")) parts.push(`they have: ${by("have")}`);
