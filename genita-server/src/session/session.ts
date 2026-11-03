@@ -1828,7 +1828,8 @@ export class Session {
             continue;
           }
         }
-        if (droppedOpener && modelFirst) tts = tts.replace(/^(\s*(?:\[[^\]]*\]\s*)*)(\p{Ll})/u, (_, lead, c) => lead + c.toUpperCase());
+        // the reply's first sentence starts with a capital (also when the model wrote "okay, did you…", QA 11/3), never "IPhone"
+        if (modelFirst && !interpret && !self) tts = tts.replace(/^(\s*(?:\[[^\]]*\]\s*)*)(\p{Ll})(?!\p{Lu})/u, (_, lead, c) => lead + c.toUpperCase());
         const display = tts === p.ttsText ? p.displayText : parseTaggedSentence(tts).displayText;
         // a memory tool's follow-up round may repeat what was already said before the call (bug-fix lane smoke 11/3:
         // "I knew you'd crush it… I knew you'd crush it…"): a sentence already spoken in this reply is not said twice

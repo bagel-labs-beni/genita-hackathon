@@ -994,3 +994,14 @@ test("first-sound cap (Codex P2 #427): after the beat, narration is still droppe
   }
   session.close();
 });
+
+test("QA 11/3: a reply never starts lowercase ('okay, did you…'), but 'iPhone' stays", { skip: !v1 }, async () => {
+  for (const [said, want] of [["<warm> okay, did you ever decide on the trip?", "Okay, did you ever decide on the trip?"], ["<warm> iPhone photos look great on that.", "iPhone photos look great on that."]] as const) {
+    const { client, session } = setup([said]);
+    await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+    await session.onClientText(JSON.stringify({ type: "text", text: "hey" }));
+    const reply = await client.waitFor((m) => m.type === "reply" && m.final === true);
+    assert.equal(reply.text, want);
+    session.close();
+  }
+});
