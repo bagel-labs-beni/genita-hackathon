@@ -302,6 +302,7 @@ export class Personalize {
   // ───────────── "That's not me" (C1–C3) ─────────────
 
   async correct(userId: string, body: Record<string, unknown>): Promise<{ card: StoryCard | null; ack: string; changed: string[]; profile: string; rows: DisplayRow[] }> {
+    const gen = this.generation(userId);   // a forget while this reads: it is not saved (Codex #583 r12)
     const cardId = body.cardId as StoryId;
     if (!STORY_IDS.includes(cardId)) throw new PersonalizeError(400, "bad_correction", "unknown card");
     const rawItems = body.items === undefined || body.items === null ? [] : body.items;
@@ -342,13 +343,15 @@ export class Personalize {
     // profile updates and rewords the card in the background (queued per user, newest wins by asOf).
     const card = optimisticCard(shown, items, text);
     // the save is kept (pendingCorrections) before the answer: a Spark outage or a restart replays it later
-    await this.update(userId, (c) => {
+    const saved = await this.update(userId, (c) => {
+      if (gen !== this.generation(userId)) return null;
       const pending = [...(c.pendingCorrections ?? []), { cardId, items, text, asOf }].slice(-20);
       if (c.story?.version !== 2) return { card: { ...c, pendingCorrections: pending }, out: true };
       const cards = card ? c.story.cards.map((x) => (x.id === cardId ? card : x)) : c.story.cards.filter((x) => x.id !== cardId);
       // not marked stale here: a story read before Spark merged would reword it from the old profile
       return { card: { ...c, pendingCorrections: pending, story: { ...c.story, cards } }, out: true };
     });
+    if (!saved) return { card: null, ack: ACK, changed: [], profile: "", rows: [] };   // forgotten meanwhile: nothing kept
     this.lastSave.set(`${userId}\u0000${cardId}`, asOf);
     this.queued.add(`${userId}\u0000${asOf}`);
     this.queueCorrection(userId, () => this.applyCorrection(userId, cardId, items, text, asOf, shown, texts), `${userId}\u0000${asOf}`);
@@ -560,10 +563,12 @@ export class Personalize {
    */
   async voiceCorrection(userId: string, line: string, lastAssistant?: string, signal?: AbortSignal, asked?: UnknownItem | null): Promise<VoiceUpdate | null> {
     if (!asked && !mightBeCorrection(line)) return null;
+    // when it was said and under which profile: captured before any await (Codex #583 r12)
+    const asOf = this.now().toISOString();
+    const gen = this.generation(userId);
     const card = await this.store.getStyle(userId);
     if (!card) return null;
     const t0 = performance.now();
-    const asOf = this.now().toISOString();
     let forgot: { applied: AppliedUpdate[]; kept: string } | null = null;
     // "forget that …": its target is kept out of everything from now on, whatever Spark makes of the line
     // checked on the whole line too: stripping punctuation can hide an email ("alice@example com", Codex P1)
@@ -585,6 +590,7 @@ export class Personalize {
     const updates = [...(answer ? [answer] : []), ...toCorrectionUpdates(raw, { allowRemove: FORGET.test(line) })].map((u) => ({ ...u, asOf }));
     if (!updates.length || signal?.aborted) { this.log("profile.voice_checked", { applied: 0, ms: Math.round(performance.now() - t0) }); return signal?.aborted ? null : forgotUpdate(); }
     const out = await this.update(userId, (latest) => {
+      if (gen !== this.generation(userId)) return null;   // said before "Forget all of this"
       const m = mergeUpdates(latest, updates, this.now().toISOString());
       if (!m.applied.length) return null;
       if (answer && m.applied.some((a) => a.answers === answer.answers) && m.card.growth) m.card.growth = { ...m.card.growth, asked: m.card.growth.asked.map((a) => (a.item === asked!.item ? { ...a, answered: true } : a)) };
