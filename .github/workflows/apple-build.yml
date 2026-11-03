@@ -90,6 +90,20 @@ jobs:
         run: |
           [ -d build-output/ios.xcresult ] || exit 0
           xcrun xcresulttool get test-results summary --path build-output/ios.xcresult | head -c 6000
+          # a crashed test leaves its crash report in the bundle's diagnostics
+          mkdir -p build-output/diag
+          xcrun xcresulttool export diagnostics --path build-output/ios.xcresult --output-path build-output/diag >/dev/null 2>&1 || true
+          find build-output/diag -name '*.ips' -o -name '*.crash' | head -3 | while read -r f; do echo "== $f"; python3 -c '
+          import json, sys
+          raw = open(sys.argv[1]).read().split("\n", 1)
+          d = json.loads(raw[1]) if len(raw) > 1 else {}
+          print(d.get("exception"), d.get("termination", {}).get("indicator"))
+          th = d.get("threads", []); t = next((x for x in th if x.get("triggered")), th[0] if th else {})
+          imgs = d.get("usedImages", [])
+          for fr in t.get("frames", [])[:25]:
+              img = imgs[fr["imageIndex"]]["name"] if fr.get("imageIndex", -1) < len(imgs) else "?"
+              print(img, fr.get("symbol", "?"), fr.get("sourceFile", ""), fr.get("sourceLine", ""))
+          ' "$f" || head -80 "$f"; done
 
       # I03 live soul orb: ~9 s simulator video + the app's own fps / GPU-time log (GENITA_ORB_STATS=1)
       - name: Record the I03 orb
