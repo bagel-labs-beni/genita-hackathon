@@ -244,8 +244,12 @@ export function buildQuestionContext(c: {
   moments?: { agoSec: number; moment: string; line: string }[];
   /** the newest moment's frame, when it is older than `frames` */
   momentFrame?: { url: string; agoSec: number } | null;
+  /** the share stopped this long ago (AU-66): past tense, and only when the user brings it up */
+  stoppedAgoSec?: number | null;
 }): QuestionContext {
-  const out = [`You and the user are watching their shared screen together${c.source ? ` (${c.source})` : ""}.`];
+  const out = [typeof c.stoppedAgoSec === "number"
+    ? `You and the user were watching their shared screen together${c.source ? ` (${c.source})` : ""} until ${c.stoppedAgoSec} s ago; they stopped sharing. Talk about it only if they bring it up, in the past tense.`
+    : `You and the user are watching their shared screen together${c.source ? ` (${c.source})` : ""}.`];
   const tl = titleLine(c.title);
   if (tl) out.push(`${tl} It is what the page or video is called; you may use it ("this is the one about…") and any name written in it.`);
   if (c.memo.length) out.push(`What you've seen so far, oldest first:\n${c.memo.map((e) => `- ${e.text}`).join("\n")}`);

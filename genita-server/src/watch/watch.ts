@@ -82,6 +82,11 @@ const SEEN_KEEP_MS = 60_000;
 /** a share that comes back this soon with the same window (and title) is a reconnect, not a new video */
 const RECONNECT_KEEP_MS = 15_000;
 const MAX_SEEN = 6;
+/** AU-66 (11/4): after the share stops, turns hear "you were just watching…" this long, then nothing */
+const AFTER_STOP_KEEP_MS = 90_000;
+/** a frame this different from the last (most of the screen changed: another product or page in a shop that keeps
+ *  its title) opens a new page for the one-comment rule (Codex #542 P2) */
+const PAGE_NEW_MOTION = 0.3;
 /** one moment seen by both the quick look and a memo (or two quick looks) within this window counts once */
 const SEEN_SAME_MS = 4_000;
 const SEEN_TWIN_MS = 1_000;
@@ -224,6 +229,7 @@ export class WatchController {
   private protectedSpoken = false;
   /** this page (share / window / title) already got its one comment (lead's call 11/4) */
   private pageSpoken = false;
+  private stoppedAt: number | null = null;
   private protectedPending = false;
   private protectedSince = 0;
   /** a funny moment waiting for the video's line (or the conversation) to pause */
@@ -349,6 +355,7 @@ export class WatchController {
 
   private start(source: string | null): void {
     if (!this.sharing) {
+      this.stoppedAt = null;
       const last = this.lastShare;
       const reconnect = last !== null && this.deps.now() - last.at <= RECONNECT_KEEP_MS && last.source === source
         && (last.title === null || this.title === null || last.title === this.title);
@@ -419,6 +426,7 @@ export class WatchController {
     this.frames = []; // never kept past the share
     this.seen = this.seen.map((m) => ({ ...m, frame: null }));
     this.lastShare = { source: this.source, title: this.title, at: this.deps.now() };
+    this.stoppedAt = this.deps.now();
     this.title = null;
     this.dialogueActive = false;
     this.openLine = "";
@@ -446,6 +454,7 @@ export class WatchController {
     this.stats.frames++;
     if (!blank) {
       if (motion !== null) this.motionAware = true;
+      if (motion !== null && motion >= PAGE_NEW_MOTION) this.pageSpoken = false;
       if (motion !== null && motion >= MOTION_SPIKE) {
         this.salientAt = now;
         this.quickSpikeAt ??= now; // the first pending spike; the quick look takes the newest frames anyway
@@ -742,9 +751,10 @@ export class WatchController {
     } catch (err) {
       if (!abort.signal.aborted) {
         this.log("watch.quick.error", { message: String(err).slice(0, 200) });
-        // 11/4: a look that timed out saw nothing: the next look picks from its frames again (unless a newer look
-        // already moved past them)
-        if (gen === this.clipGen && this.lastLookedAt === (picked.at(-1)?.at ?? lookedBefore)) this.lastLookedAt = lookedBefore;
+        // 11/4: a look that timed out saw nothing: the next look picks from its frames again
+        // (min: two looks failing in a row both get their frames back, Codex #542 P2; a frame seen twice costs a look,
+        // a moment said twice can't happen: the 25 s gap and the seen list)
+        if (gen === this.clipGen) this.lastLookedAt = Math.min(this.lastLookedAt, lookedBefore);
       }
       return;
     } finally {
@@ -851,7 +861,10 @@ export class WatchController {
   /** Watch context for the user's question, or null when nothing has been watched. */
   questionContext(): QuestionContext | null {
     const now = this.deps.now();
-    if (!this.sharing && !this.memo.length && !this.seen.some((m) => now - m.at <= SEEN_KEEP_MS)) return null;
+    // AU-66: a stopped share is "just watched" for 90 s, then the call is about something else
+    if (!this.sharing && (this.stoppedAt === null || now - this.stoppedAt > AFTER_STOP_KEEP_MS)) return null;
+    const memo = this.memo.filter((e) => now - e.at <= MEMO_KEEP_MS);
+    if (!this.sharing && !memo.length && !this.seen.some((m) => now - m.at <= SEEN_KEEP_MS)) return null;
     const frames = this.sharing ? pickFrames(this.frames, QUESTION_FRAMES, QUESTION_FRAME_SPACING_MS).map((f) => f.url) : [];
     const seen = this.seen.filter((m) => now - m.at <= SEEN_KEEP_MS);
     // "did you see that dunk?" a few seconds later: the newest moment's own frame, when the "now" frames have moved on
@@ -863,7 +876,8 @@ export class WatchController {
       momentFrame,
       source: this.source,
       title: this.title,
-      memo: this.memo,
+      memo,
+      stoppedAgoSec: this.sharing || this.stoppedAt === null ? null : Math.round((now - this.stoppedAt) / 1000),
       lines: this.sharing ? this.lines.filter((l) => now - l.at <= QUESTION_LINES_MS).slice(-12) : this.lines.slice(-6),
       names: this.names,
       frames,

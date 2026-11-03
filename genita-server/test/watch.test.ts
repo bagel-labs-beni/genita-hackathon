@@ -1466,3 +1466,48 @@ test("English-only transcriber (11/4): every place the video's lines show up say
   const q = buildQuestionContext({ source: "YouTube", memo: [], lines, names: new Map(), frames: [frame], blank: false });
   assert.match(q.instructions, /never claim to understand what is said/);
 });
+
+test("AU-66: after the share stops, turns hear 'you were watching' in the past tense for 90 s, then nothing", async () => {
+  const { c, at } = controller(['{"memo":"A chess game in a park.","moment":"none","reaction":"","speakers":[]}']);
+  c.onMessage({ type: "start", source: "Safari" });
+  at(13_000);
+  c.onMessage({ type: "frame", image: frame });
+  c.tick();
+  await new Promise((r) => setTimeout(r, 5));
+  assert.match(c.questionContext()!.instructions, /^You and the user are watching their shared screen together \(Safari\)/);
+  at(20_000);
+  c.onMessage({ type: "stop" });
+  at(50_000);
+  const q = c.questionContext()!;
+  assert.match(q.instructions, /were watching their shared screen together \(Safari\) until 30 s ago; they stopped sharing/);
+  assert.doesNotMatch(q.instructions, /are watching/);
+  assert.match(q.instructions, /chess game/);
+  at(111_000);
+  assert.equal(c.questionContext(), null, "90 s after the stop the call has moved on");
+  // a new share is live again
+  c.onMessage({ type: "start", source: "Safari" });
+  at(112_000);
+  c.onMessage({ type: "frame", image: frame + "N" });
+  assert.match(c.questionContext()!.instructions, /are watching/);
+});
+
+test("Codex #542 P2: two looks failing in a row both hand their frames back; a new product (most of the screen changed) can get its comment", async () => {
+  const { quickFrames } = await import("../src/watch/watch.ts");
+  assert.ok(quickFrames);
+  const page = (line: string) => JSON.stringify({ protectedVideo: false, moment: "sweet", page: true, reaction: line, talkOver: false, memo: "A shop page.", speakers: [] });
+  const { c, reacted, at } = controller([page("ooh, red runners"), page("ooh, that blue jacket")]);
+  c.onMessage({ type: "start", source: "Google Chrome", title: "RUNSHOP" });
+  at(7_000);
+  c.onMessage({ type: "frame", image: frame, motion: 1 });
+  at(9_100);
+  c.tick();
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(reacted.length, 1);
+  // same title, another product page: most of the screen changed
+  at(40_000);
+  c.onMessage({ type: "frame", image: frame + "B", motion: 0.45 });
+  at(42_500);
+  c.tick();
+  await new Promise((r) => setTimeout(r, 5));
+  assert.deepEqual(reacted, ["<warm> [smile] ooh, red runners", "<warm> [smile] ooh, that blue jacket"]);
+});

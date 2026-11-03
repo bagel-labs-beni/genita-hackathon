@@ -31,7 +31,7 @@ export type ReactGate = {
 
 export type GateResult = { ok: true } | { ok: false; why: string };
 
-/** F5-L14: only while sharing, at most once per 30 s, never over dialogue or anyone talking. */
+/** F5-L14: only while sharing, at most once per REACT_MIN_GAP_MS (25 s, Chelsea 11/3), never over dialogue or anyone talking. */
 export function reactionAllowed(g: ReactGate): GateResult {
   if (!g.sharing) return { ok: false, why: "not_sharing" };
   if (g.blank) return { ok: false, why: "blank" };

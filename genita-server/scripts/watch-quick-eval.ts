@@ -100,7 +100,7 @@ async function judge(line: string, truth: string): Promise<{ correct: boolean; i
       if (o && typeof o.correct === "boolean" && typeof o.invented === "boolean") return { correct: o.correct, invented: o.invented, why: String(o.why ?? "").slice(0, 80) };
     } catch { /* retry */ }
   }
-  return { correct: false, invented: false, why: "judge failed" };
+  return { correct: false, invented: false, why: "judge failed", judged: false } as { correct: boolean; invented: boolean; why: string };
 }
 
 const spec = JSON.parse(readFileSync(join(dir, "moments.json"), "utf8")) as { clips: Clip[] };
@@ -170,6 +170,8 @@ for (const v of variants) {
     invented: `${said.filter((r) => r.invented).length}/${said.length}`,
     msP50: med(mine.map((r) => r.ms as number)),
     errors: rows.filter((r) => r.variant === v.name && r.error).length,
+    // a judge that failed 3 times is not "nothing invented" (Codex #542 P2)
+    judgeFailed: said.filter((r) => r.why === "judge failed" || String(r.why ?? "").includes("judge failed")).length,
     byClip: Object.fromEntries(clips.map((c) => {
       const x = mine.filter((r) => r.clip === c.id);
       return [c.id, `${x.filter((r) => r.react).length}/${x.length} react, ${x.filter((r) => r.invented).length} invented`];

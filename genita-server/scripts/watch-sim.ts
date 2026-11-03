@@ -583,6 +583,7 @@ if (args.some((a) => a === "--moments" || a.startsWith("--moments="))) {
     const logFrom = logs.length;
     let playAt = 0;
     let macDone: Record<string, unknown> | null = null;
+    let macExit: number | null = 0;
     if (MAC_BIN) {
       // the Mac's own capture + uplink code plays the clip (mac-app/Tools/watch-shots/ShareE2E.swift)
       const file = clip.file.startsWith("/") ? clip.file : join(dir, clip.file);
@@ -601,7 +602,7 @@ if (args.some((a) => a === "--moments" || a.startsWith("--moments="))) {
           } catch { /* not ours */ }
         }
       });
-      await new Promise((r) => child.on("exit", r));
+      macExit = await new Promise<number | null>((r) => child.on("exit", (code) => r(code)));
     }
     if (!MAC_BIN) call.watch.send(JSON.stringify({ type: "start", source: "YouTube" }));
     for (let i = 0; i < (MAC_BIN ? 0 : Math.round(LEAD_SEC * FPS)); i++) {
@@ -654,16 +655,19 @@ if (args.some((a) => a === "--moments" || a.startsWith("--moments="))) {
       // commentary / crowd the model judged fine to talk over is allowed (talkOver)
       overDialogue = open && react.talkOver !== true;
     }
-    let verdict = { correct: false, invented: false, why: "" };
+    // judged = the judge answered; a judge that failed 3 times is its own state, never a pass (Codex #542 P2)
+    let verdict = { correct: false, invented: false, why: "", judged: false };
+    // the words actually spoken: a named play is replaced by the plain line before it is said (Codex #542 P2)
+    const spokenText = react ? (call.ev.find((e) => e.type === "reply" && e.utteranceId === react.utteranceId)?.text as string | undefined) : undefined;
     if (react) {
       for (let i = 0; i < 3; i++) {
         try {
           const g = await sparkText(config.metaKey, {
-            input: `A friend watching a video with the user blurted out: "${String(react.line)}".\nWhat the video shows (ground truth, written by a person who checked it frame by frame): ${clip.truth}\nAnswer as JSON {"correct":bool,"invented":bool,"why":string}: correct = the line fits what is actually happening (the action or moment); invented = it states or names something the ground truth does not support (an invented person, object, event, play, technique, quote or text — e.g. calling a solo dunk an alley-oop). A plain feeling ("whoa", "no way") invents nothing. why = 3 to 10 words.`,
+            input: `A friend watching a video with the user blurted out: "${String(spokenText ?? react.line)}".\nWhat the video shows (ground truth, written by a person who checked it frame by frame): ${clip.truth}\nAnswer as JSON {"correct":bool,"invented":bool,"why":string}: correct = the line fits what is actually happening (the action or moment); invented = it states or names something the ground truth does not support (an invented person, object, event, play, technique, quote or text — e.g. calling a solo dunk an alley-oop). A plain feeling ("whoa", "no way") invents nothing. why = 3 to 10 words.`,
             effort: "low",
           });
           const o = JSON.parse(g.match(/\{[\s\S]*\}/)?.[0] ?? "null") as Record<string, unknown> | null;
-          if (o && typeof o.correct === "boolean" && typeof o.invented === "boolean") { verdict = { correct: o.correct, invented: o.invented, why: String(o.why ?? "").slice(0, 80) }; break; }
+          if (o && typeof o.correct === "boolean" && typeof o.invented === "boolean") { verdict = { correct: o.correct, invented: o.invented, why: String(o.why ?? "").slice(0, 80), judged: true }; break; }
         } catch {
           await sleep(2000);
         }
@@ -671,7 +675,7 @@ if (args.some((a) => a === "--moments" || a.startsWith("--moments="))) {
     }
     const memos = mine.filter((l) => l.event === "watch.memo");
     const row = {
-      clip: clip.id, kind: clip.kind, expect, run, framesSent: MAC_BIN ? ((macDone as Record<string, unknown> | null)?.framesSent ?? null) : LEGACY_FRAMES ? m.frames.length : m.macSend.filter(Boolean).length, mac: !!MAC_BIN, framesClip: m.frames.length, reacted: !!react, via: react?.via ?? null, line: react?.line ?? null, moment: react?.moment ?? null, delaySec, firstAudioSec,
+      clip: clip.id, kind: clip.kind, expect, run, framesSent: MAC_BIN ? ((macDone as Record<string, unknown> | null)?.framesSent ?? null) : LEGACY_FRAMES ? m.frames.length : m.macSend.filter(Boolean).length, mac: !!MAC_BIN, framesClip: m.frames.length, reacted: !!react, via: react?.via ?? null, line: react?.line ?? null, spoken: spokenText ?? null, moment: react?.moment ?? null, delaySec, firstAudioSec,
       quickMs: mine.filter((l) => l.event === "watch.quick").map((l) => l.ms), quicks: mine.filter((l) => l.event === "watch.quick").map((l) => `${Math.round(((l.t as number) - (l.ms as number) - playAt) / 100) / 10}s${l.forSpike ? "S" : ""}[${(l.ages as number[] | undefined)?.join(",") ?? ""}] ` + (l.react ? `${l.moment}:${l.line}` : "no") + (l.seen ? ` (${l.seen})` : "")),
       afterLineMs: react?.afterLineMs ?? null, lineOpen: (!!react?.lineOpen && react?.talkOver !== true) || overDialogue, talkOver: react?.talkOver ?? null, held: react?.held ?? false, ...verdict,
       memos: memos.length, memoMs: memos.map((l) => l.ms), salientMemos: memos.filter((l) => l.salient).length,
@@ -680,7 +684,12 @@ if (args.some((a) => a === "--moments" || a.startsWith("--moments="))) {
       shareStartedLogged: !!startLog,
     };
     // pass per the clip's expect (scorecard 11/4: a quiet clip's silence is the right answer, not "correct: false")
-    const ok = expect === "quiet" ? !react : expect === "optional" ? !react || !verdict.invented : expect === "page" ? !!react && !verdict.invented : !!react && verdict.correct && !verdict.invented && !row.lineOpen;
+    // the Mac player failing (exit code, no share, no frames) is an error, never a quiet pass (Codex #542 P2)
+    const macFailed = !!MAC_BIN && (macExit !== 0 || !macDone || !startLog || !((macDone as Record<string, unknown>).framesSent as number));
+    const judgedOk = !react || verdict.judged;
+    const ok = macFailed || !judgedOk ? false : expect === "quiet" ? !react : expect === "optional" ? !react || !verdict.invented : expect === "page" ? !!react && verdict.correct && !verdict.invented : !!react && verdict.correct && !verdict.invented && !row.lineOpen;
+    if (macFailed) Object.assign(row, { error: `mac player: exit ${macExit}, share ${startLog ? "started" : "not started"}` });
+    if (!judgedOk) Object.assign(row, { error: "judge failed 3 times" });
     Object.assign(row, { pass: ok });
     rows.push(row);
     console.log(`${ok ? "✓" : "✗"} #${run} ${clip.id} (${clip.kind}, ${expect}) ${react ? `"${react.line}" ${delaySec}s after the moment, first audio +${firstAudioSec}s${react.held ? ", held for a pause" : ""}` : "no reaction"}${react ? ` via ${react.via}` : ""}  quick=${JSON.stringify(row.quicks)}  memos=${memos.length} moments=${JSON.stringify(row.moments)} blocked=${JSON.stringify(row.blocked)} ${react ? JSON.stringify(verdict) : ""}`);
