@@ -193,7 +193,7 @@ import ARKit
     func forgetMac() { registering=false;trackingURL=nil;updateTracking();link.forgetMac();code="";refreshSurface() }
     func snapshotCall() {
         guard let model else { return }
-        let renderer=ImageRenderer(content: ConversationView(model:model,handoffEnabled:false).frame(width:390,height:844).environment(\.colorScheme,.light))
+        let renderer=ImageRenderer(content: ConversationView(model:model,handoffEnabled:false).frame(width:390,height:844).environment(\.colorScheme,.light).environment(\.genitaStillRender,true))
         renderer.scale=2
         snapshot=renderer.uiImage?.pngData()?.base64EncodedString() ?? ""
     }

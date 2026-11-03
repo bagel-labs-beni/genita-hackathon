@@ -34,15 +34,27 @@ public enum MotionFinds {
     @MainActor public static var fades: Bool { MotionDetails.enabled && !GenitaMotion.reviewStill }
 }
 
+// MARK: - Offscreen renders
+
+/// true for a one-off render with no `onAppear` (the handoff snapshot's `ImageRenderer`): entrances draw finished.
+private struct GenitaStillRenderKey: EnvironmentKey { static let defaultValue = false }
+public extension EnvironmentValues {
+    var genitaStillRender: Bool {
+        get { self[GenitaStillRenderKey.self] }
+        set { self[GenitaStillRenderKey.self] = newValue }
+    }
+}
+
 // MARK: - Card 4 · blocks lift in
 
 struct FindsRiseModifier: ViewModifier {
     var index: Int
     @State private var shown = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.genitaStillRender) private var stillRender
     func body(content: Content) -> some View {
-        // flag off / UI test: drawn at once, exactly as before
-        let hidden = MotionFinds.fades && !shown
+        // flag off / UI test / offscreen snapshot: drawn at once, exactly as before
+        let hidden = MotionFinds.fades && !shown && !stillRender
         content
             .opacity(hidden ? 0 : 1)
             .offset(y: hidden && !reduceMotion ? MotionFinds.blockLift : 0)
