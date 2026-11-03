@@ -48,7 +48,29 @@ before calling the vendor, and no keys/raw vendor errors are returned or logged 
 this module. A forged `companion_face`, `scene_image`, `room` or `user_face` field is
 rejected by the photo route.
 
+## Session memory (11/3, `GENITA_SESSION_MEMORY=0` turns it off)
+
+- At call close, and every 12 more completed turns in a long call, Muse Spark writes one compact
+  summary of the **thread**: topics, the user's mood, open threads, the companion's promises, what the
+  user asked for (`summaries.ts`). It runs in the background, never on the reply path. Every line
+  goes through `safeMemoryText` (health, religion, politics, sex, income/debt/finances, locations,
+  other people, identifiers). Turns are summarized and dropped, never stored.
+- The newest three summaries of *other* threads go into the next call's instructions as notes. The
+  greeting may pick up one open thread or promise. Loading them is capped at 800 ms, so a slow
+  store means no notes, not a slow call start.
+- A handoff (iPhone ↔ Mac) is one thread, not two calls. `server.ts` hands over the thread id and
+  pair count together with the turns (`priorThread`), both devices upsert the same
+  `call_summaries` row, and the copy covering more turns wins. The summarizer gets the thread's
+  previous notes, so the Mac's summary merges the iPhone's.
+- Any Forget (one item or all) drops every summary, and a summary started before a Forget is never
+  stored (revision check). Account delete removes them (Forget + cascade). The newest 10 are kept per user.
+
 ## Persistence / Postgres adapter
+
+With accounts on (`DATABASE_URL`), the server swaps the in-process store for `PgMemoryRepository`
+(migrations `005_memory_store`, `006_call_summaries`), so memory survives deploys. The boot log
+`memory.store {kind}` says which store is live. Without accounts, the JSON or in-memory adapters below apply.
+
 
 `MemoryRepository` is exactly `put(userId,memory):Promise<boolean>`,
 `list(userId):Promise<Memory[]>`, `delete(userId,id?):Promise<void>`.
@@ -133,6 +155,17 @@ Live checks run only with explicit opt-in, loading keys from
 ```sh
 npm run check:memory -- --live
 ```
+
+Session memory, live (real Spark for replies, extraction, summaries and the judge; synthetic facts):
+
+```sh
+npm run eval:session-memory -- --live --runs=5
+```
+
+Call 1 and call 2 for account A (one health line that must never be stored), then call 3 for A.
+It checks that A's companion brings up at least one right fact, open thread or promise on its own
+and that the Spark judge finds no invented shared past. The same call-3 lines then run for account B
+on the same service, and none of A's memory may appear in B's call.
 
 This runs five synthetic grocery extractions and real new-call greetings. Optional
 photos for the fridge/drama/outfit scenarios use only an approved companion image:

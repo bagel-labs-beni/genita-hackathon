@@ -249,15 +249,29 @@ final class OnboardingUITests: XCTestCase {
         func element(_ id: String) -> XCUIElement { app.descendants(matching: .any).matching(identifier: id).firstMatch }
         XCTAssertTrue(app.buttons["openChatGPT"].waitForExistence(timeout: 15), "I01")
         app.buttons["openChatGPT"].tap()
-        XCTAssertTrue(element("promptCopiedToast").waitForExistence(timeout: 3), "Prompt copied")
-        let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "onb-I01-prompt-copied"; shot.lifetime = .keepAlways; add(shot)
-        // leave the app (ChatGPT or its site opens; home makes sure) and come back
-        XCUIDevice.shared.press(.home)
-        XCTAssertTrue(app.wait(for: .runningBackground, timeout: 15))
+        // One tap copies the prompt, shows "Prompt copied" and opens ChatGPT (on the simulator, with no ChatGPT app:
+        // chatgpt.com in Safari). Safari can take the foreground before the toast is read (flaky on loaded CI
+        // runners), so the toast is only looked for while Genita is still in front; the open and the copy are then
+        // checked on their own: Safari comes to the front, and back on I02 the paste button pastes the prompt.
+        let toast = element("promptCopiedToast")
+        var sawToast = false
+        let end = Date().addingTimeInterval(3)
+        while Date() < end, app.state == .runningForeground {
+            if toast.exists { sawToast = true; break }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if sawToast { let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "onb-I01-prompt-copied"; shot.lifetime = .keepAlways; add(shot) }
+        let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
+        XCTAssertTrue(safari.wait(for: .runningForeground, timeout: 15), "the AI app's site opened")
+        XCTAssertTrue(app.wait(for: .runningBackground, timeout: 5))
         app.activate()
         XCTAssertTrue(app.buttons["pasteReply"].waitForExistence(timeout: 10), "back from the AI app → I02 with the paste button")
         XCTAssertTrue(element("responseInput").exists)
         XCTAssertFalse(element("copyPrompt").exists, "not on I01 any more")
+        // the copy: the system paste button puts the I01 prompt into the reply box
+        app.buttons["pasteReply"].tap()
+        let pasted = NSPredicate(format: "value CONTAINS %@", "evidence-based personalization profile for Genita")
+        expectation(for: pasted, evaluatedWith: element("responseInput")); waitForExpectations(timeout: 10)
         let back = XCTAttachment(screenshot: app.screenshot()); back.name = "onb-I02-paste-first"; back.lifetime = .keepAlways; add(back)
     }
 

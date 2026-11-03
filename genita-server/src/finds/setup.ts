@@ -6,6 +6,7 @@
  *                             the AWS release dir is read-only for the service user)
  *   GENITA_FIND_IMAGES=0    → no Muse Image illustrations (cards say nothing about pictures)
  *   GENITA_SHOP_REGION      → where product search shops (default "US")
+ *   GENITA_SAM_MASKS=1      → camera ingredient boxes also carry a pixel mask (observe.boxes items[].mask)
  *   GENITA_PRODUCT_HEDGE    → identical product searches raced, first good one wins (default 2, 1 = off)
  */
 import { join } from "node:path";
@@ -16,7 +17,7 @@ import type { FindsDeps } from "./runner.ts";
 export function findsFromEnv(metaKey: string, env: NodeJS.ProcessEnv = process.env): FindsDeps | undefined {
   if (env.GENITA_FINDS === "0") return undefined;
   return {
-    vendors: metaVendors(metaKey),
+    vendors: metaVendors(metaKey, { samMasks: env.GENITA_SAM_MASKS === "1" }),
     store: new FileFindsStore(findsDir(env)),
     images: env.GENITA_FIND_IMAGES !== "0",
     imageBase: "/v1/finds",
