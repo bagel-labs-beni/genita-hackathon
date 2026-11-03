@@ -54,7 +54,7 @@ function runner(v: FindsVendors, now = () => performance.now()) {
 const SAID = "Black, for sure. You have warm undertones, so dark brown shoes or leather accessories would be perfect.";
 
 test("an outfit card starts the matching shoe search in the background; a later ask reuses it (no second search)", async () => {
-  const { v, searches } = vendors(60);
+  const { v, searches } = vendors(400);
   const { r, events } = runner(v);
   r.onTurn({ text: "Which one looks better on me, the white one or the black one?", frames: [FRAME, FRAME], utteranceId: 1, replyText: Promise.resolve(SAID) });
   await sleep(20);
@@ -62,7 +62,7 @@ test("an outfit card starts the matching shoe search in the background; a later 
   assert.ok(pre >= 1, "prefetch started as soon as the spoken pick was out");
   assert.match(searches[0], /dark brown shoes or leather accessories/, "it follows what the companion suggested");
   assert.ok(!events.some((e) => e.type === "find.started" && e.kind === "product"), "nothing on screen until she asks");
-  await r.settle(); await sleep(120); // the prefetch has landed by the time she asks
+  await r.settle(); await sleep(600); // the prefetch has landed by the time she asks
   const t0 = performance.now();
   const started = r.onTurn({ text: "Can you find me some dark brown shoes that go with this?", frames: [FRAME], utteranceId: 2, replyText: Promise.resolve(null) });
   assert.equal(started?.kind, "product");
@@ -74,7 +74,7 @@ test("an outfit card starts the matching shoe search in the background; a later 
   assert.ok(created, "the card arrives under the ask's own id");
   assert.equal(created.card.id, started!.findId);
   assert.deepEqual(created.card.products!.map((p) => p.url), [P1, P2]);
-  assert.ok(performance.now() - t0 < 50, "the card is there at once");
+  assert.ok(performance.now() - t0 < 300, "the card is there at once (a search takes 400 ms here)");
   const img = mine.find((e) => e.type === "find.image" && e.status === "ready") as Extract<ServerEvent, { type: "find.image" }>;
   assert.ok(img?.url?.startsWith(`/v1/finds/${started!.findId}/images/`), "pictures are stored under the ask's id");
   assert.ok(!events.some((e) => "findId" in e && e.findId !== started!.findId && e.type === "find.created" && e.card.kind === "product"), "the prefetch's own id never reaches the app");
