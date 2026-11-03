@@ -261,3 +261,46 @@ test("proximity: garbage tokens are a bad_message, never a lookup", async () => 
   assert.equal(mac.last("error").code, "bad_message");
   assert.equal(mac.last("proximity.result"), undefined);
 });
+
+test("proximity: a store failure answers proximity.result server_error (the Mac's one report in flight frees), and moves nothing", async () => {
+  // #377 follow-up: a bare `error/server_error` never answered the report, so the Mac kept it pending until it reconnected.
+  const store = new MemoryOwnershipStore();
+  let failClaims = 0;
+  const realClaim = store.claim.bind(store);
+  store.claim = async (...args: Parameters<typeof store.claim>) => {
+    if (failClaims > 0) {
+      failClaims--;
+      throw new Error("db down");
+    }
+    return realClaim(...args);
+  };
+  let now = 1_000_000;
+  const hub = new HandoffHub(store, () => {}, { handoverMs: 0, now: () => now, liveCall: () => true });
+  const open = (device: HandoffDevice) => {
+    const got: Msg[] = [];
+    const handle = hub.connect("u1", { device, send: (m) => got.push(m) });
+    return { got, handle, last: (type: string): any => [...got].reverse().find((m) => m.type === type) };
+  };
+  const phone = open("iphone");
+  const mac = open("mac");
+  await phone.handle.claim(null, "start");
+  await phone.handle.proximityArm();
+  const token = phone.last("proximity.token")?.token;
+  failClaims = 1;
+  await mac.handle.proximitySeen(token);
+  await flush();
+  assert.deepEqual(mac.last("proximity.result"), { type: "proximity.result", accepted: false, reason: "server_error" });
+  assert.equal(mac.last("error"), undefined, "answered as the report's result, not a bare error");
+  assert.equal((await hub.current("u1")).owner, "iphone", "nothing moved");
+  assert.equal(mac.last("proximity.peer").armed, false, "its token is spent: the Mac stops scanning until the iPhone re-arms");
+  // the iPhone's next re-arm gives a fresh token, and the Mac's next report moves the call
+  now += COOLDOWN_MS + 30_000;
+  await phone.handle.proximityArm();
+  const next = phone.last("proximity.token")?.token;
+  assert.notEqual(next, token);
+  assert.equal(mac.last("proximity.peer").armed, true);
+  await mac.handle.proximitySeen(next);
+  await flush();
+  assert.deepEqual(mac.last("proximity.result"), { type: "proximity.result", accepted: true, reason: "ok" });
+  assert.equal((await hub.current("u1")).owner, "mac");
+});

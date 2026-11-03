@@ -230,10 +230,22 @@ export class HandoffHub {
         : null;
       if (why) return false;
       this.proximity.spend(u.id, now);
+      spent = true;
       return true;
     };
+    let spent = false;
     this.log("handoff.preparing", { from: "iphone", to: "mac", trigger: "proximity" });
-    const out = await this.claimFor(u.id, "mac", null, "proximity", conn, false, check);
+    let out: ClaimOutcome;
+    try {
+      out = await this.claimFor(u.id, "mac", null, "proximity", conn, false, check);
+    } catch (err) {
+      // A transient failure (the store) moved nothing. Answer the report itself: the Mac keeps one report in flight
+      // and a bare `error` never freed it (#377 follow-up). A spent token stays spent (it never comes back after a
+      // disarm); the Mac hears `armed: false` and scans again on the iPhone's next re-arm (≤ 30 s).
+      this.log("handoff.error", { message: String(err).slice(0, 200) });
+      if (spent) this.proximityArmedChanged(u);
+      return result(false, "server_error");
+    }
     if (why) return result(false, why);
     this.proximityArmedChanged(u);
     result(out.accepted, "ok");

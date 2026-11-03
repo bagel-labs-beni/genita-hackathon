@@ -23,8 +23,8 @@ import os
     private var detector = ProximityDetector(config: .current())
     /// peripheral → the token it advertised last (the local name can arrive in a later scan response)
     private var tokens: [UUID: String] = [:]
-    /// One report at a time; proximity.result does not echo the token.
-    private var pendingToken: String?
+    /// One report at a time; proximity.result does not echo the token. Given up after 5 s without an answer.
+    private var report = ProximityReport()
     private var timer: Timer?
     private var toastWindow: NSPanel?
     private var chime: AVAudioPlayer?
@@ -54,7 +54,7 @@ import os
             MainActor.assumeIsolated {
                 guard let self else { return }
                 // A result from the old socket cannot arrive on this connection.
-                self.pendingToken = nil
+                self.report.reset()
                 if self.screenLocked, self.enabled { self.handoff?.server.setActive(false) }
             }
         }
@@ -77,6 +77,7 @@ import os
     }
 
     private func tick() {
+        expireReport()
         guard wanted else { return stopScan() }
         guard let central else {
             // First time it is useful: this creates the Bluetooth permission prompt (NSBluetoothAlwaysUsageDescription).
@@ -121,7 +122,7 @@ import os
         guard scanning, wanted, let handoff else { return }
         if let token = ProximityToken.parse(name) { tokens[id] = token }
         let now = Date().timeIntervalSince1970
-        let fire = detector.observe(id.uuidString, rssi: rssi, at: now, canReport: tokens[id] != nil && pendingToken == nil, token: tokens[id])
+        let fire = detector.observe(id.uuidString, rssi: rssi, at: now, canReport: tokens[id] != nil && report.canReport, token: tokens[id])
         if now - lastLog > 0.5 {
             lastLog = now
             let level = detector.smoothed(id.uuidString) ?? rssi, enter = detector.config.enterRSSI, hasToken = tokens[id] != nil
@@ -129,7 +130,7 @@ import os
             log.debug("proximity rssi \(rssi, privacy: .public) smoothed \(level, privacy: .public) token \(hasToken, privacy: .public)")
         }
         guard fire, let token = tokens[id] else { return }
-        pendingToken = token
+        report.sent(token, at: now)
         log.info("proximity held close, reporting")
         handoff.server.send(["type": "proximity.seen", "token": token])
     }
@@ -139,8 +140,7 @@ import os
         switch message {
         case let .result(accepted, reason):
             log.info("proximity result \(accepted, privacy: .public) \(reason, privacy: .public)")
-            guard let token = pendingToken else { return }
-            pendingToken = nil
+            guard let token = report.answered() else { return }
             // Only a successful move keeps the leave-range latch. Briefly exclude an unknown token so
             // another account's nearby phone cannot keep retrying ahead of this account's phone.
             if !accepted {
@@ -156,6 +156,18 @@ import os
             celebrate()
         default: break
         }
+    }
+
+    /// No answer in time (an older server's bare `error/server_error`, or a stuck request): free the report so a later
+    /// approach can report without a reconnect. The call did not move here, so the leave-range latch goes too; if it
+    /// did move (the Mac owns it), the latch stays and nothing scans anyway.
+    private func expireReport() {
+        let now = Date().timeIntervalSince1970
+        guard let token = report.expire(at: now) else { return }
+        log.info("proximity result timed out")
+        guard handoff?.ownership.isOwner != true else { return }
+        detector.reject(token: token, reason: "timeout", at: now)
+        tokens = [:]
     }
 
     /// The Mac's half of the moment: the same Connected chime the iPhone plays, and the toast.
