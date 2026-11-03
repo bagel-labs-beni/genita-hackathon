@@ -27,7 +27,7 @@ EMOTIONS = {
     "teasing": {"shift_st": 0.8, "range": 1.12, "gain_db": 0.5, "bright_db": 1.0, "end_st": 2.0},
     "playful": {"shift_st": 0.8, "range": 1.12, "gain_db": 0.5, "bright_db": 1.0, "end_st": 2.0},
     "warm": {"shift_st": -0.5, "range": 1.0, "gain_db": 0.0, "bright_db": -1.5, "end_st": -1.0},
-    "sad": {"shift_st": -1.2, "range": 0.85, "gain_db": -1.5, "bright_db": -2.0, "end_st": -1.5},
+    "sad": {"shift_st": -1.2, "range": 0.85, "gain_db": -0.9, "bright_db": -1.2, "end_st": -1.5},  # 0.6x: NISQA
     "whisper": {"shift_st": -0.5, "range": 0.9, "gain_db": -2.0, "bright_db": -1.0, "end_st": -1.0},
 }
 
@@ -101,7 +101,9 @@ def polish(x, tail_ms=0, last=True, rough_db=None, deess=None, air=None, breath_
 # ---- pitch by varispeed (11/3, after PSOLA cost -0.25 UTMOS even at 60 % strength) ----
 # Seamless synthesizes a little slower (speed / r) and the audio is resampled r times shorter: pitch x r, same length
 # as the plain synth at `speed`, no resynthesis artefacts (formants move with it, like a slightly brighter/darker voice).
-SHIFT_ST = {"excited": 1.5, "happy": 1.0, "surprised": 1.5, "teasing": 0.8, "playful": 0.8, "warm": -0.5, "sad": -0.8, "whisper": -0.5}  # sad -1.2 cost NISQA -0.12, so -0.8
+SHIFT_ST = {"excited": 1.5, "happy": 1.0, "surprised": 1.5, "teasing": 0.8, "playful": 0.8, "warm": -0.5, "sad": -0.5, "whisper": -0.5}
+# 11/3 n=24 (4 voices x 6 lines) vs raw UTMOS 4.136 / NISQA 4.687: excited -0.06/+0.00, warm -0.07/-0.06, teasing -0.05/-0.02
+# all within 0.1 at full strength; sad at full strength (-0.8 st) cost NISQA -0.12, at 0.6x +0.01/-0.05, so sad is 0.6x
 
 
 STRENGTH = 1.0  # scales every emotion move (pitch and tone); set from the 11/3 n=24 check, see the PR
