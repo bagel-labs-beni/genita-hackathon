@@ -307,7 +307,7 @@ extension AppState {
     /// V01 "Use this image" → V03 → V02-T / V02-F.
     func checkImage() {
         // the face is fixed once the companion exists (B7): no second check, no new face
-        if setup.companionCreated == true { go(.voice); return }
+        if setup.companionCreated == true || creatingCompanion { go(.voice); return }   // AU-37: also while it's made
         guard let data = setup.imageData, rightsAcked else { return }
         imageCheck = nil; imageCheckError = nil; imageCheckRetryable = false
         polished = nil; polishedImage = nil; polishError = nil; polishing = false; polishRetriesLeft = 0; polishAttempts = 0
