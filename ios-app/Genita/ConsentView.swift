@@ -12,7 +12,8 @@ struct ConsentView: View {
         ("What you say and type", "To answer you. Voice is turned into text first."),
         ("The image you choose", "To make their face, voice and video."),
         ("Camera and screen, only while on", "Nothing is seen until you turn it on. Video isn’t kept."),
-        ("Never used to train AI models", "Delete your account any time in Settings."),
+        // PRD v12 9.2 / D16: no "Never used to train AI models" line (hackathon-credit inputs may be used by Meta);
+        // the Mac CS01 already dropped it (QA build 7, ONB-08)
     ]
 
     var body: some View {
@@ -33,9 +34,9 @@ struct ConsentView: View {
                 }
             }.padding(.top, 32)
             HStack(spacing: 16) {
-                // PRD v12 D16: Genita's own pages
-                Link("Terms", destination: URL(string: "https://bagel-labs-beni.github.io/genita-legal/terms/")!)
+                // PRD v12 D16: Genita's own pages; Privacy Policy first, then Terms (Figma 4:2, LG-01 step 5, AU-02)
                 Link("Privacy Policy", destination: URL(string: "https://bagel-labs-beni.github.io/genita-legal/privacy/")!)
+                Link("Terms", destination: URL(string: "https://bagel-labs-beni.github.io/genita-legal/terms/")!)
             }.font(TypeStyle.text(14, .medium)).foregroundStyle(CallInk.ink).underline().padding(.top, 24).frame(minHeight: 44)
             }
             .frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 24)
@@ -73,9 +74,7 @@ struct ConsentView: View {
             do {
                 try await GenitaAuthClient().consent()
                 guard model.stage == .consent else { return } // left this screen meanwhile
-                model.consentAccepted()
-                // a judge account already has its ready-made companion: /me sends it straight to the call
-                await model.routeOnLaunch()
+                await model.consentAgreed()
             } catch GenitaAuthError.unauthorized {
                 // the session expired here: the token is gone, sign in again (A02)
                 model.signedOut()

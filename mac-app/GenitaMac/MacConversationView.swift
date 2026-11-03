@@ -38,7 +38,7 @@ struct MacConversationView: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             ZStack(alignment: .topLeading) {
-                companionImage.resizable().frame(width: 479, height: 852).offset(x: -53, y: -4).frame(width: 390, height: 844, alignment: .topLeading).clipped()
+                companionStill(width: 479, height: 852).offset(x: -53, y: -4).frame(width: 390, height: 844, alignment: .topLeading).clipped()
                     // motion details card 10: veiled while the call connects, clears once when it is live (flag off: plain)
                     .modifier(MacCallVeil(veiled: call.link == .connecting))
                     .contentShape(Rectangle()).onTapGesture { faceTapped() }
@@ -51,6 +51,7 @@ struct MacConversationView: View {
                         if let poster = call.facePoster { Image(decorative: poster, scale: 1).resizable().scaledToFill() }
                         FaceFrameView(driver: face)
                     }.frame(width: 479, height: 852).clipped().offset(x: -53, y: -4).frame(width: 390, height: 844, alignment: .topLeading).clipped()
+                        // the motion lane's call veil (as the iPhone #524 reveal): the generated face clears it once
                         .modifier(MacCallVeil(veiled: call.link == .connecting))
                         .allowsHitTesting(false)
                         // S09-P (D28, AU-25): a face set that lands mid-call fades in over the still once (the reveal)
@@ -122,7 +123,7 @@ struct MacConversationView: View {
                             .frame(width: 390, height: 844, alignment: .topLeading)
                     }
                     if sheetFull {
-                        companionImage.resizable().scaledToFill().frame(width: 96, height: 128).clipShape(RoundedRectangle(cornerRadius: 16))
+                        companionStill(width: 96, height: 128, fill: true).clipShape(RoundedRectangle(cornerRadius: 16))
                             .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(MacSheetInk.onInk, lineWidth: 2))
                             .position(x: 278 + 48, y: (MacDesignV2.enabled ? 28 : 48) + 64).onTapGesture { withAnimation { call.finds.pipTapped() } }
                             .accessibilityLabel("Back to half height").accessibilityAddTraits(.isButton)
@@ -200,9 +201,30 @@ struct MacConversationView: View {
         .frame(width: 390, height: 844)
         .accessibilityIdentifier("macInterpretSheet")
     }
-    private var companionImage: Image {
-        if let face = macCall.face { return Image(nsImage: face) }
-        if let data=handoff.profile,let image=NSImage(data:data) { return Image(nsImage:image) };return resourceImage("companion")
+    /// This account's own picture only: the server's scene still, else the one the iPhone handed over. Without either the
+    /// call shows a neutral placeholder — never the bundled demo face, which is someone else's companion (#524 UI sweep, CL-03).
+    private var companionPicture: NSImage? {
+        // CL-03 order (CallStillSource, tested): this account's server still, then the iPhone's handoff profile, else
+        // the dark ground — never the bundled companion.png in the shipped app (DEBUG review renders below only)
+        switch CallStillSource.pick(hasServerStill: macCall.face != nil, hasHandoffProfile: handoff.profile != nil) {
+        case .serverStill: return macCall.face
+        case .handoffProfile: if let image = handoff.profile.flatMap({ NSImage(data: $0) }) { return image }
+        case .ground: break
+        }
+        #if DEBUG
+        // review renders (GENITA_MAC_REVIEW_OUT) keep the fixture face so the call screens stay comparable
+        if ProcessInfo.processInfo.environment["GENITA_MAC_REVIEW_OUT"] != nil, reviewState != "noface",
+           let url = Bundle.main.url(forResource: "companion", withExtension: "png") { return NSImage(contentsOf: url) }
+        #endif
+        return nil
+    }
+    @ViewBuilder private func companionStill(width: CGFloat, height: CGFloat, fill: Bool = false) -> some View {
+        if let picture = companionPicture {
+            if fill { Image(nsImage: picture).resizable().scaledToFill().frame(width: width, height: height) }
+            else { Image(nsImage: picture).resizable().frame(width: width, height: height) }
+        } else {
+            MacFacePlaceholder().frame(width: width, height: height)
+        }
     }
     // MARK: #118 / #121 call + sheet layout
     private var sheetFull: Bool { call.finds.state == .full && linkOpened == nil && waitingCopy == nil }
@@ -365,5 +387,14 @@ private final class IslandDragView:NSView {
         guard MacHandoff.shared.companionVisible,MacHandoff.shared.motion == nil else{return}
         NSCursor.closedHand.push();defer{NSCursor.pop()}
         window?.performDrag(with:event)
+    }
+}
+
+/// The call's ground until this account's own face arrives — the same as the iPhone (#524 CompanionFaceView: no still
+/// → the dark call ink #111 under the S07 veil): no initial, no silhouette, no new design, and never someone else's face
+/// (CL-03). The live face fades in over it with the same veil lift (`genitaFaceReveal`).
+struct MacFacePlaceholder: View {
+    var body: some View {
+        MacSheetInk.ink.accessibilityHidden(true)
     }
 }

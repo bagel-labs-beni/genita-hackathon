@@ -29,7 +29,7 @@ extension AppState {
         // here): A02 first, never A03 → N1–N3 and a bounce to A02 at the end (QA build 5; PRD A02 → CS01 → A03)
         if needsSignInFirst { signedOut(); return }
         guard serverWired, launchRequest.token != nil else { return }
-        let state = await onboarding.auth.sessionState()
+        var state = await onboarding.auth.sessionState()
         // A current 401 clears its token in the auth client. It still routes to A02, but an old
         // request must never sign out a newer login or re-adopt a logged-out account's handoff.
         guard launchRequest.generation == authGeneration, !Task.isCancelled,
@@ -41,7 +41,23 @@ extension AppState {
         }
         guard launchRequest.accepts(launchAuthSnapshot) else { return }
         var me: GenitaMe?
-        if case .active(let m) = state { me = m; adopt(accountId: m.user.id); qaSamplePhotos = m.qaSamplePhotos == true }
+        if case .active(var m) = state {
+            // AU-05 (LG-03): A03's name never reached the server (offline at Next) but this account already has its
+            // companion: send the name this phone kept again and go on to the call, never back to A03
+            let kept = setup.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            if (m.user.displayName ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, m.hasCompanion, !kept.isEmpty {
+                if let saved = try? await onboarding.auth.setName(kept) { m = saved } else { m.user.displayName = kept }
+                // another sign-in (or sign-out) happened meanwhile: this answer is for an account that's gone (Codex P2);
+                // the PATCH's own 401 cleared this lifetime's token: A02, as for an expired /me (Codex re-review P2)
+                guard launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled, ownsOnboardingResponse(request) else {
+                    if launchRequest.generation == authGeneration, !Task.isCancelled, onboarding.auth.token == nil,
+                       ownsOnboardingResponse(request, allowingClearedSession: true) { signedOut() }
+                    return
+                }
+                state = .active(m)
+            }
+            me = m; adopt(accountId: m.user.id); qaSamplePhotos = m.qaSamplePhotos == true
+        }
         let route = StartRouter.route(state, device: .iphone)
         // a companion on the server but not on this phone (reinstall, new phone, a judge's ready-made one):
         // bring its name, card and face back first
@@ -55,6 +71,23 @@ extension AppState {
             return
         }
         apply(route, me: me, afterSignIn: afterSignIn)
+    }
+
+    /// CS01 "Agree and continue", after the server recorded the consent.
+    /// AU-03 (JG-01): right after a sign-in, `/me` picks the next screen while CS01's button spins. A judge's
+    /// ready-made companion goes straight to the call, never through an empty A03 whose Next would start the
+    /// onboarding instead. A new account gets A03 as before; no answer (offline) moves on to A03 too.
+    func consentAgreed() async {
+        let returning = history.contains(.conversation) || setup.hasOnboarded
+        guard serverWired, !returning else {
+            consentAccepted()
+            // a returning account (4403 mid-call) is back in its call; /me still checks where it stands
+            if serverWired { await routeOnLaunch() }
+            return
+        }
+        consentRecorded()
+        await routeOnLaunch(afterSignIn: true)
+        if stage == .consent { consentAccepted() }
     }
 
     func restoreCompanion(for request: OnboardingSessionGeneration.Snapshot? = nil) async {
@@ -352,13 +385,13 @@ extension AppState {
     /// V01 "Use this image" → V03 → V02-T / V02-F.
     func checkImage() {
         // the face is fixed once the companion exists (B7): no second check, no new face
-        if setup.companionCreated == true { go(.voice); return }
+        if setup.companionCreated == true || creatingCompanion { go(.voice); return }   // AU-37: also while it's made
         guard let data = setup.imageData, rightsAcked else { return }
-        imageCheck = nil; imageCheckError = nil
+        imageCheck = nil; imageCheckError = nil; imageCheckRetryable = false
         polished = nil; polishedImage = nil; polishError = nil; polishing = false; polishRetriesLeft = 0; polishAttempts = 0
         imageCheckTask?.cancel()
         let ticket = UUID(); imageCheckTicket = ticket
-        go(.imageCheck)
+        if stage != .imageCheck { go(.imageCheck) }   // V02-F "Try again" (AU-26) checks again in place
         guard serverWired else {
             // screen review / UI tests without a server: V02-T as a passed person
             imageCheck = ImageCheck(imageId: "local", passed: true, type: "human",
@@ -381,7 +414,9 @@ extension AppState {
                 } else if r.passed { setup.imageId = r.imageId; setup.imageType = r.type }
             } catch {
                 guard imageCheckTicket == ticket, !Task.isCancelled else { return }
-                imageCheckError = Self.imageErrorLine(error); route(error)
+                imageCheckError = Self.imageErrorLine(error)
+                imageCheckRetryable = Self.isTransient(error)
+                route(error)
             }
         }
     }
@@ -394,6 +429,13 @@ extension AppState {
             polishAttempts += 1
             let p = try await onboarding.polishImage(imageId: source)
             guard imageCheckTicket == ticket, !Task.isCancelled else { return }
+            // AU-32: a Try again that fails its re-check never takes away a polished picture that already passed;
+            // V02-T keeps it (Use this image still works) with the new attempt's reason on one line
+            if !p.passed, let kept = polished, kept.passed, polishedImage != nil, setup.imageId == kept.imageId {
+                polishRetriesLeft = p.retriesLeft
+                polishError = p.reasons.first?.label ?? "Couldn't polish this photo."
+                return
+            }
             // kept before the download: a failed download only reloads the picture, it never costs a polish
             polished = p; polishedImage = nil; polishRetriesLeft = p.retriesLeft
             setup.imageId = p.passed ? p.imageId : nil
@@ -437,6 +479,15 @@ extension AppState {
         }
         guard polishRetriesLeft > 0 else { return }
         imageCheckTask = Task { await polish(source: source, ticket: ticket) }
+    }
+
+    /// The request failed on the way, not on the photo: offline, a timeout or a server error (AU-26).
+    static func isTransient(_ error: Error) -> Bool {
+        switch error as? GenitaAuthError {
+        case .offline?: return true
+        case let .server(status, _, _)?: return status >= 500
+        default: return false
+        }
     }
 
     /// V02-F copy for upload errors: an unreadable photo is "choose another", not "try again".

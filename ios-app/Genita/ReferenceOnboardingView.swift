@@ -374,7 +374,8 @@ import UniformTypeIdentifiers
     }
     func accept(_ data: Data) {
         // B7: one companion, the face can't change once it's made
-        guard model.setup.companionCreated != true else { imageError = "Their face is already set."; return }
+        // … nor while it is being made (AU-37: a photo picked then left the call face on the first one)
+        guard model.setup.companionCreated != true, !model.creatingCompanion else { imageError = "Their face is already set."; return }
         guard let jpeg = AppState.uploadJPEG(data) else { imageError = "Please select a supported image."; return }
         // a new photo needs a new check (V03); the old result and suggestion don't apply
         model.setup.imageData = jpeg; model.setup.imageId = nil; model.imageCheck = nil; model.rightsAcked = false
@@ -549,8 +550,8 @@ import UniformTypeIdentifiers
             let cardWidth = (width - 90) / 2
             let left = label.x < 200 ? CGFloat(38) : 51 + cardWidth
             Button {
-                var updated = selectedIDs
-                if updated.contains(key) { updated.remove(key) } else { updated.insert(key) }
+                let updated = PresenceChips.toggle(selectedIDs, key)
+                guard updated != selectedIDs else { return }
                 model.setup.presenceCardIDs = updated
                 model.setup.presence = Set(labels.filter { updated.contains("\($0.x)-\($0.y)") }.compactMap(\.characters))
             } label: {
@@ -753,5 +754,16 @@ struct ReferencePhotoPicker: UIViewControllerRepresentable {
                 DispatchQueue.main.async { self.parent.received(data) }
             }
         }
+    }
+}
+
+/// P "Describe their presence" (PRD B10): at most two chips. A third tap while two are on does nothing (AU-31: the
+/// server kept only two, so SUM listed a third that the persona never got).
+enum PresenceChips {
+    static let max = 2
+    static func toggle(_ selected: Set<String>, _ key: String) -> Set<String> {
+        var updated = selected
+        if updated.contains(key) { updated.remove(key) } else if updated.count < max { updated.insert(key) }
+        return updated
     }
 }

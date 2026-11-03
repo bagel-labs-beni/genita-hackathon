@@ -105,6 +105,9 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     var pasteFocusRequested = false
     var checkingImage = false
     var imageCheck: ImageCheck?
+    /// AU-26: the check failed on the way (offline, timeout, server error), not on the photo: V02-F offers
+    /// "Try again" with the same photo instead of clearing it.
+    var imageCheckRetryable = false
     /// V01 "I have the right to use this image" (D26 / SUB-8): off for every new image, must be on to check it. Transient.
     var rightsAcked = false
     /// V01 "Use a test photo" (device QA): only an account the server lists (`/me` `qaSamplePhotos`, GENITA_QA_SAMPLE_PHOTOS).
@@ -160,6 +163,8 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     static let sceneKeyKey = "genita.sceneKey"
     /// A02-E-style one-line error for any onboarding call (offline, server)
     var flowError: String?
+    /// M02-X (Figma 82:2): A02 shows "Your account and data are deleted." once, after a deletion
+    var accountDeletedNotice = false
     /// D47 HISY v2 cards (I03 → HISY-0 … HISY-7, N1–N3 → S0 … S4). Transient: after a relaunch they're read
     /// again (`GET /v1/profile/story`).
     var story: [StoryCard]?
@@ -277,6 +282,19 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     static let signedOutKey = "genita.signedOut"
     static let needsConsentKey = "genita.needsConsent"
     static let userKey = "genita.userId"
+    /// Set on the first launch of this install (AU-12).
+    static let installedKey = "genita.installed"
+
+    /// AU-12 (LG-01 FIRST): deleting the app clears UserDefaults but not the keychain, so a reinstall opened signed
+    /// in. The first launch of an install forgets an earlier install's session. An update from a build before this
+    /// flag still has its own saved state here and keeps its session. True when it cleared.
+    @discardableResult static func forgetEarlierInstall(storage: UserDefaults = .standard, clearToken: () -> Void) -> Bool {
+        guard !storage.bool(forKey: installedKey) else { return false }
+        storage.set(true, forKey: installedKey)
+        if [storageKey, userKey, signedOutKey, needsConsentKey].contains(where: { storage.object(forKey: $0) != nil }) { return false }
+        clearToken()
+        return true
+    }
     func onboardingSnapshot() -> OnboardingSessionGeneration.Snapshot {
         onboardingSession.snapshot(token: onboarding.auth.token)
     }
@@ -310,6 +328,7 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     /// `consented` has no default on purpose: every caller states whether CS01 was already agreed (#218).
     func signedIn(userId: String? = nil, consented: Bool, qaSamplePhotos: Bool = false) {
         invalidateOnboardingWork()
+        accountDeletedNotice = false
         // an error from the signed-out session must not follow into the new one (QA build 5: N3 kept "Please sign in again.")
         flowError = nil
         authGeneration += 1
@@ -357,12 +376,21 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     }
     /// CS01 agreed: back to the call if the account is set up, else on to A03 (name).
     func consentAccepted() {
+        consentRecorded()
+        if history.contains(.conversation) || setup.hasOnboarded { returnTo(.conversation) } else { go(.name) }
+    }
+    /// CS01 agreed on the server: a restart no longer shows CS01 (or A02).
+    func consentRecorded() {
         storage.removeObject(forKey: Self.signedOutKey)
         storage.removeObject(forKey: Self.needsConsentKey)
-        if history.contains(.conversation) || setup.hasOnboarded { returnTo(.conversation) } else { go(.name) }
     }
     /// M02 account deleted: nothing of it stays on this iPhone.
     func accountDeleted() {
+        leftAfterDeleteRequest()
+        accountDeletedNotice = true
+    }
+    /// M02-D asked, then the session was gone before the server confirmed (AU-06): A02, nothing kept, no notice.
+    func leftAfterDeleteRequest() {
         resetLocalProfile()
         storage.removeObject(forKey: Self.userKey)
         signedOut()

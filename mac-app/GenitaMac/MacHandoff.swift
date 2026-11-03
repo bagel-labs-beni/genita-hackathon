@@ -680,6 +680,16 @@ extension MacHandoff {
                 try? rep.representation(using:.png,properties:[:])?.write(to:dir.appendingPathComponent("MC-M.png"))
             }
             window.orderOut(nil)
+            // MC-NOFACE (CL-03): no picture of this account's companion yet → the placeholder, never the demo face
+            let noFace=NSHostingView(rootView:MacConversationView(reviewOverride:"noface").frame(width:390,height:844))
+            let noFaceWindow=NSWindow(contentRect:NSRect(x:0,y:0,width:390,height:844),styleMask:.borderless,backing:.buffered,defer:false)
+            noFaceWindow.contentView=noFace;noFaceWindow.orderFront(nil)
+            try? await Task.sleep(for:.seconds(1))
+            if let rep=noFace.bitmapImageRepForCachingDisplay(in:noFace.bounds) {
+                noFace.cacheDisplay(in:noFace.bounds,to:rep)
+                try? rep.representation(using:.png,properties:[:])?.write(to:dir.appendingPathComponent("MC-NOFACE.png"))
+            }
+            noFaceWindow.orderOut(nil)
         }
         // MAC-REG at a 14-inch MacBook Pro's point size
         let size=NSSize(width:1512,height:982)
