@@ -79,6 +79,8 @@ const MAX_LINES = 60;
 const QUESTION_LINES_MS = 90_000;
 /** moments stay askable this long; the moment's own frame rides along while it is older than the "now" frames */
 const SEEN_KEEP_MS = 60_000;
+/** a share that comes back this soon with the same window (and title) is a reconnect, not a new video */
+const RECONNECT_KEEP_MS = 15_000;
 const MAX_SEEN = 6;
 /** one moment seen by both the quick look and a memo (or two quick looks) within this window counts once */
 const SEEN_SAME_MS = 4_000;
@@ -159,6 +161,10 @@ export class WatchController {
   private blankSpoken = false;
   private frames: Frame[] = [];
   private seen: SeenMoment[] = [];
+  /** bumped when the video changes: a look that started on the old one is dropped */
+  private clipGen = 0;
+  /** the last share, so a reconnect of the same video keeps its moments (Codex #445 P2) */
+  private lastShare: { source: string | null; title: string | null; at: number } | null = null;
   private lastMemoAt = 0;
   private memo: MemoEntry[] = [];
   private lines: DialogueLine[] = [];
@@ -276,6 +282,20 @@ export class WatchController {
    * window, or another title starts clean. A stopped share keeps them (asking right after stopping still works).
    */
   private resetClip(why: string): void {
+    // results of looks started on the old video must not land in the new one (Codex #445 P2)
+    this.clipGen++;
+    for (const m of this.memosInFlight) m.abort();
+    this.memosInFlight.clear();
+    for (const q of this.quickInFlight) q.abort();
+    this.quickInFlight.clear();
+    this.quickSpikeAt = null;
+    if (why === "title" || why === "source") {
+      // the old video's frames and lines are not the new one's (Codex #445 P2); the newest frame stays: the title
+      // arrives after the page changed, so it is already the new picture (and a paused screen sends no more)
+      this.frames = this.frames.slice(-1);
+      this.lines = [];
+      this.openLine = "";
+    }
     if (!this.seen.length && !this.memo.length && !this.held) return;
     this.seen = [];
     this.memo = [];
@@ -285,7 +305,12 @@ export class WatchController {
   }
 
   private start(source: string | null): void {
-    if (!this.sharing) this.resetClip("new_share");
+    if (!this.sharing) {
+      const last = this.lastShare;
+      const reconnect = last !== null && this.deps.now() - last.at <= RECONNECT_KEEP_MS && last.source === source
+        && (last.title === null || this.title === null || last.title === this.title);
+      if (!reconnect) this.resetClip("new_share");
+    }
     if (this.sharing) {
       // another window or display: an older "protected" verdict was about the old one
       if (source !== null && source !== this.source) this.protectedPending = false;
@@ -346,6 +371,7 @@ export class WatchController {
     this.asr = null;
     this.frames = []; // never kept past the share
     this.seen = this.seen.map((m) => ({ ...m, frame: null }));
+    this.lastShare = { source: this.source, title: this.title, at: this.deps.now() };
     this.title = null;
     this.dialogueActive = false;
     this.openLine = "";
@@ -518,6 +544,7 @@ export class WatchController {
 
   async runMemo(): Promise<MemoVerdict | null> {
     const at = this.deps.now();
+    const gen = this.clipGen;
     const since = this.lastMemoAt;
     const fresh = this.frames.filter((f) => f.at > since);
     // spread over everything new since the last memo (a move between two memos is never skipped), ≥0.6 s apart
@@ -550,6 +577,7 @@ export class WatchController {
       // lanes race, first complete JSON wins; the reaction can go out as soon as the verdict part has streamed
       // (before the memo text is written)
       raw = await this.memoRace(req, abort.signal, (this.deps.memoLanes ?? MEMO_LANES) > 1 ? undefined : (e) => {
+        if (gen !== this.clipGen) return;
         early = true;
         this.log("watch.memo.early", { ms: Math.round(this.deps.now() - at), moment: e.moment });
         this.noteMoment(e.moment, e.reaction, contentAt, frames.at(-1) ?? null);
@@ -561,7 +589,7 @@ export class WatchController {
     } finally {
       this.memosInFlight.delete(abort);
     }
-    if (abort.signal.aborted || !this.sharing) return null;
+    if (abort.signal.aborted || !this.sharing || gen !== this.clipGen) return null;
     const v = parseMemoVerdict(raw);
     const ms = Math.round(this.deps.now() - at);
     this.stats.memos++;
@@ -643,6 +671,7 @@ export class WatchController {
 
   async runQuick(spikeAt: number, rememberOnly = false): Promise<void> {
     const at = this.deps.now();
+    const gen = this.clipGen;
     this.lastQuickAt = at;
     const frames = pickFrames(this.frames.filter((f) => f.at >= Math.min(spikeAt, (this.frames.at(-1)?.at ?? spikeAt)) - 900), QUICK_FRAMES, 300).map((f) => f.url);
     const seq = this.speechSeq;
@@ -661,7 +690,7 @@ export class WatchController {
     } finally {
       this.quickInFlight.delete(abort);
     }
-    if (abort.signal.aborted || !this.sharing) return;
+    if (abort.signal.aborted || !this.sharing || gen !== this.clipGen) return;
     const q = parseQuick(raw);
     this.log("watch.quick", { ms: Math.round(this.deps.now() - at), rememberOnly, react: !!q, moment: q?.moment ?? "none", line: q?.line ?? "", talkOver: q?.talkOver ?? null, frames: frames.length });
     if (q) {

@@ -1078,9 +1078,31 @@ test("moments belong to one video: a new share or another title starts clean, an
   await seeDunk(b, 7_000);
   b.c.onMessage({ type: "stop" });
   assert.match(ctx(b), /What a dunk!/, "right after stopping it is still askable");
-  b.at(20_000);
+  b.at(12_000);
   b.c.onMessage({ type: "start", source: "YouTube" });
-  assert.doesNotMatch(ctx(b), /dunk/i, "a new share starts clean");
+  assert.match(ctx(b), /What a dunk!/, "the same window back within 15 s is a reconnect: kept");
+  b.c.onMessage({ type: "stop" });
+  b.at(60_000);
+  b.c.onMessage({ type: "start", source: "YouTube" });
+  assert.doesNotMatch(ctx(b), /dunk/i, "a new share later starts clean");
+
+  // a look that started on the old video and lands after the switch is dropped
+  let release: () => void = () => {};
+  const gate = new Promise<void>((r) => (release = r));
+  const c = quickController(yes, {}, {
+    async *spark(req): AsyncGenerator<SparkStreamEvent> {
+      await gate;
+      const text = yes(req);
+      yield { type: "text", delta: text };
+      yield { type: "done", responseId: null, text, status: "completed" };
+    },
+  });
+  c.c.onMessage({ type: "start", source: "YouTube", title: "Dunk highlights - YouTube" });
+  await seeDunk(c, 7_000);
+  c.c.onMessage({ type: "context", title: "Jumpstyle dance compilation - YouTube" });
+  release();
+  await wait(5);
+  assert.doesNotMatch(ctx(c), /dunk/i, "the old video's late answer never lands in the new one");
 });
 
 test("crowd noise / a stray word is not dialogue: it never holds a reaction (the dunk case)", async () => {
