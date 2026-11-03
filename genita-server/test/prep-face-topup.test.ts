@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { FACE_KEYS, faceEditPrompt, faceManifest, faceSoftPrompt, type FaceState } from "../src/prep/face.ts";
 import { topUpFaceKeys } from "../src/prep/faceTopUp.ts";
 import { FileStore, type CompanionRecord } from "../src/prep/store.ts";
-import { newPrepState } from "../src/prep/runner.ts";
+import { PrepRunner, newPrepState } from "../src/prep/runner.ts";
 import { fakeMedia, fakePng } from "./helpers/fakeMedia.ts";
 
 const keyOf = (prompt: string) => {
@@ -124,6 +124,40 @@ test("face top-up (codex P1/P2): a companion deleted mid-run keeps no new image;
     await s3.deleteCompanion("u1");
     assert.equal((await run3).status, "skipped");
     for (const k of ["surprised", "concerned"]) assert.equal(await s3.getAsset("u1", "c1", k), null, `${k} swept`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runner.topUpFace (face load): in the background, once per account per 10 min; DELETE /me's forgetUser drains it and erases the images; GENITA_FACE_TOPUP=0 stops it", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "face-topup-"));
+  try {
+    const store = new FileStore(dir);
+    await store.putCompanion(prepped());
+    await store.putAsset("u1", "c1", "neutral", fakePng(1000, 2000, "scene"));
+    const logs: string[] = [];
+    const { media, calls } = fakeMedia({ keyOf, delayMs: 20 });
+    const runner = new PrepRunner({ metaKey: "k", store, voices: [], media, log: (e) => logs.push(e) });
+    const wait = () => (runner as unknown as { running: Map<string, Promise<void>> }).running.get("u1");
+    assert.equal(runner.topUpFace("u1", (await store.getCompanion("u1"))!, { GENITA_FACE_TOPUP: "0" }), false, "switch off");
+    assert.equal(runner.topUpFace("u1", (await store.getCompanion("u1"))!, {}), true);
+    assert.equal(runner.topUpFace("u1", (await store.getCompanion("u1"))!, {}), false, "one at a time");
+    await wait();
+    assert.ok(logs.includes("face.topup"));
+    const f = (await store.getCompanion("u1"))!.prep.steps.face!.face!;
+    assert.equal(f.items.surprised?.status, "done");
+    assert.equal(runner.topUpFace("u1", (await store.getCompanion("u1"))!, {}), false, "complete: nothing to do");
+    assert.equal(calls.edits.length, 2);
+
+    // a second account: deleted while its top-up runs → nothing left
+    const c2 = { ...prepped(), id: "c2", userId: "u2" };
+    await store.putCompanion(c2);
+    await store.putAsset("u2", "c2", "neutral", fakePng(1000, 2000, "scene"));
+    assert.equal(runner.topUpFace("u2", c2, {}), true);
+    await new Promise((r) => setTimeout(r, 5));
+    await runner.forgetUser("u2");
+    for (const k of ["surprised", "concerned", "neutral"]) assert.equal(await store.getAsset("u2", "c2", k), null, `${k} erased`);
+    assert.equal(runner.topUpFace("u2", c2, {}), false, "no top-up while the account is being deleted");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

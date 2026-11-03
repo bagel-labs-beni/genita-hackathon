@@ -5,6 +5,7 @@
 import { EventEmitter } from "node:events";
 import { PREP_EMOTIONS } from "./prompts.ts";
 import { makeScene, mediaOf, type PrepDeps } from "./pipeline.ts";
+import { missingFaceKeys, topUpFaceKeys, topUpOn } from "./faceTopUp.ts";
 import { makePersonMatte } from "./person.ts";
 import { FACE_EXPRESSIONS, FACE_KEYS, faceManifest, imageSize, makeFaceSet, normBox, samPrompt, type FaceKey } from "./face.ts";
 const sceneMime = (b: Buffer) => (b.readUInt32BE(0) === 0x89504e47 ? "image/png" : b[0] === 0xff && b[1] === 0xd8 ? "image/jpeg" : "image/webp");
@@ -91,6 +92,10 @@ export function prepView(c: CompanionRecord) {
   };
 }
 
+/** Face top-up: one try per account this often (s), and this many at once (Muse Image budget). */
+export const TOPUP_RETRY_MS = 10 * 60_000;
+export const TOPUP_MAX = 3;
+
 export class PrepRunner {
   readonly events = new EventEmitter();
   private running = new Map<string, Promise<void>>();
@@ -151,6 +156,38 @@ export class PrepRunner {
     await this.running.get(userId)?.catch(() => {});
     await this.d.store.deleteAssets(userId);
   }
+
+  /**
+   * Expression keys (11/3 night): a companion prepped before surprised / concerned existed gets them in the
+   * background when its face is loaded (GET /v1/companion/prep). In-process like `run`, so DELETE /me's
+   * `forgetUser` stops it, waits for its in-flight writes and then erases the images. Idempotent; once per
+   * `TOPUP_RETRY_MS` per account; GENITA_FACE_TOPUP=0 (or GENITA_FACE_EMOTION_KEYS=0) turns it off; a failure only
+   * logs (the face keeps working with the keys it has). At most `TOPUP_MAX` at once.
+   */
+  topUpFace(userId: string, c: CompanionRecord, env: Record<string, string | undefined> = process.env): boolean {
+    if (!topUpOn(env) || this.running.has(userId) || this.deleting.has(userId) || this.topUps >= TOPUP_MAX) return false;
+    const f = c.prep.steps.face;
+    if (f?.status !== "done" || !f.face || !missingFaceKeys(c, env).length) return false;
+    const last = this.topUpAt.get(userId);
+    if (last !== undefined && Date.now() - last < TOPUP_RETRY_MS) return false;
+    this.topUpAt.set(userId, Date.now());
+    const ac = new AbortController();
+    this.aborts.set(userId, ac);
+    this.topUps++;
+    const t0 = performance.now();
+    const p = topUpFaceKeys({ store: this.d.store, media: mediaOf(this.d), metaKey: this.d.metaKey, companion: c, env, signal: ac.signal, settleMs: 0, log: this.d.log })
+      .then((r) => this.d.log("face.topup", { companion: c.id, status: r.status, added: r.added, rejected: r.rejected, ms: Math.round(performance.now() - t0) }))
+      .catch((err) => this.d.log("face.topup_failed", { companion: c.id, message: String(err).slice(0, 200) }))
+      .finally(() => {
+        this.topUps--;
+        this.running.delete(userId);
+        this.aborts.delete(userId);
+      });
+    this.running.set(userId, p);
+    return true;
+  }
+  private topUps = 0;
+  private topUpAt = new Map<string, number>();
 
   async resumeAll(): Promise<number> {
     const list = await this.d.store.listCompanions();

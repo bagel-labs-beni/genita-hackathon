@@ -332,6 +332,8 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
     if (m === "GET" && p === "/v1/companion/prep") {
       const c = await d.store.getCompanion(user);
       if (!c) throw new PrepError(404, "no_companion");
+      // a face prepped before the expression keys gets them in the background (served from the next fetch)
+      runner.topUpFace(user, c);
       return send(res, 200, prepView(c));
     }
 

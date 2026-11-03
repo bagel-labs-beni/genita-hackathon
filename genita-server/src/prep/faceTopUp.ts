@@ -3,12 +3,27 @@
  * its set is missing (today: surprised / concerned) without redoing the rest. It reuses the prep's own
  * `makeFaceSet` with the saved state as `prev`, so only the missing keys are edited (Muse Image, from the scene,
  * SAM drift-checked, one stricter retry) and every other key, the flow data and the person matte stay as they are.
- * Called by `npm run face:topup` (ops script); the running server picks the new keys up on the next prep fetch
- * (the app's face cache key follows the manifest, so devices download the new stills once).
+ * Run in-process by `PrepRunner.topUpFace` when a face is loaded (GET /v1/companion/prep), so account deletion
+ * stops and drains it; the next prep fetch serves the new keys (the app's face cache key follows the manifest, so
+ * devices download the new stills once).
  */
 import { faceKeysFor, makeFaceSet, type FaceItem, type FaceKey, type FaceState, type MediaApi } from "./face.ts";
 import { SCENE_SIZE } from "./prompts.ts";
 import type { CompanionRecord, PrepStore } from "./store.ts";
+
+/** GENITA_FACE_TOPUP=0 / false / off stops the background top-up (new face sets still get every key). */
+export function topUpOn(env: Record<string, string | undefined> = process.env): boolean {
+  const v = (env.GENITA_FACE_TOPUP ?? "").trim().toLowerCase();
+  return !(v === "0" || v === "false" || v === "off");
+}
+
+/** The face keys this companion's finished set is missing (or lost to an upstream edit failure). */
+export function missingFaceKeys(c: CompanionRecord, env: Record<string, string | undefined> = process.env): FaceKey[] {
+  const f = c.prep.steps.face;
+  if (f?.status !== "done" || !f.face) return [];
+  const items = f.face.items;
+  return faceKeysFor(c.type, f.face.profile, env).filter((k) => !items[k] || (items[k]?.status === "rejected" && items[k]?.reason === "edit_failed"));
+}
 
 export type TopUpResult = { companionId: string; userId: string; status: "added" | "complete" | "skipped"; added: FaceKey[]; rejected: FaceKey[]; reason?: string; ms: number };
 
@@ -20,8 +35,8 @@ export async function topUpFaceKeys(o: {
   env?: Record<string, string | undefined>;
   log?: (event: string, data: Record<string, unknown>) => void;
   signal?: AbortSignal;
-  /** After the write, wait this long and check the companion again: an account deletion that ran its blob sweep
-   *  while this (out-of-process) run was writing removes the row a moment later; the images go then too (codex P1). */
+  /** After the write, wait this long and check the companion again (out-of-process callers: an account deletion
+   *  removes the row a moment after its blob sweep). In-process (the runner) passes 0: forgetUser drains it. */
   settleMs?: number;
 }): Promise<TopUpResult> {
   const t0 = performance.now();
@@ -32,10 +47,9 @@ export async function topUpFaceKeys(o: {
   const step = c.prep.steps.face;
   const prev = step?.face;
   if (step?.status !== "done" || !prev) return done("skipped", [], [], `face step ${step?.status ?? "missing"}`);
-  const plan = faceKeysFor(c.type, prev.profile, o.env);
   // a key that failed upstream (Muse / SAM outage) is retried on the next run (codex P2)
   const retryable = (k: FaceKey) => { const i = prev.items[k]; return i?.status === "rejected" && i.reason === "edit_failed"; };
-  const missing = plan.filter((k) => !prev.items[k] || retryable(k));
+  const missing = missingFaceKeys(c, o.env);
   if (!missing.length) return done("complete");
   const scene = await o.store.getAsset(c.userId, c.id, "neutral");
   if (!scene) return done("skipped", [], [], "no scene");
@@ -53,7 +67,9 @@ export async function topUpFaceKeys(o: {
     prev: { ...prev, items },
     profile: prev.profile,
     onItem: async (key, item, bytes) => {
-      // a companion deleted (or replaced) mid-run gets no image written back (codex P1)
+      // a companion deleted (or replaced) mid-run gets no image written back (codex P1); an abort (DELETE /me's
+      // forgetUser) stops every later write, and forgetUser waits for this one before it erases the images
+      o.signal?.throwIfAborted();
       if (bytes && (await still())) { await o.store.putAsset(c.userId, c.id, key, bytes); written.push(key); }
       settled.push([key, item]);
     },
@@ -63,6 +79,7 @@ export async function topUpFaceKeys(o: {
   // one write at the end: the saved face keeps its flow / person / profile, gains the new items (and the key plan).
   // A key another run already finished is never downgraded (codex P2: concurrent runs).
   const got = Object.fromEntries(settled);
+  o.signal?.throwIfAborted();
   const saved = await o.store.patchCompanion(c.userId, (x) => {
     const f = x.prep.steps.face;
     if (!f?.face || x.id !== c.id) return x;

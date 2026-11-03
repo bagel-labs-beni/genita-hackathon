@@ -35,7 +35,7 @@ import type { Prep } from "./index.ts";
 import { DEMO_NAME, DEMO_TEMPLATE_SUB } from "./demo.ts";
 import { getOps } from "../ops/limits.ts";
 
-export const DEMO_TEMPLATE_VERSION = "2026-11-03.1";
+export const DEMO_TEMPLATE_VERSION = "2026-11-03.2";   // .2: + surprised / concerned expression keys
 export const DEMO_TEMPLATE_IMAGE = join(import.meta.dirname, "../../assets/demo/jin.jpg");
 const RETRY_MS = 10 * 60_000;
 /** a build in another process older than this is treated as crashed */
