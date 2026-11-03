@@ -287,7 +287,8 @@ public struct GenitaSplash: View {
                 // one light haptic as the bloom settles (none on a signed-in relaunch)
                 if skipAt == nil, mode == .full { GenitaHaptic.impact(soft: false, intensity: 1) }
             }
-            if skipAt == nil, elapsed >= endTime { finish() }
+            // endTime already follows a tap (skipAt + 0.38 s), so a skip also ends on the held clock (Codex P2)
+            if elapsed >= endTime { finish() }
         }
     }
 
@@ -306,8 +307,11 @@ public struct GenitaSplash: View {
         let now = Self.frozenAt ?? Date().timeIntervalSince(start)
         guard now < Self.handoffAt else { return } // already handing over
         skipAt = now
-        if let frozen = Self.frozenAt { self.start = Date().addingTimeInterval(-frozen); Self.unfreeze = true }
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.skipHandoff + 0.05) { finish() }
+        if let frozen = Self.frozenAt {
+            // review stills: run() never started its loop, so the tap ends it on a timer
+            self.start = Date().addingTimeInterval(-frozen); Self.unfreeze = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.skipHandoff + 0.05) { finish() }
+        }
     }
 
     @MainActor private func finish() {
