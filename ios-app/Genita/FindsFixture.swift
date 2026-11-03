@@ -171,7 +171,7 @@ extension FindsModel {
             } else if n == 24 {
                 play([(product, Array(product.events.prefix(1)))])
                 if let id = entries.first?.id {
-                    apply(.findFailed(.init(findId: id, reason: .searchFailed, message: "Couldn’t find a good match. Try a color or a price, or ask me again.")))
+                    apply(.findFailed(.init(findId: id, reason: .searchFailed, message: "Couldn’t find a good match. Try a color or a price.")))
                 }
                 state = .searching
             } else {
