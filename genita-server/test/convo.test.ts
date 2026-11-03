@@ -1424,3 +1424,34 @@ test("#344 session: a call that starts after an upbeat call carries it into the 
   assert.match(calls[0].instructions!, /upbeat and playful/);
   session.close();
 });
+
+test("Codex #477: a mood computed before a Forget is never saved after it; no carried smile on a crisis turn or an explicit [neutral]", { skip: !v1 }, async () => {
+  const { saveCallMood } = await import("../src/convo/callMood.ts");
+  let state: Record<string, unknown> = { revision: 2 };
+  const memory = { serial: async (_u: string, fn: () => Promise<unknown>) => fn(), state: { getState: async () => ({ ...state }), putState: async (_u: string, s: Record<string, unknown>) => { state = s; } } } as never;
+  saveCallMood(memory, "u", { valence: 1, energy: 1 }, 0, 1);
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(state.call_mood, undefined, "revision moved on: dropped");
+  saveCallMood(memory, "u", { valence: 1, energy: 1 }, 0, 2);
+  await new Promise((r) => setTimeout(r, 5));
+  assert.ok(state.call_mood);
+  for (const [userText, sparkText] of [["I want to kill myself.", "<neutral> Please call 988 right now."], ["hey", "[neutral] So what's up."]]) {
+    const { client, session } = setup([sparkText]);
+    (session as unknown as { startMood: { valence: number; energy: number } }).startMood = { valence: 0.8, energy: 0.6 };
+    await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+    await session.onClientText(JSON.stringify({ type: "text", text: userText }));
+    await client.waitFor((m) => m.type === "reply");
+    assert.ok(!client.json.some((m) => m.type === "expression" && m.tag === "smile"), userText);
+    session.close();
+  }
+});
+
+test("Codex #490: a carried upbeat mood never reaches a crisis turn's instructions", { skip: !v1 }, async () => {
+  const { client, session, calls } = setup(["<neutral> Please call 988 right now."]);
+  (session as unknown as { startMood: { valence: number; energy: number } }).startMood = { valence: 0.8, energy: 0.6 };
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "I want to kill myself." }));
+  await client.waitFor((m) => m.type === "reply");
+  assert.doesNotMatch(calls[0].instructions!, /Your mood right now is (?:upbeat|playful)/);
+  session.close();
+});
