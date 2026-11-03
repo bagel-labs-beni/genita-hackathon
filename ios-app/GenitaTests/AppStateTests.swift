@@ -77,7 +77,7 @@ import UIKit
         let model = AppState(storage: store)
         model.signedIn(userId: "user-a", consented: true)
         model.signedOut()
-        model.setup.skipInterests = ["Food", "Style"]; model.setup.skipReplies = "Show me options"
+        model.setup.skipInterests = ["Food", "Style"]; model.setup.skipReplies = "Show me options"; model.setup.skipSent = false
         model.signedIn(userId: "user-b", consented: true)
         XCTAssertEqual(model.setup.skipInterests, ["Food", "Style"])
         XCTAssertEqual(model.setup.skipReplies, "Show me options")
@@ -88,6 +88,11 @@ import UIKit
         model.signedIn(userId: "user-c", consented: true)
         XCTAssertNil(model.setup.skipInterests)
         XCTAssertNil(model.setup.skipReplies)
+        // an older build's saved picks (no skipSent): unknown whether sent → never carried (Codex #516 r2)
+        model.signedOut()
+        model.setup.skipInterests = ["Travel"]; model.setup.skipSent = nil
+        model.signedIn(userId: "user-d", consented: true)
+        XCTAssertNil(model.setup.skipInterests)
     }
     func testVerifiedIdentityAndLogoutNotifyHandoffEvenWhenSavedAccountIsUnchanged() {
         var accounts: [String?] = []

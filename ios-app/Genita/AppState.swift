@@ -61,8 +61,8 @@ struct SavedSetup: Codable {
     var skipAvoid: [String]?
     /// N3 taste picker (Figma 144:2): tapped once = liked (here), tapped twice = avoided (`skipAvoid`)
     var skipLikes: [String]?
-    /// Set before the skip answers are sent (Codex P1 #516): once a send was tried they belong to that account,
-    /// even if its reply was lost, and never go on to another one
+    /// false = N1–N3 picked on this phone and not sent yet; true = a send was tried (they belong to that account even
+    /// if its reply was lost); nil = unknown (an older build) — only `false` picks go on to another account (Codex #516)
     var skipSent: Bool?
     /// The first call after onboarding waits up to 2 s for the user to speak first (D21, `start.greetAfterMs`)
     var firstCallPending: Bool?
@@ -285,7 +285,7 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
         if setup.accountId != nil || setup.companionCreated == true || setup.styleRows != nil {
             var fresh = SavedSetup(); fresh.stage = setup.stage == .consent ? .consent : .name
             // unsent N1–N3 picks stay (same rule as resetLocalProfile)
-            if setup.skipSent != true && setup.styleRows == nil && setup.companionCreated != true {
+            if setup.skipSent == false && setup.styleRows == nil && setup.companionCreated != true {
                 fresh.skipInterests = setup.skipInterests; fresh.skipReplies = setup.skipReplies
                 fresh.skipAvoid = setup.skipAvoid; fresh.skipLikes = setup.skipLikes
             }
@@ -313,7 +313,8 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     /// only N3 after a sign-in wiped N1·N2). An account delete drops everything.
     func resetLocalProfile(keepUnsentSkipPicks: Bool = false) {
         let old = setup
-        let carry = keepUnsentSkipPicks && old.skipSent != true && old.styleRows == nil && old.companionCreated != true
+        // only picks known to be unsent (`false`, set when picked); nil = an older build's data, never carried (Codex #516)
+        let carry = keepUnsentSkipPicks && old.skipSent == false && old.styleRows == nil && old.companionCreated != true
         storage.removeObject(forKey: Self.storageKey)
         try? FileManager.default.removeItem(at: imageURL)
         history = []

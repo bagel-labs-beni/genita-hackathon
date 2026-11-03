@@ -314,6 +314,7 @@ struct SkipImportView: View {
         }
     }
     private func toggle(_ v: String) {
+        model.setup.skipSent = false   // picked on this phone and not sent yet (Codex #516: unknown = never carried)
         switch step {
         case .skipTopics: var s = model.setup.skipInterests ?? []; if let i = s.firstIndex(of: v) { s.remove(at: i) } else if s.count < 8 { s.append(v) }; model.setup.skipInterests = s
         case .skipReplies: model.setup.skipReplies = model.setup.skipReplies == v ? nil : v
@@ -322,6 +323,7 @@ struct SkipImportView: View {
     }
     /// N3 chips: tap once = like, twice = avoid, three times = clear (Chelsea 11/3: likes and things to avoid).
     private func cycleTaste(_ v: String) {
+        model.setup.skipSent = false
         var like = model.setup.skipLikes ?? [], avoid = model.setup.skipAvoid ?? []
         if let i = like.firstIndex(of: v) { like.remove(at: i); avoid.append(v) }
         else if let i = avoid.firstIndex(of: v) { avoid.remove(at: i) }
