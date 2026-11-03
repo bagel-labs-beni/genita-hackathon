@@ -11,11 +11,12 @@ final class SplashUITests: XCTestCase {
         add(s)
     }
 
-    private func launch(at: String? = nil) -> XCUIApplication {
+    private func launch(at: String? = nil, lateFirstFrame: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting", "--splash-demo"]
         var env = ["GENITA_REVIEW_STAGE": "signIn"] // A02 under the splash, as at a first launch
         if let at { env["GENITA_SPLASH_AT"] = at }
+        if let lateFirstFrame { env["GENITA_SPLASH_LATE_FIRST_FRAME"] = lateFirstFrame }
         app.launchEnvironment = env
         app.launch()
         return app
@@ -47,5 +48,17 @@ final class SplashUITests: XCTestCase {
         XCTAssertTrue(splash.waitForExistence(timeout: 10))
         splash.tap()
         XCTAssertTrue(splash.waitForNonExistence(timeout: 2), "tap wakes the app")
+    }
+
+    /// Chelsea 11/3: "the splash goes by too fast". On a phone the first frame comes late (cold launch work); the
+    /// splash clock started at launch, so it skipped ahead and was on screen ~1 s. It must be on screen ≥ 1.2 s.
+    func testSplashStaysOnScreenAtLeast1200msEvenWhenTheFirstFrameIsLate() throws {
+        let app = launch(lateFirstFrame: "1.5")
+        let visible = app.descendants(matching: .any)["splashVisibleMs"]
+        XCTAssertTrue(visible.waitForExistence(timeout: 15))
+        let ms = Int(visible.label) ?? 0
+        print("splash was on screen for \(ms) ms (first frame 1.5 s late)")
+        XCTAssertGreaterThanOrEqual(ms, 1200, "splash on screen at least 1.2 s")
+        XCTAssertLessThanOrEqual(ms, 2900, "and not dragged past its own timeline")
     }
 }

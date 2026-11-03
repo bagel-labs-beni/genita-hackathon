@@ -464,24 +464,48 @@ struct SplashOverlayModifier: ViewModifier {
     @State private var visible = GenitaSplash.shouldShowAtLaunch
     @State private var shownAt = Date()
     @State private var elapsedMs: Int?
+    /// when the splash was first on screen (the run loop turn after it appeared) and how long it stayed there
+    @State private var firstFrameAt: Date?
+    @State private var visibleMs: Int?
     func body(content: Content) -> some View {
+        #if DEBUG
+        let _ = Self.simulateLateFirstFrameOnce()
+        #endif
         content.overlay {
             if enabled && visible {
                 GenitaSplash(origin: shownAt) {
                     elapsedMs = Int(Date().timeIntervalSince(shownAt) * 1000)
+                    visibleMs = firstFrameAt.map { Int(Date().timeIntervalSince($0) * 1000) }
                     visible = false
                 }
+                .onAppear { DispatchQueue.main.async { if firstFrameAt == nil { firstFrameAt = Date() } } }
             }
         }
         #if DEBUG
-        // UI test reads how long the splash held A02 back (≤ 2700 ms)
+        // UI tests read how long the splash held the first screen back since launch, and how long it was on screen
         .overlay(alignment: .topLeading) {
-            if let elapsedMs {
-                Text(String(elapsedMs)).font(.system(size: 2)).opacity(0.02).allowsHitTesting(false).accessibilityIdentifier("splashElapsedMs")
+            VStack {
+                if let elapsedMs {
+                    Text(String(elapsedMs)).font(.system(size: 2)).opacity(0.02).allowsHitTesting(false).accessibilityIdentifier("splashElapsedMs")
+                }
+                if let visibleMs {
+                    Text(String(visibleMs)).font(.system(size: 2)).opacity(0.02).allowsHitTesting(false).accessibilityIdentifier("splashVisibleMs")
+                }
             }
         }
         #endif
     }
+
+    #if DEBUG
+    nonisolated(unsafe) private static var lateFirstFrameDone = false
+    /// UI test `GENITA_SPLASH_LATE_FIRST_FRAME=<s>`: block the main thread once before the first frame, like a heavy
+    /// cold launch on a device (fonts, design JSON, keychain, AppState).
+    private static func simulateLateFirstFrameOnce() {
+        guard !lateFirstFrameDone, let s = ProcessInfo.processInfo.environment["GENITA_SPLASH_LATE_FIRST_FRAME"].flatMap(Double.init) else { return }
+        lateFirstFrameDone = true
+        Thread.sleep(forTimeInterval: s)
+    }
+    #endif
 }
 
 public extension View {
