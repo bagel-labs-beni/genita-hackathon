@@ -79,6 +79,12 @@ export class Accounts {
     return r.rows[0] ? toUser(r.rows[0]) : null;
   }
 
+  /** Lookup only (never creates): e.g. the reserved demo template account (provider dev, sub demo:template). */
+  async findUserId(provider: Provider, sub: string): Promise<string | null> {
+    const r = await this.db.query("SELECT id FROM users WHERE provider = $1 AND provider_sub = $2", [provider, sub]);
+    return r.rows[0] ? String(r.rows[0].id) : null;
+  }
+
   /** Dev fallback (shared GENITA_SESSION_TOKEN): a stable users row per x-genita-user name. */
   async devUserId(name: string): Promise<string> {
     return (await this.upsertUser({ provider: "dev", sub: name, displayName: name })).user.id;
@@ -152,13 +158,15 @@ export class Accounts {
   async meView(userId: string) {
     const user = await this.getUser(userId);
     if (!user) return null;
-    const c = await this.db.query("SELECT prep_status FROM companions WHERE user_id = $1", [userId]);
+    const c = await this.db.query("SELECT prep_status, demo FROM companions WHERE user_id = $1", [userId]);
     const conv = await this.db.query("SELECT active_device, epoch FROM conversations WHERE user_id = $1 ORDER BY last_active_at DESC LIMIT 1", [userId]);
     return {
       user: { id: user.id, provider: user.provider, email: user.email, displayName: user.displayName, aiConsentAt: user.aiConsentAt, createdAt: user.createdAt },
       consented: !!user.aiConsentAt,
       hasCompanion: c.rows.length > 0,
       prepStatus: (c.rows[0]?.prep_status ?? "none") as "none" | "running" | "ready" | "failed",
+      /** D41: the companion is the ready-made judge demo (app shows a small "Demo companion" label) */
+      companionDemo: c.rows[0]?.demo === true,
       conversation: conv.rows[0] ? { activeDevice: conv.rows[0].active_device ?? null, epoch: Number(conv.rows[0].epoch) } : null,
     };
   }

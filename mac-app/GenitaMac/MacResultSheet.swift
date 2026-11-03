@@ -158,8 +158,8 @@ struct MacResultSheet: View {
                 let saved = entry?.saved == true
                 Button { finds.toggleSave() } label: {
                     Text(saved ? "Saved to Finds" : "Save to Finds").font(MacSheetInk.sans(16, .medium)).foregroundStyle(saved ? MacSheetInk.ink : MacSheetInk.onInk)
-                        .frame(width: 314, height: 50).background(saved ? MacSheetInk.chip : MacSheetInk.ink, in: RoundedRectangle(cornerRadius: 12))
-                }.buttonStyle(.plain).padding(.bottom, 56).accessibilityIdentifier("macResultSave").accessibilityValue(saved ? "saved" : "")
+                        .frame(width: 314, height: 50).contentShape(RoundedRectangle(cornerRadius: 12))
+                }.buttonStyle(MacGlassButtonStyle(kind: saved ? .regular : .prominent)).padding(.bottom, 56).accessibilityIdentifier("macResultSave").accessibilityValue(saved ? "saved" : "")
             }
         }
     }
@@ -247,10 +247,8 @@ struct MacProductCard: View {
             Button(action: open) {
                 Text("Open in browser ↗").font(MacSheetInk.sans(14, .medium))
                     .foregroundStyle(filled ? MacSheetInk.onInk : MacSheetInk.ink)
-                    .frame(width: 151, height: 34)
-                    .background(filled ? MacSheetInk.ink : MacSheetInk.sheet, in: RoundedRectangle(cornerRadius: 6))
-                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(filled ? .clear : MacSheetInk.line))
-            }.buttonStyle(.plain).onHover { hover = $0 }.padding(.top, 6)
+                    .frame(width: 151, height: 34).contentShape(RoundedRectangle(cornerRadius: 12))
+            }.buttonStyle(MacGlassButtonStyle(kind: filled ? .prominent : .regular)).onHover { hover = $0 }.padding(.top, 6)
                 .accessibilityLabel("Open \(pick.name) in your browser").accessibilityIdentifier("macOpenInBrowser")
         }.frame(width: 151, alignment: .leading)
     }

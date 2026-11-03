@@ -28,6 +28,9 @@
  *            ./_qa-scripts/genita-watch-moments). Per clip: reacted?, delay
  *            after the salient moment, spoken over a video line (must be 0), and a
  *            Spark judge for "fits the action" and "invented details".
+ *   --recall[=N]  "did you see that dunk?" a few seconds later (11/3): play the dunk / skate clip from the moments
+ *            set, hold its last frame 3 s, then ask about the moment as a typed turn. Spark judges whether the answer
+ *            recalls that moment and whether it invents anything. N runs per clip (default 3).
  *   --remote=wss://host   run --naming or --moments against a deployed server instead of
  *            a local one (bearer from GENITA_SESSION_TOKEN: a session JWT or the shared
  *            dev token; never printed). No server logs there: --moments takes the
@@ -51,7 +54,7 @@ if (existsSync(envFile)) process.loadEnvFile(envFile);
 const SR = 24000;
 const CHUNK = (SR * 2 * 80) / 1000;
 const args = process.argv.slice(2);
-const T5 = args.includes("--qa") || (!args.includes("--react") && !args.includes("--blank") && !args.includes("--naming") && !args.includes("--title") && !args.some((a) => a.startsWith("--moments"))) ? fixturePath("suite") : undefined;
+const T5 = args.includes("--qa") || (!args.includes("--react") && !args.includes("--blank") && !args.includes("--naming") && !args.includes("--title") && !args.some((a) => a.startsWith("--moments")) && !args.some((a) => a.startsWith("--recall"))) ? fixturePath("suite") : undefined;
 const outDir = args.find((a) => a.startsWith("--out="))?.slice(6) ?? join(tmpdir(), "genita-watch-sim");
 mkdirSync(outDir, { recursive: true });
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -484,6 +487,54 @@ if (args.includes("--title")) {
   result.title = { titleOk: `${rows.filter((r) => r.titleOk).length}/${rows.length}`, sceneGrounded: `${rows.filter((r) => r.sceneGrounded).length}/${rows.length}`, firstSpeechP50Ms: median(ms), firstSpeechMaxMs: ms.at(-1) ?? null, rows };
 }
 
+if (args.some((a) => a === "--recall" || a.startsWith("--recall="))) {
+  const n = Number(args.find((a) => a.startsWith("--recall="))?.slice(9) ?? 3) || 3;
+  const dir = join(homedir(), "genita-fixtures/genita-watch-moments");
+  const spec = JSON.parse(readFileSync(join(dir, "moments.json"), "utf8")) as { clips: { id: string; file: string; truth: string }[] };
+  const asks: Record<string, string> = { dunk: "Whoa, did you see that dunk?", skate: "Wait, did you see that trick?" };
+  const rows: Record<string, unknown>[] = [];
+  for (const clip of spec.clips.filter((c) => asks[c.id])) {
+    const m = prepare(join(dir, clip.file));
+    for (let run = 1; run <= n; run++) {
+      const call = new Call(url);
+      await call.open();
+      call.watch.send(JSON.stringify({ type: "start", source: "YouTube" }));
+      for (let i = 0; i < Math.round(6.5 * FPS); i++) {
+        call.watch.send(JSON.stringify({ type: "frame", image: m.frames[0].toString("base64"), motion: i ? 0 : 1 }));
+        call.watch.send(Buffer.alloc(Math.round((SR * 2) / FPS)));
+        await sleep(1000 / FPS);
+      }
+      await call.play(m);
+      for (let i = 0; i < 3 * FPS; i++) {
+        call.watch.send(JSON.stringify({ type: "frame", image: m.frames.at(-1)!.toString("base64"), motion: 0 }));
+        await sleep(1000 / FPS);
+      }
+      // a reaction may still be playing: let it finish first
+      for (const e of call.ev.filter((x) => x.type === "reply")) call.main.send(JSON.stringify({ type: "playback_done", utteranceId: e.utteranceId }));
+      const reacted = call.ev.filter((x) => x.type === "reply").map((x) => String(x.text));
+      const r = await call.ask(asks[clip.id]);
+      let verdict = { recalls: false, invented: false };
+      for (let i = 0; i < 3; i++) {
+        try {
+          const g = await sparkText(config.metaKey, {
+            input: `The user and a friend watched a video together. A few seconds after it, the user asked: "${asks[clip.id]}"\nWhat the video showed (ground truth): ${clip.truth}\nThe friend answered: "${r.a}"\nAnswer as JSON {"recalls":bool,"invented":bool}: recalls = the answer shows the friend saw that moment (it agrees and says something true about it, not "I missed it" or "what dunk?"); invented = it states something not in the ground truth.`,
+            effort: "low",
+          });
+          const o = JSON.parse(g.match(/\{[\s\S]*\}/)?.[0] ?? "null") as Record<string, unknown> | null;
+          if (o && typeof o.recalls === "boolean" && typeof o.invented === "boolean") { verdict = { recalls: o.recalls, invented: o.invented }; break; }
+        } catch {
+          await sleep(2000);
+        }
+      }
+      const row = { clip: clip.id, run, reactedBefore: reacted, q: asks[clip.id], a: r.a, firstAudioMs: r.firstAudioMs, ...verdict };
+      rows.push(row);
+      console.log(`${verdict.recalls && !verdict.invented ? "✓" : "✗"} ${clip.id} #${run} "${r.a}" (reacted before: ${JSON.stringify(reacted)}) ${JSON.stringify(verdict)} first audio ${r.firstAudioMs} ms`);
+      call.close();
+    }
+  }
+  result.recall = { recalls: rows.filter((x) => x.recalls).length, invented: rows.filter((x) => x.invented).length, n: rows.length, rows };
+}
+
 if (args.some((a) => a === "--moments" || a.startsWith("--moments="))) {
   // per clip: one share, ~6.5 s of the clip's first frame held still (a share's first seconds never react), then
   // the clip in real time (3 fps + sound), then its last frame held 7 s for the reaction to land
@@ -593,7 +644,7 @@ if (args.some((a) => a === "--moments" || a.startsWith("--moments="))) {
 const file = join(outDir, `watch-sim-${Date.now()}.json`);
 writeFileSync(file, JSON.stringify({ result, logs }, null, 1));
 const { rows: _r, ...qaSummary } = (result.qa ?? {}) as Record<string, unknown>;
-console.log("\nRESULT", JSON.stringify({ qa: result.qa ? qaSummary : undefined, react: result.react, blank: result.blank && { ...(result.blank as object), rows: undefined }, naming: result.naming && { ...(result.naming as object), rows: undefined }, title: result.title && { ...(result.title as object), rows: undefined }, moments: result.moments && { ...(result.moments as object), rows: undefined } }, null, 1));
+console.log("\nRESULT", JSON.stringify({ qa: result.qa ? qaSummary : undefined, react: result.react, blank: result.blank && { ...(result.blank as object), rows: undefined }, naming: result.naming && { ...(result.naming as object), rows: undefined }, title: result.title && { ...(result.title as object), rows: undefined }, moments: result.moments && { ...(result.moments as object), rows: undefined }, recall: result.recall && { ...(result.recall as object), rows: undefined } }, null, 1));
 console.log("saved", file);
 server?.close();
 process.exit(0);

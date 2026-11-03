@@ -1,16 +1,25 @@
 name: Appetize preview
 
 # Builds the iPhone app for the iOS Simulator and uploads it to Appetize.io, so it can be clicked through in a
-# browser (no device needed). The link opens the app in its browser-preview mode (launch argument
-# `--browser-preview`, Debug-compiled code only, see shared/Call/BrowserPreview.swift).
+# browser (no device needed). One upload, two links:
+#   - "Real app" (primary): no launch arguments, so the app runs as the TestFlight build does — the production
+#     server (the app's built-in default, genita-api.thebeni.ai), real email-code sign-in, real onboarding and calls.
+#   - "Mock": launch argument `--browser-preview` (shared/Call/BrowserPreview.swift) — no server, recorded call replay.
+# Appetize itself has no microphone on any platform and no iOS sound output (support.appetize.io), and the simulator
+# has no camera: in the real-app link the companion's face moves and captions show, but nobody can speak to it.
 #
 # Needs the repo secret APPETIZE_API_TOKEN. Without it a run only prints a notice and stops.
-# APPETIZE_PUBLIC_KEY (secret or variable, optional) makes every run update the same Appetize app, so the link stays
-# the same.
+# APPETIZE_PUBLIC_KEY (secret or variable) picks the Appetize app to update; without it, the app this workflow
+# created on 11/3 is updated, so the link stays the same.
 
 # Manual only (Chelsea 11/3: CI cost) — run it from main once per build (build 3, build 4).
 on:
   workflow_dispatch:
+    inputs:
+      upload:
+        description: Upload to Appetize (off = build and check only)
+        type: boolean
+        default: true
 
 concurrency:
   group: appetize-${{ github.ref }}
@@ -20,16 +29,19 @@ jobs:
   appetize:
     runs-on: macos-15
     timeout-minutes: 40
+    outputs:
+      key: ${{ steps.upload.outputs.key }}
     env:
       APPETIZE_API_TOKEN: ${{ secrets.APPETIZE_API_TOKEN }}
-      APPETIZE_PUBLIC_KEY: ${{ secrets.APPETIZE_PUBLIC_KEY || vars.APPETIZE_PUBLIC_KEY }}
+      # not a secret (it is in every link); the fallback is the app the first main run created (11/3)
+      APPETIZE_PUBLIC_KEY: ${{ secrets.APPETIZE_PUBLIC_KEY || vars.APPETIZE_PUBLIC_KEY || 'bttvcmvd763tor2p4txtmnszlq' }}
     steps:
       - name: Decide what to do
         id: plan
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
+          if [ "${{ github.event_name }}" = "pull_request" ] || [ "${{ inputs.upload }}" = "false" ]; then
             echo "build=true" >> "$GITHUB_OUTPUT"; echo "upload=false" >> "$GITHUB_OUTPUT"
-            echo "Pull request: build and zip only, nothing is uploaded."
+            echo "Build and zip only, nothing is uploaded."
           elif [ -z "$APPETIZE_API_TOKEN" ]; then
             echo "build=false" >> "$GITHUB_OUTPUT"; echo "upload=false" >> "$GITHUB_OUTPUT"
             echo "::notice title=Appetize skipped::The repo secret APPETIZE_API_TOKEN is not set, so nothing was built or uploaded. Add it under Settings > Secrets and variables > Actions, then run this workflow again."
@@ -58,10 +70,33 @@ jobs:
           sudo xcode-select -s "$XC"
           xcodebuild -version
 
-      # Release (optimised) for the simulator. DEBUG is switched on for this build only: the fixtures the preview
-      # uses are Debug-compiled code (as in the UI tests), and nothing runs without the --browser-preview launch
-      # argument. The TestFlight / App Store archive (device-test.yml) is Release without DEBUG and has none of it.
+      # Release (optimised) for the simulator, the TestFlight configuration. DEBUG is switched on for this build only so
+      # the same binary can also open the mock (`--browser-preview`); every DEBUG path is behind a launch argument or a
+      # GENITA_* variable, and the real-app link passes none, so it runs the Release code paths. The TestFlight / App
+      # Store archive (device-test.yml) is Release without DEBUG.
+      # Signed ad hoc ("Sign to Run Locally") with the keychain entitlements: the session token from sign-in lives in
+      # the keychain, and an unsigned simulator app has no keychain access group (the UI tests use --stub-signin for
+      # that reason). Sign in with Apple is left out: it needs a provisioning profile and an Apple ID on the device.
       # arm64 only: Appetize recommends ARM simulator builds.
+      - name: Simulator entitlements (keychain)
+        if: steps.plan.outputs.build == 'true'
+        run: |
+          cat > "$RUNNER_TEMP/simulator.entitlements" <<'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+          	<key>application-identifier</key>
+          	<string>SIMULATOR.ai.thebeni.genita</string>
+          	<key>keychain-access-groups</key>
+          	<array>
+          		<string>SIMULATOR.ai.thebeni.genita</string>
+          	</array>
+          </dict>
+          </plist>
+          EOF
+          plutil -lint "$RUNNER_TEMP/simulator.entitlements"
+
       - name: Build for the iOS Simulator
         if: steps.plan.outputs.build == 'true'
         run: |
@@ -72,8 +107,80 @@ jobs:
             ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
             SWIFT_ACTIVE_COMPILATION_CONDITIONS=DEBUG \
             CONFIGURATION_BUILD_DIR="$PWD/build-output/app" \
-            CODE_SIGNING_ALLOWED=NO | grep -E "error:|warning: unre|\*\* BUILD" | cut -c1-240
+            CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= PROVISIONING_PROFILE_SPECIFIER= \
+            CODE_SIGN_ENTITLEMENTS="$RUNNER_TEMP/simulator.entitlements" | grep -E "error:|warning: unre|\*\* BUILD" | cut -c1-240
           exit "${PIPESTATUS[0]}"
+
+      - name: The app carries the keychain entitlements
+        if: steps.plan.outputs.build == 'true'
+        run: |
+          APP=build-output/app/Genita.app
+          codesign -dv "$APP" 2>&1 | grep -E "Identifier|Signature" || true
+          codesign -d --entitlements - --xml "$APP" 2>/dev/null | head -c 1200; echo
+          # the simulator reads entitlements from the binary's __TEXT,__entitlements section (Xcode writes it for simulator builds)
+          otool -l "$APP/Genita" | grep -A1 "sectname __entitlements" || true
+          grep -aq "SIMULATOR.ai.thebeni.genita" "$APP/Genita" || { echo "::error title=No keychain entitlement::the binary has no keychain group, sign-in could not keep its session token"; exit 1; }
+
+      # On a booted simulator: (1) a tiny probe signed the same way does a keychain write + read with the app's query
+      # (data-protection keychain, as GenitaKit's KeychainTokenStore) — unsigned it gets -34018 (errSecMissingEntitlement),
+      # which is why sign-in could not keep its session before; (2) Genita itself installs and stays running.
+      - name: Keychain and launch check on the simulator
+        if: steps.plan.outputs.build == 'true'
+        run: |
+          D="$RUNNER_TEMP/kc"; mkdir -p "$D"
+          cat > "$D/probe.swift" <<'EOF'
+          import Foundation
+          import Security
+          let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "ai.thebeni.genita.probe",
+                                  kSecAttrAccount as String: "session", kSecUseDataProtectionKeychain as String: true]
+          SecItemDelete(q as CFDictionary)
+          var add = q
+          add[kSecValueData as String] = Data("token".utf8)
+          add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+          let added = SecItemAdd(add as CFDictionary, nil)
+          var read = q
+          read[kSecReturnData as String] = true
+          read[kSecMatchLimit as String] = kSecMatchLimitOne
+          var out: CFTypeRef?
+          let found = SecItemCopyMatching(read as CFDictionary, &out)
+          let line = "SecItemAdd=\(added) SecItemCopyMatching=\(found)"
+          print(line)
+          EOF
+          # signed the way Xcode signs the app for the simulator: entitlements in __TEXT,__entitlements, an ad hoc
+          # signature without entitlements (the linker's)
+          xcrun -sdk iphonesimulator swiftc -target arm64-apple-ios17.0-simulator "$D/probe.swift" -o "$D/unsigned"
+          xcrun -sdk iphonesimulator swiftc -target arm64-apple-ios17.0-simulator "$D/probe.swift" -o "$D/signed" \
+            -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __entitlements -Xlinker "$RUNNER_TEMP/simulator.entitlements"
+          UDID="$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k,v in sorted(d.items(), reverse=True) if 'iOS' in k for x in v if x['name'].startswith('iPhone')))")"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b >/dev/null
+          echo "keychain probe, unsigned: $(xcrun simctl spawn "$UDID" "$D/unsigned" 2>&1 || true)"
+          PROBE="$(xcrun simctl spawn "$UDID" "$D/signed" 2>&1 || true)"
+          echo "keychain probe (signed as the app): $PROBE"
+          xcrun simctl install "$UDID" build-output/app/Genita.app
+          xcrun simctl launch "$UDID" ai.thebeni.genita
+          sleep 30
+          RUNNING="$(xcrun simctl spawn "$UDID" launchctl list | grep -c 'ai.thebeni.genita$\|UIKitApplication:ai.thebeni.genita\[' || true)"
+          echo "Genita processes after 30 s: $RUNNING"
+          xcrun simctl io "$UDID" screenshot "$RUNNER_TEMP/launch.png" >/dev/null 2>&1 || true
+          xcrun simctl shutdown "$UDID" || true
+          echo "Simulator: keychain probe \`$PROBE\`; Genita running after 30 s: $RUNNING" >> "$GITHUB_STEP_SUMMARY"
+          # -34018 = errSecMissingEntitlement: a sign-in would be lost. A probe that could not run at all only warns.
+          case "$PROBE" in
+            "SecItemAdd=0 SecItemCopyMatching=0") ;;
+            *SecItem*) echo "::error title=Keychain write failed::$PROBE"; exit 1 ;;
+            *) echo "::warning title=Keychain probe did not run::$PROBE" ;;
+          esac
+          [ "$RUNNING" -ge 1 ] || { echo "::error title=Genita did not stay running on the simulator::"; exit 1; }
+
+      - name: Keep the launch screenshot
+        if: steps.plan.outputs.build == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: simulator-launch
+          path: ${{ runner.temp }}/launch.png
+          retention-days: 7
+          if-no-files-found: ignore
 
       - name: Zip the app
         if: steps.plan.outputs.build == 'true'
@@ -92,6 +199,7 @@ jobs:
           retention-days: 7
 
       - name: Upload to Appetize
+        id: upload
         if: steps.plan.outputs.upload == 'true'
         run: |
           if [ -n "$APPETIZE_PUBLIC_KEY" ]; then
@@ -113,17 +221,76 @@ jobs:
             exit 1
           fi
           KEY="$(python3 -c "import json; print(json.load(open('appetize-response.json'))['publicKey'])")"
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+          # grantPermissions: the camera / mic / photos prompts are answered yes (Appetize has neither device anyway)
+          BASE="https://appetize.io/app/${KEY}?device=iphone17pro&osVersion=26.0&autoplay=true"
+          URL="${BASE}&grantPermissions=true"
           # launchArgs is a URL-encoded JSON array: ["--browser-preview"]
-          URL="https://appetize.io/app/${KEY}?device=iphone17pro&osVersion=26.0&autoplay=true&launchArgs=%5B%22--browser-preview%22%5D"
-          echo "::notice title=Appetize preview::$URL"
+          MOCK_URL="${BASE}&launchArgs=%5B%22--browser-preview%22%5D"
+          echo "::notice title=Appetize real app (prod server)::$URL"
+          echo "::notice title=Appetize mock (no server)::$MOCK_URL"
           {
             echo "### Appetize preview"
             echo ""
-            echo "Open in a browser: $URL"
+            echo "- Real app, production server: $URL"
+            echo "- Mock, no server (recorded call, Preview tab on the right edge): $MOCK_URL"
             echo ""
-            echo "Commit \`${GITHUB_SHA::7}\`. The app opens in browser-preview mode; use the **Preview** tab on the right edge to jump between flows."
+            echo "Commit \`${GITHUB_SHA::7}\`. Real app: sign in with **Continue with email** (the 6-digit code arrives by email; Sign in with Apple can't run here). Appetize has no microphone and no iOS sound, and the simulator has no camera: a call connects and the face moves, but it can't hear you."
             if [ -z "$APPETIZE_PUBLIC_KEY" ]; then
               echo ""
               echo "**This run created a new Appetize app.** To keep this link for future runs, add its key \`$KEY\` as the repo secret (or variable) \`APPETIZE_PUBLIC_KEY\`. Without it every run creates another app with another link."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Opens the real-app link headless (Chromium on Linux, no Mac needed) on the public app page — the JS SDK embed
+  # needs a paid Appetize plan — screenshots A01 Welcome, taps it (the whole screen is "Get started") and
+  # screenshots A02 sign-in. Screenshots only: the page gives no UI tree. One short Appetize session per run.
+  check:
+    needs: appetize
+    if: needs.appetize.outputs.key != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Open the real app, tap through to sign-in
+        env:
+          URL: https://appetize.io/app/${{ needs.appetize.outputs.key }}?device=iphone17pro&osVersion=26.0&autoplay=true&grantPermissions=true&codec=jpeg
+        run: |
+          mkdir -p check && cd check
+          npm init -y >/dev/null
+          npm i --no-save --silent playwright@1.48.2
+          npx playwright install --with-deps chromium >/dev/null
+          cat > check.mjs <<'EOF'
+          import { chromium } from "playwright";
+          // headless Chromium has no GPU video path: JPEG frames (codec=jpeg) + software GL
+          const browser = await chromium.launch({ args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--autoplay-policy=no-user-gesture-required"] });
+          const page = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+          await page.goto(process.env.URL, { waitUntil: "domcontentloaded", timeout: 60000 });
+          // the device stream: the biggest video or canvas on the page
+          const screenBox = async () => page.evaluate(() => {
+            const els = [...document.querySelectorAll("video, canvas, img")].map(e => e.getBoundingClientRect())
+              .filter(r => r.width > 150 && r.height > 300).sort((a, b) => b.width * b.height - a.width * a.height);
+            return els[0] ? { x: els[0].x, y: els[0].y, width: els[0].width, height: els[0].height } : null;
+          });
+          await page.waitForTimeout(90000); // queue + boot + launch
+          await page.screenshot({ path: "welcome.png" });
+          const box = await screenBox();
+          console.log("device screen box:", JSON.stringify(box));
+          // no element found: the centre of the device frame at this viewport (Auto scale)
+          const at = box ? { x: box.x + box.width / 2, y: box.y + box.height / 2 } : { x: 736, y: 516 };
+          await page.mouse.click(at.x, at.y);
+          await page.waitForTimeout(10000);
+          await page.screenshot({ path: "signin.png" });
+          await browser.close();
+          EOF
+          node check.mjs
+
+      - name: Keep the screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: appetize-check
+          path: |
+            check/welcome.png
+            check/signin.png
+          retention-days: 7
+          if-no-files-found: ignore

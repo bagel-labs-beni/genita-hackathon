@@ -13,6 +13,7 @@
  */
 import type { SparkRequest } from "../meta/spark.ts";
 import { sparkJson } from "../meta/spark.ts";
+import { backgroundJson } from "../meta/sparkOpen.ts";
 import { styleProfileText, type StyleCard, type DisplayRow } from "../prep/importProfile.ts";
 import type { PrepStore } from "../prep/store.ts";
 import { EYEBROWS, SPARK_STORY_IDS, STORY_IDS, buildStoryRequest, cardTexts, toStory, type SparkStoryId, type Story, type StoryCard, type StoryId, type UnknownItem } from "./story.ts";
@@ -46,6 +47,8 @@ export type VoiceUpdate = { events: Array<{ text: string; fields: string[] }>; a
 export class Personalize {
   private readonly store: PersonalizeStore;
   private readonly json: JsonFn;
+  /** after-call profile growth: Muse Spark Open on Baseten first, Muse Spark API fallback (meta/sparkOpen.ts) */
+  private readonly bgJson: JsonFn;
   private readonly log: (event: string, data: Record<string, unknown>) => void;
   private readonly now: () => Date;
   private readonly locks = new Map<string, Promise<unknown>>();
@@ -53,9 +56,11 @@ export class Personalize {
   /** a failed story write isn't retried for STORY_BACKOFF_MS (each try is a Spark call) */
   private readonly storyFailedAt = new Map<string, number>();
 
-  constructor(o: { store: PersonalizeStore; json?: JsonFn; metaKey?: string; log?: (event: string, data: Record<string, unknown>) => void; now?: () => Date }) {
+  constructor(o: { store: PersonalizeStore; json?: JsonFn; backgroundJson?: JsonFn; metaKey?: string; log?: (event: string, data: Record<string, unknown>) => void; now?: () => Date }) {
     this.store = o.store;
     this.json = o.json ?? (<T>(req: Parameters<JsonFn>[0], signal?: AbortSignal) => sparkJson<T>(o.metaKey ?? "", req, signal));
+    // injected `json` alone (tests) keeps serving both; production gets the Spark Open path
+    this.bgJson = o.backgroundJson ?? (o.json ? o.json : (<T>(req: Parameters<JsonFn>[0], signal?: AbortSignal) => backgroundJson<T>(o.metaKey ?? "", req, { timeoutMs: 30_000, signal })));
     this.log = o.log ?? (() => {});
     this.now = o.now ?? (() => new Date());
   }
@@ -364,7 +369,7 @@ export class Personalize {
     const card = await this.store.getStyle(userId);
     if (!card) return 0;
     const t0 = performance.now();
-    const raw = await this.json<{ updates?: unknown; answered?: unknown }>(buildCallExtractRequest(card, turns, asked));
+    const raw = await this.bgJson<{ updates?: unknown; answered?: unknown }>(buildCallExtractRequest(card, turns, asked));
     const asOf = startedAt ?? new Date(this.now().getTime() - 60 * 60_000).toISOString();
     const updates: ProfileUpdate[] = toCallUpdates(raw, asked).map((u) => ({ ...u, asOf }));
     const n = (await this.update(userId, (latest) => {

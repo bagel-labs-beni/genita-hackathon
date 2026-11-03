@@ -339,7 +339,7 @@ struct MacAccountRow: View {
                 }
             }
         }
-        .font(.callout)
+        .font(.custom("PretendardVariable-Regular", fixedSize: 13)) // Figma: Pretendard everywhere but the serif titles
         .task { if call.account == .checking { await call.refresh() } }
         // 4401 → MAC-1, 4403 → MAC-2 (the control window is always there, so this sees every stop)
         .onChange(of: CallController.shared.stopped) { _, stop in if let stop { call.callStopped(stop) } }

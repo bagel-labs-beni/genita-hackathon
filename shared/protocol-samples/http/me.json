@@ -10,5 +10,6 @@
   "consented": true,
   "hasCompanion": true,
   "prepStatus": "running",
+  "companionDemo": false,
   "conversation": { "activeDevice": "iphone", "epoch": 3 }
 }

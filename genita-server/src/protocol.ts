@@ -280,7 +280,9 @@ export type ErrorCode =
   | "bad_persona"
   | "bad_message"
   | "unknown_type"
-  | "frame_too_large";
+  | "frame_too_large"
+  /** D41: this account's turns for today are used up (Judge access codes); the call stays open */
+  | "daily_limit";
 
 export type ServerEventType = ServerEvent["type"];
 

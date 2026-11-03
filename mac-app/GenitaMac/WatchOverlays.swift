@@ -69,7 +69,7 @@ struct SharingChip: View {
             Text(Self.label(source)).font(WatchPalette.sans(14, medium: true)).lineLimit(1)
         }
         .foregroundStyle(WatchPalette.onInk).padding(.horizontal, 12).frame(height: 36)
-        .background(WatchPalette.pill, in: Capsule())
+        .macDarkGlass(in: Capsule())
         .accessibilityElement(children: .combine)
     }
 }
@@ -82,7 +82,7 @@ struct ReactingCue: View {
             Text("Reacting").font(WatchPalette.sans(14, medium: true))
         }
         .foregroundStyle(WatchPalette.onInk).padding(.vertical, 8).padding(.horizontal, 16).frame(minHeight: 36)
-        .background(WatchPalette.pill, in: RoundedRectangle(cornerRadius: 18))
+        .macDarkGlass(in: Capsule())
         .accessibilityElement(children: .combine).accessibilityAddTraits(.updatesFrequently)
     }
 }
@@ -136,13 +136,8 @@ struct ShareNoticeSheet: View {
             // MS-1 (157:74): three even lines, one per sentence
             Text("Pick a window or your whole screen.\nI look while it’s shared and don’t keep it.\nGenita’s window is left out.")
                 .font(WatchPalette.sans(15)).lineSpacing(9).padding(.top, 16).fixedSize(horizontal: false, vertical: true)
-            Button(action: choose) {
-                Text("Choose what to share").font(WatchPalette.sans(16, medium: true)).foregroundStyle(WatchPalette.onInk)
-                    .frame(maxWidth: .infinity).frame(height: 50).background(WatchPalette.ink, in: RoundedRectangle(cornerRadius: 12))
-            }.buttonStyle(.plain).padding(.top, 32).accessibilityIdentifier("watchChooseShare")
-            Button(action: notNow) {
-                Text("Not now").font(WatchPalette.sans(15, medium: true)).frame(maxWidth: .infinity, minHeight: 44).contentShape(Rectangle())
-            }.buttonStyle(.plain).padding(.top, 4)
+            MacV2Button(label: "Choose what to share", id: "watchChooseShare", action: choose).padding(.top, 32)
+            MacV2Button(label: "Not now", style: .text, id: "watchNotNow", action: notNow).frame(maxWidth: .infinity).padding(.top, 4)
         }
         .foregroundStyle(WatchPalette.ink)
         .padding(.top, 28).padding(.horizontal, 38).padding(.bottom, 48)

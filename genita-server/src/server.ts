@@ -1,6 +1,6 @@
 /**
  * HTTP + WebSocket entry.
- *   GET  /healthz          → {ok:true}
+ *   GET  /healthz          → {ok:true, sessions, spark_open, spark_open_provider, spark_open_model}
  *   WS   /v1/session       → one realtime conversation (PROTOCOL.md)
  *   *    /v1/finds…        → result cards (finds/http.ts, F10-L6)
  *   WS   /v1/watch?session= → the Mac's screen share for that call (src/watch, F5)
@@ -26,6 +26,7 @@ import { Session, type ClientSink, type HistoryItem, type SessionDeps } from "./
 import { TranscribeStream } from "./meta/transcribe.ts";
 import { sparkStream } from "./meta/spark.ts";
 import { META_BASE, metaHeaders } from "./meta/http.ts";
+import { setLlmLog, sparkOpenStatus, startSparkOpenProbe } from "./meta/sparkOpen.ts";
 import { installKeepAlive, makePrewarm } from "./util/keepalive.ts";
 import { createSeamless } from "./tts/seamless.ts";
 import { createVoiceSeats } from "./tts/capacity.ts";
@@ -107,6 +108,11 @@ export async function startServer(
     throw new Error("GENITA_SESSION_TOKEN or DATABASE_URL (accounts) is required when HOST is not loopback");
   }
   const ops = configureOps(config, { log, db: accounts?.db });
+  // background structured calls → Muse Spark Open on Baseten (meta/sparkOpen.ts); one boot line for partner verification
+  setLlmLog(log);
+  // boot probe + every 10 min: is the model open to us yet? (llm.spark_open on each change; nothing without a key)
+  // uses the env this server was started with (tests pass their own); stopped when the server closes
+  const stopSparkOpenProbe = startSparkOpenProbe(env);
   // P0 11/3: without GENITA_MEMORY_FILE, memory lived in this process and every deploy erased it.
   // With accounts on, long-term memory goes to Postgres (migration 005), keyed by users.id.
   if (accounts && deps.memory?.ephemeral) deps.memory.useStore(new PgMemoryRepository(accounts.db));
@@ -162,7 +168,9 @@ export async function startServer(
   async function principal(req: IncomingMessage, url: URL): Promise<Principal | null> {
     const token = bearer(req, url);
     if (accounts && looksLikeJwt(token)) return accounts.verifyToken(token).catch(() => null);
-    const devOk = config.sessionToken ? sameToken(token, config.sessionToken) : loopback;
+    // keyless loopback access is for native apps: a browser page (any Origin header) never gets the dev identity,
+    // on HTTP as on WebSocket (a text/plain POST from a page skips CORS preflight)
+    const devOk = config.sessionToken ? sameToken(token, config.sessionToken) : loopback && req.headers.origin === undefined;
     if (!devOk) return null;
     const h = req.headers["x-genita-user"];
     const name = (Array.isArray(h) ? h[0] : h) ?? "demo";
@@ -214,7 +222,8 @@ export async function startServer(
       if (!who) return json(res, 401, { error: "unauthorized" });
       return handleHandoffHttp(handoff, req, res, url, who.userId, who.device);
     }
-    if (req.url === "/healthz") return json(res, 200, { ok: true, sessions: sessions.size });
+    // spark_open: available | not_listed | no_key | unknown | error, + provider/model (never the key)
+    if (req.url === "/healthz") return json(res, 200, { ok: true, sessions: sessions.size, ...sparkOpenStatus() });
     json(res, 404, { error: "not_found" });
   }
 
@@ -252,6 +261,7 @@ export async function startServer(
           wss.handleUpgrade(req, socket, head, (ws) => {
             ws.on("error", () => ws.terminate());
             if (!who) return ws.close(4401, "unauthorized");
+            if (who.kind === "dev" && !config.sessionToken && req.headers.origin !== undefined) return ws.close(4401, "unauthorized");
             if (!who.consented) return ws.close(4403, "consent_required");
             ws.on("message", () => touches.get(id)?.());
             attachWatchSocket(ws, session!, log);
@@ -275,6 +285,8 @@ export async function startServer(
           ws.on("error", () => ws.terminate());
           // F1-L5: close codes the app can act on (4401 → sign in again, 4403 → consent screen)
           if (!who) return ws.close(4401, "unauthorized");
+          // Browser pages can open localhost WebSockets too. Keyless dev access is for native apps.
+          if (who.kind === "dev" && !config.sessionToken && req.headers.origin !== undefined) return ws.close(4401, "unauthorized");
           if (isPresence) {
             // presence carries no conversation content, so consent is not needed to know the owner
             const device = deviceFor(who.device, url);
@@ -429,7 +441,9 @@ export async function startServer(
     // Demo S4: an iPhone call may suggest moving to this account's open Mac app
     const macNearby = here === "iphone" ? () => handoff.isPresent(who.userId, "mac") : undefined;
     // lane 개인화: the stored profile, first-call asks, voice corrections and post-call growth for this account
-    const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, renameCompanion: rename, companionVoiceId,
+    // D41: judge demo accounts get a per-code daily turn cap (auth/judge.ts), on top of the D46 ops caps
+    const turnGate = who.judge && accounts ? accounts.judgeTurns.gate(who.judge) : undefined;
+    const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, turnGate, renameCompanion: rename, companionVoiceId,
       priorTurns: (revision) => priorTurns(who.userId, id, revision, callDevice), priorThread: () => priorThread(id),
       personalize: deps.personalize ?? prep.deps.personalize, macNearby,
       continuesCall: () => continuesOtherDevice(who.userId, id, callDevice),
@@ -445,7 +459,7 @@ export async function startServer(
     sessionDevices.set(id, callDevice);
     const gen = ++nextGen;
     sessionGens.set(id, gen);
-    log("session.open", { session: id, sessions: sessions.size, auth: who.kind });
+    log("session.open", { session: id, sessions: sessions.size, auth: who.kind, ...(who.judge ? { judge: who.judge } : {}) });
     let idle = setTimeout(() => session.close(4000, "idle"), IDLE_MS);
     const touch = () => {
       clearTimeout(idle);
@@ -495,5 +509,6 @@ export async function startServer(
     for (const userId of lastTurns.keys()) dropLastTurns(userId);
     void accounts?.close().catch(() => {});
   });
+  http.once("close", stopSparkOpenProbe);
   return new Promise((resolve) => http.listen(config.port, config.host, () => resolve(http)));
 }

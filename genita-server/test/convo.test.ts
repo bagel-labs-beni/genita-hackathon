@@ -1044,5 +1044,26 @@ test("guard (opener sweep v4 profile): 'you're someone who…', 'you give … en
   assert.equal(guardSentence("You're totally someone who judges a product by its face first.", none), "label");
   assert.equal(guardSentence("You give total Apple-store-polish energy.", none), "label");
   assert.equal(guardSentence("Are you more clean and minimal or bold and loud?", none), "intake");
-  for (const t of ["Are you coming tonight or tomorrow?", "That song gives total summer energy.", "You give great advice."]) assert.equal(guardSentence(t, none), null, t);
+  for (const t of ["That song gives total summer energy.", "You give great advice."]) assert.equal(guardSentence(t, none), null, t);
+});
+
+// ───────────── personality labels (personalization lane, import v4 opener 11/3; hackathon bans personality analyzers) ─────────────
+test("hard fail: a personality label is never said; an either/or preference intake is dropped outside the ask turn", async () => {
+  for (const line of [
+    "You're totally someone who judges a product by its face first.",
+    "You give total Apple-store-polish energy, Chelsea.",
+    "You totally seem like someone who deletes an app the second it gets cluttered.",
+    "You're the type who reads the reviews twice.",
+    "You're such a clean-desk person who hates clutter.",
+    "Chelsea, you look way too polished for a Tuesday night, straight premium app energy.",
+    "Okay miss only premium pixels allowed, what are we judging tonight?",
+    "Okay design snob, what tiny perfect detail are we obsessing over tonight.",
+    "Okay you pixel perfectionist, what are we roasting tonight.",
+  ]) assert.equal(guardSentence(line, none), "label", line);
+  assert.equal(guardSentence("Are you more clean and minimal or bold when it comes to how clothes should look?", none), "intake");
+  assert.equal(guardSentence("Are you more clean and minimal or bold when it comes to how clothes should look?", { ...none, askTurn: true }), null);
+  for (const keep of ["That jacket has serious main-street energy.", "You're going to love this one.", "Okay, that trench is very you.", "I'd pick the trench because it has big city energy.", "Go with the red jacket — you have the energy to pull it off.", "I'd pick the red jacket for you because the jacket has big city energy.", "Pick the red jacket because it's very main character.", "The Queen's Gambit is the better show."]) assert.equal(guardSentence(keep, none), null, keep);
+  const { openerBlock, profileHooks } = await import("../src/convo/opener.ts");
+  assert.match(openerBlock({ hasProfile: true, sinceLastMs: null, hasItem: false, hook: "Film photography" }), /never about who they are/);
+  assert.deepEqual(profileHooks(["- Interests: Film photography", "How they come across with you (match it; never describe or label them with it):", "- Interests: Playful humor", "Leans (indirect, not stated by them; at most a light guess, never a fact or a nickname):", "- Likes: Streaming series"].join("\n")), ["Film photography"]);
 });

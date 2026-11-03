@@ -29,7 +29,8 @@ export type OpenerInput = {
  * several on one line ("Into: a, b, c"), which are split on commas. Dislikes, talk style and boundaries are not hooks.
  */
 /** unconfirmed suggestions and to-confirm asks are not things we know about them (Codex #352 P2) */
-const STOP_SECTION = /^\s*(?:suggestions\b|ask naturally\b)/i;
+// …and #432's "How they come across with you" / "Leans" blocks: a manner to match and indirect leans, never an opener topic
+const STOP_SECTION = /^\s*(?:suggestions\b|ask naturally\b|how they come across\b|leans\b)/i;
 /** a hook is said out loud on the first line: never health, money, a place, a person (Codex #352 P1) */
 const PRIVATE_HOOK = /\b(?:lives?|living|based in|from|moved|city|town|address|neighbou?rhood|works? (?:at|for)|job at|friend|boyfriend|girlfriend|partner|wife|husband|mom|dad|mother|father|sister|brother|son|daughter|kids?|coworker|boss)\b/i;
 const HOOK_LINE = /^\s*-?\s*(taste|interests?|into|likes?|loves?|hobbies|favou?rites?)\s*:\s*(.+)$/i;

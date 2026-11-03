@@ -5,10 +5,12 @@
  *   GET    /auth/apple/start      ?challenge=<b64url sha256(verifier)>&device=mac                Mac: 302 to Apple
  *   POST   /auth/apple/callback   Apple form_post (code, id_token, state, user)                  302 genita://auth?code=…
  *   POST   /auth/exchange         {code, verifier}                                                Mac: one-time code → session
+ *   POST   /auth/judge            {code, device?}                                                 Judge access (D41): demo-account session, no Apple ID;
+ *                                                                                                 a companion-less judge account gets the demo "Jin" (prep/demo.ts)
  *   POST   /auth/email/start      {email}                                                         mails a 6-digit code (also /v1/auth/email/start)
  *   POST   /auth/email/verify     {email, code, device?}                                          code → session (also /v1/auth/email/verify)
  *   POST   /auth/logout           (session)                                                       revokes this session
- *   GET    /me                    {user, consented, hasCompanion, prepStatus, conversation}
+ *   GET    /me                    {user, consented, hasCompanion, prepStatus, companionDemo, conversation}
  *   PATCH  /me                    {displayName}                                                   blank → 400
  *   POST   /me/consent            {kind?: "ai_data", version?}
  *   DELETE /me                    Apple revoke → blobs users/<id>/ + avatars/<companion>/ → rows (cascade)
@@ -155,6 +157,7 @@ export function readState(secret: string, state: string, nowSec = Math.floor(Dat
  */
 export function clientIp(req: IncomingMessage, trustProxy: boolean): string {
   if (trustProxy) {
+    // the LAST entry is the one our own proxy appended; earlier entries are whatever the caller sent
     const xff = req.headers["x-forwarded-for"];
     const last = (Array.isArray(xff) ? xff.join(",") : xff)?.split(",").pop()?.trim();
     if (last) return last;
@@ -283,6 +286,30 @@ export function createAccountRoutes(core: AccountsCore): AccountRoutes {
       const want = Buffer.from(c.challenge);
       if (a.length !== want.length || !timingSafeEqual(a, want)) throw fail("apple", "verifier_mismatch");
       return send(res, 200, await issue(c.userId, c.device, c.isNew, "apple"));
+    }
+
+    // ── Judge access (D41): code → session for that code's demo account ──
+    if (m === "POST" && p === "/auth/judge") {
+      const ip = clientIp(req, core.trustProxy);
+      if (!core.judge.enabled) throw new HttpError(404, "not_found");
+      const b = await readJson(req);
+      // no await from here to the verdict: concurrent requests from one IP can't all slip past the limit
+      if (core.judge.limited(ip)) {
+        log("auth.judge", { ok: false, reason: "rate_limited", ip });
+        throw new HttpError(429, "rate_limited");
+      }
+      const code = str(b.code, 128).trim();
+      const device: Device = b.device === "mac" ? "mac" : "iphone";
+      const label = code ? core.judge.check(ip, code) : null;
+      if (!label) {
+        log("auth.judge", { ok: false, reason: code ? "wrong_code" : "missing_code", ip });
+        throw fail("judge", code ? "wrong_code" : "missing_code", code ? 401 : 400);
+      }
+      const { user, isNew } = await accounts.upsertUser({ provider: "dev", sub: `judge:${label}`, displayName: "Judge" });
+      log("auth.judge", { ok: true, label, device, ip });
+      // first sign-in (or no companion): the ready-made demo companion, so the first call needs no prep wait
+      await core.seedDemo?.(user.id);
+      return send(res, 200, await issue(user.id, device, isNew, "judge"));
     }
 
     // ── email one-time code (any address; same answer whether or not an account exists) ──

@@ -402,13 +402,15 @@ struct FindCardPage: View {
     let offline: Bool
     var openFinds: (() -> Void)?
     private var finds: FindsModel { call.finds }
+    /// The title row's measured height (title, subtitle, reason chips): the half sheet sizes the camera picture from it.
+    @State private var titleRowHeight: CGFloat = 0
 
     var body: some View {
         ScrollViewReader { reader in
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 8) {
                 header
-                titleRow
+                titleRow.onGeometryChange(for: CGFloat.self) { $0.size.height } action: { titleRowHeight = $0 }
                 switch card.kind {
                 case .recipe: recipe
                 case .outfit: outfit
@@ -488,10 +490,16 @@ struct FindCardPage: View {
     }
 
     /// A saved recipe describes the camera result as a completed observation (Figma F2 138:2).
+    /// "15 min · Have 6 · Need soy sauce" → "15 min · Had 6 · Needed soy sauce" (#215 short line; the older
+    /// "You have 4, need rice" form is still read for saved cards).
     static func reopenedSubtitle(_ subtitle: String) -> String {
-        subtitle
-            .replacingOccurrences(of: "You have ", with: "You had ")
-            .replacingOccurrences(of: ", need ", with: ", needed ")
+        subtitle.components(separatedBy: " · ").map { part in
+            if part.hasPrefix("Have ") { return "Had " + part.dropFirst(5) }
+            if part.hasPrefix("Need ") { return "Needed " + part.dropFirst(5) }
+            return part
+                .replacingOccurrences(of: "You have ", with: "You had ")
+                .replacingOccurrences(of: ", need ", with: ", needed ")
+        }.joined(separator: " · ")
     }
 
     // MARK: recipe
@@ -504,12 +512,18 @@ struct FindCardPage: View {
     @ViewBuilder private var recipe: some View {
         if let cam = card.camera {
             CameraFrame(frame: entry.frames.indices.contains(cam.frame) ? entry.frames[cam.frame] : nil, camera: cam, items: card.items, selected: finds.selectedItem,
-                        checking: entry.checking, height: full ? 196 : (entry.reopened ? (card.title.count <= 17 ? 196 : 130) : 132))
+                        checking: entry.checking, height: full ? 196 : (entry.reopened ? (card.title.count <= 17 ? 196 : 130) : halfCameraHeight))
         }
         chipRow
         if let sel = card.items.first(where: { $0.id == finds.selectedItem }), sel.tier == .maybe { confirmRow(sel) }
         if !card.steps.isEmpty { stepsSection }
     }
+
+    /// Half sheet (344 pt page, scrolling off): the picture gives way so the ingredient chips show whole under a
+    /// two-line title. 344 − 40 top − 44 header − 3 × 8 spacing − 44 chips = 192 for title row + picture; 132 at most
+    /// (r03), 88 at least. Before: "Kimchi fried rice / with tofu and egg" cut the chip row in half (UI sweep 11/3).
+    static func halfCameraHeight(titleRow: CGFloat) -> CGFloat { min(132, max(88, 192 - titleRow)) }
+    private var halfCameraHeight: CGFloat { titleRowHeight > 0 ? Self.halfCameraHeight(titleRow: titleRowHeight) : 132 }
 
     // r03 `.chiprow`: missing first (blue, +), then what you have (white, ✓); maybe = faded "?"
     private var chipRow: some View {
