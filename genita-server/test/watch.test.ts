@@ -1438,3 +1438,23 @@ test("a quick look that fails (Spark timeout) hands its frames to the next look 
   assert.deepEqual(looks[0], ["A", "B"]);
   assert.ok(looks[1].includes("A"), `the failed look's moment is looked at again (got ${looks[1]})`);
 });
+
+test("page comment: a YouTube page with its video playing is not commented on as a page (it waits, then drops)", async () => {
+  const page = JSON.stringify({ protectedVideo: false, moment: "sweet", page: true, reaction: "ooh, a cooking channel", talkOver: false, memo: "A YouTube page with a cooking video.", speakers: [] });
+  const { c, reacted, at } = controller([page]);
+  c.onMessage({ type: "start", source: "Google Chrome", title: "Perfect scrambled eggs - YouTube" });
+  for (let ms = 6_000; ms <= 9_000; ms += 333) {
+    at(ms);
+    c.onMessage({ type: "frame", image: `${frame}${ms}`, motion: 0.05 });
+  }
+  at(9_100);
+  c.tick();
+  await new Promise((r) => setTimeout(r, 5));
+  assert.deepEqual(reacted, [], "the video is playing: no page comment");
+  for (let ms = 9_400; ms <= 19_000; ms += 333) {
+    at(ms);
+    c.onMessage({ type: "frame", image: `${frame}${ms}`, motion: 0.05 });
+    c.tick();
+  }
+  assert.deepEqual(reacted, [], "still playing, then stale: dropped");
+});

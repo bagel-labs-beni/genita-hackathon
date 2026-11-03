@@ -17,7 +17,7 @@ import type { SparkRequest, SparkStreamEvent } from "../meta/spark.ts";
 import type { AsrEvent } from "../meta/transcribe.ts";
 import type { WatchServerEvent } from "../protocol.ts";
 import { buildMemoRequest, buildQuestionContext, buildQuickRequest, cleanTitle, earlyVerdict, parseMemoVerdict, parseQuick, type DialogueLine, type MemoEntry, type MemoVerdict, type QuestionContext } from "./memo.ts";
-import { echoNow, isVideoEcho, pickFrames, REACT_MIN_GAP_MS, reactionAllowed, reactionScript, speakerChipEnabled, SPEAKER_SILENCE_MS } from "./rules.ts";
+import { echoNow, isVideoEcho, pickFrames, REACT_MAX_STALE_MS, REACT_MIN_GAP_MS, reactionAllowed, reactionScript, speakerChipEnabled, SPEAKER_SILENCE_MS } from "./rules.ts";
 
 export interface WatchAsr {
   on(ev: "event", fn: (e: AsrEvent) => void): unknown;
@@ -111,6 +111,9 @@ const MEMO_AFTER_LINE_MS = 1_200;
 const HOLD_WHY = new Set(["dialogue", "conversation", "turn"]);
 /** a page comment is about something that stays on screen: it also waits out the share's first seconds */
 const HOLD_WHY_PAGE = new Set([...HOLD_WHY, "just_started"]);
+/** frames in the last 3 s that mean the screen is a playing video (≈2 fps sustained), not a page being read: a
+ *  YouTube window is a web page too, and its video is watched for moments, not commented on as a page */
+const PAGE_BUSY_FRAMES = 6;
 /** the timeline memo sees a short motion sequence: 5 frames ~0.6 s apart (≈2.4 s), not stills seconds apart */
 const MEMO_FRAMES = 4;
 /** memo Spark lanes raced per memo (GENITA_WATCH_MEMO_LANES, default 2) */
@@ -777,6 +780,18 @@ export class WatchController {
     }
     const script = reactionScript(v.moment, v.reaction);
     if (!script) return;
+    if (v.page) {
+      const now = this.deps.now();
+      if (now - verdictAt > REACT_MAX_STALE_MS) {
+        if (this.held?.v === v) this.held = null;
+        return;
+      }
+      if (this.frames.filter((f) => now - f.at <= 3_000).length >= PAGE_BUSY_FRAMES) {
+        if (!retry) this.log("watch.react.held", { why: "video", moment: v.moment, reaction: v.reaction });
+        if (!this.held || this.held.at <= verdictAt) this.held = { v, at: verdictAt };
+        return;
+      }
+    }
     // an older moment (a slower memo finishing late) never replaces or clears a newer one that is waiting
     if (!retry && this.held && verdictAt < this.held.at) return;
     const gate = reactionAllowed({
