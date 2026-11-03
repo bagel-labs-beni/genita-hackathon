@@ -1,5 +1,10 @@
 /**
- * Conversation eval harness (real Muse Spark for both companion and judge).
+ * Conversation eval harness. Live mode = real Muse Spark for both companion and judge; offline mode (#346) = the
+ * deterministic rubric in rubric.ts over recorded transcripts, no key, no vendor call (CI runs it via
+ * test/convoEvalRubric.test.ts):
+ *   npm run eval:convo:offline                                   (fixtures/transcripts.json; exit 1 if a verdict changed)
+ *   npm run eval:convo -- --offline <transcripts.json> [--out <dir>]
+ *   npm run eval:convo -- --rubric <report.json> [--out <dir>]    (a saved live run, scored offline)
  *
  *   npm run eval:convo -- --root <genita-server dir> [--label before|after] [--only id1,id2] [--n 1]
  *   npm run eval:convo -- --compare <reportA.json> <reportB.json>
@@ -236,6 +241,21 @@ async function main() {
     for (const x of r.rows) console.log(`${x.match ? "ok " : "NO "} ${x.scenarioId}: human ${x.human}, judge ${x.judge}`);
     return;
   }
+  // #346 offline: recorded transcripts or a saved live report, scored by the rubric — no key, no vendor call
+  if (process.argv.includes("--offline") || process.argv.includes("--rubric")) {
+    const { loadFixtures, runOffline, fromReport, DEFAULT_FIXTURES } = await import("./offline.ts");
+    const rb = arg("rubric");
+    const off = process.argv.indexOf("--offline");
+    const path = rb ?? (off >= 0 && process.argv[off + 1] && !process.argv[off + 1].startsWith("--") ? process.argv[off + 1] : DEFAULT_FIXTURES);
+    const transcripts = rb ? fromReport(JSON.parse(readFileSync(rb, "utf8")) as Report, scenarios) : loadFixtures(path);
+    const r = runOffline(transcripts, rb ? `live report ${rb}` : `fixtures ${path}`);
+    const out = arg("out");
+    if (out) { await mkdir(out, { recursive: true }); await writeFile(join(out, "rubric.md"), r.md); await writeFile(join(out, "rubric.json"), JSON.stringify(r.scored, null, 2)); }
+    console.log(r.md);
+    // fixtures carry a verdict: a changed one fails the command (CI-style); a live report only reports
+    if (!rb && !r.ok) process.exitCode = 1;
+    return;
+  }
   const root = resolve(arg("root") ?? process.cwd());
   const label = arg("label") ?? "run";
   const only = arg("only")?.split(",");
@@ -280,7 +300,12 @@ async function main() {
   await writeFile(join(out, "report.json"), JSON.stringify(report, null, 2));
   await writeFile(join(out, "report.md"), reportMd(report));
   await writeFile(join(out, "transcripts.md"), transcriptsMd(report));
+  // the same offline rubric on the live transcripts, so a live run and CI speak the same six numbers (#346)
+  const { fromReport, runOffline } = await import("./offline.ts");
+  const rub = runOffline(fromReport(report, scenarios), `live ${label}`);
+  await writeFile(join(out, "rubric.md"), rub.md);
   console.log(reportMd(report).split("## Per scenario")[0]);
+  console.log(rub.md.split("\n| transcript |")[0]);
   console.log(`report: ${out}`);
 }
 
