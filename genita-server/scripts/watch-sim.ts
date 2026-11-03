@@ -25,6 +25,10 @@
  *            ./_qa-scripts/genita-watch-moments). Per clip: reacted?, delay
  *            after the salient moment, spoken over a video line (must be 0), and a
  *            Spark judge for "fits the action" and "invented details".
+ *   --remote=wss://host   run --naming against a deployed server instead of a local one
+ *            (bearer from GENITA_SESSION_TOKEN: a session JWT or the shared dev
+ *            token; never printed). Server logs aren't available there, so only
+ *            --naming (client-side timing + judge) is supported remotely.
  * Keys come from GENITA_ENV_FILE / ~/.config/genita/meta.env and are never printed.
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -92,7 +96,7 @@ class Call {
     this.url = url;
   }
   async open(): Promise<void> {
-    this.main = new WebSocket(`${this.url}/v1/session`);
+    this.main = new WebSocket(`${this.url}/v1/session`, { headers: AUTH });
     this.main.on("message", (d, bin) => {
       if (!bin) this.ev.push({ ...JSON.parse(d.toString()), _t: performance.now() });
     });
@@ -108,7 +112,7 @@ class Call {
     );
     const ready = await this.wait((e) => e.type === "ready");
     this.sessionId = String(ready.sessionId);
-    this.watch = new WebSocket(`${this.url}/v1/watch?session=${this.sessionId}`);
+    this.watch = new WebSocket(`${this.url}/v1/watch?session=${this.sessionId}`, { headers: AUTH });
     this.watch.on("message", (d, bin) => {
       if (!bin) this.wev.push({ ...JSON.parse(d.toString()), _t: performance.now() });
     });
@@ -215,12 +219,18 @@ class Call {
 
 const config = loadConfig();
 const logs: Record<string, unknown>[] = [];
-const server = await startServer({ ...config, port: 0 }, (event, data) => {
+const REMOTE = args.find((a) => a.startsWith("--remote="))?.slice(9).replace(/\/+$/, "") ?? null;
+const remoteToken = process.env.GENITA_SESSION_TOKEN?.trim();
+if (REMOTE && !remoteToken) throw new Error("--remote needs GENITA_SESSION_TOKEN (a session JWT or the shared dev token)");
+if (REMOTE && !args.includes("--naming")) throw new Error("--remote supports --naming only (the other modes read server logs)");
+const AUTH: Record<string, string> = REMOTE ? { authorization: `Bearer ${remoteToken}` } : {};
+const server = REMOTE ? null : await startServer({ ...config, port: 0 }, (event, data) => {
   logs.push({ t: Math.round(performance.now()), event, ...data });
   if (event.startsWith("watch.") && !["watch.asr.status", "watch.open", "watch.close"].includes(event)) console.log(event, JSON.stringify(data).slice(0, 220));
 });
-const addr = server.address();
-const url = `ws://127.0.0.1:${typeof addr === "object" && addr ? addr.port : 8787}`;
+const addr = server?.address();
+const url = REMOTE ?? `ws://127.0.0.1:${typeof addr === "object" && addr ? addr.port : 8787}`;
+if (REMOTE) console.log(`remote: ${new URL(url).host}`);
 
 async function judge(truth: string, q: string, a: string): Promise<boolean> {
   for (let i = 0; i < 3; i++) {
@@ -536,5 +546,5 @@ writeFileSync(file, JSON.stringify({ result, logs }, null, 1));
 const { rows: _r, ...qaSummary } = (result.qa ?? {}) as Record<string, unknown>;
 console.log("\nRESULT", JSON.stringify({ qa: result.qa ? qaSummary : undefined, react: result.react, blank: result.blank && { ...(result.blank as object), rows: undefined }, naming: result.naming && { ...(result.naming as object), rows: undefined }, moments: result.moments && { ...(result.moments as object), rows: undefined } }, null, 1));
 console.log("saved", file);
-server.close();
+server?.close();
 process.exit(0);
