@@ -453,6 +453,7 @@ jobs:
             sleep $((i * 5))
           done
           test "$published" = 1 || { echo "::error::could not push the appcast entry after 4 tries"; exit 1; }
+          echo "PUBLISHED_NEWEST=$NEWEST" >> "$GITHUB_ENV"
           {
             echo "### Sparkle update published"
             echo "Genita $MAC_VERSION ($BUILD_NUMBER) → $UPDATES_BASE_URL/appcast.xml. Pages deploys in about a minute; installed Macs see it at next launch or daily check."
@@ -485,8 +486,9 @@ jobs:
             code="$(curl -sL --connect-timeout 10 --max-time 180 -o "$OUT" -w '%{http_code}' "$URL" || true)"
             size="$( [ -f "$OUT" ] && wc -c < "$OUT" | tr -d ' ' || echo 0)"
             sigok=no
-            if [ "$code" = 200 ] && [ "$size" = "$LEN" ] && printf '%s' "$SPARKLE_ED_PRIVATE" | "$RUNNER_TEMP/sparkle/bin/sign_update" --verify -f - "$OUT" "$SIG" >/dev/null 2>&1; then sigok=yes; fi
-            echo "try $i: HTTP $code, $size bytes; newest appcast build $NB ($LEN bytes); signature $sigok"
+            # the live appcast must already show what this run pushed (Pages deployed), not an older state
+            if [ "${NB:-0}" -ge "$PUBLISHED_NEWEST" ] 2>/dev/null && [ "$code" = 200 ] && [ "$size" = "$LEN" ] && printf '%s' "$SPARKLE_ED_PRIVATE" | "$RUNNER_TEMP/sparkle/bin/sign_update" --verify -f - "$OUT" "$SIG" >/dev/null 2>&1; then sigok=yes; fi
+            echo "try $i: HTTP $code, $size bytes; live newest build $NB (pushed $PUBLISHED_NEWEST, $LEN bytes); ok $sigok"
             if [ "$sigok" = yes ]; then ok=1; break; fi
             sleep 20
           done
