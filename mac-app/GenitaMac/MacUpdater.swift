@@ -21,6 +21,7 @@ final class MacUpdater: NSObject {
     private var installNow: (() -> Void)?
     private var readyVersion: String?
     private var panel: NSPanel?
+    private var panelObservers: [NSObjectProtocol] = []
     private var activeObserver: NSObjectProtocol?
 
     static var installedBuild: Int? { GenitaAppConfigStore.installedBuild }
@@ -76,13 +77,36 @@ final class MacUpdater: NSObject {
         panel.backgroundColor = .clear
         panel.hasShadow = false
         panel.contentView = host
-        let frame = window.frame
-        panel.setFrameOrigin(NSPoint(x: frame.midX - size.width / 2, y: frame.maxY - size.height - 38))
         window.addChildWindow(panel, ordered: .above)
         self.panel = panel
+        Self.place(panel, by: window)
+        // the window moves / resizes / changes screen: place the pill again (a child keeps its old offset otherwise)
+        panelObservers = [NSWindow.didMoveNotification, NSWindow.didResizeNotification, NSWindow.didChangeScreenNotification].map { name in
+            NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self, weak window] _ in
+                MainActor.assumeIsolated { if let panel = self?.panel, let window { Self.place(panel, by: window) } }
+            }
+        }
+    }
+
+    /// QA 291 (11/4): 38 pt under the window top put the pill over the home title ("Jin is on this Mac."). It hangs
+    /// 8 pt under the window (the pill's own 28 pt padding is the gap), above it when there's no room below (a tall
+    /// call window), otherwise inside the window's bottom — and the result is always kept on the visible screen.
+    @MainActor private static func place(_ panel: NSPanel, by window: NSWindow) {
+        let size = panel.frame.size
+        let frame = window.frame
+        let visible = (window.screen ?? NSScreen.main)?.visibleFrame ?? frame
+        let inset: CGFloat = 28 - 8
+        var y = frame.minY - size.height + inset
+        if y < visible.minY { y = frame.maxY - inset }
+        if y + size.height > visible.maxY { y = frame.minY - 4 }
+        y = min(max(y, visible.minY), visible.maxY - size.height)
+        let x = min(max(frame.midX - size.width / 2, visible.minX), visible.maxX - size.width)
+        panel.setFrameOrigin(NSPoint(x: x, y: y))
     }
 
     @MainActor private func hidePill() {
+        panelObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        panelObservers = []
         guard let panel else { return }
         panel.parent?.removeChildWindow(panel)
         panel.orderOut(nil)
@@ -160,7 +184,8 @@ struct UpdateReadyPill: View {
         .background(Capsule().fill(.black.opacity(0.78)))
         .overlay(Capsule().strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
         .shadow(color: .black.opacity(0.25), radius: 14, y: 6)
-        .padding(12)
+        // room for the whole shadow (14 + 6): at 12 the panel's edge cut it into a visible rectangle (QA 291)
+        .padding(28)
         .scaleEffect(shown || reduceMotion ? 1 : 0.92)
         .offset(y: shown || reduceMotion ? 0 : -10)
         .opacity(shown ? 1 : 0)
