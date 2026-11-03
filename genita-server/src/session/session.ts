@@ -1508,7 +1508,7 @@ export class Session {
   }
 
   /** Conversation engine v1 inputs for this turn: style, the greeting's opener, an initiative block, the camera lines. */
-  private v1Extras(turn: { greeting?: { item: Memory | null } | null; cue?: { block: string } | null }, userText = "", cameraFrames = 0): Partial<Parameters<typeof buildInstructions>[0]> {
+  private v1Extras(turn: { greeting?: { item: Memory | null } | null; cue?: { block: string } | null }, userText = "", cameraFrames = 0, screenFrames = 0): Partial<Parameters<typeof buildInstructions>[0]> {
     const last = this.lastMessageAt;
     let opener: string | undefined;
     if (turn.greeting) {
@@ -1534,7 +1534,9 @@ export class Session {
     } catch { /* the reply never fails on the camera lane */ }
     // intel eval 11/4: "do I look ok?" with the camera off got an empty reply (the unseen guard dropped "You look great")
     // Codex #541 P2: an explicit "do I look ok?" beats a lingering face hint, and shared-screen images count as seeing
-    if (!turn.greeting && !turn.cue && userText) { const off = cameraOffHint(userText, cameraFrames > 0 || !!perception); if (off) perceptionHint = off; }
+    // Codex #541 r2: only this turn's camera frames say the camera is on (a cached face line can outlive it); a shared
+    // screen counts for "look at this", never for "do I look ok?"
+    if (!turn.greeting && !turn.cue && userText) { const off = cameraOffHint(userText, cameraFrames > 0, screenFrames > 0); if (off) perceptionHint = off; }
     // P1: closeness, question rhythm, mood, what landed, recall — one "This turn:" line on a user turn (never a greeting / cue)
     let turnLine: string | undefined;
     this.subscribePerception();
@@ -1684,7 +1686,7 @@ export class Session {
       ...this.history.map((h): InputMessage => (h.role === "user" ? { role: "user", content: h.text } : { role: "assistant", content: h.text })),
       { role: "user", content },
     ];
-    const v1 = this.v1 ? this.v1Extras(turn, text, images.length) : {};
+    const v1 = this.v1 ? this.v1Extras(turn, text, camera.length, images.length - camera.length) : {};
     const base = buildInstructions({
       persona,
       user: this.user,

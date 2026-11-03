@@ -5,12 +5,17 @@
  * on any other turn. Pure.
  */
 // Codex #541 P2: "can you see what I mean", "do I look like I care" are figures of speech, not asks to be seen
-const NOT_LOOK = /\b(?:see what i mean|see where i'?m coming from|see my point|look like i care|look like i give|look (?:it )?up|look into)\b/i;
+const NOT_LOOK = /\b(?:see what i(?:'?m| am)? (?:mean|saying|getting at)|see what you mean|see where i'?m coming from|see my point|look like i care|look like i give|look (?:it )?up|look into)\b/i;
+/** about how THEY look (needs the camera, a shared screen doesn't show them) vs "look at this" (a shared screen counts) */
+const SELF_LOOK = /\b(?:(?:how|do|does|did) (?:do |does )?(?:i|my [a-z]+) look\b|how do i look|can you see me|do you see me|look at me\b|what am i (?:wearing|holding)|(?:rate|judge|check(?: out)?) my (?:fit|outfit|look|hair|makeup|shoes)|how(?:'s| is| are) my (?:fit|outfit|hair|makeup|shoes|look))/i;
 const LOOK_ASK = /\b(?:(?:how|do|does|did) (?:do |does )?(?:i|this|it|my [a-z]+) look\b|how do i look|can you see (?:me|this|it|my|what)|do you see (?:me|this|my|what)|look at (?:this|me|my|these)\b|what am i (?:wearing|holding)|(?:rate|judge|check(?: out)?) my (?:fit|outfit|look|hair|makeup|shoes)|how(?:'s| is| are) my (?:fit|outfit|hair|makeup|shoes|look)|what do you think of (?:my|this) (?:fit|outfit|look|hair|top|dress))/i;
 
 export const CAMERA_OFF_HINT = "Their camera is off right now, so you can't see them or anything they show: say that in your own playful way and ask them to flip the camera on or describe it.";
 
 /** the hint for this user turn, or null (camera on, or not a "look at me / this" line) */
-export function cameraOffHint(userText: string, cameraOn: boolean): string | null {
-  return !cameraOn && LOOK_ASK.test(userText) && !NOT_LOOK.test(userText) ? CAMERA_OFF_HINT : null;
+export function cameraOffHint(userText: string, cameraOn: boolean, screenShown = false): string | null {
+  if (cameraOn || !LOOK_ASK.test(userText) || NOT_LOOK.test(userText)) return null;
+  // Codex #541 r2: a shared screen answers "look at this", never "do I look ok?"
+  if (screenShown && !SELF_LOOK.test(userText)) return null;
+  return CAMERA_OFF_HINT;
 }
