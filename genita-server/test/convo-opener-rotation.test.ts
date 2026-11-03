@@ -126,3 +126,8 @@ test("opener topics (Codex #352 round 3): an unknown Forget revision neither rea
   assert.deepEqual(r.recent, []);
   assert.deepEqual(pickOpenerTopic("u6", ["a thing", "b thing"], [], 0, undefined, undefined, 0).recent, ["a thing"], "the null pick wrote nothing");
 });
+
+test("#194 follow-up: the GK-1 ask turn's question is never dropped as intake", async () => {
+  const { guardSentence } = await import("../src/convo/guard.ts");
+  assert.equal(guardSentence("What kind of music do you like for focus?", { camera: false, userText: "ok", askTurn: true }), null);
+});

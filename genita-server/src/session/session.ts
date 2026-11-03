@@ -1488,7 +1488,10 @@ export class Session {
     // v1 sentence guard (src/convo/guard.ts): the first dropped sentence, spoken only if nothing else is
     const guarded: { first: { raw: string; cls: GuardClass } | null; narration: boolean; tool: boolean } = { first: null, narration: false, tool: false };
     let laughs = 0;
-    const guardCtx = { camera: (built?.images.length ?? 0) > 0, userText: synthetic ? "" : text };
+    // #194 GK-1: this turn carries the call's one still-to-confirm question; the guard lets that question through
+    // (read from the request itself: it was built before this turn was counted)
+    const askTurn = !synthetic && !interpret && !!this.ask && (req.instructions ?? "").includes(this.ask.line);
+    const guardCtx = { camera: (built?.images.length ?? 0) > 0, userText: synthetic ? "" : text, askTurn };
     const enqueueSentences = (list: string[], keepOpener = false) => {
       for (const raw of list) {
         const p = parseTaggedSentence(raw);
