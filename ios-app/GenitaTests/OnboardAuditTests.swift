@@ -168,4 +168,24 @@ import UIKit
         XCTAssertLessThanOrEqual(704 + (20 - 44) - se, 667 - 108 - 12, "note bottom above the button")
         XCTAssertGreaterThanOrEqual(289 - se, 120)
     }
+
+    /// AU-35 · PP-01 NET/BAD: one failed preview greys V04, and the list comes back by itself once the service answers.
+    func testOneFailedPreviewDoesNotGreyTheVoiceListForGood() async throws {
+        let voices = Data(#"{"voices":[{"id":"72","name":"Tara"},{"id":"9","name":"Leah"}],"suggested":"72","available":true}"#.utf8)
+        let (model, _) = makeModel { req in
+            let path = req.url?.path ?? ""
+            if path.hasSuffix("/preview") { return (503, Data()) }
+            if path.hasSuffix("/v1/companion/voices") { return (200, voices) }
+            return (404, Data())
+        }
+        let player = VoicePlayer()
+        player.recoveryInterval = .milliseconds(50)
+        await player.load(client: model.onboarding, imageId: "img1", kind: "human")
+        XCTAssertTrue(player.available)
+        player.preview(player.voices[0], client: model.onboarding)
+        for _ in 0..<200 where player.available { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertFalse(player.available, "the failed preview greys the list")
+        for _ in 0..<200 where !player.available { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertTrue(player.available, "…and it comes back without leaving V04")
+    }
 }
