@@ -314,7 +314,7 @@ export function nameAsYou(sentence: string, name: string | undefined): string {
  * "fourteen twenty three Maple"): when their line is about money, health or where they live, any of its numbers
  * repeated (digits or spoken) drops the sentence. Prices in a shopping turn are not touched.
  */
-const SENSITIVE_CONTEXT = /\b(?:salary|income|raise|make|making|earn\w*|paid|pay|rent|debt|owe|savings|bank|blood pressure|weight|weigh|kg|lbs?|pounds|sugar|cholesterol|heart rate|bpm|street|st|ave(?:nue)?|road|rd|apartment|apt|address|zip|moved|new place|live at)\b/i;
+const SENSITIVE_CONTEXT = /\b(?:salary|income|raise|paycheck|per year|a year|annual(?:ly)?|net worth|savings|in (?:my|the) bank|i owe|debt|rent is|i (?:make|earn)\s+\$?\d|i'?m (?:making|earning)\s+\$?\d|blood pressure|blood sugar|glucose|a1c|cholesterol|heart rate|bpm|bmi|i weigh|my weight|address|zip ?code|apartment \d|apt\.? ?\d|live at|moved to|\d+\s+\w+\s+(?:street|st|avenue|ave|road|rd|blvd|boulevard|lane|ln|drive|dr|way|court|ct)\b)/i;
 const ONES_W = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"];
 const TENS_W = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"];
 function under100(n: number): string { return n < 20 ? ONES_W[n] : TENS_W[Math.floor(n / 10)] + (n % 10 ? `[- ]${ONES_W[n % 10]}` : ""); }

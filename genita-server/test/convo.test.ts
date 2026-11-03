@@ -1414,3 +1414,14 @@ test("r3 sweep 11/4: money / health / address numbers they said are never said b
   assert.equal(r.text, "Finally, you actually did it.");
   session.close();
 });
+
+test("Codex #506 gate: cooking amounts, oven temperatures, minutes and a shopping budget are not sensitive numbers", () => {
+  const c = (sentence: string, userText: string) => guardSentence(sentence, { camera: false, userText });
+  assert.equal(c("Use 100 grams of sugar.", "Can I make cookies with 100 grams of sugar?"), null);
+  assert.equal(c("Bake it at 180 degrees.", "Can I make this at 180 degrees?"), null);
+  assert.equal(c("Simmer it for twenty minutes.", "Can we make soup in 20 minutes?"), null);
+  assert.equal(c("These boots are $150.", "I can pay $150 for boots."), null);
+  assert.equal(c("No way, eighty five k is huge!", "guess what, I got a raise, I make 85k now"), "sensitive");
+  assert.equal(c("That one fifty over ninety five is scary.", "my blood pressure was 150 over 95 today"), "sensitive");
+  assert.equal(c("Fourteen twenty three Maple, nice!", "the new place is 1423 Maple Street"), "sensitive");
+});
