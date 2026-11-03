@@ -242,17 +242,18 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # Opens the real-app link headless (Appetize JS SDK in Chromium on Linux, no Mac needed), taps A01 "Get started",
-  # waits for the A02 sign-in screen and keeps a screenshot, the UI tree and the app's log. One short Appetize session per run.
+  # Opens the real-app link headless (Chromium on Linux, no Mac needed) on the public app page — the JS SDK embed
+  # needs a paid Appetize plan — screenshots A01 Welcome, taps it (the whole screen is "Get started") and
+  # screenshots A02 sign-in. Screenshots only: the page gives no UI tree. One short Appetize session per run.
   check:
     needs: appetize
     if: needs.appetize.outputs.key != ''
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Open the real app and wait for sign-in
+      - name: Open the real app, tap through to sign-in
         env:
-          KEY: ${{ needs.appetize.outputs.key }}
+          URL: https://appetize.io/app/${{ needs.appetize.outputs.key }}?device=iphone17pro&osVersion=26.0&autoplay=true&grantPermissions=true&codec=jpeg
         run: |
           mkdir -p check && cd check
           npm init -y >/dev/null
@@ -260,59 +261,30 @@ jobs:
           npx playwright install --with-deps chromium >/dev/null
           cat > check.mjs <<'EOF'
           import { chromium } from "playwright";
-          import { writeFileSync } from "node:fs";
-          const key = process.env.KEY;
-          const html = `<!doctype html><html><body>
-            <iframe id="appetize" width="400" height="860" frameborder="0" scrolling="no"></iframe>
-            <script src="https://js.appetize.io/embed.js"></script></body></html>`;
-          const browser = await chromium.launch();
-          const page = await browser.newPage({ viewport: { width: 500, height: 900 } });
-          await page.route("https://check.genita.test/", r => r.fulfill({ contentType: "text/html", body: html }));
-          await page.goto("https://check.genita.test/");
-          await page.waitForFunction(() => window.appetize && window.appetize.getClient, null, { timeout: 60000 });
-          const out = await page.evaluate(async (key) => {
-            const logs = [];
-            const client = await window.appetize.getClient("#appetize", { buildId: key, device: "iphone17pro", osVersion: "26.0", grantPermissions: true, debug: true });
-            const session = await client.startSession();
-            session.on("log", d => logs.push(d.message));
-            const t0 = Date.now();
-            const within = (p, ms) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error("timeout")), ms))]);
-            let found = null, lastError = "", welcome = null;
-            const shots = {};
-            // A01 Welcome first (as in TestFlight): "Get started" opens A02 sign-in
-            while (!welcome && Date.now() - t0 < 120000) {
-              try { await within(session.findElement({ attributes: { accessibilityLabel: "Get started" } }), 15000); welcome = "Get started"; }
-              catch (e) { lastError = String(e); await new Promise(r => setTimeout(r, 3000)); }
-            }
-            shots.welcome = (await session.screenshot("base64")).data;
-            try { await session.tap({ element: { attributes: { accessibilityLabel: "Get started" } } }, { timeout: 10000 }); }
-            catch (e) { await session.tap({ position: { x: "50%", y: "50%" } }); }
-            while (!found && Date.now() - t0 < 180000) {
-              for (const text of ["Continue with email", "Continue with Apple"]) {
-                try { await within(session.findElement({ attributes: { text } }), 15000); found = text; break; } catch (e) { lastError = String(e); }
-              }
-              if (!found) await new Promise(r => setTimeout(r, 3000));
-            }
-            if (!found) logs.push("findElement: " + lastError);
-            const waitedMs = Date.now() - t0;
-            const shot = await session.screenshot("base64");
-            let ui = null; try { ui = await session.getUI(); } catch (e) { ui = String(e); }
-            await session.end();
-            return { found, welcome, waitedMs, shot: shot.data, welcomeShot: shots.welcome, ui, logs };
-          }, key);
-          writeFileSync("signin.png", Buffer.from(out.shot, "base64"));
-          writeFileSync("welcome.png", Buffer.from(out.welcomeShot, "base64"));
-          writeFileSync("ui.json", typeof out.ui === "string" ? out.ui : JSON.stringify(out.ui, null, 1));
-          writeFileSync("app-log.txt", out.logs.join("\n"));
-          const net = out.logs.filter(l => /cloudfront|genita-api|app-config|auth\/|nw_|NSURLError|TLS/i.test(l)).slice(0, 40);
-          console.log(`welcome=${out.welcome} signIn=${out.found} after ${out.waitedMs} ms; log lines ${out.logs.length}`);
-          console.log(net.join("\n"));
+          // headless Chromium has no GPU video path: JPEG frames (codec=jpeg) + software GL
+          const browser = await chromium.launch({ args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--autoplay-policy=no-user-gesture-required"] });
+          const page = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+          await page.goto(process.env.URL, { waitUntil: "domcontentloaded", timeout: 60000 });
+          // the device stream: the biggest video or canvas on the page
+          const screenBox = async () => page.evaluate(() => {
+            const els = [...document.querySelectorAll("video, canvas, img")].map(e => e.getBoundingClientRect())
+              .filter(r => r.width > 150 && r.height > 300).sort((a, b) => b.width * b.height - a.width * a.height);
+            return els[0] ? { x: els[0].x, y: els[0].y, width: els[0].width, height: els[0].height } : null;
+          });
+          await page.waitForTimeout(90000); // queue + boot + launch
+          await page.screenshot({ path: "welcome.png" });
+          const box = await screenBox();
+          console.log("device screen box:", JSON.stringify(box));
+          // no element found: the centre of the device frame at this viewport (Auto scale)
+          const at = box ? { x: box.x + box.width / 2, y: box.y + box.height / 2 } : { x: 736, y: 516 };
+          await page.mouse.click(at.x, at.y);
+          await page.waitForTimeout(10000);
+          await page.screenshot({ path: "signin.png" });
           await browser.close();
-          process.exit(out.found ? 0 : 1);
           EOF
           node check.mjs
 
-      - name: Keep the screenshot
+      - name: Keep the screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -320,7 +292,5 @@ jobs:
           path: |
             check/welcome.png
             check/signin.png
-            check/ui.json
-            check/app-log.txt
           retention-days: 7
           if-no-files-found: ignore

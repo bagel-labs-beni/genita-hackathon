@@ -10,6 +10,8 @@ struct ConversationView: View {
     private var denied: LocalCallMedia.Kind? { media.denied ?? (call.cameraDenied ? .camera : call.micDenied ? .microphone : nil) }
     private let call = CallController.shared
     @State private var moreOpen = false
+    /// RP-1 (D37): Report from ⋮ More
+    @State private var reportOpen = false
     #if DEBUG
     /// #291 probe for UI tests: how many times ✕ Stop interpreting ran its action (the tap reached the button)
     @State private var debugStopTaps = 0
@@ -168,7 +170,7 @@ struct ConversationView: View {
                                 Spacer(minLength: 0)
                                 // #180: Move to Mac runs the move (unpaired → the P01 pairing sheet)
                                 CallMoreSheet(call: call, textChatEnabled: appConfig.config.flag("textChat", default: false), moveToMacSubtitle: handoff.link.connected ? "Connected to your Mac" : "Pair with your Mac", moveToMac: { handoff.moveToMac() },
-                                              openFinds: { openFindsTab() }) {
+                                              openFinds: { openFindsTab() }, report: { reportOpen = true }) {
                                     withAnimation(.easeOut(duration: 0.22)) { moreOpen = false }
                                 }
                             }.frame(width: full.size.width, height: full.size.height).transition(.move(edge: .bottom))
@@ -185,7 +187,7 @@ struct ConversationView: View {
                         DesignText(node: title).frame(width: title.w, height: title.h).position(x: title.x + title.w / 2, y: title.y + top + title.h / 2)
                         menuRow("Chat", icon: "reference-menu-chat", y: 118, width: panelWidth, top: top) { withAnimation { model.menuOpen = false } }.accessibilityIdentifier("returnConversation")
                         menuRow("Setting", text: "Finds", symbol: "bookmark", badge: findsList.count > 0 ? "\(findsList.count)" : nil, y: 165, width: panelWidth, top: top) { openFindsTab() }.accessibilityIdentifier("menuFinds")
-                        menuRow("Setting", icon: "reference-menu-settings", y: 212, width: panelWidth, top: top) { model.menuOpen = false; model.settingsOpen = true }.accessibilityIdentifier("settings")
+                        menuRow("Setting", text: "Settings", icon: "reference-menu-settings", y: 212, width: panelWidth, top: top) { model.menuOpen = false; model.settingsOpen = true }.accessibilityIdentifier("settings")
                         if waitingCopy == nil && handoffEnabled {
                             moveToMacRow(y: 259, width: panelWidth, top: top) { withAnimation { model.menuOpen = false }; handoff.moveToMac() }.accessibilityIdentifier("moveToMac")
                         }
@@ -211,6 +213,7 @@ struct ConversationView: View {
         .onChange(of: reduceMotion) { _, on in call.setFaceReduceMotion(on || CallMotion.reviewStill) }
         .onChange(of: handoff.surface) { _, surface in let onMac = surface != .active; if !connecting { if onMac { call.hideFace() } else if scenePhase == .active { showFace() } } }
         .sheet(isPresented: $model.settingsOpen) { SettingsView(model: model) }
+        .reportFlow(isPresented: $reportOpen, surface: "call", auth: model.onboarding.auth) { call.lastReplyText }
         .task(id: model.setup.imageData) { loopURL = model.companionLoopURL }
         // S09-P (D28): the face is still being made while the call runs; keep `model.prep` fresh so the in-call
         // indicator (`model.callPrepIndicator`, S09-PREP 228:543) follows scene → expressions → mouth.
@@ -291,13 +294,7 @@ struct ConversationView: View {
         }
     }
     /// r03 `.rail`: half → up 440, peek/searching → up 122, full → hidden behind the sheet.
-    private func railShift(_ s: SheetState) -> CGFloat {
-        switch s {
-        case .half, .rising, .full: -440
-        case .peek, .searching: -122
-        default: 0
-        }
-    }
+    private func railShift(_ s: SheetState) -> CGFloat { CameraBoxes.railShift(s) }
 
     func dismissDenied() { media.denied = nil; call.dismissDenied() }
     func openAppSettings() {
@@ -318,7 +315,9 @@ struct ConversationView: View {
                 Color.clear
                 if let symbol { Image(systemName: symbol).font(.system(size: 18, weight: .regular)).foregroundStyle(CallInk.ink).frame(width: 21, height: 21).position(x: 20, y: 22) }
                 else { Image(resource: icon).resizable().frame(width: title == "Chat" ? 20.7 : 21.7007, height: 20.7).position(x: 20, y: 22) }
-                DesignText(node: label, text: text ?? label.characters).frame(width: label.w, height: label.h).position(x: label.x - 24 + label.w / 2, y: 22)
+                // "Settings" is wider than the Figma "Setting" node: room to 140 pt, as Move to Mac
+                let w = max(label.w, 140)
+                DesignText(node: label, text: text ?? label.characters).frame(width: w, height: label.h).position(x: label.x - 24 + w / 2, y: 22)
                 if let badge { Text(badge).font(TypeStyle.body(14)).foregroundStyle(CallInk.mute).position(x: width - 48 - 12, y: 22) }
             }.frame(width: width - 48, height: 44).contentShape(Rectangle())
         }.buttonStyle(.plain).position(x: width / 2, y: y + 22 + top).accessibilityLabel(text ?? title)

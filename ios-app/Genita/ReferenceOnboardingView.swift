@@ -165,7 +165,7 @@ import UniformTypeIdentifiers
         let sourceY: CGFloat = stage == .name ? 454 : stage == .preparing ? 704 : 736
         return Button(action: advance) {
             ZStack(alignment: .topLeading) {
-                RoundedRectangle(cornerRadius: 12).fill(enabled ? stage == .summary ? Color(red: 0, green: 0.6352941176, blue: 1) : Color("Ink") : Color(white: 0.8))
+                GlassCTA(color: enabled ? stage == .summary ? Color(red: 0, green: 0.6352941176, blue: 1) : Color("Ink") : Color(white: 0.8))
                 DesignText(node: source, color: enabled ? UIColor(white: 0.99215686, alpha: 1) : UIColor(white: 0.65, alpha: 1))
                     .frame(width: source.w, height: source.h).position(x: (width - 77) / 2 + 1, y: source.y - sourceY + source.h / 2)
             }
@@ -289,7 +289,12 @@ import UniformTypeIdentifiers
             ZStack {
                 RoundedRectangle(cornerRadius: 12).fill(.white).overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(white: 0.89), lineWidth: 1))
                 if let data = model.setup.imageData, let image = UIImage(data: data) {
-                    Image(uiImage: image).resizable().scaledToFit().clipShape(RoundedRectangle(cornerRadius: 12))
+                    // the whole photo, never cropped; the bands beside a portrait photo are the photo itself, soft
+                    // (UI sweep 11/3: a portrait sat in wide white bands inside the white card)
+                    ZStack {
+                        Image(uiImage: image).resizable().scaledToFill().frame(width: width - 48, height: 289).clipped().blur(radius: 24).opacity(0.55)
+                        Image(uiImage: image).resizable().scaledToFit()
+                    }.frame(width: width - 48, height: 289).clipShape(RoundedRectangle(cornerRadius: 12))
                 } else {
                     let icon = nodes.first { $0.name == "Subtract" }!
                     let label = texts.first { $0.characters == "Upload Image" }!

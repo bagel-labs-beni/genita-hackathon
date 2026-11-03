@@ -63,6 +63,33 @@ const SLANG: [RegExp, string][] = [
   [/\b(?:lol|lmao|lmfao|rofl)\b/gi, "haha"], [/\b(?:pls|plz)\b/gi, "please"], [/\btho\b/gi, "though"], [/\bw\/(?=\s)/gi, "with"],
 ];
 
+/**
+ * 11/3 voice-naturalness pass: Seamless reads an ALL-CAPS word letter by letter ("SO" → "S. O."), so shouted words
+ * are said as words; real acronyms stay spelled. Stretched letters ("sooo", "yesss") come out dragged and robotic, so
+ * they collapse to the word ("hmmm" keeps its "mm", "goooood" is "good"); "hahahaha" is "haha". Captions keep the written form.
+ */
+const ACRONYMS = new Set(["TV", "NASA", "FBI", "CIA", "USA", "US", "UK", "EU", "NYC", "LA", "SF", "DC", "CEO", "CTO", "DM", "DMs", "ID",
+  "PM", "AM", "ASAP", "DIY", "BBQ", "FAQ", "GPS", "PDF", "URL", "USB", "VIP", "NBA", "NFL", "BTS", "K", "TBD", "RSVP", "OMG", "LOL", "RN", "FR",
+  "IKEA", "UNESCO", "NATO", "UFO", "MRI", "ER", "ICU", "IQ", "PhD", "MBA", "IT", "HR", "PR", "QA", "UI", "UX", "API", "AI"]);
+const SHOUTED_2 = new Set(["NO", "SO", "OH", "GO", "MY", "ME", "WE", "DO", "BE", "UP", "IS", "IN", "ON", "TO", "OF", "AT", "HI", "YO", "OK", "AH", "UH", "UM", "HE", "OR"]);
+const ROMAN = /^M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})$/;
+function speakCaps(t: string): string {
+  return t.replace(/\b[A-Z]{2,}\b/g, (w) => {
+    if (ACRONYMS.has(w) || ROMAN.test(w)) return w; // acronyms, Roman numerals ("III"; "DID" is not one)
+    if (w.length === 2) return SHOUTED_2.has(w) ? w.toLowerCase() : w;
+    return /[AEIOUY]/.test(w) ? w.toLowerCase() : w;
+  });
+}
+function unstretch(t: string): string {
+  return t
+    .replace(/\b(?:ha){3,}h?\b/gi, (w) => (w[0] === "H" ? "Haha" : "haha"))
+    .replace(/\b(?:he){3,}\b/gi, (w) => (w[0] === "H" ? "Hehe" : "hehe"))
+    // lower-case runs only ("III" stays a numeral); at a word's end the stretch is one letter ("sooo" → "so",
+    // "yesss" → "yes", "hmmm" keeps "mm"), inside a word two ("goooood" → "good", "cooool" → "cool") — Codex P2
+    .replace(/([a-z])\1{2,}(?![a-z])/g, (_, c: string) => (c === "m" ? c + c : c))
+    .replace(/([a-z])\1{2,}/g, "$1$1");
+}
+
 const EMOJI = /[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\u{FE0F}\u{200D}]/gu;
 
 /** Shared clean-up: markdown, URLs, emojis, tags, brackets. */
@@ -79,6 +106,7 @@ function clean(t: string): string {
     .replace(/\(([^()]{1,60})\)/g, ", $1,")
     .replace(/\s*—\s*|\s+-\s+/g, ", ")
     .replace(/\.{3,}|…/g, "...")
+    .replace(/[!?！？]*[?？][!?！？]*|[!！]{2,}/g, (m) => (/[?？]/.test(m) ? "?" : "!")) // "?!" asks, "!!!" is one "!"
     .replace(/\s+([,.!?])/g, "$1")
     .replace(/,\s*,+/g, ",")
     .replace(/\s{2,}/g, " ")
@@ -90,6 +118,8 @@ export function normalizeEnglish(text: string): string {
   let t = clean(text);
   for (const [re, w] of ABBR) t = t.replace(re, w);
   for (const [re, w] of SLANG) t = t.replace(re, w);
+  t = t.replace(/\b(?:OK|Ok|ok)\b(?!\.\w)/g, "okay").replace(/\bu\b/g, "you").replace(/\bur\b/g, "your");
+  t = speakCaps(unstretch(t));
   // times: 3:30pm, 10:05 AM, 7pm
   t = t.replace(/\b(\d{1,2}):(\d{2})\s*([ap])\.?m\.?\b/gi, (_, h, m, ap) => `${numberToWords(+h)} ${m === "00" ? "" : +m < 10 ? `oh ${numberToWords(+m)} ` : numberToWords(+m) + " "}${ap.toUpperCase()}.M.`.replace(/\s+/g, " "));
   t = t.replace(/\b(\d{1,2}):(\d{2})\b/g, (_, h, m) => `${numberToWords(+h)} ${m === "00" ? "o'clock" : +m < 10 ? `oh ${numberToWords(+m)}` : numberToWords(+m)}`);

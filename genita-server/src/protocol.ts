@@ -102,7 +102,7 @@ export type ClientMessage =
 
 // ───────────────────────── Finds (F5-L3, F5-L8, F10) ─────────────────────────
 
-export type FindKind = "recipe" | "outfit" | "link" | "product";
+export type FindKind = "recipe" | "outfit" | "link" | "product" | "answer";
 /** checking → have (Spark YES + SAM box) | maybe (Spark YES, no box: "맞아?") | buy (recipe only) */
 export type FindTier = "checking" | "have" | "maybe" | "buy";
 /** 0..1 of the camera frame the box was found on */

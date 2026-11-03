@@ -13,7 +13,7 @@ import { findUrl } from "./parse.ts";
 const COOK =
   /\b(cook|cooking|make|making|recipe|recipes|eat|dinner|lunch|breakfast|meal|fridge|ingredients?|leftovers?|hungry|snack)\b|냉장고|요리|해\s*먹|먹을|레시피|재료|저녁|점심|아침|반찬/i;
 const CLOTHES =
-  /\b(wear|wearing|outfit|outfits|jacket|coat|blazer|dress|shirt|top|skirt|pants|jeans|shoes|sweater|hoodie|look better|which one|this or that|suit)\b|입을|입고|옷|코트|자켓|재킷|원피스|셔츠|바지|신발|어느\s*게|뭐가\s*나아/i;
+  /\b(wear|wearing|outfit|outfits|jacket|coat|blazer|dress|shirt|top|skirt|pants|jeans|shoes|sweater|hoodie|look better|which one|this or that|suit|looks? (?:better|best|good|nicer) on me|suits? me (?:better|best))\b|입을|입고|옷|코트|자켓|재킷|원피스|셔츠|바지|신발|어느\s*게|뭐가\s*나아/i;
 
 // F7 product search (D2, D24): voice alone, no camera. A shopping verb plus
 // something to buy, or a follow-up that asks for links / "match my style".

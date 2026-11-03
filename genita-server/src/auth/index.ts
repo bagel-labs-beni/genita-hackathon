@@ -22,6 +22,7 @@ import { migrateUp } from "../db/migrate.ts";
 import { blobStoreFromEnv, type BlobStore } from "../storage/blob.ts";
 import { PgPrepStore } from "../prep/pgStore.ts";
 import { DEMO_TEMPLATE_SUB, seedDemoCompanion } from "../prep/demo.ts";
+import { readDemoPointer } from "../prep/demoTemplate.ts";
 import { AppleAuth, appleConfigFromEnv } from "./apple.ts";
 import { EmailCodes, mailSenderFromEnv, type MailSender } from "./email.ts";
 import { Accounts, DEVICES, type Device } from "./accounts.ts";
@@ -114,7 +115,7 @@ export async function createAccounts(env: NodeJS.ProcessEnv, log: Log, opts: Acc
     judgeTurns: JudgeDailyTurns.fromEnv(env.GENITA_JUDGE_DAILY_TURNS),
     log,
     seedDemo: async (userId) => {
-      await seedDemoCompanion({ store: prepStore, blobs, templateUserId: () => accounts.findUserId("dev", DEMO_TEMPLATE_SUB), log }, userId).catch((e) =>
+      await seedDemoCompanion({ store: prepStore, blobs, templateUserId: async () => (await readDemoPointer(blobs))?.userId ?? (await accounts.findUserId("dev", DEMO_TEMPLATE_SUB)), log }, userId).catch((e) =>
         log("demo.failed", { message: String(e).slice(0, 200) }),
       );
     },

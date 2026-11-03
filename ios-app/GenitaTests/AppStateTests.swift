@@ -328,4 +328,18 @@ import UIKit
         state.go(.preferences)
         XCTAssertEqual(state.setup.depth, .deep)
     }
+
+    /// UI sweep 11/3: Settings read "Gentle 3/5 Direct" and "Only when asked 3/5 Anticipate"; the preferences block
+    /// had headings and bullets in one style.
+    func testSettingsReadsSliderStopsAsWordsAndSplitsHeadings() {
+        XCTAssertEqual(SettingsView.display("challenge", "2"), "In between")
+        XCTAssertEqual(SettingsView.display("initiative", "0"), "Only when asked")
+        XCTAssertEqual(SettingsView.display("tempo", "4"), "Quick")
+        XCTAssertEqual(SettingsView.display("tempo", "9"), "Quick", "out of range clamps")
+        XCTAssertEqual(SettingsView.display("help", "Think with me"), "Think with me", "non-scale answers unchanged")
+        XCTAssertFalse(SettingsView.display("challenge", "2").contains("/5"))
+        let lines = SettingsView.styleLines("Communication style\n• Warm, direct.\nBoundaries\n• Ask first.")
+        XCTAssertEqual(lines.map(\.heading), [true, false, true, false])
+        XCTAssertEqual(SettingsView.styleLines("Just a pasted paragraph.").map(\.heading), [false], "no bullets: body text")
+    }
 }

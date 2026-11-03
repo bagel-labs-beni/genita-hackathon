@@ -394,3 +394,14 @@ test("#214: the 'Searched the web' line fits one card line", () => {
   assert.equal(searchedLine(["northline.example.com", "fieldandco.example.com"]), "Searched the web · northline.example.com +1");
   assert.equal(searchedLine(["onlyone.example.com"]), "Searched the web · onlyone.example.com");
 });
+
+test("S5 speed: the search prompt asks for one product search (GENITA_PRODUCT_ONE_SEARCH=0 brings back two)", async () => {
+  const run = async () => {
+    const v = vendors({ items: [ITEM1, ITEM2], output: [SEARCH, OPEN(P1), OPEN(P2)], facts: { [P1]: { kind: "product" }, [P2]: { kind: "product" } } });
+    await runProduct(ctxFor(v).ctx);
+    return v.prompts[0];
+  };
+  assert.match(await run(), /Be quick: one product search, then open the pages\./);
+  process.env.GENITA_PRODUCT_ONE_SEARCH = "0";
+  try { assert.match(await run(), /at most 2 product searches/); } finally { delete process.env.GENITA_PRODUCT_ONE_SEARCH; }
+});

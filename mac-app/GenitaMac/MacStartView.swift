@@ -301,33 +301,30 @@ struct MacJudgeCodeSheet: View {
     @FocusState private var focused: Bool
 
     var body: some View {
+        // A02-J in the email sheet's Mac v2 look (it still had the old one: filled field, 16 pt mute body,
+        // 24 pt sides, a grey disabled block — the two sign-in sheets didn't match)
         VStack(alignment: .leading, spacing: 0) {
-            Text("Judge access").font(MacSheetInk.serif(28)).foregroundStyle(MacSheetInk.ink).accessibilityAddTraits(.isHeader)
+            MacV2Title(text: "Judge access")
             Text("Enter the code from the submission form. No Apple ID needed.")
-                .font(MacSheetInk.sans(16)).foregroundStyle(MacSheetInk.mute).padding(.top, 12).fixedSize(horizontal: false, vertical: true)
+                .font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink).lineSpacing(3).padding(.top, 8).fixedSize(horizontal: false, vertical: true)
             TextField("Access code", text: $code)
                 .textFieldStyle(.plain).autocorrectionDisabled().focused($focused).disabled(sending)
                 .font(MacSheetInk.sans(16)).foregroundStyle(MacSheetInk.ink)
                 .padding(.horizontal, 16).frame(height: 50)
-                .background(MacSheetInk.chip, in: RoundedRectangle(cornerRadius: 12))
+                .background(Color.white, in: RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(focused || message != nil ? MacSheetInk.ink : MacDesignV2.outline, lineWidth: focused || message != nil ? 1.5 : 1))
                 .padding(.top, 24).onSubmit { submit() }
                 .accessibilityIdentifier("macJudgeCodeField")
             if let message {
                 Text(message).font(MacSheetInk.sans(14, .medium)).foregroundStyle(MacSheetInk.ink).padding(.top, 12)
                     .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("macJudgeCodeError")
             }
-            Button { submit() } label: {
-                ZStack {
-                    if sending { ProgressView().controlSize(.small).tint(MacSheetInk.onInk) } else { Text("Continue") }
-                }.font(MacSheetInk.sans(16, .medium)).foregroundStyle(MacSheetInk.onInk)
-                    .frame(maxWidth: .infinity).frame(height: 50).background(MacSheetInk.ink, in: RoundedRectangle(cornerRadius: 12))
-            }.buttonStyle(.plain).disabled(sending || code.trimmingCharacters(in: .whitespaces).isEmpty).padding(.top, 24)
-                .keyboardShortcut(.defaultAction).accessibilityIdentifier("macJudgeCodeContinue")
-            Button("Cancel") { dismiss() }
-                .buttonStyle(.plain).font(MacSheetInk.sans(16, .medium)).foregroundStyle(MacSheetInk.ink)
-                .frame(maxWidth: .infinity).frame(height: 50).disabled(sending).keyboardShortcut(.cancelAction)
+            MacV2Button(label: "Continue", loading: sending, id: "macJudgeCodeContinue") { submit() }
+                .disabled(sending || code.trimmingCharacters(in: .whitespaces).isEmpty).keyboardShortcut(.defaultAction).padding(.top, 12)
+            MacV2Button(label: "Cancel", style: .text, id: "macJudgeCodeCancel") { dismiss() }.disabled(sending).keyboardShortcut(.cancelAction)
+                .frame(maxWidth: .infinity).padding(.top, 4)
         }
-        .padding(24).frame(width: 400)
+        .padding(.horizontal, 32).padding(.top, 28).padding(.bottom, 20).frame(width: 420, alignment: .topLeading)
         .background(MacSheetInk.sheet)
         .onAppear { focused = true }
     }
@@ -433,9 +430,21 @@ struct MacSettingsSheet: View {
     /// The call window is the phone's physical size (~330–360 pt on a MacBook), narrower than the 420 home window:
     /// a 420-wide sheet there was cut off on both sides (Mac QA 11/3). The call passes `compact`.
     var compact = false
+    /// RP-1 (D37): Report on the Mac
+    @State private var reportOpen = false
 
     var body: some View {
-        if MacDesignV2.enabled { v2Body } else { v1Body }
+        Group { if MacDesignV2.enabled { v2Body } else { v1Body } }
+            .reportFlow(isPresented: $reportOpen, surface: "mac", auth: call.auth) { CallController.shared.lastReplyText }
+    }
+    private var reportRow: some View {
+        Button { reportOpen = true } label: {
+            HStack {
+                Text("Report a problem").font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink)
+                Spacer()
+                Image(systemName: "flag").font(.system(size: 11, weight: .medium)).foregroundStyle(MacSheetInk.mute)
+            }.padding(.horizontal, 16).frame(height: 44).contentShape(Rectangle())
+        }.buttonStyle(.plain).accessibilityIdentifier("macReport")
     }
 
     /// MAC-SET v2: who is signed in and which build, the legal pages as rows, Sign out as a row, one Done button.
@@ -450,6 +459,8 @@ struct MacSettingsSheet: View {
                 link("Terms", MacDesignV2.terms)
                 Divider().overlay(Color(white: 232.0 / 255))
                 link("Privacy Policy", MacDesignV2.privacy)
+                Divider().overlay(Color(white: 232.0 / 255))
+                reportRow
             }.overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(white: 232.0 / 255), lineWidth: 1)).padding(.top, 20)
             Button { dismiss(); call.signOut() } label: {
                 Text("Sign out").font(MacSheetInk.sans(15, .medium)).foregroundStyle(MacSheetInk.ink)
@@ -495,6 +506,7 @@ struct MacSettingsSheet: View {
                     .font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink).lineSpacing(3).fixedSize(horizontal: false, vertical: true)
             }
             HStack(spacing: 16) { MacLegalLinks() }.font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.ink).underline().frame(height: 44)
+            Button("Report a problem") { reportOpen = true }.buttonStyle(.link).font(MacSheetInk.sans(14)).accessibilityIdentifier("macReport")
             Button { dismiss(); call.signOut() } label: {
                 Text("Sign out").font(MacSheetInk.sans(16, .medium)).foregroundStyle(MacSheetInk.ink)
                     .frame(maxWidth: .infinity).frame(height: 50).background(Color.white, in: RoundedRectangle(cornerRadius: 12))

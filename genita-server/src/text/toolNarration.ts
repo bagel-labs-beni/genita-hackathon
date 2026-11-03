@@ -49,7 +49,7 @@ const WEB_INTENT = new RegExp(`^(?:i'll|i will|let me|i'm going to|i'm gonna)(?:
 /** "now I'm pulling your favorites for dinner ideas" (smoke 11/3): a lookup in progress. */
 // the subject may be dropped after a dash: "I'll pick a favorite — pulling up what I remember" (bug-fix 1c63d32 outfit 1/6)
 // what a lookup is about — memory, a route, options — never a plain noun ("Choosing your own clothes builds confidence", Codex r23)
-const LOOKUP_OBJ = "(?:what (?:i|you)\\b|on what you\\b|from what (?:i|you)\\b|something (?:good|tasty|fun|nice|new)\\b|(?:your|my|the)(?: [\\w'-]+){0,2} (?:style|notes|memory|options|favorites|faves|vibe|look|plans|calendar|route|directions|forecast|map|details|picks|choices)\\b|for you\\b)";
+const LOOKUP_OBJ = "(?:(?:today|tomorrow|tonight|this week|the week|the weekend)'s (?:forecast|weather)\\b|what (?:i|you)\\b|on what you\\b|from what (?:i|you)\\b|something (?:good|tasty|fun|nice|new)\\b|(?:your|my|the)(?: [\\w'-]+){0,2} (?:style|notes|memory|options|favorites|faves|vibe|look|plans|calendar|route|directions|forecast|map|details|picks|choices)\\b|for you\\b)";
 const LOOKING_NOW = new RegExp(`^(?:now |so |just )?(?:i'm )?(?:just )?(?:pulling|checking|digging|searching|looking|plotting|mapping|working out|figuring out|grabbing|loading|scanning|lining up|picking|choosing|sizing up|thinking back|cooking up|whipping up|putting together)\\b(?=.*${LOOKUP_OBJ})${TAIL}$`);
 /** Deliberation said aloud before the pick ("Love both — let me think which one fits tonight best", outfit e2e 11/3).
  * A bare "Let me think" stays (it is how people start an answer). */
@@ -75,6 +75,7 @@ let metaIsUser = true;
 function isNarrationClause(clause: string): boolean {
   const s = normalize(clause);
   if (!s) return false;
+  if (searchRetry(s) || recallNow(s) || progressClause(s) || (RESOURCE_PROMISE.test(s) && !HELP_ACTION.test(s))) return true;
   // an explicit pick is the answer before anything else ("I'm picking the trench for you", Codex r24)
   if (DECISION.test(s) && !(CHOOSE_PLAN.test(s) && new RegExp(`\\b${NO_CHOICE}\\b`).test(s))) return false;
   if (isNarrowNarration(s)) return true;
@@ -100,9 +101,47 @@ function isNarrationClause(clause: string): boolean {
   return !/\b(?:and|but|because|then)\b/.test(guard) && (LOOKUP_INTENT.test(s) || WEB_INTENT.test(s) || THINK_INTENT.test(s) || LOOKING_NOW.test(s));
 }
 
+/**
+ * AI sweep 11/3 (real Spark with web_search + memory on, n=54): two shapes still reached the voice.
+ * A search retry said aloud ("First search came up empty, so I'll try again with a broader query") and a recall in
+ * progress ("Got it — trying to remember that concert we mentioned"). Both are the lookup itself, never its result:
+ * "My search came up empty, I've never heard of it" (a result) and "trying to remember the last time I…" (a story) stay.
+ */
+/** D13 run (crisis turns use web_search for the local hotline): "I'm going to find the right support resources for you",
+ * "let me find support resources you can reach right now" — a promise of the lookup, never the help itself */
+const RESOURCE_PROMISE = /(?:^|,? and )(?:i'?m going to|i'?m gonna|let me|i'?ll|i will)(?: (?:just|quickly|now))? (?:find|get|pull up|look up|grab)(?: you)? (?:the |some )?(?:right |best |local )?(?:support|crisis|help)? ?(?:resources|options|numbers?|lines?|hotlines?)\b(?![^.!?]*\b(?:is|are|call|text|dial)\b)/;
+const SEARCH_RETRY = /\b(?:i'll|i will|let me|i'm gonna|i'm going to)(?: just)? (?:try (?:again|another (?:search|query)|a (?:broader|different|wider|new) (?:search|query))|search again|(?:re-?)?search (?:again|with)|(?:run|do) (?:another|a broader|a different) (?:search|query)|dig (?:deeper|around|more)|look (?:again|harder|deeper))\b/;
+/** "— finding you the Hongdae spots now", "Got you, hunting down late-night ramen", "— pulling it up now" (sweep r2):
+ * our own search in progress. A result in the clause ("…is exhausting", "found", "says") keeps it. */
+const PROGRESS = /^(?:i'm |i am )?(?:just |now |still )?(?:hunting (?:down|for)|tracking down|rounding up|scouting(?: out)?|finding (?:you|some|the best|a few)|pulling (?:up|together|it up|that up|those up|them up)|digging (?:up|into|through)|searching for|looking for (?:some|the best|a few|spots|places|options)|getting you (?:[\w,'-]+ ){0,3}(?:support|options|resources|numbers?|help lines?)|(?:pulling|grabbing|checking|getting|fetching|loading)(?: up)? (?:the |that |your )?(?:final |latest |live |current |full )?(?:score|scores|results?|stats|standings|box score|numbers|forecast|weather|schedule|times?))\b/;
+// a predicate keeps it: "Searching for a job takes time", "Trying to remember what you ate can be hard" (Codex #415 P2)
+const PROGRESS_RESULT = /\b(?:says|shows|found|turns out|is|was|were|has|had|takes|took|makes|costs|means|sucks|helps|works|gets|feels|seems|can|could|will|would|should|might|must)\b|\d/;
+/** "I've got that note about your sister" said before the recall result, nothing in it: the memory store, never the
+ * answer. "…note about your sister saying her birthday is May 12" carries the content and stays (Codex #415 P2). */
+const NOTE_CLAIM = /^i(?:'ve| have)? got (?:that|the|a|your|some) notes? (?:about|on|for) (?:your |the |that |my )?[\w'-]+(?: [\w'-]+)?$/;
+/** a sentence that carries help or a result is never a lookup promise (Codex #431 P1: "Let me get you the crisis line:
+ * 988.", "Getting you support: call the police right now.", "Call 988 now, and I'll find support resources for you.") */
+const HELP_ACTION = /\b(?:call|text|dial|police|emergency|crisis (?:line|text line)|hotline|helpline|one (?:oh|zero) nine|nine one one|nine eight eight)\b|\d/;
+const progressClause = (c: string) => !HELP_ACTION.test(c) && (PROGRESS.test(c) && !PROGRESS_RESULT.test(c.replace(/\b(?:that|which) are\b.*$/, ""))) || NOTE_CLAIM.test(c);
+// "which concert that was" is the thing being recalled, not a predicate
+const RECALL_HEAD = /^(?:(?:got it|okay|ok|hmm+|wait)\W+)?(?:i'm )?(?:still )?trying to (?:remember|recall|place|think of) (?:that|which|what|who|when|where|the one|your)\b(?!.*\b(?:last time|first time|whenever|every time|back when)\b)/;
+const RECALL_PRED = /\b(?:can|could|will|would|should|might|must|takes|makes|sucks|gets|is (?:hard|tough|impossible|easy|rough)|helps)\b/;
+const recallNow = (s: string) => RECALL_HEAD.test(s) && !RECALL_PRED.test(s);
+/** a retry is narration only when everything else in the sentence is about the search too (Codex #415 P2: "The last
+ * train leaves at 11, so I'll try another search for a later bus" keeps the train time) */
+const SEARCH_META = /\b(?:search|query|results?|nothing (?:yet|so far)|came (?:up|back) (?:empty|blank|short|with nothing)|no luck)\b/;
+const searchRetry = (s: string) => {
+  // help in the sentence is the answer (Codex #431 r2 P1: "Call the police and I'll look again for support resources")
+  if (!SEARCH_RETRY.test(s) || HELP_ACTION.test(s)) return false;
+  const parts = s.split(/\s*(?:,|;|—|–| - )\s*(?:so |and |but )?|\s+so\s+/).map((p) => p.trim()).filter(Boolean);
+  // a retry part that carries a result is an answer ("Let me look again at the tag because it says hand wash only", Codex #431 P2)
+  return parts.every((p) => (SEARCH_RETRY.test(p) && !/\bbecause\b/.test(p) && !PROGRESS_RESULT.test(p)) || (SEARCH_META.test(p) && !/\d/.test(p)) || /^(?:okay|ok|hmm+|ugh|got it|nothing yet)$/.test(p));
+};
+
 export function isToolNarration(sentence: string): boolean {
   const s = normalize(sentence);
   if (!s) return false;
+  if (searchRetry(s) || recallNow(s) || progressClause(s) || (RESOURCE_PROMISE.test(s) && !HELP_ACTION.test(s))) return true;
   if (isProcessLine(sentence)) return true;
   if (isNarrowNarration(s)) return true;
   const clauses = s.split(CLAUSE_SPLIT).map(normalize).filter(Boolean);
@@ -142,7 +181,7 @@ export function stripNarrationClauses(raw: string): string {
  * Same family as "I'm …ing": the process clause is dropped; the acknowledgement stays only if real content follows
  * (the judge drops a "process" line at EOF too, so a reply that is only this says nothing and retries).
  */
-const PROCESS_ACK = /^(?:got it|you got it|okay|ok|alright|all right|sure|on it|yep|yeah|mm+|hm+|your (?:\w+ )?(?:idea|ideas|pick|picks|answer|suggestion|recipe|plan|options?) (?:is|are) (?:coming|on (?:its|the) way))$/;
+const PROCESS_ACK = /^(?:got it|got you|gotchu|say less|bet|love (?:that|it|this)|you got it|okay|ok|alright|all right|sure|on it|yep|yeah|mm+|hm+|your (?:\w+ )?(?:idea|ideas|pick|picks|answer|suggestion|recipe|plan|options?) (?:is|are) (?:coming|on (?:its|the) way))$/;
 const PROCESS_ING = /^(?:just )?(?:picking (?:something|one)\b|thinking (?:back|about which|it over)|pulling|checking|figuring|working (?:on|out)|cooking up|whipping up|putting together|digging|looking (?:up|into|through|for)|searching|plotting|mapping|deciding|weighing|choosing (?:something|one|between)\b|scrolling|loading|grabbing (?:something|a few))\b/;
 const OPINION_ING = /^(?:loving|seeing|feeling|liking|looking (?:good|great|sharp|cute)|nothing|something|anything|everything|morning|evening)\b/;
 export function isProcessLine(sentence: string): boolean {
@@ -152,6 +191,7 @@ export function isProcessLine(sentence: string): boolean {
   const [head, ...rest] = clauses;
   // only a lookup / plan in progress, never a choice or a result ("You got it — wearing the trench tonight",
   // "… taking the bus saves you twenty minutes", Codex #371)
+  if (PROCESS_ACK.test(head) && rest.length === 1 && progressClause(rest[0])) return true;
   return PROCESS_ACK.test(head) && rest.length === 1 && PROCESS_ING.test(rest[0]) && !OPINION_ING.test(rest[0])
     && !/\b(?:shows|says|is|are|it'?s|that'?s|takes)\b|\d/.test(rest[0]) && !/\b\w{3,}(?:s|es)\s+(?:the|a|an|your|you|it|up|out)\b/.test(rest[0]);
 }

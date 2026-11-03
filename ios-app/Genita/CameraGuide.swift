@@ -36,7 +36,7 @@ struct CameraGuideSheet: View {
                 }.font(TypeStyle.body(16)).foregroundStyle(CallInk.ink).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 16)
                 Button(action: turnOn) {
                     Text("Turn on camera").font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.onInk)
-                        .frame(maxWidth: .infinity).frame(height: 50).background(CallInk.ink, in: RoundedRectangle(cornerRadius: 12))
+                        .frame(maxWidth: .infinity).frame(height: 50).background(GlassCTA(color: CallInk.ink))
                 }.buttonStyle(PressScale()).padding(.top, 32).accessibilityIdentifier("cameraGuideTurnOn")
                 Button(action: notNow) {
                     Text("Not now").font(TypeStyle.body(15, .medium)).foregroundStyle(CallInk.ink).frame(maxWidth: .infinity, minHeight: 44).contentShape(Rectangle())
