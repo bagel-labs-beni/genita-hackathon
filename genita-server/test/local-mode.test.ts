@@ -36,8 +36,8 @@ test("local mode discards inherited cloud/vendor configuration, including an unr
     AWS_ACCESS_KEY_ID: "fake", AWS_SECRET_ACCESS_KEY: "fake", AWS_PROFILE: "cloud",
     GENITA_VOICE_URL: "https://voice.example", GENITA_VOICE_TOKEN: "fake",
     RESEND_API_KEY: "fake", GENITA_MAIL_FROM: "cloud@example.com",
-    ELEVENLABS_API_KEY: "fake", FAL_KEY: "fake", OPENAI_API_KEY: "fake", NEW_VENDOR_SECRET: "fake",
-    GENITA_PETER_URL: "https://peter.example", APPLE_PRIVATE_KEY: "fake", APPLE_TEAM_ID: "fake",
+    OTHER_TTS_API_KEY: "fake", OTHER_IMAGE_KEY: "fake", OPENAI_API_KEY: "fake", NEW_VENDOR_SECRET: "fake",
+    GENITA_LIPSYNC_URL: "https://lipsync.example", APPLE_PRIVATE_KEY: "fake", APPLE_TEAM_ID: "fake",
     GENITA_ENV_FILE: "/personal.env", GENITA_DB_MIGRATE: "0", GENITA_TRUST_PROXY: "1",
     DATABASE_SSL: "1", GENITA_FINDS_DIR: "/personal/finds", GENITA_MEMORY_FILE: "/personal/memory",
   };
