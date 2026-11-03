@@ -1,4 +1,6 @@
 import CoreGraphics
+import CoreImage
+import CoreImage.CIFilterBuiltins
 import Foundation
 import Testing
 @testable import GenitaKit
@@ -442,3 +444,110 @@ struct MouthQualityTests {
     }
 }
 
+
+/// 11/4 brow flash: stressed (loudest 20 %) vowels lift the brows for 0.3 s, at least 1.6 s apart.
+struct BrowFlashTests {
+    @Test func loudVowelsFlashBrieflyAndRarely() {
+        // ten vowels 0.5 s apart; every third is loud
+        var ph: [LipPhonemeTiming] = []
+        for i in 0..<10 { ph.append(LipPhonemeTiming(phoneme: "AA1", startMs: i * 500, endMs: i * 500 + 150)) }
+        let loud: (Double) -> Double = { ms in
+            let i = Int(ms / 500); let inVowel = ms - Double(i * 500) < 150
+            return inVowel ? (i % 3 == 0 ? 0.9 : 0.3) : 0.02
+        }
+        let on = BrowFlash.onsets(phonemes: ph, loudness: loud)
+        #expect(!on.isEmpty)
+        for (a, b) in zip(on, on.dropFirst()) { #expect(b - a >= BrowFlash.minGap - 1e-9) }
+        let s = on[0]
+        #expect(BrowFlash.weight(atMs: (s + 0.15) * 1000, phonemes: ph, loudness: loud) == 1)
+        #expect(BrowFlash.weight(atMs: (s + 0.35) * 1000, phonemes: ph, loudness: loud) == 0)
+        #expect(BrowFlash.weight(atMs: (s - 0.05) * 1000, phonemes: ph, loudness: loud) == 0)
+        #expect(BrowFlash.weight(atMs: 1000, phonemes: [], loudness: loud) == 0)
+    }
+
+    /// codex P2: a flash that has started survives later clauses (a louder vowel arriving re-ranks the list)
+    @Test func aStartedFlashIsKeptWhenLaterPhonemesArrive() {
+        var tr = BrowFlash.Tracker()
+        let first = (0..<4).map { LipPhonemeTiming(phoneme: "AA1", startMs: $0 * 500, endMs: $0 * 500 + 150) }
+        let quietLoud: (Double) -> Double = { ms in ms < 150 ? 0.6 : (ms < 2000 && Int(ms) % 500 < 150 ? 0.3 : 0.02) }
+        // the first vowel is the loud one so far: its flash starts
+        _ = tr.weight(atMs: 0, phonemes: first, loudness: quietLoud)
+        #expect(tr.weight(atMs: 120, phonemes: first, loudness: quietLoud) > 0.9)
+        // a much louder clause arrives: the started flash keeps going
+        let more = first + (4..<8).map { LipPhonemeTiming(phoneme: "AA1", startMs: $0 * 500, endMs: $0 * 500 + 150) }
+        let loudLater: (Double) -> Double = { ms in ms >= 2000 && Int(ms) % 500 < 150 ? 1.0 : quietLoud(ms) }
+        #expect(tr.weight(atMs: 130, phonemes: more, loudness: loudLater) > 0.9)   // still in the hold (onset −0.06 s)
+        #expect(tr.shown.count == 1)
+    }
+
+    /// codex P2 (cdeb8965): more audio with the same phonemes re-ranks the loudness; the onset cache follows it
+    @Test func moreAudioRefreshesTheStressOnsets() {
+        var tr = BrowFlash.Tracker()
+        let ph = (0..<6).map { LipPhonemeTiming(phoneme: "AA1", startMs: $0 * 100, endMs: $0 * 100 + 60) }
+        let early: (Double) -> Double = { ms in ms < 60 ? 0.9 : 0.3 }        // vowel 0 loudest
+        let later: (Double) -> Double = { ms in ms >= 200 && ms < 260 ? 1.0 : 0.02 }   // after more PCM: vowel 2 loudest
+        _ = tr.weight(atMs: -100, phonemes: ph, audioRevision: 300, loudness: early)
+        // same phonemes, new audio, 10 ms later: vowel 0 (onset −0.06 s) is no longer stressed, nothing has started
+        #expect(tr.weight(atMs: -90, phonemes: ph, audioRevision: 900, loudness: later) == 0)
+        #expect(tr.weight(atMs: 250, phonemes: ph, audioRevision: 900, loudness: later) == 1)   // vowel 2's flash
+    }
+
+    @Test func aClockJumpBackForgetsTheOldFlashes() {
+        var tr = BrowFlash.Tracker()
+        let ph = (0..<4).map { LipPhonemeTiming(phoneme: "AA1", startMs: $0 * 500, endMs: $0 * 500 + 150) }
+        let loud: (Double) -> Double = { ms in ms < 150 ? 0.9 : 0.1 }
+        _ = tr.weight(atMs: 0, phonemes: ph, loudness: loud); _ = tr.weight(atMs: 200, phonemes: ph, loudness: loud)
+        #expect(tr.shown.count == 1)
+        _ = tr.weight(atMs: 20, phonemes: [], loudness: loud)   // the next reply starts
+        #expect(tr.shown.isEmpty)
+    }
+
+    @Test func theBrowMaskLiftsTheBrowsButNotTheEyes() throws {
+        let face = CGRect(x: 100, y: 300, width: 400, height: 500), extent = CGRect(x: 0, y: 0, width: 600, height: 1000)
+        let g = FaceRenderer.browGeometry(eyeY: 640, mouthY: 420, faceWidth: 400)
+        let brow = FaceRenderer.ellipseMask(center: CGPoint(x: face.midX, y: g.browY), rx: face.width * 0.42, ry: g.browRy, inner: 0.45, extent: extent)
+        let eyes = FaceRenderer.ellipseMask(center: CGPoint(x: face.midX, y: g.eyeY), rx: face.width * 0.5, ry: g.eyeRy, inner: 0.7, extent: extent)
+        let cut = CIFilter.sourceOutCompositing(); cut.inputImage = brow; cut.backgroundImage = eyes
+        let m = cut.outputImage!.cropped(to: extent)
+        let ctx = CIContext()
+        func alpha(_ p: CGPoint) -> Float {
+            var px = [UInt8](repeating: 0, count: 4)
+            ctx.render(m, toBitmap: &px, rowBytes: 4, bounds: CGRect(x: p.x, y: p.y, width: 1, height: 1), format: .RGBA8, colorSpace: nil)
+            return Float(px[3]) / 255
+        }
+        #expect(alpha(CGPoint(x: face.midX - 50, y: g.browY)) > 0.9)    // the brow centre moves
+        #expect(alpha(CGPoint(x: face.midX - 80, y: g.eyeY)) < 0.05)    // the eye stays
+    }
+
+    @Test func theBrowBandEndsAboveTheEyes() {
+        let g = FaceRenderer.browGeometry(eyeY: 600, mouthY: 400, faceWidth: 400)
+        #expect(g.browY - g.browRy > g.eyeY + g.eyeRy * 0.5)   // brow ellipse bottom above the eye cut-out's core
+        #expect(g.browY - g.eyeY <= 48 + 0.001)                 // capped at 0.12 face widths (a hair-wide face box)
+    }
+
+    @Test func theEyeLineComesFromTheBlinkStill() throws {
+        let w = 300, h = 400
+        // lids: (x, row from the top, height) per eye; `down` draws the whole blink still lower (an unaligned still)
+        func img(lids: [(Int, Int, Int)], down: Int = 0) -> CGImage {
+            let c = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                              space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            c.setFillColor(gray: 0.7, alpha: 1); c.fill(CGRect(x: 0, y: 0, width: w, height: h))
+            c.setFillColor(gray: 0.1, alpha: 1)
+            c.fill(CGRect(x: 60, y: h - 132 - down, width: 180, height: 6))   // brows (rows 126–132 from the top)
+            c.setFillColor(gray: 0.35, alpha: 1)
+            for (x, row, lh) in lids { c.fill(CGRect(x: x, y: h - row - lh - down, width: 70, height: lh)) }
+            return c.makeImage()!
+        }
+        let face = CGRect(x: 40, y: 60, width: 220, height: 300)
+        let open = img(lids: []), shut = [(70, 158, 12), (160, 158, 12)]
+        let e = try #require(FaceRenderer.eyeLine(neutral: open, blink: img(lids: shut), face: face, mouthTop: 280))
+        #expect(abs(e.y - 164) < 6 && e.top <= 160 && e.bottom >= 168)
+        #expect(FaceRenderer.eyeLine(neutral: open, blink: open, face: face, mouthTop: 280) == nil)
+        // codex P2: a blink still drawn 8 px lower is read through the renderer's alignment (dy 8), not its brows
+        let low = try #require(FaceRenderer.eyeLine(neutral: open, blink: img(lids: shut, down: 8), shift: (0, 8), face: face, mouthTop: 280))
+        #expect(abs(low.y - 164) < 6)
+        // codex P2: a tilted face (eyes 35 px apart in height): the span takes in both eyes
+        let tilt = try #require(FaceRenderer.eyeLine(neutral: open, blink: img(lids: [(70, 150, 12), (160, 185, 12)]), face: face, mouthTop: 280))
+        #expect(tilt.top <= 152 && tilt.bottom >= 195)
+    }
+}
