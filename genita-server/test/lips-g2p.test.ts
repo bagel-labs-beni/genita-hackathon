@@ -15,13 +15,13 @@ test("dictKey: punctuation and curly apostrophes", () => {
   assert.equal(dictKey("Halloween,"), "halloween");
   assert.equal(dictKey("I’d"), "i'd");
   assert.equal(dictKey("great."), "great");
-  assert.equal(dictKey("Peter\uB294"), "", "mixed-script word is not looked up");
+  assert.equal(dictKey("Hello\uB294"), "", "mixed-script word is not looked up");
   assert.equal(dictKey("3pm"), "");
   assert.equal(dictKey("\"you?\""), "you");
 });
 
 test("relabelPhonemes: the prod aligner's letter guesses become dictionary labels on the same times", () => {
-  // prod 11/3 (t9-peter-2): "You" Y AW, "warm" W AE R M
+  // prod 11/3 (prod voice line 2): "You" Y AW, "warm" W AE R M
   const t = {
     words: [{ w: "You", s: 2165, e: 2266 }, { w: "warm", s: 2486, e: 2787 }, { w: "Zorbluk", s: 2800, e: 3000 }],
     phonemes: [
