@@ -148,8 +148,6 @@ export type SessionDeps = {
    * start.persona.name, so a device with a cached older name still calls the companion by its current one.
    */
   companionName?: () => Promise<string | null | undefined>;
-  /** AU-42: the account's own name (users.display_name), used only when start.user.name is missing (the Mac sends none) */
-  accountName?: () => Promise<string | null | undefined>;
 };
 
 /** Demo S5 (agreed with the convo lane 11/3): the product-ask turn's reply while the search runs in the background. */
@@ -483,9 +481,8 @@ export class Session {
   private voiceOverflow = false;
   /** the account's saved companion voice (same presence), looked up as the socket opens */
   private readonly ownedVoice: Promise<string | null>;
-  /** AU-53 / AU-42: the stored companion name and the account's name, looked up as the socket opens (bounded) */
+  /** AU-53: the stored companion name, looked up as the socket opens (bounded) */
   private readonly ownedName: Promise<string | null>;
-  private readonly accountName: Promise<string | null>;
   private history: HistoryItem[] = [];
   private historyRevision: number | null = null;
   private recentReplies: string[] = [];
@@ -564,7 +561,6 @@ export class Session {
     // looked up from the socket's open, so `start` rarely waits for it (Codex P2: no input window)
     this.ownedVoice = this.companionVoice();
     this.ownedName = this.boundedLookup(deps.companionName, 80);
-    this.accountName = this.boundedLookup(deps.accountName, 80);
     this.bargeCfg = { bargeInMinMs: deps.config.bargeInMinMs, bargeInMinWords: deps.config.bargeInMinWords };
     if (deps.config.perception) {
       this.perceptionCtl = new PerceptionController({
@@ -859,10 +855,8 @@ export class Session {
     // One voice per reply: if something already started speaking (input raced the lookup), this call keeps it.
     if (owned && this.turn.utteranceId === 0 && !this.reply) this.pickVoice(owned, persona.kind);
     else if (owned) this.log("voice.owned_late", {});
-    const [ownedName, accountName] = await Promise.all([this.ownedName, this.accountName]);
+    const ownedName = await this.ownedName;
     if (this.closed) return;
-    // AU-42: the Mac never sends start.user.name; the account's name fills it (a name the app sent always wins)
-    if (!this.user?.name && accountName) this.user = { ...this.user, name: accountName };
     // AU-53: the stored companion name is the current one (a voice rename saved it); a device's cached start may be older.
     // Unlike the voice, a name can switch even if a first input raced the lookup: like a voice rename, a reply already
     // under way keeps its prompt and the next one uses the stored name (Codex AU-53 P2).

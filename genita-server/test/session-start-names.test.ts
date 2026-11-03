@@ -1,10 +1,8 @@
 /**
- * Names at call start (audit 11/4):
- * - AU-42: the Mac never sends start.user.name, so the server fills it from the account's name
- *   (a name the app sent always wins). Greeting opener, prompt line and name guards then work on the Mac.
- * - AU-53: a voice rename is saved on the stored companion; a device with a cached older persona name
- *   starts with the stored name, and `companion.named` tells the app so its labels follow.
- * Both lookups are bounded: a slow or failing store never holds `ready`.
+ * AU-53 (audit 11/4): a voice rename is saved on the stored companion; a device with a cached older persona
+ * name starts with the stored name, and `companion.named` tells the app so its labels follow.
+ * The lookup is bounded: a slow or failing store never holds `ready`.
+ * (AU-42, the user's name on the Mac, is covered by #585.)
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -70,25 +68,6 @@ function setup(deps: Partial<SessionDeps> = {}) {
 const persona = { name: "Jin", kind: "human", traits: ["warm"] };
 const prompt = (r: SparkRequest) => JSON.stringify(r);
 
-test("AU-42: no start.user.name (the Mac) → the account's name is the user's name in the prompt", async (t) => {
-  const { client, session, sparkCalls } = setup({ accountName: async () => "Summer" });
-  t.after(() => session.close());
-  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false, user: { timeZone: "Asia/Seoul" } }));
-  await session.onClientText(JSON.stringify({ type: "text", text: "hi" }));
-  await client.waitFor((m) => m.type === "reply");
-  assert.match(prompt(sparkCalls[0]), /The user's name is Summer/);
-});
-
-test("AU-42: a name the app sent wins over the account's name", async (t) => {
-  const { client, session, sparkCalls } = setup({ accountName: async () => "Summer Lee" });
-  t.after(() => session.close());
-  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false, user: { name: "Sum" } }));
-  await session.onClientText(JSON.stringify({ type: "text", text: "hi" }));
-  await client.waitFor((m) => m.type === "reply");
-  assert.match(prompt(sparkCalls[0]), /The user's name is Sum\b/);
-  assert.doesNotMatch(prompt(sparkCalls[0]), /Summer Lee/);
-});
-
 test("AU-53: the stored companion name wins over a device's cached persona name, and the app is told", async (t) => {
   const { client, session, sparkCalls } = setup({ companionName: async () => "Max" });
   t.after(() => session.close());
@@ -110,10 +89,10 @@ test("AU-53: the same name sends nothing extra", async (t) => {
   assert.equal(client.of("companion.named").length, 0);
 });
 
-test("names: no row, a store error or a slow store keeps the app's names and never holds ready", async () => {
+test("AU-53: no row, a store error or a slow store keeps the app's name and never holds ready", async () => {
   const slow = () => new Promise<string>((r) => setTimeout(() => r("Late"), 5_000));
   for (const lookup of [async () => null, async () => { throw new Error("db down"); }, slow]) {
-    const { client, session, sparkCalls } = setup({ companionName: lookup, accountName: lookup });
+    const { client, session, sparkCalls } = setup({ companionName: lookup });
     const t0 = Date.now();
     await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
     assert.ok(Date.now() - t0 < 2_500, "ready is never held past the wait");
@@ -121,15 +100,14 @@ test("names: no row, a store error or a slow store keeps the app's names and nev
     assert.equal(client.of("companion.named").length, 0);
     await session.onClientText(JSON.stringify({ type: "text", text: "hi" }));
     await client.waitFor((m) => m.type === "reply");
-    assert.doesNotMatch(prompt(sparkCalls[0]), /The user's name is/);
     assert.doesNotMatch(prompt(sparkCalls[0]), /Late/);
     session.close();
   }
 });
 
-test("AU-53 (Codex P2): a first input that races the lookups still ends on the stored name and the account's name", async (t) => {
+test("AU-53 (Codex P2): a first input that races the lookup still ends on the stored name", async (t) => {
   const late = <T,>(v: T) => () => new Promise<T>((r) => setTimeout(() => r(v), 150));
-  const { client, session, sparkCalls } = setup({ companionName: late("Max"), accountName: late("Summer") });
+  const { client, session, sparkCalls } = setup({ companionName: late("Max") });
   t.after(() => session.close());
   const started = session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
   await session.onClientText(JSON.stringify({ type: "text", text: "hi" }));
@@ -140,5 +118,4 @@ test("AU-53 (Codex P2): a first input that races the lookups still ends on the s
   await client.waitFor((m) => client.of("reply").length >= 2);
   const last = prompt(sparkCalls.at(-1)!);
   assert.match(last, /Max/);
-  assert.match(last, /The user's name is Summer/);
 });

@@ -474,15 +474,12 @@ export async function startServer(
     const storedCompanion = () => (companion ??= prep.deps.store.getCompanion(who.userId));
     const companionVoiceId = () => storedCompanion().then((c) => c?.voiceId ?? null);
     const companionName = () => storedCompanion().then((c) => c?.name ?? null);
-    // AU-42: the account's name when the app sends none (the Mac). Placeholder names of dev/judge rows
-    // ("Judge", "Demo template", dev user names) are never used as the user's name.
-    const accountName = accounts ? () => accounts.accounts.getUser(who.userId).then((u) => (u && u.provider !== "dev" ? u.displayName : null)) : undefined;
     // Demo S4: an iPhone call may suggest moving to this account's open Mac app
     const macNearby = here === "iphone" ? () => handoff.isPresent(who.userId, "mac") : undefined;
     // lane 개인화: the stored profile, first-call asks, voice corrections and post-call growth for this account
     // D41: judge demo accounts get a per-code daily turn cap (auth/judge.ts), on top of the D46 ops caps
     const turnGate = who.judge && accounts ? accounts.judgeTurns.gate(who.judge) : undefined;
-    const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, turnGate, renameCompanion: rename, companionVoiceId, companionName, accountName,
+    const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, turnGate, renameCompanion: rename, companionVoiceId, companionName,
       priorTurns: (revision) => priorTurns(who.userId, id, revision, callDevice), priorThread: () => priorThread(id), lastCall: () => lastCall(id),
       personalize: deps.personalize ?? prep.deps.personalize, macNearby,
       continuesCall: () => continuesOtherDevice(who.userId, id, callDevice),
