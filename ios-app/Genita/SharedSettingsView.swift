@@ -164,7 +164,9 @@ struct SettingsView: View {
     }
     /// C1 About you row: "What {name} knows about you", the report's headline (2 lines max), "{n} things · {m} still learning".
     private var aboutYouRow: some View {
-        let summary = AboutYouSummary(report: model.insightReport, companion: companionName)
+        // the report when there is one; else the style card's own lines (the page behind the row shows those — QA)
+        let summary = model.insightReport != nil ? AboutYouSummary(report: model.insightReport, companion: companionName)
+            : AboutYouSummary(noticed: AboutYouPage.noticed(AboutYouPage.styleText(model.setup)), companion: companionName)
         return HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("What \(companionName) knows about you").font(SettingsType.font(17, .semibold)).foregroundStyle(SettingsInk.ink)
@@ -260,6 +262,7 @@ enum SettingsInk {
     static let line = Color(red: 217 / 255, green: 217 / 255, blue: 222 / 255)
     static let body = Color(red: 58 / 255, green: 58 / 255, blue: 58 / 255)
     static let danger = Color(red: 200 / 255, green: 40 / 255, blue: 30 / 255)
+    static let learning = Color(red: 244 / 255, green: 244 / 255, blue: 242 / 255)
 }
 
 /// Pretendard that follows Dynamic Type (relative to the text style it stands in for).
@@ -389,6 +392,11 @@ struct AboutYouSummary: Equatable {
     var counts: String?
 
     init(preview: String, counts: String?) { self.preview = preview; self.counts = counts }
+    /// No report: the first noticed line as the preview, "{n} things" from the style card's rows.
+    init(noticed: [(category: String?, claims: [String])], companion: String) {
+        let claims = noticed.flatMap(\.claims)
+        self = Self.make(headline: claims.first, known: claims.count, learning: 0, companion: companion)
+    }
     init(report: InsightReport?, companion: String) {
         self = Self.make(headline: report?.headline, known: report?.observations.count ?? 0, learning: report?.learning.count ?? 0, companion: companion)
     }
@@ -398,7 +406,10 @@ struct AboutYouSummary: Equatable {
             return AboutYouSummary(preview: "\(companion) is still getting to know you.", counts: nil)
         }
         let things = known == 1 ? "1 thing" : "\(known) things"
-        return AboutYouSummary(preview: "“\(h)”", counts: learning > 0 ? "\(things) · \(learning) still learning" : things)
+        // no one-word last line: the last space is unbreakable (insight R1's keepLast rule)
+        let quoted = "“\(h)”"
+        let kept = quoted.range(of: " ", options: .backwards).map { quoted.replacingCharacters(in: $0, with: "\u{00A0}") } ?? quoted
+        return AboutYouSummary(preview: kept, counts: learning > 0 ? "\(things) · \(learning) still learning" : things)
     }
 }
 
@@ -462,8 +473,9 @@ struct SettingsShowsUpPage: View {
 struct AboutYouPage: View {
     @Bindable var model: AppState
     private var name: String { model.companionDisplayName }
-    private var styleText: String {
-        guard let rows = model.setup.styleRows, !rows.isEmpty else { return model.setup.response }
+    private var styleText: String { Self.styleText(model.setup) }
+    static func styleText(_ setup: SavedSetup) -> String {
+        guard let rows = setup.styleRows, !rows.isEmpty else { return setup.response }
         return ImportedStyle(rows: rows, partial: false, toConfirm: [], profile: "", source: "").displayText
     }
     var body: some View {
@@ -486,10 +498,14 @@ struct AboutYouPage: View {
                     }
                 }
             }
-            SettingsGroup(header: "Still learning") {
+            // C3: one Still learning block, #F4F4F2 r16, 14/16 — not a white card
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Still learning").font(SettingsType.font(13, .semibold, relativeTo: .footnote)).foregroundStyle(SettingsInk.header)
+                    .accessibilityAddTraits(.isHeader).padding(.horizontal, 16).padding(.top, 22).padding(.bottom, 8)
                 Text("I’ll pick these up as we talk.").font(SettingsType.font(15, relativeTo: .subheadline)).foregroundStyle(SettingsInk.body)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.vertical, 14)
-            }
+                    .background(SettingsInk.learning, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            }.padding(.horizontal, 16)
             SettingsGroup(header: "Where this comes from") {
                 // the paste only: the skip path fills styleRows from the answers too (Codex P3)
                 if !model.setup.response.isEmpty {

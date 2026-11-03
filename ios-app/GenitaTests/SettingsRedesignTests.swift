@@ -16,7 +16,11 @@ final class SettingsRedesignTests: XCTestCase {
     func testAboutYouRowSummary() {
         XCTAssertEqual(AboutYouSummary.make(headline: nil, known: 0, learning: 3, companion: "Lou"), AboutYouSummary(preview: "Lou is still getting to know you.", counts: nil))
         XCTAssertEqual(AboutYouSummary.make(headline: "You want two good options, a laugh, and the final say.", known: 5, learning: 3, companion: "Lou"),
-                       AboutYouSummary(preview: "“You want two good options, a laugh, and the final say.”", counts: "5 things · 3 still learning"))
+                       AboutYouSummary(preview: "“You want two good options, a laugh, and the final\u{00A0}say.”", counts: "5 things · 3 still learning"))
+        // no report: the row says what the page behind it shows (QA: "still getting to know you" over five known lines)
+        let noticed = AboutYouPage.noticed("Communication style\n• Warm, direct.\nBoundaries\n• Ask first.")
+        XCTAssertEqual(AboutYouSummary(noticed: noticed, companion: "Jin"), AboutYouSummary(preview: "“Warm,\u{00A0}direct.”", counts: "2 things"))
+        XCTAssertEqual(AboutYouSummary(noticed: [], companion: "Jin").preview, "Jin is still getting to know you.")
         XCTAssertEqual(AboutYouSummary.make(headline: "You keep it light.", known: 1, learning: 0, companion: "Lou").counts, "1 thing")
     }
 
