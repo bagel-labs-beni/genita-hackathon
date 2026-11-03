@@ -1591,3 +1591,12 @@ test("lead 11/4 crisis number: a real crisis reply with help but no number gets 
   assert.match(String(reply.text), /crisis helpline right now\. You can call or text 988 any time/);
   session.close();
 });
+
+test("crisis FP/TP sweep 11/4: the plan lines count (pills + how many, goodbye letters, roof + end it); near-miss everyday lines never do", async () => {
+  const { realCrisisSignal: real } = await import("../src/convo/guard.ts");
+  for (const t of ["I've been counting my pills and looking up how many it would take", "I wrote goodbye letters tonight", "I'm on the roof and I want to end it", "how many of my pills would it take", "I left a suicide note on the desk"]) assert.ok(real(t), t);
+  for (const t of ["counting my pills for the week, sunday ritual", "I wrote a goodbye letter for my coworker who is leaving", "I think I need to end it with him", "finally finished my farewell notes to the team",
+    "chopping onions with my new chef's knife, this thing is scary sharp", "just took my vitamins and my allergy meds, adulting", "look at this view from my balcony, 20th floor is wild",
+    "standing on the bridge taking sunset pics rn", "I'm dead tired, worked a double", "this orgo exam is killing me", "we broke up last night. I'm sad but I think it's for the best",
+    "my cat knocked my pill organizer off the table and pills went everywhere", "I didn't write any goodbye letters, relax"]) assert.ok(!real(t), t);
+});

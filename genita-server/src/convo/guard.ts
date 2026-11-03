@@ -241,9 +241,17 @@ function weaponHit(t: string, clauses: Clause[]): boolean {
   });
 }
 
+/**
+ * Crisis FP/TP sweep 11/4 (40 near-miss everyday lines → 0 hits; 10 real → 7 at acff8e3): the three misses —
+ * counting pills + "how many it would take", goodbye / suicide letters written, "on the roof … end it". Each needs the act
+ * or the plan, never a lone word ("counting my pills for the week", "a goodbye letter for my coworker", "end it with him").
+ */
+const CRISIS_PLAN = /\bcount(?:ing|ed)? (?:out )?(?:all )?(?:my |the |these )?(?:pills|tablets|meds)\b[^.!?]{0,60}\b(?:how many (?:it )?(?:would|will|'d) (?:it )?take|enough to (?:die|not wake up|end it))\b|\bhow many (?:pills|tablets|of (?:my|these|them|those)(?: pills)?) (?:it )?(?:would|will|'d) (?:it )?take\b|\b(?:wrote|writing|written|left|finished) (?:my |some |a few |the )?(?:goodbye|suicide|farewell) (?:letters?|notes?)\b(?!\s+(?:to|for)\s+(?:my |a |the |our )?(?:coworker|colleague|boss|team|class|teacher|friend|neighbou?r|camp|students?))|\bsuicide note\b|\b(?:want|wanna|going|gonna|ready|about|planning) to end (?:my life|it (?:all )?tonight)\b|\b(?:roof|bridge|ledge|railing)\b[^.!?]{0,60}\b(?:end it|end my life)\b/i;
+
 export function realCrisisSignal(text: string): boolean {
   // curly apostrophes from the keyboard / ASR ("I don’t see the point…", Codex #441 P1)
   const t = text.replace(/[‘’ʼ]/g, "'");
+  if (CRISIS_PLAN.test(t) && !DENIED.test(t.slice(0, t.search(CRISIS_PLAN)))) return true;
   // everything but the weapon alternation reads the whole line (its lookaheads run to the sentence end)
   if (REAL_CRISIS.test(t.replace(WEAPON, " "))) return true;
   const clauses = clausesOf(t);
