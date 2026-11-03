@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import QuartzCore
 import Combine
 
 /// Same presence (11/3, Chelsea OK: on by default): the companion fades in on this Mac as the
@@ -11,6 +12,11 @@ enum MacPresenceFade {
         return UserDefaults.standard.object(forKey: "genita.presence.fade") as? Bool ?? true // Chelsea 11/3: on by default
     }
     static let seconds = 0.35
+    /// Dyno's demo video (1:44–1:52, lead 11/4): on a move by button the Mac window slides in from beyond the right
+    /// screen edge, a whole window width, and settles at its resting inset. Reduce Motion (or another display on that
+    /// edge) keeps the fade. Touch moves keep the DUO effect's own motion.
+    static let slideSeconds = 0.7
+    static var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
 }
 
 /// A borderless window that still takes clicks and keyboard focus for its controls and sheets.
@@ -155,10 +161,26 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     private func showCompanion() {
         let first = !companionVisible
         ensureCompanion();companionVisible=true
-        // Same presence (flag): a move by button (no touch effect) fades the companion in instead of popping up.
+        // Same presence (flag): a move by button (no touch effect) brings the companion in instead of popping up —
+        // sliding in from beyond the right edge as in Dyno's video, or a fade with Reduce Motion.
         if first, motion == nil, MacPresenceFade.enabled, let window=companion {
-            window.alphaValue=0;window.orderFrontRegardless()
-            NSAnimationContext.runAnimationGroup { $0.duration=MacPresenceFade.seconds;window.animator().alphaValue=1 }
+            // the slide starts just past the right edge; if another display sits there the window would show up on it
+            // first, so fade instead (Codex P2)
+            let rest=window.frame
+            let start=screen.map { NSRect(origin:NSPoint(x:$0.frame.maxX,y:rest.origin.y),size:rest.size) }
+            let neighbour=start.map { s in NSScreen.screens.contains { $0 != screen && $0.frame.intersects(s) } } ?? true
+            if MacPresenceFade.reduceMotion || neighbour {
+                window.alphaValue=0;window.orderFrontRegardless()
+                NSAnimationContext.runAnimationGroup { $0.duration=MacPresenceFade.seconds;window.animator().alphaValue=1 }
+            } else if let start {
+                window.setFrame(start,display:false)
+                window.alphaValue=1;window.orderFrontRegardless()
+                NSAnimationContext.runAnimationGroup {
+                    $0.duration=MacPresenceFade.slideSeconds
+                    $0.timingFunction=CAMediaTimingFunction(controlPoints:0.16,1,0.3,1)
+                    window.animator().setFrame(rest,display:true)
+                }
+            }
         } else {companion?.alphaValue=1;companion?.orderFrontRegardless()}
     }
     /// Continue here on R2 or R2-E. The tap wins immediately; the effect is only an extra.

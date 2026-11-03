@@ -115,8 +115,11 @@ for (const u of USERS.filter((x) => !only || only.includes(x.id))) {
 }
 
 const mean = (xs: number[]) => (xs.length ? Math.round((xs.reduce((a, b) => a + b, 0) / xs.length) * 100) / 100 : 0);
-const sum = (rs: Row[], side: "after" | "before", k: "supported" | "generic" | "creepy") => rs.reduce((a, r) => a + r[side].lines.filter((l) => l[k]).length, 0);
-const lines = (rs: Row[], side: "after" | "before") => rs.reduce((a, r) => a + r[side].lines.length, 0);
+// "Your mix" rows restate the user's own slider / N2 picks as a visual (by design): graded, but counted apart from the insight lines
+const isMix = (r: Row, side: "after" | "before", n: number) => side === "after" && (r.afterLines[n - 1] ?? "").startsWith("Your mix:");
+const sum = (rs: Row[], side: "after" | "before", k: "supported" | "generic" | "creepy") => rs.reduce((a, r) => a + r[side].lines.filter((l) => l[k] && !isMix(r, side, l.n)).length, 0);
+const lines = (rs: Row[], side: "after" | "before") => rs.reduce((a, r) => a + r[side].lines.filter((l) => !isMix(r, side, l.n)).length, 0);
+const mixGeneric = rows.reduce((a, r) => a + r.after.lines.filter((l) => isMix(r, "after", l.n) && l.generic).length, 0);
 const p50 = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)] ?? 0;
 const summary = {
   n: rows.length,
@@ -124,6 +127,7 @@ const summary = {
   before: { wow: mean(rows.map((r) => r.before.wow)), specificity: mean(rows.map((r) => r.before.specificity)), supported: `${sum(rows, "before", "supported")}/${lines(rows, "before")}`, generic: `${sum(rows, "before", "generic")}/${lines(rows, "before")}`, creepy: sum(rows, "before", "creepy") },
   observations: { kept: rows.reduce((a, r) => a + r.kept, 0), raw: rows.reduce((a, r) => a + r.rawObs, 0), rawGeneric: rows.reduce((a, r) => a + r.rawGeneric, 0), underMin: rows.filter((r) => r.kept < OBS_MIN).map((r) => r.id) },
   latency: { p50: p50(rows.map((r) => r.ms)), max: Math.max(0, ...rows.map((r) => r.ms)) },
+  mixRowsGeneric: mixGeneric,
 };
 console.log("\nSUMMARY " + JSON.stringify(summary));
 const file = join(outDir, `eval-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}.json`);

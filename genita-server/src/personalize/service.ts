@@ -497,7 +497,10 @@ export class Personalize {
    */
   private async rememberForget(userId: string, card: StyleCard, target: string): Promise<{ applied: AppliedUpdate[]; kept: string } | null> {
     const keys = avoidKeys([{ text: target, forget: true }]);
-    const lines = Object.values(card.sections ?? {}).flatMap((l) => (l as Array<{ text: string }>).map((f) => f.text));
+    // the "not me" list's own words count too: a fact only stored in a correction ("I collect fountain pens.") is
+    // still forgettable, and scrubRemoved then takes it off the list (Codex r4 P1)
+    const deniedLines = (card.insights?.denied ?? []).flatMap((d) => [d.claim, d.correction ?? ""]).filter(Boolean);
+    const lines = [...Object.values(card.sections ?? {}).flatMap((l) => (l as Array<{ text: string }>).map((f) => f.text)), ...deniedLines];
     const named = [...new Set(keys.flatMap((k) => k.keys).filter((stem) => lines.some((t) => keyWords(t).includes(stem))))];
     const words = [...new Set(lines.flatMap((t) => (t.match(/[\p{L}\p{N}-]{3,}/gu) ?? []).filter((w) => named.includes(w.toLowerCase().slice(0, 5)))))].map((w) => w.toLowerCase());
     const kept = words.join(" ").slice(0, 80);

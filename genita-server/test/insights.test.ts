@@ -48,7 +48,7 @@ const obs = (o: Record<string, unknown> = {}) => ({
   ...o,
 });
 const RAW = {
-  headline: "You want two good options, a laugh, and the final say.",
+  headline: "You want a shortlist, a joke, and the last word.",
   observations: [
     obs(),
     obs({ category: "humor", claim: "You joke to keep work from feeling heavy.", evidence: [ev("import", "ok but which one is cheaper lol")], surprise: 0.9, use_in_call: "I'll keep a joke ready, even when we're being practical." }),
@@ -294,18 +294,18 @@ test("report: highlight is a phrase inside its own quote, or nothing", () => {
 test("report: the type read (춘식이 r02) — type, strengths, watch-outs, chain tied to kept traits; mix only from picks", () => {
   const raw = {
     ...RAW,
-    type: { name: "The Playful Editor", line: "You pick from good options, keep it light, and keep the final say.", signature: ["Options", "Light", "Final say"], basis: [0, 1, 7] },
-    strengths: [{ text: "You know a good option when you see one.", trait: 0 }, { text: "You value deep connections.", trait: 1 }, { text: "Ghost trait strength here.", trait: 9 }],
-    watchouts: [{ text: "Three options can turn into thirty.", fix: "I'll cap it at two and say my pick.", trait: 0 }, { text: "Menus are your villain origin story.", fix: "Pick one.", trait: 0 }],
-    chain: { you_are: "You compare before you commit.", so_you: "So you want choices, not lectures.", so_ill: "So I'll bring two options and my pick." },
+    type: { name: "The Playful Editor", line: "You shortlist fast, joke about prices, and sign off last.", signature: ["Options", "Light", "Final say"], basis: [0, 1, 7] },
+    strengths: [{ text: "Two or three options and you're already deciding.", trait: 0 }, { text: "You value deep connections.", trait: 1 }, { text: "Ghost trait strength here.", trait: 9 }],
+    watchouts: [{ text: "A third option can turn into thirty.", fix: "I'll stop at two options and name my favorite.", trait: 0 }, { text: "Menus are your villain origin story.", fix: "Pick one.", trait: 0 }],
+    chain: { you_are: "You line options up before you commit.", so_you: "So you want a shortlist, not a lecture.", so_ill: "So I'll bring a shortlist and my favorite." },
   };
   const inputs = { ...INPUTS, picks: [...INPUTS.picks, { question: "How you like replies", label: "Show me options" }, { question: "pace", label: "Quick-leaning" }] };
   const r = toReport(raw, inputs, { at: "", from: "answers" });
   const think = r.observations.find((o) => o.category === "think")!;
   assert.deepEqual(r.type, { name: "The Playful Editor", line: raw.type.line, signature: ["Options", "Light", "Final say"], basis: [think.id, r.observations.find((o) => o.category === "humor")!.id] });
-  assert.deepEqual(r.strengths, [{ text: "You know a good option when you see one.", basis: think.id }]);
-  assert.deepEqual(r.watchouts.map((w) => w.fix), ["I'll cap it at two and say my pick."], "a fix must be 'I'll …'");
-  assert.equal(r.chain!.so_ill, "So I'll bring two options and my pick.");
+  assert.deepEqual(r.strengths, [{ text: "Two or three options and you're already deciding.", basis: think.id }]);
+  assert.deepEqual(r.watchouts.map((w) => w.fix), ["I'll stop at two options and name my favorite."], "a fix must be 'I'll …'");
+  assert.equal(r.chain!.so_ill, "So I'll bring a shortlist and my favorite.");
   assert.deepEqual(r.share, { title: "{name} is The Playful Editor", lines: ["Options", "Light", "Final say"] });
   assert.deepEqual(r.mix.map((m) => [m.left, m.right, m.position, m.evidence.quote]), [["Options", "One answer", 1, "Show me options"], ["Reflective", "Quick", 3, "Quick-leaning"]]);
   assert.deepEqual(toReport(raw, INPUTS, { at: "", from: "import" }).mix, [], "no picks for it → no mix row");
@@ -367,7 +367,7 @@ test("codex: a 'not me' made while a rewrite runs is not brought back; what was 
   let release!: () => void;
   let gated = false;
   const gate = new Promise<void>((r) => (release = r));
-  const TYPED = { ...RAW, type: { name: "The Playful Editor", line: "You pick from good options, keep it light, and keep the final say.", signature: ["Options", "Light", "Final say"], basis: [0] }, strengths: [{ text: "You know a good option when you see one.", trait: 0 }] };
+  const TYPED = { ...RAW, type: { name: "The Playful Editor", line: "You shortlist fast, joke about prices, and sign off last.", signature: ["Options", "Light", "Final say"], basis: [0] }, strengths: [{ text: "Two or three options and you're already deciding.", trait: 0 }] };
   const h = harness(async () => { if (gated) await gate; return TYPED; });
   t.after(h.cleanup);
   const job = h.ins.begin("u1", PASTE);
@@ -427,7 +427,7 @@ test("codex r2: 'not me' drops a type built on it; a like chip needs a plain men
   const like = toReport({ ...RAW, observations: [obs({ category: "taste", claim: "You eat loud and dress quiet on purpose.", evidence: [ev("import", "the spicier the better")], chips: [{ label: "Seafood", polarity: "like" }] })] }, inputs, { at: "", from: "import" });
   assert.equal(like.observations[0].chips, undefined, "'Dislikes seafood' is never a like");
 
-  const TYPED = { ...RAW, type: { name: "The Playful Editor", line: "You pick from good options, keep it light, and keep the final say.", signature: ["Options", "Light", "Final say"], basis: [0, 1] } };
+  const TYPED = { ...RAW, type: { name: "The Playful Editor", line: "You shortlist fast, joke about prices, and sign off last.", signature: ["Options", "Light", "Final say"], basis: [0, 1] } };
   const h = harness(() => TYPED);
   t.after(h.cleanup);
   const job = h.ins.begin("u1", PASTE);
@@ -439,4 +439,32 @@ test("codex r2: 'not me' drops a type built on it; a like chip needs a plain men
   assert.equal(after.type, null, "one of its two bases is gone → the type goes");
   assert.equal(after.share, null);
   assert.equal((await h.store.getStyle("u1"))!.insights!.denied![0].correction, undefined, "a minor's age is never stored");
+});
+
+test("codex r3: forget also clears the not-me list and stitched lines; a curly-apostrophe age is caught", async (t) => {
+  const r = toReport({ ...RAW, headline: "You want two good options and leather everything." }, INPUTS, { at: "", from: "import" });
+  const stored = { ...r, denied: [{ id: "x", claim: "You let leather do the talking.", category: "taste" as const, at: "t" }] };
+  const scrubbed = scrubRemoved(stored, [{ text: "leather accessories", forget: true }]);
+  assert.ok(!JSON.stringify(scrubbed).toLowerCase().includes("leather"), JSON.stringify(scrubbed).slice(0, 200));
+  const h = harness(() => RAW);
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  const rep = (await h.ins.get("u1", 3000)).report!;
+  await h.ins.verdict("u1", rep.observations[0].id, { verdict: "not_me", correction: "I’m 15 and I just like choices." });
+  assert.equal((await h.store.getStyle("u1"))!.insights!.denied![0].correction, undefined);
+});
+
+test("codex r4: a fact only in a not-me correction is forgotten too (off the list and the call profile)", async (t) => {
+  const h = harness(() => RAW);
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  const rep = (await h.ins.get("u1", 3000)).report!;
+  await h.ins.verdict("u1", rep.observations[0].id, { verdict: "not_me", correction: "I collect fountain pens." });
+  assert.match(JSON.stringify((await h.store.getStyle("u1"))!.insights!.denied), /fountain pens/);
+  await h.p.voiceCorrection("u1", "Forget about fountain pens.");
+  const card = (await h.store.getStyle("u1"))!;
+  assert.ok(!/fountain/i.test(JSON.stringify(card.insights!.denied ?? [])), JSON.stringify(card.insights!.denied));
+  assert.ok((card.removed ?? []).some((r) => r.forget && /fountain/.test(r.text)), JSON.stringify(card.removed));
 });
