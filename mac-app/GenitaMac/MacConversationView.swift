@@ -39,6 +39,8 @@ struct MacConversationView: View {
         ZStack(alignment: .topLeading) {
             ZStack(alignment: .topLeading) {
                 companionImage.resizable().frame(width: 479, height: 852).offset(x: -53, y: -4).frame(width: 390, height: 844, alignment: .topLeading).clipped()
+                    // motion details card 10: veiled while the call connects, clears once when it is live (flag off: plain)
+                    .modifier(MacCallVeil(veiled: call.link == .connecting))
                     .contentShape(Rectangle()).onTapGesture { faceTapped() }
                     .accessibilityElement().accessibilityLabel(macCall.companionName.map { "\($0) on the call" } ?? "Your companion").accessibilityIdentifier("macCompanionFace")
                 // L4: the animated Meta face (prep face set), same framing as the still; nil → the still
@@ -49,6 +51,7 @@ struct MacConversationView: View {
                         if let poster = call.facePoster { Image(decorative: poster, scale: 1).resizable().scaledToFill() }
                         FaceFrameView(driver: face)
                     }.frame(width: 479, height: 852).clipped().offset(x: -53, y: -4).frame(width: 390, height: 844, alignment: .topLeading).clipped()
+                        .modifier(MacCallVeil(veiled: call.link == .connecting))
                         .allowsHitTesting(false)
                 }
                 if sheetFull { MacSheetInk.ink.frame(width: 390, height: 844).allowsHitTesting(false) }
@@ -70,16 +73,22 @@ struct MacConversationView: View {
                     }
                     VStack(spacing: 13) {
                         Button { call.toggleCamera() } label: { MacGlassControl(icon: "glass-camera-icon", size: 46) }.buttonStyle(MacUnchangedControlStyle())
+                            .modifier(MacControlEntrance(shown: call.link != .connecting, index: 0))
                             .accessibilityLabel(call.cameraOn ? "Turn camera off" : "Turn camera on").accessibilityIdentifier("macCameraToggle")
-                        Button { call.toggleMic() } label: { MacGlassControl(icon: "glass-mic-icon", size: 46, slashed: !call.micOn) }.buttonStyle(MacUnchangedControlStyle())
+                        // motion details card 2: pressed to 0.92, a blue ring that follows the user's voice while the mic is on
+                        Button { call.toggleMic() } label: {
+                            MacGlassControl(icon: "glass-mic-icon", size: 46, slashed: !call.micOn)
+                                .background { MotionVoiceRing(active: call.micOn && call.link == .live, diameter: 46, color: Color(red: 84 / 255, green: 193 / 255, blue: 1), level: { call.inputLevel }) }
+                        }.buttonStyle(MotionPressStyle())
+                            .modifier(MacControlEntrance(shown: call.link != .connecting, index: 1))
                             .accessibilityLabel(call.micOn ? "Turn microphone off" : "Turn microphone on").accessibilityIdentifier("macMicToggle")
                         if MacInterpretController.enabled {
                             Button { withAnimation(.easeOut(duration: 0.22)) { interpret.open() } } label: { MacGlassControl(icon: "glass-more-icon", size: 46) }
-                                .buttonStyle(.plain).accessibilityLabel("More").accessibilityIdentifier("macMore")
+                                .buttonStyle(.plain).modifier(MacControlEntrance(shown: call.link != .connecting, index: 2)).accessibilityLabel("More").accessibilityIdentifier("macMore")
                         } else {
                             // ⋮ = the Mac menu (MC-M: Finds, Setting, Move to iPhone) while interpretation is cut — never a dead button
                             Button { withAnimation { menuOpen = true } } label: { MacGlassControl(icon: "glass-more-icon", size: 46) }
-                                .buttonStyle(.plain).accessibilityLabel("More").accessibilityIdentifier("macMore")
+                                .buttonStyle(.plain).modifier(MacControlEntrance(shown: call.link != .connecting, index: 2)).accessibilityLabel("More").accessibilityIdentifier("macMore")
                         }
                     }.position(x: 334, y: 724 - railShift).opacity(sheetCovers ? 0 : 1).allowsHitTesting(!sheetCovers)
                 }
@@ -299,6 +308,22 @@ struct MacConversationView: View {
         }.frame(width: 390, height: 366, alignment: .topLeading).position(x: 195, y: 661).accessibilityIdentifier("macSharePermission")
     }
 }
+/// Motion details card 10 on the Mac call window (flag `motionDetails`; off: unchanged).
+private struct MacCallVeil: ViewModifier {
+    var veiled: Bool
+    func body(content: Content) -> some View {
+        if MotionDetails.enabled { content.motionCallReveal(veiled: veiled) } else { content }
+    }
+}
+
+private struct MacControlEntrance: ViewModifier {
+    var shown: Bool
+    var index: Int
+    func body(content: Content) -> some View {
+        if MotionDetails.enabled { content.motionControlRise(shown: shown, index: index) } else { content }
+    }
+}
+
 private struct MacUnchangedControlStyle: ButtonStyle { func makeBody(configuration: Configuration) -> some View { configuration.label } }
 
 private struct MacDemoSystemBar: View {

@@ -924,6 +924,19 @@ enum CallStop: Equatable {
     }
 
 
+    /// Motion details cards 1 and 2: the user's voice (mic ring) and the reply (pill bars), 0…1, read every frame.
+    var inputLevel: Float {
+        #if DEBUG
+        // motion lane evidence recordings: the simulator has no mic, so a speech-like envelope stands in (never in TestFlight)
+        if micOn, ProcessInfo.processInfo.environment["GENITA_MOTION_DEMO_LEVEL"] == "1" {
+            let t = Date.timeIntervalSinceReferenceDate
+            return Float(max(0, sin(t * 2.2) * (0.55 + 0.45 * sin(t * 9.0))))
+        }
+        #endif
+        return audio.inputLevel
+    }
+    var outputLevel: Float { audio.outputLevel }
+
     /// Device voice mouth hook: openness 0…1 of the speech playing now (from the rendered buffers), or nil.
     func deviceMouthLevel() -> Float? {
         guard tts == .device, let id = playingUtterance, let position = audio.playbackPositionMs(utteranceId: id) else { return nil }
