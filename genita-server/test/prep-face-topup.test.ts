@@ -80,3 +80,41 @@ test("face top-up: a companion still prepping (or without a face) is skipped, ne
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("face top-up (codex P1/P2): a companion deleted mid-run keeps no new image; a finished key is never downgraded; edit_failed keys are retried", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "face-topup-"));
+  try {
+    // P1: deleted while the edits run
+    const store = new FileStore(dir);
+    await store.putCompanion(prepped());
+    await store.putAsset("u1", "c1", "neutral", fakePng(1000, 2000, "scene"));
+    const c = (await store.getCompanion("u1"))!;
+    const slow = fakeMedia({ keyOf, delayMs: 30 });
+    const run = topUpFaceKeys({ store, media: slow.media, metaKey: "k", companion: c, env: {} });
+    await new Promise((r) => setTimeout(r, 5));
+    await store.deleteCompanion("u1");
+    const r = await run;
+    assert.equal(r.status, "skipped");
+    for (const k of ["surprised", "concerned"]) assert.equal(await store.getAsset("u1", "c1", k), null, `${k} not written back`);
+
+    // P2: another run already finished `surprised`; this run's rejection does not overwrite it
+    const s2 = new FileStore(join(dir, "b"));
+    const a = prepped();
+    a.prep.steps.face!.face!.items.surprised = { status: "rejected", reason: "edit_failed", retried: true };
+    await s2.putCompanion(a);
+    await s2.putAsset("u1", "c1", "neutral", fakePng(1000, 2000, "scene"));
+    const failing = fakeMedia({ keyOf, fail: (tag) => (tag.startsWith("surprised") ? new Error("upstream 503") : null) });
+    const run2 = topUpFaceKeys({ store: s2, media: failing.media, metaKey: "k", companion: a, env: {} });
+    await s2.patchCompanion("u1", (x) => {
+      const f = x.prep.steps.face!;
+      return { ...x, prep: { ...x.prep, steps: { ...x.prep.steps, face: { ...f, face: { ...f.face!, items: { ...f.face!.items, surprised: { status: "done", box: BOX, retried: false, ms: 1 } } } } } } };
+    });
+    await run2;
+    assert.ok(failing.calls.edits.some((e) => e.key.startsWith("surprised")), "the edit_failed key was retried");
+    const after = (await s2.getCompanion("u1"))!.prep.steps.face!.face!.items;
+    assert.equal(after.surprised?.status, "done", "never downgraded");
+    assert.equal(after.concerned?.status, "done");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
