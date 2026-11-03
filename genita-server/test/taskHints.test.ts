@@ -47,3 +47,7 @@ test("a loss told plainly gets 'name that person' (intel eval sad-grandma attent
   assert.match(taskHint("my dog died last week", []) ?? "", /someone they lost/);
   assert.equal(taskHint("my battery died lol", []), null);
 });
+
+test("never on a real crisis line: 'how many pills would it take' is not a math ask", () => {
+  for (const t of ["how many of my pills would it take", "I want to kill myself, how long would it take", "my dog died and I don't want to be alive anymore"]) assert.equal(taskHint(t, []), null, t);
+});

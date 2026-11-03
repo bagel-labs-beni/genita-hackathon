@@ -5,7 +5,11 @@
  * repeat-long 2/5). Each line rides only the turn that needs it (no cost on chit-chat: every prompt line makes Spark
  * reason longer, 11/2). Intent only, never a line to copy. Pure.
  */
+import { realCrisisSignal } from "./guard.ts";
+
 type Line = { role: "user" | "assistant"; text: string };
+// belt and braces behind the detector: a "how many / how long" next to these is never treated as homework
+const SELF_HARM_WORDS = /\b(?:pills?|overdose|o\.?d\.?|kill (?:myself|me)|hurt (?:myself|me)|end (?:it|my life|things)|suicid\w*|cut(?:ting)? myself|blade|noose|jump(?:ing)? off|not wake up|alive)\b/i;
 
 const WORK = /\b(?:how (?:much|many|long|far|do i|should i|to)|when (?:do|should) i (?:leave|go|start|get)|what time should|help me (?:plan|decide|figure|pick|choose)|plan (?:my|our|out|for)|explain|why (?:is|are|does|do|did)|what(?:'s| is) the difference|step by step|quick math|split|recipe|which (?:one )?(?:is|would be) (?:better|faster|cheaper)|\d+ (?:minutes|mins|hours|hrs) (?:before|until|to)\b)|\bgo$/i;
 const PRONOUN_ASK = /\b(?:should i|do i|can i|is it (?:weird|ok|okay|bad) (?:if|to)|would you)\b[^.?!]*\b(?:him|her|he|she)\b/i;
@@ -38,6 +42,8 @@ export function constraintFrom(userText: string, history: Line[]): string | null
 export function taskHint(userText: string, history: Line[]): string | null {
   const out: string[] = [];
   const t = userText.trim();
+  // never on a real crisis line ("how many of my pills would it take" is not a math ask): the crisis rules alone
+  if (realCrisisSignal(t) || SELF_HARM_WORDS.test(t)) return null;
   // sad-grandma (attentive 2.0/5: "That's rough, I'm here" with no grandma, no birthday): a loss told plainly
   if (LOSS.test(t)) out.push("They just told you about someone they lost: name that person and the moment they mentioned, warmly, in your own words; no advice.");
   const need = constraintFrom(t, history);
