@@ -205,6 +205,8 @@ const DEVICE_MS_PER_CHAR = 70;
 const DEVICE_SLACK_MS = 1500;
 const DEVICE_MAX_MS = 60_000;
 const ASR_RETRY_MS = 2000;
+/** F8: interpretation always hears both sides, even when chat listens in English only (prod GENITA_ASR_LANGUAGES=English) */
+const INTERPRET_ASR_LANGUAGES = ["English", "Korean"];
 
 /**
  * Words of `spoken` (the spoken form the voice was given) not yet voiced, given the voiced characters.
@@ -309,6 +311,10 @@ export class Session {
   /** Demo S4: the move-to-Mac suggestion was made in this call */
   private macSuggested = false;
   private asr: AsrLike | null = null;
+  /** the languages `asr` was opened with (joined), so a mode switch can tell whether it must reopen */
+  private asrLanguagesKey: string | null = null;
+  /** set while `start` runs: `mode` only becomes "interpret" in enterInterpret, after the mic ASR is opened */
+  private startingMode: Mode | null = null;
   /** F8 · set while mode is "interpret" */
   private interp: Interpreter | null = null;
   /** F8 · Mac call interpretation: a second ASR stream for the call's sound */
@@ -553,6 +559,8 @@ export class Session {
       this.recentReplies = this.history.filter((h) => h.role === "assistant").map((h) => h.text).slice(-3);
     }
     const startMode: Mode = msg.mode === "interpret" ? "interpret" : "chat";
+    // the mic ASR opened during start listens in the start mode's languages (no English-only stream to replace)
+    this.startingMode = startMode;
     this.language = str(msg.language, 40) ?? "English";
     this.pickVoice(str(msg.voiceId, 64) ?? persona.voice?.id, persona.kind);
     const lip = (msg.lip && typeof msg.lip === "object" ? msg.lip : { mode: msg.lip }) as Record<string, unknown>;
@@ -682,6 +690,7 @@ export class Session {
       ...(this.perceptionCtl ? { perception: true } : {}),
     });
     this.client.sendJson({ type: "state", state: "listening" });
+    this.startingMode = null;
     if (startMode === "interpret") this.enterInterpret(parseInterpretOptions(msg.interpret));
     if (this.tts === "server" && this.deps.config.voice && !this.voiceOverflow) this.deps.voicePrefetch?.(Number(this.voiceId.slice("seamless:".length)));
     if (startMode === "chat" && initiativeOn()) this.startInitiative();
@@ -730,6 +739,7 @@ export class Session {
     }
     this.leaveInterpret();
     this.mode = "chat";
+    this.retuneMicAsr();
     // back from interpretation: the silence clock starts now, and a call that started interpreting gets a governor
     this.initiative?.activity(this.now());
     if (this.started && initiativeOn()) this.startInitiative();
@@ -751,6 +761,7 @@ export class Session {
     this.interp.begin();
     if (this.interp.source === "call") void this.ensureCallAsr();
     else this.dropCallAsr();
+    this.retuneMicAsr();
   }
 
   private leaveInterpret(): void {
@@ -809,9 +820,11 @@ export class Session {
     retry.connecting = true;
     let asr: AsrLike | null = null;
     try {
-      asr = this.deps.openAsr(this.deps.config.asrLanguages);
+      // the call's sound is only listened to for interpretation
+      const languages = this.asrLanguages(source === "call" ? "interpret" : this.startingMode ?? this.mode);
+      asr = this.deps.openAsr(languages);
       const stream = asr;
-      if (source === "mic") this.asr = stream;
+      if (source === "mic") { this.asr = stream; this.asrLanguagesKey = languages.join(","); }
       else this.callAsr = stream;
       stream.on("event", (e) => {
         if (this.closed || current() !== stream) return;
@@ -851,6 +864,27 @@ export class Session {
     } finally {
       retry.connecting = false;
     }
+    // the mode changed while this stream was connecting
+    if (source === "mic") this.retuneMicAsr();
+  }
+
+  /** Chat listens in the configured languages; interpretation adds English and Korean (the face-to-face pair). */
+  private asrLanguages(mode: Mode): string[] {
+    const base = this.deps.config.asrLanguages;
+    return mode === "interpret" ? [...new Set([...base, ...INTERPRET_ASR_LANGUAGES])] : base;
+  }
+
+  /** Mode switch: reopen the mic ASR when it listens in the wrong languages (not while one is connecting). */
+  private retuneMicAsr(): void {
+    const stream = this.asr;
+    if (this.closed || !stream || this.asrRetry.mic.connecting) return;
+    const want = this.asrLanguages(this.startingMode ?? this.mode).join(",");
+    if (this.asrLanguagesKey === want) return;
+    this.log("asr.retune", { mode: this.mode, languages: want });
+    this.asr = null;
+    this.asrLanguagesKey = null;
+    try { stream.end(); } catch { /* already unusable */ }
+    if (this.micOn) void this.ensureAsr();
   }
 
   close(code = 1000, reason = "closed"): void {
