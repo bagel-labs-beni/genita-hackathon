@@ -9,8 +9,6 @@ import SwiftUI
     private var orb: DesignNode { nodes.first { $0.name.hasPrefix("soul-orb") }! }
     private var subtitle: DesignNode { nodes.first { $0.characters == "Using the profile you chose to share." }! }
 
-    override func tearDown() { ReferenceOnboardingView.orbSpacing = true; super.tearDown() }
-
     func testOrbSitsUnderTheSubtitleAtFullSizeOnA390Phone() {
         // 390 × 844 (safe top 47 → top 3): content bottom 680 − 3
         let fit = ReferenceOnboardingView.readingFit(orb: orb, nodes: nodes, limit: 677)
@@ -33,6 +31,7 @@ import SwiftUI
 
     func testSpacingOffIsTheFigmaNode() {
         ReferenceOnboardingView.orbSpacing = false
+        defer { ReferenceOnboardingView.orbSpacing = true }
         let fit = ReferenceOnboardingView.readingFit(orb: orb, nodes: nodes, limit: 527)
         XCTAssertEqual(fit.orb.y, orb.y); XCTAssertEqual(fit.shift, 0); XCTAssertEqual(fit.scale, 1)
     }
@@ -45,11 +44,15 @@ import SwiftUI
                 let model = AppState(storage: UserDefaults(suiteName: UUID().uuidString)!, imageURL: URL.temporaryDirectory.appending(path: UUID().uuidString))
                 model.setup.stage = .preparing
                 let host = UIHostingController(rootView: ReferenceOnboardingView(model: model).frame(width: size.width, height: size.height))
-                host.additionalSafeAreaInsets = UIEdgeInsets(top: safeTop, left: 0, bottom: safeBottom, right: 0)
                 let window = UIWindow(frame: CGRect(origin: .zero, size: size))
                 window.rootViewController = host; window.isHidden = false
                 host.view.frame = window.bounds
                 host.view.setNeedsLayout(); host.view.layoutIfNeeded()
+                // the final safe area is the phone's (47 / 20 top), whatever the test window already brings
+                let base = host.view.safeAreaInsets
+                host.additionalSafeAreaInsets = UIEdgeInsets(top: max(0, safeTop - base.top), left: 0, bottom: max(0, safeBottom - base.bottom), right: 0)
+                host.view.setNeedsLayout(); host.view.layoutIfNeeded()
+                XCTAssertEqual(host.view.safeAreaInsets.top, safeTop, accuracy: 0.5, label)
                 RunLoop.main.run(until: Date().addingTimeInterval(0.2))
                 let format = UIGraphicsImageRendererFormat(); format.scale = 3
                 let image = UIGraphicsImageRenderer(size: size, format: format).image { _ in host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true) }

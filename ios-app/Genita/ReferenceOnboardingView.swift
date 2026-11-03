@@ -316,7 +316,7 @@ import UniformTypeIdentifiers
     /// about its centre line instead of overlapping. Returns the placed orb node and how far the reading block moves.
     static let orbGapBelowSubtitle: CGFloat = 24
     static let readingBlockTop: CGFloat = 400
-    static var orbSpacing = true
+    nonisolated(unsafe) static var orbSpacing = true
     static func readingFit(orb: DesignNode, nodes: [DesignNode], limit: CGFloat) -> (orb: DesignNode, shift: CGFloat, scale: CGFloat) {
         guard orbSpacing,
               let subtitle = nodes.first(where: { $0.type == "text" && $0.y > 150 && $0.y < orb.y + 40 && $0.fontFamily != "KMU80 TTF" }),
@@ -326,7 +326,7 @@ import UniformTypeIdentifiers
         let orbTop = subtitle.y + subtitle.h + orbGapBelowSubtitle
         let toReading = reading.y - orb.y            // Figma: the reading title sits this far below the orb's top
         let block = blockBottom - reading.y           // title … % label
-        let scale = max(0.4, min(1, (limit - orbTop - block) / toReading))
+        let scale = max(0.05, min(1, (limit - orbTop - block) / toReading))
         var placed = orb
         placed.w = orb.w * scale; placed.h = orb.h * scale
         placed.x = orb.x + (orb.w - placed.w) / 2
