@@ -131,7 +131,7 @@ import ARKit
         let args=ProcessInfo.processInfo.arguments
         if !args.contains("--uitesting") || args.contains("--handoff-server") {server.start()}
         // a recovered call never swaps a code pairing in progress for the remembered Mac
-        if HandoffPairingInput.mayReconnectRemembered(sheetOpen:settings,code:code,linkConnected:link.connected) {link.reconnect()}
+        if HandoffPairingInput.mayReconnectRemembered(sheetOpen:settings,code:link.pairedWithCode ? "" : code,linkConnected:link.connected) {link.reconnect()}
     }
     private func resolveAccount() {
         guard sceneActive,accountScope.accountID == nil,let model,model.serverWired,
@@ -143,7 +143,7 @@ import ARKit
                 self?.resolving=false
                 // setAccount keeps the code entered while /me was pending and joins once the scope is installed
                 model?.adopt(accountId:accountID)
-            },expired:{ [weak self,weak model] in self?.resolving=false;model?.signedOut() })
+            },expired:{ [weak model] in model?.signedOut() })  // setAccount(nil) clears `resolving` after it drops the typed digits
     }
     func attach(_ model: AppState) {
         self.model=model
