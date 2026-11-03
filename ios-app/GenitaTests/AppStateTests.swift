@@ -364,4 +364,21 @@ import UIKit
         signedIn.go(.name)
         XCTAssertFalse(signedIn.needsSignInFirst, "a session: A03 stays")
     }
+
+    /// Build 7 P1: a cold launch straight into a call opens on the saved generated scene (same account only),
+    /// never the upload photo; signing out forgets it.
+    func testSceneSurvivesARelaunchForTheSameAccountOnly() {
+        let dir = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        let photo = dir.appending(path: "companion.jpg")
+        let model = AppState(storage: store, imageURL: photo)
+        model.setup.accountId = "a"
+        model.sceneImage = ("a|https://x/scene.jpg", Data([1, 2, 3]))
+        let relaunched = AppState(storage: store, imageURL: photo)
+        relaunched.setup.accountId = "a"
+        XCTAssertEqual(relaunched.sceneImageData, Data([1, 2, 3]), "before /prep answers: the saved scene")
+        relaunched.setup.accountId = "b"
+        XCTAssertNil(relaunched.sceneImageData, "another account never sees it")
+        relaunched.sceneImage = nil
+        XCTAssertNil(AppState(storage: store, imageURL: photo).sceneImage, "cleared on sign-out / reset")
+    }
 }
