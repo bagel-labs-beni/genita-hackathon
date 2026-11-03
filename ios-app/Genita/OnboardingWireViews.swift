@@ -195,10 +195,11 @@ struct ImageCheckView: View {
     @ViewBuilder private func photo(width: CGFloat) -> some View {
         if !analyzing, polishFlow, let data = model.polishedImage, let image = UIImage(data: data) {
             // the whole polished 9:16 picture, as the call will show it, over a soft blur of itself (no grey bars)
-            ZStack {
-                Image(uiImage: image).resizable().scaledToFill().blur(radius: 24).opacity(0.55)
-                Image(uiImage: image).resizable().scaledToFit()
-            }.clipped().accessibilityIdentifier("polishedImage")
+            // the fitted picture sets the size; the blurred copy is only a background (it must not grow the frame)
+            Image(uiImage: image).resizable().scaledToFit()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background { Image(uiImage: image).resizable().scaledToFill().blur(radius: 24).opacity(0.55) }
+                .clipped().accessibilityIdentifier("polishedImage")
         } else if let data = model.setup.imageData, let image = UIImage(data: data) {
             Image(uiImage: image).resizable().scaledToFill()
         } else { Color(white: 0.93) }
