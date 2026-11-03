@@ -14,10 +14,10 @@
 import type { SparkRequest } from "../meta/spark.ts";
 import { sparkJson } from "../meta/spark.ts";
 import { backgroundJson } from "../meta/sparkOpen.ts";
-import { looksLikeInjection, redactSensitive, styleProfileText, type StyleCard, type DisplayRow } from "../prep/importProfile.ts";
+import { looksLikeInjection, redactSensitive, styleProfileText, type DisplayRow, type Finding, type StyleCard } from "../prep/importProfile.ts";
 import type { PrepStore } from "../prep/store.ts";
 import { EYEBROWS, SPARK_STORY_IDS, STORY_IDS, buildStoryRequest, cardTexts, interimCard, optimisticCard, toStory, type SparkStoryId, type Story, type StoryCard, type StoryId, type UnknownItem } from "./story.ts";
-import { mergeUpdates, type AppliedUpdate, type ProfileUpdate } from "./merge.ts";
+import { PROFILE_FIELDS, mergeUpdates, type AppliedUpdate, type ProfileField, type ProfileUpdate } from "./merge.ts";
 import { askLine, beginCall } from "./unknowns.ts";
 import { FORGET, buildCorrectionRequest, mightBeCorrection, toAnswer, toCorrectionUpdates } from "./corrections.ts";
 import { buildCallExtractRequest, toCallUpdates, type CallTurn } from "./extract.ts";
@@ -490,7 +490,23 @@ export class Personalize {
     const words = [...new Set(lines.flatMap((t) => (t.match(/[\p{L}\p{N}-]{3,}/gu) ?? []).filter((w) => named.includes(w.toLowerCase().slice(0, 5)))))].map((w) => w.toLowerCase());
     const kept = words.join(" ").slice(0, 80);
     if (!kept) return false;
-    await this.update(userId, (c) => ({ card: { ...c, removed: [...(c.removed ?? []), { text: kept, at: this.now().toISOString(), forget: true as const }].slice(-40) }, out: true }));
+    const at = this.now().toISOString();
+    const targetKeys = keys.flatMap((k) => k.keys);
+    await this.update(userId, (c) => {
+      // the profile lines the request is about go now (more than half of the request's words are in the line), so
+      // the sheet's "forget that …" really removes it without waiting for Spark (Codex r8); "asthma when running"
+      // does not take "Likes running." with it
+      const updates: ProfileUpdate[] = [];
+      for (const [field, list] of Object.entries(c.sections ?? {})) {
+        const hit = (list as Finding[]).filter((f) => {
+          const w = keyWords(f.text);
+          return targetKeys.filter((x) => w.includes(x)).length * 2 > targetKeys.length;
+        }).map((f) => f.text);
+        if (hit.length && (PROFILE_FIELDS as readonly string[]).includes(field)) updates.push({ field: field as ProfileField, text: "", replaces: hit, label: "explicit", asOf: at });
+      }
+      const merged = updates.length ? mergeUpdates(c, updates, at).card : c;
+      return { card: { ...merged, removed: [...(merged.removed ?? []), { text: kept, at, forget: true as const }].slice(-40) }, out: true };
+    });
     return true;
   }
 

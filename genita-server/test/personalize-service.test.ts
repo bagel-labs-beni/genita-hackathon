@@ -449,7 +449,8 @@ test("Codex P1: 'forget that I have diabetes' stores nothing and sends nothing o
   assert.doesNotMatch((await h.p.startCall("u1"))?.profile ?? "", /diabetes/);
   await h.p.voiceCorrection("u1", "Actually, forget that I like leather accessories.");
   const removed = (await h.store.getStyle("u1"))!.removed ?? [];
-  assert.deepEqual(removed.map((r) => [r.text, r.forget]), [["leather accessories", true]]);
+  assert.deepEqual(removed.filter((r) => r.forget).map((r) => [r.text, r.forget]), [["leather accessories", true]]);
+  assert.ok(!(await h.store.getStyle("u1"))!.sections.likes.some((x) => /leather/.test(x.text)), "the line itself is gone");
 });
 
 test("Codex P1 r2: a sensitive sheet correction is never stored or shown; an email hidden by punctuation stripping is never kept", async (t) => {
@@ -512,4 +513,19 @@ test("Codex r7: 'Forget that I have asthma' on the sheet stores and shows nothin
   const removed = ((await h.store.getStyle("u1"))!.removed ?? []).filter((x) => x.forget).map((x) => x.text);
   assert.ok(removed.length === 1 && /clean|minimal|clothes/.test(removed[0]), JSON.stringify(removed));
   assert.ok(!JSON.stringify((await h.store.getStyle("u1"))!.pendingCorrections ?? []).includes("Forget"));
+});
+
+test("Codex r8: the sheet's 'forget that I like leather accessories' really removes the line (no Spark), not 'Likes running' for 'asthma when running'", async (t) => {
+  const h = harness(() => ({ updates: [], answered: { field: "", text: "", chip: "" } }));
+  t.after(h.cleanup);
+  await h.store.putStyle("u1", toStyleCard({ ...IMPORT_RAW, sections: { ...IMPORT_RAW.sections, likes: [f("Likes leather accessories."), f("Likes running.")] } }, "import"));
+  const { toStory } = await import("../src/personalize/story.ts");
+  const c0 = (await h.store.getStyle("u1"))!;
+  const { cards, topics } = toStory(STORY_RAW, c0);
+  await h.store.putStyle("u1", { ...c0, story: { version: 2, cards, topics, at: "", from: "text" } });
+  await h.p.correct("u1", { cardId: "taste", text: "Forget that I like leather accessories." });
+  await h.p.voiceCorrection("u1", "Actually, forget that I have asthma when running.");
+  const likes = (await h.store.getStyle("u1"))!.sections.likes.map((x) => x.text);
+  assert.deepEqual(likes, ["Likes running."]);
+  assert.doesNotMatch((await h.p.startCall("u1"))?.profile ?? "", /leather accessories\./);
 });
