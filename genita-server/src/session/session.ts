@@ -68,6 +68,7 @@ import { carriedMood, moodScaledIntensity, saveCallMood } from "../convo/callMoo
 import { holdsSteady, personaBaseline, restingFace } from "../convo/moodState.ts";
 import { forgetOpenerTopics, pickOpenerTopic, storedTopics } from "../convo/openerTopics.ts";
 import { InitiativeGovernor, initiativeBlock, initiativeInput, type InitiativeSource } from "../convo/initiative.ts";
+import { cueRhythm } from "../convo/rhythm.ts";
 import type { PerceptionSource } from "../convo/types.ts";
 
 export { PROTOCOL_VERSION, FRAME_HEADER_BYTES, FRAME_KIND_TTS_PCM } from "../protocol.ts";
@@ -1593,7 +1594,7 @@ export class Session {
       if (!again.fire) return;
       gov.markFired(this.now());
       const input = initiativeInput(again.source);
-      this.cueTurn = { source: again.source, block: initiativeBlock(again.source, threads), input };
+      this.cueTurn = { source: again.source, block: cueRhythm(initiativeBlock(again.source, threads), again.source, this.recentReplies), input };
       this.log("convo.initiative", { source: again.source, threads: threads.length, n: gov.count });
       this.dispatch({ type: "text", text: input });
     } finally {

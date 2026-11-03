@@ -856,7 +856,7 @@ test("dropRepeatedName (Codex P2/P3): names that are not a vocative stay; emotio
 
 test("P1 turnHints: closeness by call, no two '?' replies in a row, mood, what landed, recall on news", async () => {
   const { turnHints, closenessLine, moodFrom, moodLine } = await import("../src/convo/rhythm.ts");
-  assert.equal(closenessLine(1), null, "call 1 is the opener's job");
+  assert.match(closenessLine(1)!, /already know them/, "#343: call 1 already knows you, a bit giddy");
   assert.match(closenessLine(3)!, /teasing and callbacks/);
   assert.match(closenessLine(6)!, /running jokes and honest disagreement/);
   assert.equal(turnHints({ userText: "ok", remembers: false }), null, "nothing to say: no line at all");
