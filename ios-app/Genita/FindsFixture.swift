@@ -3,7 +3,8 @@ import Foundation
 
 /// Debug builds only. Puts the Finds sheet into one of the r03 board's states using events recorded from a real
 /// genita-server run (Resources/finds-fixture.json: fridge recipe, outfit, link; `npm run finds:e2e -- --record`).
-///   GENITA_FINDS_STATE = 1…19 (r03 frame numbers), 20 = IC-4 "can't see it", 21–24 = PF-1 product search (#120), 25 = fridge pill (#214), 26 = FT-NOSEE, 41 = reason chips (D48 ③), 42 = budget reason chip on a product card (Knows-Me Map)
+///   GENITA_FINDS_STATE = 1…19 (r03 frame numbers), 20 = IC-4 "can't see it", 21–24 = PF-1 product search (#120), 25 = fridge pill (#214), 26 = FT-NOSEE, 41 = reason chips (D48 ③), 42 = budget reason chip on a product card (Knows-Me Map),
+///   43–44 = motion demo recordings (MotionDemoFindsUITests): 43 the recipe card rises, its pictures arrive late; 44 a "?" chip turns ✓
 /// Pictures point at bundled illustrations ("bundle:finds-step-1") instead of the server.
 extension CallController {
     func installFindsFixture(environment env: [String: String] = ProcessInfo.processInfo.environment) {
@@ -119,6 +120,32 @@ extension FindsModel {
                 return .findCreated(c)
             }
             play([(product, priced)]); state = .full
+        case 43:
+            // motion card 4 demo: searching → the card rises (pictures still pending, the placeholders sweep) →
+            // the pictures arrive 5 s later and fade in (time to open the sheet full and see the step pictures)
+            play([(recipe, untilCard(recipe))]); state = .searching
+            let rest = Array(recipe.events.drop { if case .findCreated = $0 { return false }; return true })
+            let isImage = { (e: ServerEvent) -> Bool in if case .findImage = e { return true }; return false }
+            Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(1500))
+                for e in rest where !isImage(e) { self?.apply(e) }
+                try? await Task.sleep(for: .seconds(5))
+                for e in rest where isImage(e) { self?.apply(e) }
+            }
+        case 44:
+            // motion card 5 demo: the recipe at half; 6 s later the "?" kimchi chip turns ✓ (as if confirmed on the call)
+            play([(recipe, recipe.events)]); state = .half
+            let lastItems = recipe.events.last { if case .findItems = $0 { return true }; return false }
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(6))
+                guard case var .findItems(i)? = lastItems else { return }
+                i.items = i.items.map { item in
+                    var item = item
+                    if item.name == "kimchi" { item.tier = .have }
+                    return item
+                }
+                self?.apply(.findItems(i))
+            }
         case 17: play([(recipe, recipe.events)]); state = .half; close()
         case 19: play([(recipe, recipe.events)]); state = .full; scrollTarget = "how"
         case 30:
