@@ -52,7 +52,9 @@ const LOOKING_NOW = new RegExp(`^(?:now |so )?i'm (?:pulling|checking|digging|se
  * A bare "Let me think" stays (it is how people start an answer). */
 const THINK_INTENT = new RegExp(`^(?:let me|i'll|i need to|i have to) (?:think|figure out|decide|work out) (?:about )?(?:which|what|how)\\b${TAIL}$`);
 /** a plan to choose, not the choice: "I'll pick between the two" (bug-fix lane, fcece2f outfit 1/6) */
-const CHOOSE_PLAN = new RegExp(`^(?:let me|i'll|i will|i need to) (?:pick|choose|decide) (?:between|which)\\b${TAIL}$`);
+// …and "I'll pick one for you" / "a favorite" / "the winner": a choice promised with nothing chosen (bug-fix 5784953, 3/6)
+const NO_CHOICE = "(?:one|a favorite|a favourite|the winner|a winner|something|for you)";
+const CHOOSE_PLAN = new RegExp(`^(?:(?:got it|okay|ok|alright)\\b[^a-z]*)?(?:[^—–;]*[—–;,]\\s*)?(?:let me|i'll|i will|i need to|i'm gonna|i'm going to) (?:pick|choose|decide)(?: (?:between|which)\\b| ${NO_CHOICE}\\b)${TAIL}$|^(?:still |just )?(?:deciding|choosing|picking|torn) between\\b${TAIL}$`);
 /** a wait that promises a lookup, tool or no tool: "give me a sec to remember your vibe", "one sec while I check" */
 const WAIT_TO = new RegExp(`^(?:${WAIT})(?: (?:to|while i|so i can|and i'll|let me))? (?:remember|recall|think|check|look|pull|find|map|dig|figure|search|go through)\\b${TAIL}$`);
 /** "Trying to map your route — give me just a moment": only with a wait in the same sentence ("Trying to find a job is exhausting" is content). */
@@ -87,7 +89,9 @@ export function isToolNarration(sentence: string): boolean {
   if (clauses.length <= 1) return isNarrationClause(s);
   // every clause announces, waits or narrates the user; any real clause keeps the sentence
   const narrates = (c: string) => isNarrationClause(c) || (TRYING.test(c) && clauses.some((w) => WAIT_ONLY.test(w)));
-  return clauses.every((c) => narrates(c) || WAIT_ONLY.test(c)) && clauses.some(narrates);
+  // an acknowledgement clause ("got it — …") rides along with the announcement
+  const ACK_ONLY = /^(?:got it|okay|ok|alright|all right|sure|yep|yeah|mm+|hm+)$/;
+  return clauses.every((c) => narrates(c) || WAIT_ONLY.test(c) || ACK_ONLY.test(c)) && clauses.some(narrates);
 }
 
 /**
@@ -155,7 +159,7 @@ const SUSPECT = /^(?:i'?m|i am)(?: \w+ly)? (?!(?:seeing|loving|liking|feeling|th
 /** "I'll go with the black blazer" is the answer, not a plan (Codex #356 r11) */
 // a stated choice is the answer: "I'll go with…", "I'm going with the trench", "I'm leaning toward…" (Codex r15) — but not
 // "I'll pick between the two" (a plan to choose)
-const DECISION = /\b(?:i'?ll|i'?d|i will|i would|let me) (?:go with|pick (?!between|which)|take|choose (?!between|which)|vote for|say|recommend|bet on|stick with)|\bi'?m (?:going (?:with|for)|leaning (?:toward|towards|to)|voting for|sticking with|rooting for|picking the|choosing the|all in on)\b|\b(?:go with|pick|wear) the\b/;
+const DECISION = /\b(?:i'?ll|i'?d|i will|i would|let me) (?:go with|pick (?!between|which|one\b|a favou?rite|the winner|a winner|something|for you)|take (?!a (?:sec|moment|minute))|choose (?!between|which|one\b)|vote for|say|recommend|bet on|stick with)|\bi'?m (?:going (?:with|for)|leaning (?:toward|towards|to)|voting for|sticking with|rooting for|picking the|choosing the|all in on)\b|\b(?:go with|pick|wear) the\b/;
 const isSuspect = (text: string) => { const s = normalize(text); return SUSPECT.test(s) && !DECISION.test(s) && (metaIsUser || !/^(?:she|he)(?:'s| is)\b/.test(s)); };
 /** An eager first clause cut at a dash ("City Hall from here —") waits for the rest of its sentence. */
 const DASH_END = /[—–]\s*$/;

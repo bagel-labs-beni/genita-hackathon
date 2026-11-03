@@ -613,3 +613,15 @@ test("Codex r15 + bug-fix fcece2f: a stated choice is never dropped; a wait that
   const out = [...j.push("I'll pick between the two — give me a sec to remember your vibe.").speak, ...j.push("Go with the trench, Chelsea.").speak, ...j.finish().speak];
   assert.equal(out.join(" "), "Go with the trench, Chelsea.");
 });
+
+test("bug-fix 5784953 outfit 3/6: a choice promised with nothing chosen is an announcement; the actual pick stays", async () => {
+  const { NarrationJudge, isToolNarration } = await import("../src/text/toolNarration.ts");
+  for (const line of ["Got it — denim or trench for tonight, I'll pick one for you.", "I'll pick one for you.", "I'll pick a favorite between the trench and denim for tonight.", "Still deciding between the trench and denim — I'll pick the winner for tonight."]) {
+    assert.ok(isToolNarration(line), line);
+    const j = new NarrationJudge(true);
+    const out = [...j.push(line).speak, ...j.push("Go with the trench.").speak, ...j.finish().speak];
+    // a lone acknowledgement may stay in front ("Got it. Go with the trench.")
+    assert.match(out.join(" "), /^(?:Got it\. )?Go with the trench\.$/, line);
+  }
+  assert.ok(!isToolNarration("I'll pick the trench for you."));
+});
