@@ -54,11 +54,17 @@ struct LiveBox: Identifiable, Equatable {
     }
     // MARK: mask labels (demo S3 option c)
 
-    /// CameraStage space: the menu button (ConversationView: 47 pt at (47.5, 86.5 + top)), padded 6 pt.
-    static func menuRect(top: CGFloat) -> CGRect { CGRect(x: 24 - 6, y: 63 + top - 6, width: 47 + 12, height: 47 + 12) }
-    /// The status line pill ("Listening", "Jin is talking": 36 pt tall, centred at y 142 + top, up to ~240 pt wide), padded 4 pt.
+    /// CameraStage space: the menu button (CallHUDGrid: 44 pt at (38, safe top + 30)), padded 6 pt.
+    static func menuRect(grid: CallHUDGrid) -> CGRect {
+        let c = grid.menuCenter, r = CallHUDGrid.button / 2 + 6
+        return CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r)
+    }
+    /// The status line pill ("Listening", "Jin is talking": 32 pt tall on the grid's top row, up to ~240 pt wide), padded 4 pt.
     /// A box label under it read as one pill over another ("Green onion" behind "Listening", UI sweep 11/3).
-    static func statusRect(view: CGSize, top: CGFloat) -> CGRect { CGRect(x: view.width / 2 - 120 - 4, y: 142 + top - 18 - 4, width: 240 + 8, height: 36 + 8) }
+    static func statusRect(grid: CallHUDGrid) -> CGRect {
+        let c = grid.pillCenter, h = CallPillMetrics.height
+        return CGRect(x: c.x - 120 - 4, y: c.y - h / 2 - 4, width: 240 + 8, height: h + 8)
+    }
     /// How far the right-hand control rail (camera, mic, more) moves up with the Finds sheet (ConversationView reads it too).
     static func railShift(_ s: SheetState) -> CGFloat {
         switch s {
@@ -67,11 +73,11 @@ struct LiveBox: Identifiable, Equatable {
         default: 0
         }
     }
-    /// The control rail: three 50 pt glass buttons centred at x = width − 56, y 665 / 724 / 783 (+ the screen's extra
-    /// height below 844, + the sheet shift), padded 4 pt. A label under it can't be read ("Whole milk", UI sweep 11/3).
-    static func railRect(view: CGSize, sheet: SheetState) -> CGRect {
-        let y = 665 + (view.height - 844) + railShift(sheet)
-        return CGRect(x: view.width - 56 - 25 - 4, y: y - 25 - 4, width: 50 + 8, height: 783 - 665 + 50 + 8)
+    /// The control rail: three 44 pt glass buttons (CallHUDGrid: x = width − 38, ending on the baseline, + the sheet
+    /// shift), padded 4 pt. A label under it can't be read ("Whole milk", UI sweep 11/3).
+    static func railRect(grid: CallHUDGrid, sheet: SheetState) -> CGRect {
+        let half = CallHUDGrid.button / 2, top = grid.railY(.camera) - half + railShift(sheet), bottom = grid.railY(.more) + half + railShift(sheet)
+        return CGRect(x: grid.railX - half - 4, y: top - 4, width: CallHUDGrid.button + 8, height: bottom - top + 8)
     }
     /// The self-view PiP (96 × 128 at y 184 + top; right edge 20 pt, or left while the sheet is half up), padded 6 pt.
     static func pipRect(view: CGSize, top: CGFloat, sheetHalf: Bool) -> CGRect {

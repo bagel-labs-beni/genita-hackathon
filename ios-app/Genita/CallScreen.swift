@@ -106,7 +106,7 @@ struct CallCueView: View {
     var openSettings: () -> Void = {}
     var body: some View {
         if let content {
-            HStack(spacing: 8) {
+            HStack(spacing: CallPillMetrics.iconSpacing) {
                 content.icon
                 // the push runs inside the line's own box: the old words leave and the new ones rise within the pill,
                 // never drawn above or below it (a mid-change capture showed three lines stacked, UI sweep 11/3)
@@ -117,12 +117,15 @@ struct CallCueView: View {
                 if let action = content.action {
                     Button(action: action.run) {
                         Text(action.title).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.blueOnInk).padding(.horizontal, 8).frame(minHeight: 44).contentShape(Rectangle())
-                    }.buttonStyle(.plain).padding(.vertical, -4).padding(.trailing, -8).accessibilityIdentifier("cueAction")
+                    // a 44 pt tap target that lays out at the pill's text height, so the pill stays 32 tall
+                    }.buttonStyle(.plain).padding(.vertical, -(44 - (CallPillMetrics.height - 2 * CallPillMetrics.vertical)) / 2).padding(.trailing, -8).accessibilityIdentifier("cueAction")
                 }
             }
-            .padding(.leading, 16).padding(.trailing, content.action == nil ? 16 : 8).padding(.vertical, 8)
-            .frame(minHeight: 36)
-            .background(CallInk.pill, in: RoundedRectangle(cornerRadius: 18))
+            // HUD r01 A: 32 tall, 12 / 14 (8 with an action), 6 top and bottom; CallHUDGrid places it
+            .padding(.leading, CallPillMetrics.leading).padding(.trailing, content.action == nil ? CallPillMetrics.trailing : CallPillMetrics.trailingWithAction)
+            .padding(.vertical, CallPillMetrics.vertical)
+            .frame(minHeight: CallPillMetrics.height)
+            .background(CallInk.pill, in: RoundedRectangle(cornerRadius: CallPillMetrics.radius))
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.updatesFrequently)
             .accessibilityIdentifier("callCue")
@@ -215,14 +218,14 @@ struct CallToggleGlass: View {
     let on: Bool
     var body: some View {
         ZStack {
-            CallGlassControl(icon: icon, size: 46)
+            CallGlassControl(icon: icon, size: CallHUDGrid.button)
             if on {
                 Circle().fill(CallInk.onInk)
                 if let url = Bundle.main.url(forResource: icon, withExtension: "png"), let image = UIImage(contentsOfFile: url.path) {
                     Image(uiImage: image).resizable().colorInvert().frame(width: image.size.width / 4, height: image.size.height / 4)
                 }
             }
-        }.frame(width: 46, height: 46).contentShape(Circle())
+        }.frame(width: CallHUDGrid.button, height: CallHUDGrid.button).contentShape(Circle())
     }
 }
 
