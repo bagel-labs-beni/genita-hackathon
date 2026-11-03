@@ -16,8 +16,8 @@
 import type { SparkRequest, SparkStreamEvent } from "../meta/spark.ts";
 import type { AsrEvent } from "../meta/transcribe.ts";
 import type { WatchServerEvent } from "../protocol.ts";
-import { buildMemoRequest, buildQuestionContext, earlyVerdict, parseMemoVerdict, type DialogueLine, type MemoEntry, type MemoVerdict, type QuestionContext } from "./memo.ts";
-import { echoNow, isVideoEcho, pickFrames, reactionAllowed, reactionScript, speakerChipEnabled, SPEAKER_SILENCE_MS } from "./rules.ts";
+import { buildMemoRequest, buildQuestionContext, buildQuickRequest, earlyVerdict, parseMemoVerdict, parseQuick, type DialogueLine, type MemoEntry, type MemoVerdict, type QuestionContext } from "./memo.ts";
+import { echoNow, isVideoEcho, pickFrames, REACT_MIN_GAP_MS, reactionAllowed, reactionScript, speakerChipEnabled, SPEAKER_SILENCE_MS } from "./rules.ts";
 
 export interface WatchAsr {
   on(ev: "event", fn: (e: AsrEvent) => void): unknown;
@@ -57,6 +57,8 @@ export type WatchDeps = {
   memoAfterLineMs?: number;
   memoLanes?: number;
   memoConcurrency?: number;
+  /** quick look on motion spikes (default on; GENITA_WATCH_QUICK=0 turns it off) */
+  quick?: boolean;
   log?: (event: string, data: Record<string, unknown>) => void;
   /** test hook: no timers */
   manualTick?: boolean;
@@ -97,6 +99,16 @@ const MEMO_FRAME_SPACING_MS = 600;
 export const MOTION_SPIKE = 0.06;
 /** …after this long, so the frames show what the move turned into */
 const SPIKE_SETTLE_MS = 400;
+/** quick look (11/3, visual moments ≤5 s): a spike's own small Spark call on the last ~1 s, one at a time */
+const QUICK_AFTER_SPIKE_MS = 250;
+const QUICK_MIN_GAP_MS = 700;
+/** quick looks in flight at once: a second spike (the trick right after a cut) doesn't wait for the first */
+const QUICK_CONCURRENCY = 2;
+/** a sound counts as dialogue for the reaction gate only once it has words: crowd noise and cheers transcribe
+ *  as nothing or one stray word ("마이키님"), and must not hold a reaction until it's stale */
+const words = (s: string) => s.split(/\s+/).filter((w) => /\p{L}/u.test(w)).length;
+const QUICK_FRAMES = 3;
+const QUICK_ON = process.env.GENITA_WATCH_QUICK !== "0";
 const ECHO_WINDOW_MS = 10_000;
 const ECHO_WAIT_MS = 1_500;
 /** a partial that doesn't match the user's words gets this long to catch up before the turn counts as theirs */
@@ -129,11 +141,16 @@ export class WatchController {
   private dialogueActive = false;
   /** the video's line in progress (partial transcript), for the echo check */
   private openLine = "";
+  private speechEndAt: number | null = null;
   private lastDialogueEndAt: number | null = null;
   private lineSinceMemo = false;
   private lastReactionAt: number | null = null;
   /** last motion spike (scene cut / big move) not yet looked at by a memo */
   private salientAt: number | null = null;
+  /** a spike waiting for its quick look (needs one frame after it) */
+  private quickSpikeAt: number | null = null;
+  private quickInFlight = new Set<AbortController>();
+  private lastQuickAt = -Infinity;
   private protectedSpoken = false;
   private protectedPending = false;
   private protectedSince = 0;
@@ -252,6 +269,9 @@ export class WatchController {
     this.padTimer = null;
     for (const m of this.memosInFlight) m.abort();
     this.memosInFlight.clear();
+    for (const q of this.quickInFlight) q.abort();
+    this.quickInFlight.clear();
+    this.quickSpikeAt = null;
     this.held = null;
     this.asr?.end();
     this.asr = null;
@@ -281,10 +301,14 @@ export class WatchController {
     const now = this.deps.now();
     this.stats.frames++;
     if (!blank) {
-      if (motion !== null && motion >= MOTION_SPIKE) this.salientAt = now;
+      if (motion !== null && motion >= MOTION_SPIKE) {
+        this.salientAt = now;
+        this.quickSpikeAt = now; // the latest spike: its frames are what the quick look sees
+      }
       this.frames.push({ at: now, url });
       // the newest frame stays even when old: a paused screen sends no new frames
       this.frames = this.frames.filter((f, i, all) => i === all.length - 1 || now - f.at <= FRAME_KEEP_MS).slice(-MAX_FRAMES_KEPT);
+      this.maybeQuick();
     }
     if (blank !== this.blank) {
       this.blank = blank;
@@ -314,13 +338,15 @@ export class WatchController {
       case "speechEnd":
         if (this.dialogueActive) this.log("watch.dialogue", { on: false });
         this.dialogueActive = false;
-        this.lastDialogueEndAt = now;
+        this.speechEndAt = now;
+        if (words(this.openLine) >= 2) this.lastDialogueEndAt = now;
         return;
       case "speechComplete": {
         if (this.dialogueActive) this.log("watch.dialogue", { on: false });
         this.dialogueActive = false;
-        this.lastDialogueEndAt ??= now;
         const text = e.text.trim();
+        if (words(text) >= 2) this.lastDialogueEndAt = this.speechEndAt ?? now;
+        this.speechEndAt = null;
         const label = this.pendingLabel;
         this.pendingLabel = null;
         this.openLine = "";
@@ -368,6 +394,7 @@ export class WatchController {
 
   /** Runs every 500 ms while sharing (tests call it directly). */
   tick(): void {
+    this.maybeQuick();
     if (this.protectedPending && this.sharing && !this.closed) this.speakProtected();
     if (this.held && this.sharing && !this.closed) this.tryReact(this.held.v, this.held.at, true);
     const now = this.deps.now();
@@ -447,7 +474,7 @@ export class WatchController {
       raw = await this.memoRace(req, abort.signal, (this.deps.memoLanes ?? MEMO_LANES) > 1 ? undefined : (e) => {
         early = true;
         this.log("watch.memo.early", { ms: Math.round(this.deps.now() - at), moment: e.moment });
-        this.tryReact({ memo: "", moment: e.moment, reaction: e.reaction, speakers: [] }, contentAt);
+        this.tryReact({ memo: "", moment: e.moment, reaction: e.reaction, speakers: [], talkOver: e.talkOver }, contentAt);
       });
     } catch (err) {
       if (!abort.signal.aborted) this.log("watch.memo.error", { message: String(err).slice(0, 200) });
@@ -482,7 +509,7 @@ export class WatchController {
     return v;
   }
 
-  private async memoRace(req: SparkRequest, signal: AbortSignal, onEarly?: (e: { moment: Exclude<MemoVerdict["moment"], "none">; reaction: string }) => void): Promise<string> {
+  private async memoRace(req: SparkRequest, signal: AbortSignal, onEarly?: (e: { moment: Exclude<MemoVerdict["moment"], "none">; reaction: string; talkOver: boolean }) => void): Promise<string> {
     let earlyDone = false;
     const lanes = Math.max(1, this.deps.memoLanes ?? MEMO_LANES);
     const kids = Array.from({ length: lanes }, () => new AbortController());
@@ -511,7 +538,45 @@ export class WatchController {
     }
   }
 
-  private tryReact(v: MemoVerdict, verdictAt: number, retry = false): void {
+  /** A spike with one frame after it (or 0.4 s of stillness) gets a quick look right away — no memo wait. */
+  private maybeQuick(): void {
+    const spike = this.quickSpikeAt;
+    if (spike === null || !QUICK_ON || this.deps.quick === false || this.deps.reactions === false || !this.sharing || this.closed) return;
+    const now = this.deps.now();
+    const after = this.frames.some((f) => f.at > spike + QUICK_AFTER_SPIKE_MS - 50) || now - spike >= 400;
+    if (!after || this.quickInFlight.size >= QUICK_CONCURRENCY || now - this.lastQuickAt < QUICK_MIN_GAP_MS) return;
+    this.quickSpikeAt = null;
+    // no point looking when a reaction couldn't go out anyway
+    if (this.blank || !this.host.conversationQuiet() || (this.lastReactionAt !== null && now - this.lastReactionAt < REACT_MIN_GAP_MS)) return;
+    void this.runQuick(spike);
+  }
+
+  async runQuick(spikeAt: number): Promise<void> {
+    const at = this.deps.now();
+    this.lastQuickAt = at;
+    const frames = pickFrames(this.frames.filter((f) => f.at >= spikeAt - 900), QUICK_FRAMES, 300).map((f) => f.url);
+    const heard = [this.dialogueActive ? this.openLine : "", ...this.lines.filter((l) => at - l.at <= 3_000).map((l) => l.text)].filter(Boolean).slice(-2);
+    const abort = new AbortController();
+    this.quickInFlight.add(abort);
+    let raw = "";
+    try {
+      for await (const ev of this.deps.spark(buildQuickRequest({ companion: this.host.companion(), frames, heard }), { signal: abort.signal, firstEventTimeoutMs: 6_000 })) {
+        if (ev.type === "text") raw += ev.delta;
+        else if (ev.type === "done" && !raw) raw = ev.text;
+      }
+    } catch (err) {
+      if (!abort.signal.aborted) this.log("watch.quick.error", { message: String(err).slice(0, 200) });
+      return;
+    } finally {
+      this.quickInFlight.delete(abort);
+    }
+    if (abort.signal.aborted || !this.sharing) return;
+    const q = parseQuick(raw);
+    this.log("watch.quick", { ms: Math.round(this.deps.now() - at), react: !!q, moment: q?.moment ?? "none", line: q?.line ?? "", talkOver: q?.talkOver ?? null, frames: frames.length });
+    if (q) this.tryReact({ memo: "", moment: q.moment, reaction: q.line, speakers: [], talkOver: q.talkOver }, spikeAt, false, "quick");
+  }
+
+  private tryReact(v: MemoVerdict, verdictAt: number, retry = false, via: "memo" | "quick" = "memo"): void {
     if (this.deps.reactions === false) return;
     const script = reactionScript(v.moment, v.reaction);
     if (!script) return;
@@ -524,9 +589,10 @@ export class WatchController {
       sharingSince: this.sharingSince,
       lastReactionAt: this.lastReactionAt,
       conversationQuiet: this.host.conversationQuiet(),
-      dialogueActive: this.dialogueActive,
+      dialogueActive: this.dialogueActive && words(this.openLine) >= 2,
       lastDialogueEndAt: this.lastDialogueEndAt,
       verdictAt,
+      talkOver: v.talkOver === true,
     });
     if (!gate.ok) {
       // the video is mid-line or someone is talking: hold it and try again on each tick until it is stale
@@ -556,6 +622,7 @@ export class WatchController {
       moment: v.moment,
       line: v.reaction,
       held: retry,
+      via,
       // eval: how long after the video's last line the reaction started, and that no line was open
       afterLineMs: this.lastDialogueEndAt === null ? null : Math.round(now - this.lastDialogueEndAt),
       lineOpen: this.dialogueActive,

@@ -514,14 +514,15 @@ if (args.some((a) => a === "--moments" || a.startsWith("--moments="))) {
     }
     const memos = mine.filter((l) => l.event === "watch.memo");
     const row = {
-      clip: clip.id, kind: clip.kind, reacted: !!react, line: react?.line ?? null, moment: react?.moment ?? null, delaySec,
+      clip: clip.id, kind: clip.kind, reacted: !!react, via: react?.via ?? null, line: react?.line ?? null, moment: react?.moment ?? null, delaySec,
+      quickMs: mine.filter((l) => l.event === "watch.quick").map((l) => l.ms), quicks: mine.filter((l) => l.event === "watch.quick").map((l) => (l.react ? `${l.moment}:${l.line}` : "no")),
       afterLineMs: react?.afterLineMs ?? null, lineOpen: (react?.lineOpen as boolean | undefined) || overDialogue, held: react?.held ?? false, ...verdict,
       memos: memos.length, memoMs: memos.map((l) => l.ms), salientMemos: memos.filter((l) => l.salient).length,
       moments: memos.map((l) => l.moment), blocked: mine.filter((l) => l.event === "watch.react.blocked").map((l) => l.why),
       shareStartedLogged: !!startLog,
     };
     rows.push(row);
-    console.log(`${react && verdict.correct && !verdict.invented && !row.lineOpen ? "✓" : "✗"} ${clip.id} (${clip.kind}) ${react ? `"${react.line}" ${delaySec}s after the moment${react.held ? ", held for a pause" : ""}` : "no reaction"}  memos=${memos.length} moments=${JSON.stringify(row.moments)} ${JSON.stringify(verdict)}`);
+    console.log(`${react && verdict.correct && !verdict.invented && !row.lineOpen ? "✓" : "✗"} ${clip.id} (${clip.kind}) ${react ? `"${react.line}" ${delaySec}s after the moment${react.held ? ", held for a pause" : ""}` : "no reaction"}${react ? ` via ${react.via}` : ""}  quick=${JSON.stringify(row.quicks)}  memos=${memos.length} moments=${JSON.stringify(row.moments)} ${JSON.stringify(verdict)}`);
     call.close();
     await sleep(500);
   }
@@ -537,6 +538,8 @@ if (args.some((a) => a === "--moments" || a.startsWith("--moments="))) {
     delayP50Sec: delays.length ? median(delays) : null,
     delayMaxSec: delays.length ? delays.at(-1) : null,
     memoP50Ms: memoMs.length ? median(memoMs) : null,
+    quickP50Ms: (() => { const q = rows.flatMap((r) => r.quickMs as number[]).sort((a, b) => a - b); return q.length ? median(q) : null; })(),
+    viaQuick: reacted.filter((r) => r.via === "quick").length,
     rows,
   };
 }

@@ -11,18 +11,19 @@ import type { Moment } from "./rules.ts";
 
 export type MemoEntry = { at: number; text: string };
 export type DialogueLine = { at: number; label: string | null; text: string };
-export type MemoVerdict = { memo: string; moment: Moment; reaction: string; speakers: { label: string; name: string }[]; protectedVideo?: boolean };
+export type MemoVerdict = { memo: string; moment: Moment; reaction: string; speakers: { label: string; name: string }[]; protectedVideo?: boolean; talkOver?: boolean };
 
 export const MEMO_SCHEMA = {
   type: "object",
   additionalProperties: false,
   // order matters: the verdict (protectedVideo, moment, reaction) streams first, so a reaction can start before the
   // memo text is written (watch.ts earlyVerdict)
-  required: ["protectedVideo", "moment", "reaction", "memo", "speakers"],
+  required: ["protectedVideo", "moment", "reaction", "talkOver", "memo", "speakers"],
   properties: {
     protectedVideo: { type: "boolean" },
     moment: { type: "string", enum: ["none", "funny", "surprising", "sweet"] },
     reaction: { type: "string" },
+    talkOver: { type: "boolean" },
     memo: { type: "string" },
     speakers: {
       type: "array",
@@ -66,6 +67,7 @@ export function buildMemoRequest(m: MemoInput): SparkRequest {
     `reaction: if moment is not none, the 2 to 8 words ${m.companion.name} blurts out about that exact thing, casual English, no question. Otherwise empty.`,
     "speakers: for each voice label in the new lines, a short name from what you see (\"the chef\", \"the woman in green\") only if you are sure; skip the rest.",
     "protectedVideo: true only if a video player's picture is solid black while the page or app around it shows (protected streaming like Netflix captures black); then memo says so, moment none.",
+    "talkOver: true if the screen's sound is crowd noise, music, sports commentary or narration (fine to react over); false if people on screen are talking to each other.",
     "Never name a real person from their face.",
   ].join("\n");
   const parts: ContentPart[] = [];
@@ -94,16 +96,66 @@ export function buildMemoRequest(m: MemoInput): SparkRequest {
  * The reaction part of a memo still streaming: moment + the finished reaction string (protectedVideo false).
  * null until both are complete, or when there is nothing to react to.
  */
-export function earlyVerdict(raw: string): { moment: Exclude<Moment, "none">; reaction: string } | null {
+// ───────────────────────── quick look (11/3: visual moments ≤5 s) ─────────────────────────
+
+/** A motion spike's own tiny Spark call: is this react-worthy, right now? Short prompt, 3 frames, tiny JSON. */
+export const QUICK_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["react", "moment", "line", "talkOver"],
+  properties: {
+    react: { type: "boolean" },
+    moment: { type: "string", enum: ["none", "funny", "surprising", "sweet"] },
+    line: { type: "string" },
+    talkOver: { type: "boolean" },
+  },
+} as const;
+
+export type QuickVerdict = { moment: Exclude<Moment, "none">; line: string; talkOver: boolean };
+
+export function buildQuickRequest(q: { companion: { name: string }; frames: string[]; heard: string[] }): SparkRequest {
+  const instructions = [
+    `${q.companion.name} watches a video with a friend. These frames are the last ~1 s, oldest first.`,
+    "react: true only if something a friend would blurt about just happened here: a dunk, a trick landed, a fall, a big dance move, a reveal, a punchline, people cracking up.",
+    "moment: funny, surprising or sweet (none if react is false). line: 2 to 6 casual words about exactly that, no question, no names.",
+    "talkOver: true if the sound is crowd noise, music, sports commentary or narration; false if people on screen are talking to each other.",
+  ].join("\n");
+  const parts: ContentPart[] = [{ type: "input_text", text: q.heard.length ? `Heard just now: ${q.heard.map((h) => `"${h}"`).join(" ")}` : "Nothing heard just now." }];
+  for (const f of q.frames) parts.push({ type: "input_image", image_url: f });
+  return {
+    instructions,
+    input: [{ role: "user", content: parts }],
+    effort: "minimal",
+    maxOutputTokens: 600,
+    text: { format: { type: "json_schema", name: "watch_quick", schema: QUICK_SCHEMA, strict: true } },
+  };
+}
+
+export function parseQuick(raw: string): QuickVerdict | null {
+  const m = raw.match(/\{[\s\S]*\}/);
+  if (!m) return null;
+  try {
+    const o = JSON.parse(m[0]) as Record<string, unknown>;
+    const moment = (["funny", "surprising", "sweet"] as const).find((x) => x === o.moment);
+    const line = typeof o.line === "string" ? o.line.trim().slice(0, 80) : "";
+    if (o.react !== true || !moment || !line) return null;
+    return { moment, line, talkOver: o.talkOver === true };
+  } catch {
+    return null;
+  }
+}
+
+export function earlyVerdict(raw: string): { moment: Exclude<Moment, "none">; reaction: string; talkOver: boolean } | null {
   if (/"protectedVideo"\s*:\s*true/.test(raw)) return null;
   if (!/"protectedVideo"\s*:\s*false/.test(raw)) return null;
   const m = raw.match(/"moment"\s*:\s*"(funny|surprising|sweet)"/);
   const r = raw.match(/"reaction"\s*:\s*"((?:[^"\\]|\\.)*)"/);
-  if (!m || !r) return null;
+  const t = raw.match(/"talkOver"\s*:\s*(true|false)/);
+  if (!m || !r || !t) return null;
   let reaction: string;
   try { reaction = JSON.parse(`"${r[1]}"`) as string; } catch { return null; }
   reaction = reaction.trim().slice(0, 120);
-  return reaction ? { moment: m[1] as Exclude<Moment, "none">, reaction } : null;
+  return reaction ? { moment: m[1] as Exclude<Moment, "none">, reaction, talkOver: t[1] === "true" } : null;
 }
 
 export function parseMemoVerdict(raw: string): MemoVerdict | null {
@@ -124,6 +176,7 @@ export function parseMemoVerdict(raw: string): MemoVerdict | null {
       reaction: typeof o.reaction === "string" ? o.reaction.trim().slice(0, 120) : "",
       speakers,
       protectedVideo: o.protectedVideo === true,
+      talkOver: o.talkOver === true,
     };
   } catch {
     return null;

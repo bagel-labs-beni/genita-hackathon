@@ -99,6 +99,7 @@ test("memo request: frames as images, labelled lines, strict JSON schema; parse 
     reaction: "He fed the ceiling!",
     speakers: [{ label: "A", name: "the woman" }],
     protectedVideo: false,
+    talkOver: false,
   });
   assert.equal(parseMemoVerdict("no json"), null);
   assert.equal(parseMemoVerdict('{"memo":"x","moment":"lol","reaction":"","speakers":[]}')!.moment, "none");
@@ -173,6 +174,7 @@ function controller(verdicts: string[], hostOpts: { quiet?: boolean } = {}, extr
     },
     manualTick: true,
     memoLanes: 1,
+    quick: false,
     ...extra,
   });
   const sink = new FakeSink();
@@ -259,6 +261,7 @@ test("watch: a funny moment over the video's dialogue waits for the line to end,
   at(10_000);
   c.onMessage({ type: "frame", image: frame });
   asr.fire({ type: "speechStart", turnId: 0 });
+  asr.fire({ type: "partial", text: "It was" });
   c.tick(); // memo runs (new frames, ≥5 s) while the video is mid-line
   await new Promise((r) => setTimeout(r, 5));
   assert.deepEqual(reacted, [], "never over the video's line");
@@ -775,7 +778,7 @@ test("memo: the reaction goes out as soon as its verdict streams, before the mem
   const gate = new Promise<void>((r) => (release = r));
   const { c, at, reacted } = controller([], {}, {
     async *spark(): AsyncGenerator<SparkStreamEvent> {
-      yield { type: "text", delta: '{"protectedVideo":false,"moment":"funny","reaction":"He fed the ceiling!",' };
+      yield { type: "text", delta: '{"protectedVideo":false,"moment":"funny","reaction":"He fed the ceiling!","talkOver":false,' };
       await gate; // the memo text is still being written
       const rest = '"memo":"Pancake on the ceiling.","speakers":[]}';
       yield { type: "text", delta: rest };
@@ -893,4 +896,95 @@ test("Codex P2: a held protected line never speaks over the video's dialogue, an
   d.at(4_000);
   d.c.tick();
   assert.deepEqual(d.reacted, [], "another source cancels it");
+});
+
+// ───────────────────────── quick look (visual moments ≤5 s) ─────────────────────────
+
+function quickController(reply: (req: SparkRequest) => string, hostOpts: { quiet?: boolean } = {}) {
+  const calls: SparkRequest[] = [];
+  const ctl = controller([], hostOpts, {
+    quick: true,
+    async *spark(req): AsyncGenerator<SparkStreamEvent> {
+      calls.push(req);
+      const text = reply(req);
+      yield { type: "text", delta: text };
+      yield { type: "done", responseId: null, text, status: "completed" };
+    },
+  });
+  return { ...ctl, calls, isQuick: (r: SparkRequest) => (r.text?.format as { name?: string } | undefined)?.name === "watch_quick" };
+}
+const quickYes = (talkOver: boolean) => JSON.stringify({ react: true, moment: "surprising", line: "What a dunk!", talkOver });
+const memoNone = '{"protectedVideo":false,"moment":"none","reaction":"","talkOver":false,"memo":"x","speakers":[]}';
+
+test("quick look: a spike gets its own small Spark call on the next frame and reacts at once — no memo wait", async () => {
+  const q = quickController((r) => ((r.text?.format as { name?: string }).name === "watch_quick" ? quickYes(false) : memoNone));
+  q.c.onMessage({ type: "start", source: "YouTube" });
+  for (const [ms, motion] of [[7_000, 0.02], [7_330, 0.02], [7_660, 0.3]] as const) {
+    q.at(ms);
+    q.c.onMessage({ type: "frame", image: `${frame}${ms}`, motion });
+  }
+  assert.equal(q.calls.filter(q.isQuick).length, 0, "waits for one frame after the spike");
+  q.at(7_990);
+  q.c.onMessage({ type: "frame", image: `${frame}7990`, motion: 0.05 });
+  await wait(5);
+  const quick = q.calls.filter(q.isQuick);
+  assert.equal(quick.length, 1);
+  const imgs = (quick[0].input as { content: { type: string }[] }[])[0].content.filter((p) => p.type === "input_image");
+  assert.equal(imgs.length, 3, "the last ~1 s: before, at and after the spike");
+  assert.ok(quick[0].maxOutputTokens! <= 600 && quick[0].instructions!.length < 900, "small and fast");
+  assert.deepEqual(q.reacted, ["<surprised> [surprised] What a dunk!"]);
+});
+
+test("quick look: commentary/crowd (talkOver) may be reacted over; a scene's dialogue may not", async () => {
+  for (const talkOver of [true, false]) {
+    const q = quickController((r) => ((r.text?.format as { name?: string }).name === "watch_quick" ? quickYes(talkOver) : memoNone));
+    q.c.onMessage({ type: "start", source: "YouTube" });
+    q.asr.fire({ type: "speechStart", turnId: 0 }); // the video's audio is "talking"
+    q.asr.fire({ type: "partial", text: "and he drives down the lane" });
+    q.at(7_000);
+    q.c.onMessage({ type: "frame", image: `${frame}a`, motion: 0.4 });
+    q.at(7_330);
+    q.c.onMessage({ type: "frame", image: `${frame}b`, motion: 0.05 });
+    await wait(5);
+    const heard = JSON.stringify(q.calls.find(q.isQuick)!.input);
+    assert.match(heard, /drives down the lane/, "the quick look hears what's being said");
+    if (talkOver) assert.equal(q.reacted.length, 1, "sports commentary doesn't block the reaction");
+    else assert.deepEqual(q.reacted, [], "people talking: held for the pause");
+  }
+});
+
+test("quick look: none while the user talks or inside the 25 s gap", async () => {
+  const quiet = { quiet: false };
+  const q = quickController(() => quickYes(false), quiet);
+  q.c.onMessage({ type: "start", source: "YouTube" });
+  q.at(7_000);
+  q.c.onMessage({ type: "frame", image: `${frame}a`, motion: 0.4 });
+  q.at(7_330);
+  q.c.onMessage({ type: "frame", image: `${frame}b` });
+  await wait(5);
+  assert.equal(q.calls.filter(q.isQuick).length, 0, "conversation: no quick look");
+});
+
+test("crowd noise / a stray word is not dialogue: it never holds a reaction (the dunk case)", async () => {
+  const q = quickController((r) => ((r.text?.format as { name?: string }).name === "watch_quick" ? quickYes(false) : memoNone));
+  q.c.onMessage({ type: "start", source: "YouTube" });
+  q.asr.fire({ type: "speechStart", turnId: 0 }); // the arena roars: no words yet
+  q.at(7_000);
+  q.c.onMessage({ type: "frame", image: `${frame}a`, motion: 0.4 });
+  q.at(7_330);
+  q.c.onMessage({ type: "frame", image: `${frame}b` });
+  await wait(5);
+  assert.equal(q.reacted.length, 1, "no words → not dialogue");
+  // and a finished one-word "line" (마이키님) leaves no dialogue tail
+  const r = quickController((req) => ((req.text?.format as { name?: string }).name === "watch_quick" ? quickYes(false) : memoNone));
+  r.c.onMessage({ type: "start", source: "YouTube" });
+  r.asr.fire({ type: "speechStart", turnId: 0 });
+  r.asr.fire({ type: "speechEnd", turnId: 0 });
+  r.at(7_000);
+  r.asr.fire({ type: "speechComplete", turnId: 0, text: "마이키님" });
+  r.c.onMessage({ type: "frame", image: `${frame}c`, motion: 0.4 });
+  r.at(7_330);
+  r.c.onMessage({ type: "frame", image: `${frame}d` });
+  await wait(5);
+  assert.equal(r.reacted.length, 1);
 });
