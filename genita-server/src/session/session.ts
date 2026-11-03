@@ -862,6 +862,9 @@ export class Session {
       const memory = this.deps.memory;
       const userId = this.deps.userId;
       this.memoryCall = new MemoryCall(memory, userId, this.id, (revision) => {
+        // a turn the end-of-turn hold kept open, and a final still in its echo check, are from before the Forget:
+        // never answered (and so never saved) after it (CA-14, #585 Codex P1)
+        this.dropHeld(); this.asrEpoch++; this.bcGen++; this.backchannel?.stop(); this.cuedTurn = false;
         this.dropSpeculation(); this.dispatch({ type: "client_barge_in" });
         this.history = []; this.recentReplies = []; this.memories = []; this.greeting = null;
         this.historyRevision = revision;

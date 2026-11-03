@@ -929,3 +929,28 @@ test("Codex #502 P1 r5: with memory on, a client-claimed handoff history of 20 k
   assert.doesNotMatch(requests.map((r) => r.instructions ?? "").join("\n"), /own take/);
   ws.terminate();
 });
+
+test("CA-14 × Forget (#585 Codex P1): a turn held open at the Forget is dropped — never answered, never saved after it", async () => {
+  const { memory, deps, requests } = setup();
+  const asr = deps.openAsr([]) as unknown as EventEmitter;
+  const c = client();
+  const seen: string[] = [];
+  const sink0 = c.sink.sendJson;
+  c.sink.sendJson = (e) => { seen.push(String((e as { type: string }).type) + ((e as { state?: string }).state ? ":" + (e as { state?: string }).state : "")); sink0(e); };
+  const s = new Session("call-held", c.sink, deps);
+  await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" } }));
+  await waitFor(c.ready);
+  // the greeting plays out first (talking over it would be a barge-in, not a turn)
+  await waitFor(() => seen.includes("reply") && seen.lastIndexOf("state:listening") > seen.indexOf("reply"), 8000);
+  const before = requests.length;
+  asr.emit("event", { type: "speechStart", turnId: 0 });
+  asr.emit("event", { type: "speechEnd", turnId: 0 });
+  asr.emit("event", { type: "speechComplete", turnId: 0, text: "My ex Daniel lives on Maple Street and" }); // held
+  await new Promise((r) => setTimeout(r, 50));
+  await memory.forget("acct-a");
+  await new Promise((r) => setTimeout(r, 2600)); // past the 2.0 s hold
+  assert.equal(requests.length, before, "the held line never reached Spark");
+  assert.doesNotMatch(JSON.stringify(requests), /Maple Street/);
+  s.close(); await memory.drain();
+  assert.doesNotMatch(JSON.stringify(await memory.list("acct-a")), /Maple Street/);
+});
