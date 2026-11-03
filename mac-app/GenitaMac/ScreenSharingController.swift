@@ -35,6 +35,8 @@ import CoreMedia
     private var reconnectAttempt = 0
     private var reconnectTask: Task<Void, Never>?
     private let capture = WatchCapture()
+    // Queued media from a stopped share must not reach a subsequent share or account.
+    private var captureGeneration = UUID()
     private var reactingTask: Task<Void, Never>?
     private static let noticeKey = "genita.watch.noticeShown"
     private let queue = DispatchQueue(label: "ai.thebeni.genita.mac.screen-sharing")
@@ -66,6 +68,7 @@ import CoreMedia
     }
     func stop() {
         let old = stream; stream = nil; isSharing = false
+        captureGeneration = UUID()
         SCContentSharingPicker.shared.isActive = false
         if let old { Task { try? await old.stopCapture() } }
         disconnectUplink(); reconnectAttempt = 0; connectionMessage = nil
@@ -104,20 +107,24 @@ import CoreMedia
     }
     private func wireCapture() {
         let capture = capture
+        let generation = captureGeneration
         capture.onFrame = { [weak self] jpeg, blank in
             Task { @MainActor in
-                guard let self, self.isSharing, self.callIsValid else { return }
+                guard let self, self.captureGeneration == generation, self.isSharing, self.callIsValid else { return }
                 self.uplink?.sendFrame(jpeg, blank: blank)
             }
         }
         capture.onAudio = { [weak self] pcm in
             Task { @MainActor in
-                guard let self, self.isSharing, self.callIsValid else { return }
+                guard let self, self.captureGeneration == generation, self.isSharing, self.callIsValid else { return }
                 self.uplink?.sendAudio(pcm)
             }
         }
         capture.onBlank = { [weak self] on in
-            Task { @MainActor in self?.blank = on }
+            Task { @MainActor in
+                guard let self, self.captureGeneration == generation, self.isSharing else { return }
+                self.blank = on
+            }
         }
     }
     private var callIsValid: Bool {
@@ -180,10 +187,18 @@ import CoreMedia
             disconnectUplink()
             speakerName = nil; blank = false; reacting = false
             reactingTask?.cancel(); reactingTask = nil
-            guard let delay = WatchReconnectPolicy.delay(attempt: reconnectAttempt, isSharing: isSharing, callIsValid: callIsValid) else {
-                stop(); error = "Screen sharing disconnected. Try sharing again."
-                return
-            }
+            recoverUplink()
+        }
+    }
+    private func recoverUplink() {
+        switch WatchReconnectPolicy.recoveryAction(attempt: reconnectAttempt, isSharing: isSharing,
+            callIsValid: callIsValid, isCallActive: CallController.shared.link != .idle,
+            isOwner: MacHandoff.shared.ownership.isOwner, isSignedIn: MacCall.shared.isSignedIn) {
+        case .waitForCall:
+            connectionMessage = "Screen sharing is waiting for the call."
+        case .stop:
+            stop(); error = "Screen sharing disconnected. Try sharing again."
+        case .retry(let delay):
             reconnectAttempt += 1
             connectionMessage = "Reconnecting screen sharing…"
             let generation = uplinkGeneration
@@ -191,7 +206,7 @@ import CoreMedia
                 try? await Task.sleep(for: .seconds(delay))
                 guard let self, !Task.isCancelled, self.uplinkGeneration == generation else { return }
                 guard self.isSharing, self.callIsValid else {
-                    self.stop(); self.error = "Screen sharing disconnected. Try sharing again."
+                    self.recoverUplink()
                     return
                 }
                 self.connectUplink(source: self.sourceName)

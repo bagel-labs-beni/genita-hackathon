@@ -35,8 +35,12 @@ final class WatchCapture: @unchecked Sendable {
         lastThumb = nil; lastSent = .distantPast; blankRun = 0; blank = false; isBlankSent = false; ring = []; audioBuffer = Data()
     }
 
-    /// Called on the screen queue when a new watch connection needs its first frame.
-    func forceNextFrame() { lastThumb = nil; lastSent = .distantPast }
+    /// A static screen may only emit `.idle` after reconnect, so replay its latest JPEG now.
+    /// `reset()` discards the ring when sharing stops (including sign-out or ownership transfer).
+    func forceNextFrame() {
+        if let latest = ring.last { onFrame?(latest.jpeg, isBlankSent) }
+        else { lastThumb = nil; lastSent = .distantPast }
+    }
 
     // MARK: frames
 
