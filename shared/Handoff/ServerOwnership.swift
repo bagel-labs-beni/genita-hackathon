@@ -126,6 +126,8 @@ final class ServerOwnershipLink: NSObject, ObservableObject, URLSessionWebSocket
     var onEffect: ((PresenceEffect) -> Void)?
     /// Called when the socket opens; the owner of this link answers with `hello` via `publishCurrent`.
     var onConnect: (() -> Void)?
+    /// Every message, before the ownership reducer (proximity handoff reads its own types and the move's trigger here).
+    var onMessage: (([String: Any]) -> Void)?
     /// The trigger reported with this device's next claim (`button`, `touch`, `continue`).
     var nextTrigger = "continue"
     private(set) var active = true
@@ -192,8 +194,11 @@ final class ServerOwnershipLink: NSObject, ObservableObject, URLSessionWebSocket
                 guard let self, gen == self.generation else { return }
                 switch result {
                 case let .success(.string(text)):
-                    if let data = text.data(using: .utf8), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let event = PresenceEvent(object) {
-                        for effect in PresenceState.reduce(&self.state, event, me: self.device) { self.onEffect?(effect) }
+                    if let data = text.data(using: .utf8), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                        self.onMessage?(object)
+                        if let event = PresenceEvent(object) {
+                            for effect in PresenceState.reduce(&self.state, event, me: self.device) { self.onEffect?(effect) }
+                        }
                     }
                     self.receive(task, gen)
                 case .success:
