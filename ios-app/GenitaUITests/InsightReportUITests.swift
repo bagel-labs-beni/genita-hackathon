@@ -58,3 +58,17 @@ final class InsightReportUITests: XCTestCase {
         Thread.sleep(forTimeInterval: 0.6); shot(app, "7-empty")
     }
 }
+
+final class InsightReportBackUITests: XCTestCase {
+    /// 춘식이 11/4: the chevron goes back to the last question with the answers kept.
+    func testBackChevronReturnsToTheLastQuestion() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launchEnvironment = ["GENITA_REVIEW_STAGE": "summary", "GENITA_REVIEW_VARIANT": "insight"]
+        app.launch()
+        XCTAssertTrue(app.buttons["insightBack"].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.buttons["insightBack"].label, "Back to questions")
+        app.buttons["insightBack"].tap()
+        XCTAssertFalse(app.descendants(matching: .any)["insightType"].waitForExistence(timeout: 2), "left SUM")
+    }
+}
