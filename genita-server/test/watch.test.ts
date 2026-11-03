@@ -1068,6 +1068,7 @@ test("quick look frames: the biggest motion of the last 3 s no look has seen, pl
   assert.deepEqual(quickFrames(frames, null, 2_000).map((x) => x.url), ["f2330", "f2660"], "a moment already looked at is not sent again");
   assert.deepEqual(quickFrames(frames, null, 3_000).map((x) => x.url), ["f2660", "f3000"], "nothing new: the last two");
   assert.deepEqual(quickFrames([f(5_000, 0.2)], null, -Infinity).map((x) => x.url), ["f5000"]);
+  assert.deepEqual(quickFrames([...frames, f(3_330, 0.01), f(3_660, 0.01), f(4_000, 0.01)], 1_660, -Infinity).map((x) => x.url).includes("f1660"), true, "a late spike look still sends the spike");
 });
 
 test("moments belong to one video: a new share or another title starts clean, an unread count does not (QA prod 11/3)", async () => {
@@ -1098,6 +1099,17 @@ test("moments belong to one video: a new share or another title starts clean, an
   b.at(12_000);
   b.c.onMessage({ type: "start", source: "YouTube" });
   assert.match(ctx(b), /What a dunk!/, "the same window back within 15 s is a reconnect: kept");
+
+  // the same window back soon, but its title (sent after start) is another video: cleared then (Codex #445 r2 P2)
+  const d = quickController(yes);
+  d.c.onMessage({ type: "start", source: "Safari", title: "Dunk highlights - YouTube" });
+  await seeDunk(d, 7_000);
+  d.c.onMessage({ type: "stop" });
+  d.at(10_000);
+  d.c.onMessage({ type: "start", source: "Safari" });
+  assert.match(ctx(d), /What a dunk!/);
+  d.c.onMessage({ type: "context", title: "Cooking with Mom - YouTube" });
+  assert.doesNotMatch(ctx(d), /dunk/i);
   b.c.onMessage({ type: "stop" });
   b.at(60_000);
   b.c.onMessage({ type: "start", source: "YouTube" });

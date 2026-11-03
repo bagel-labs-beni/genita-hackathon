@@ -158,7 +158,8 @@ const PAD_CHUNK = Buffer.alloc(24_000 * 2 / 10); // 100 ms
 export function quickFrames<T extends { at: number; motion?: number }>(frames: T[], spikeAt: number | null, lastLookedAt: number): T[] {
   if (!frames.length) return [];
   const newest = frames[frames.length - 1].at;
-  if (spikeAt !== null && spikeAt < newest - 50) return pickFrames(frames.filter((f) => f.at >= spikeAt - 900), QUICK_FRAMES, 300);
+  // the spike and the frame(s) right after it, even when the look went out late (Codex #445 r2 P2)
+  if (spikeAt !== null && spikeAt < newest - 50) return pickFrames(frames.filter((f) => f.at >= spikeAt - 900 && f.at <= spikeAt + 400), QUICK_FRAMES, 300);
   const pool = frames.filter((f) => f.at > lastLookedAt && f.at >= newest - QUICK_LOOKBACK_MS);
   if (!pool.length) return pickFrames(frames, QUICK_FRAMES, 300);
   let peak = pool[0];
@@ -185,6 +186,8 @@ export class WatchController {
   private clipGen = 0;
   /** the last share, so a reconnect of the same video keeps its moments (Codex #445 P2) */
   private lastShare: { source: string | null; title: string | null; at: number } | null = null;
+  /** a reconnect whose title hasn't arrived yet: the last share's title, to compare when it does */
+  private reconnectTitle: string | null = null;
   private lastMemoAt = 0;
   private memo: MemoEntry[] = [];
   private lines: DialogueLine[] = [];
@@ -292,7 +295,9 @@ export class WatchController {
     if (t === this.title) return;
     // another video or page (a tab's unread count "(3) …" is the same one)
     const bare = (x: string | null) => (x ?? "").replace(/^\(\d+\)\s*/, "");
-    if (this.title !== null && t !== null && bare(t) !== bare(this.title)) this.resetClip("title");
+    const was = this.title ?? this.reconnectTitle;
+    this.reconnectTitle = null;
+    if (was !== null && t !== null && bare(t) !== bare(was)) this.resetClip("title");
     this.title = t;
     // the text itself can be private (a document, a mail subject): only its length is logged
     this.log("watch.title", { chars: t?.length ?? 0 });
@@ -332,6 +337,8 @@ export class WatchController {
       const reconnect = last !== null && this.deps.now() - last.at <= RECONNECT_KEEP_MS && last.source === source
         && (last.title === null || this.title === null || last.title === this.title);
       if (!reconnect) this.resetClip("new_share");
+      // a Mac sends the title after `start`: a different one then means a new video after all (Codex #445 r2 P2)
+      this.reconnectTitle = reconnect && this.title === null ? last?.title ?? null : null;
     }
     if (this.sharing) {
       // another window or display: an older "protected" verdict was about the old one
