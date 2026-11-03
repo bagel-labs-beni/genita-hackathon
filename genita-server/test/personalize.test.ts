@@ -511,3 +511,11 @@ test("adaptive style: the post-call growth prompt asks for lit-up topics and rep
   assert.deepEqual(toCallUpdates({ updates: [{ field: "interests", text: "Trail running.", replaces: [], label: "observed", times: 1 }], answered: { item: "", field: "", text: "" } }, null), [], "once is not a pattern");
   assert.equal(toCallUpdates({ updates: [{ field: "interests", text: "Trail running.", replaces: [], label: "observed", times: 2 }], answered: { item: "", field: "", text: "" } }, null).length, 1);
 });
+
+test("the first-call nod is a taste guess, never 'I hear' or a look", () => {
+  const card = { ...rawCard({ likes: [f("Style: Clean, minimal clothes in black and grey.")] }), growth: { calls: 1, asked: [] } };
+  const nod = firstCallNod(card)!;
+  assert.match(nod, /guess or tease about their taste/);
+  assert.match(nod, /never say "you look", "looks like"/);
+  assert.doesNotMatch(nod, /like "I hear you're into/);
+});
