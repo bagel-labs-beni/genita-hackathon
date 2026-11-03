@@ -29,6 +29,9 @@ const leaked: [string, string][] = [
   // #413 web answers (QA prod 11/3, 1/3)
   ["Oh that game was wild — pulling the final score now.", "pulling the final"],
   ["Grabbing the latest score.", "Grabbing"],
+  // final sweep run on main 22:2x
+  ["Love a late-night ramen run — finding what's open around Hongdae for you.", "finding what"],
+  ["I'm really glad you told me — that matters, and I want to get you the right support right now.", "get you the right"],
   // D13 crisis turns (Spark searches for the local hotline first)
   ["This matters more than anything else — getting you fast, accurate support options.", "getting you"],
   ["I'm really glad you told me — I care about you, and I'm going to find the right support resources for you.", "find the right"],
@@ -64,6 +67,8 @@ const answers = [
   // Codex #415 P2: answers that carry a result next to the same words
   "The last train leaves at 11, so I'll try another search for a later bus.",
   "Searching for a job takes time.",
+  "Finding what's open at 3am in Seoul is easy, Butanchu never closes.",
+  "I want to get you the right support: call 109 right now.",
   "Checking the score is my whole personality during finals.",
   "The final score was 4 to 1, Brewers.",
   "Let me get you the number: call one oh nine right now.",
