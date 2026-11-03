@@ -47,6 +47,8 @@ export type InstructionInput = {
   opener?: string;
   /** v1: an initiative turn's block (src/convo/initiative.ts) */
   initiative?: string;
+  /** v1 P1: this user turn's "This turn:" line (src/convo/rhythm.ts: closeness, question rhythm, mood, landed, recall) */
+  turn?: string;
   /** v1: perception lane's live camera line and its one-shot hint (data) */
   perception?: string;
   perceptionHint?: string;
@@ -234,6 +236,7 @@ function buildInstructionsV1(input: InstructionInput & { ask?: string; localTime
       + "One or two short spoken sentences, contractions and everyday Gen Z slang where it fits, no filler opener. "
       + "Your words are spoken aloud: commas where you'd breathe, a dash for a quick turn, end sentences with a period, question mark or exclamation mark; no markdown, lists, emojis, URLs or parentheses; say numbers, times and prices the way you'd say them.",
   );
+  if (input.turn) sections.push(input.turn.slice(0, 400));
   // this turn's own job reads after everything else (an opener / initiative buried mid-prompt was ignored 2/3, eval 11/3)
   if (input.opener) sections.push(input.opener);
   if (input.initiative) sections.push(input.initiative);

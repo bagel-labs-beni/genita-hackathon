@@ -58,6 +58,7 @@ import { convoV1, englishOnly, initiativeOn } from "../convo/flags.ts";
 import { addressUser, thirdPersonCouldBeUser, fallbackLine, guardSentence, neverSpoken, NO_ANSWER_LINE, type GuardClass } from "../convo/guard.ts";
 import { isInterjectionOnly } from "../text/toolNarration.ts";
 import { daySeed, openerBlock, openerKind, profileHooks } from "../convo/opener.ts";
+import { moodFrom, moodLine, turnHints } from "../convo/rhythm.ts";
 import { forgetOpenerTopics, pickOpenerTopic, storedTopics } from "../convo/openerTopics.ts";
 import { InitiativeGovernor, initiativeBlock, initiativeInput, type InitiativeSource } from "../convo/initiative.ts";
 import type { PerceptionSource } from "../convo/types.ts";
@@ -287,6 +288,8 @@ export class Session {
   private cueTurn: { source: InitiativeSource; block: string; input: string } | null = null;
   /** memory lines already offered to an initiative this call */
   private offeredThreads = new Set<string>();
+  /** this call's number for the account (personalize growth.calls), for the engine's closeness line (P1) */
+  private callNumber: number | undefined;
   /** perception lane (camera face reading, GENITA_PERCEPTION): read-only, assigned by its message hook */
   perception: PerceptionSource | null = null;
   private perceptionUnsub: (() => void) | null = null;
@@ -655,6 +658,7 @@ export class Session {
         // a stored profile always wins, even an empty one (a deleted preference must not come back from the app's copy)
         if (p) this.user = { ...this.user, profile: p.profile || undefined };
         if (p?.nod) this.nod = p.nod;
+        if (p?.calls) this.callNumber = p.calls;
         if (p?.ask && p.askItem) this.ask = { line: p.ask, item: p.askItem, topic: p.askTopic ?? null, asked: false };
         this.taste = p?.taste ?? [];
       } catch (err) {
@@ -1189,7 +1193,7 @@ export class Session {
   }
 
   /** Conversation engine v1 inputs for this turn: style, the greeting's opener, an initiative block, the camera lines. */
-  private v1Extras(turn: { greeting?: { item: Memory | null } | null; cue?: { block: string } | null }): Partial<Parameters<typeof buildInstructions>[0]> {
+  private v1Extras(turn: { greeting?: { item: Memory | null } | null; cue?: { block: string } | null }, userText = ""): Partial<Parameters<typeof buildInstructions>[0]> {
     const last = this.lastMessageAt;
     let opener: string | undefined;
     if (turn.greeting) {
@@ -1212,7 +1216,19 @@ export class Session {
       perception = this.perception?.contextLine() ?? undefined;
       perceptionHint = turn.greeting || turn.cue ? undefined : this.perception?.pendingHint() ?? undefined;
     } catch { /* the reply never fails on the camera lane */ }
-    return { style: "v1", opener, initiative: turn.cue?.block, perception, perceptionHint };
+    // P1: closeness, question rhythm, mood, what landed, recall — one "This turn:" line on a user turn (never a greeting / cue)
+    let turnLine: string | undefined;
+    if (!turn.greeting && !turn.cue && userText) {
+      const userLines = [...this.history.filter((h) => h.role === "user").map((h) => h.text), userText];
+      turnLine = turnHints({
+        callNumber: this.callNumber,
+        lastReply: this.recentReplies.at(-1),
+        userText,
+        mood: moodLine(moodFrom(userLines)),
+        remembers: this.memories.length > 0 || !!this.memoryCall?.summaries.length,
+      }) ?? undefined;
+    }
+    return { style: "v1", opener, initiative: turn.cue?.block, perception, perceptionHint, turn: turnLine };
   }
 
   private stopInitiative(): void {
@@ -1334,7 +1350,7 @@ export class Session {
       ...this.history.map((h): InputMessage => (h.role === "user" ? { role: "user", content: h.text } : { role: "assistant", content: h.text })),
       { role: "user", content },
     ];
-    const v1 = this.v1 ? this.v1Extras(turn) : {};
+    const v1 = this.v1 ? this.v1Extras(turn, text) : {};
     const base = buildInstructions({
       persona,
       user: this.user,

@@ -845,3 +845,40 @@ test("dropRepeatedName (Codex P2/P3): names that are not a vocative stay; emotio
   assert.equal(d("<excited> Summer, you earned it.", "Summer", ["Nice one, Summer."]), "<excited> You earned it.");
   assert.equal(d("<excited> [smile] Summer,", "Summer", ["Nice one, Summer."]), "");
 });
+
+// ───────────── P1: the "This turn:" line (closeness, question rhythm, mood, landed, recall) ─────────────
+
+test("P1 turnHints: closeness by call, no two '?' replies in a row, mood, what landed, recall on news", async () => {
+  const { turnHints, closenessLine, moodFrom, moodLine } = await import("../src/convo/rhythm.ts");
+  assert.equal(closenessLine(1), null, "call 1 is the opener's job");
+  assert.match(closenessLine(3)!, /teasing and callbacks/);
+  assert.match(closenessLine(6)!, /running jokes and honest disagreement/);
+  assert.equal(turnHints({ userText: "ok", remembers: false }), null, "nothing to say: no line at all");
+  assert.match(turnHints({ userText: "black", lastReply: "<curious> White or black?", remembers: false })!, /End on a statement this time\./);
+  assert.match(turnHints({ userText: "black", lastReply: "White or black? —", remembers: false })!, /End on a statement/, "a cut-off reply keeps its '?'");
+  assert.doesNotMatch(turnHints({ userText: "black", lastReply: "<happy> Black, easy.", callNumber: 3, remembers: false }) ?? "", /statement/);
+  assert.match(turnHints({ userText: "hahaha stop", lastReply: "<teasing> Your cat filed a complaint.", remembers: false })!, /landed/);
+  assert.match(turnHints({ userText: "I GOT THE JOB", remembers: true })!, /name that thing specifically/);
+  assert.doesNotMatch(turnHints({ userText: "I GOT THE JOB", remembers: false }) ?? "", /remember/);
+  assert.equal(moodLine(moodFrom(["ugh today was so bad"])), "Your mood right now is softer and quieter, with them.");
+  assert.equal(moodLine(moodFrom(["I got the job!!"])), "Your mood right now is upbeat and playful.");
+  assert.equal(moodLine(moodFrom(["ugh today was so bad", "ok", "ok", "ok", "ok", "ok"])), null, "decays back to baseline");
+  assert.equal(moodLine(moodFrom(["my grandma's dog is dead"])), null, "'dead' alone is not a laugh");
+});
+
+test("session v1 P1: after a reply that ended in '?', the next turn's instructions say to end on a statement; call 5 is close", { skip: !v1 }, async () => {
+  const personalize = {
+    startCall: async () => ({ taste: [], calls: 5 }),
+    voiceCorrection: async () => null,
+    endCall: async () => 0,
+  };
+  const { client, session, calls } = setup(["<curious> Wait, white or black?", "<happy> Black, easy."], { personalize, userId: "u1" });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "help me pick" }));
+  const first = await client.waitFor((m) => m.type === "reply");
+  await session.onClientText(JSON.stringify({ type: "text", text: "the black one" }));
+  await client.waitFor((m) => m.type === "reply" && m !== first);
+  assert.doesNotMatch(calls[0].instructions!, /End on a statement/);
+  assert.match(calls[1].instructions!, /This turn: You're close by now[^\n]*End on a statement this time\./);
+  session.close();
+});

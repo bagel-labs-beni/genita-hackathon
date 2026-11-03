@@ -14,6 +14,7 @@ import { parseTaggedSentence } from "../text/tags.ts";
 import { fallbackLine, guardSentence, neverSpoken, type GuardClass } from "./guard.ts";
 import { noteHook, openerBlock, openerKind, pickOpenerHook, profileHooks } from "./opener.ts";
 import { initiativeBlock, initiativeInput, type InitiativeSource } from "./initiative.ts";
+import { moodFrom, moodLine, turnHints } from "./rhythm.ts";
 import type { PerceptionTriggerKind } from "./types.ts";
 
 type Turn = { kind: "greet" } | { kind: "user"; text: string } | { kind: "silence"; quietMs: number } | { kind: "perception"; hint: string; trigger?: string };
@@ -64,7 +65,16 @@ export const adapter = {
       const instructions = buildInstructions({ ...base, initiative: initiativeBlock(source, threads(s)) });
       return { instructions, input: [...msgs(ctx.history), { role: "user", content: initiativeInput(source) }], maxOutputTokens: 800, effort: "minimal" };
     }
-    const instructions = buildInstructions(base) + memoryPrompt((s.memories ?? []).map(mem), false);
+    // P1 "This turn:" line, as session.v1Extras builds it (closeness, question rhythm, mood, landed, recall)
+    const userLines = [...ctx.history.filter((h) => h.role === "user").map((h) => h.text), t.text];
+    const turn = turnHints({
+      callNumber: s.callNumber,
+      lastReply: ctx.history.filter((h) => h.role === "assistant").at(-1)?.text,
+      userText: t.text,
+      mood: moodLine(moodFrom(userLines)),
+      remembers: !!(s.memories?.length || s.summaries?.length || s.opening),
+    }) ?? undefined;
+    const instructions = buildInstructions({ ...base, turn }) + memoryPrompt((s.memories ?? []).map(mem), false);
     return { instructions, input: [...msgs(ctx.history), { role: "user", content: t.text }], maxOutputTokens: 800, effort: "minimal" };
   },
 
