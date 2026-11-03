@@ -1,6 +1,7 @@
 // L4 face · Draws one frame of the companion from a face set, a mouth frame and a time.
 // Layer order: expression still (crossfade on emotion) → one mouth patch (the lip frame's
-// strongest shape; changes are cuts) → jaw warp (lower face stretched down by openness, strip warp) → blink (eye band from
+// strongest shape; changes are cuts) → jaw warp (lower face stretched down by openness, strip warp) → expression
+// stills (server `expression` events: eyes, brows and cheeks; the whole face once the mouth rests) → blink (eye band from
 // the blink still) → alive base (head layer sways/nods on the speech envelope, body breathes,
 // handheld camera drift with parallax; see `AliveMotion`) → aspect-fill with overscan.
 // Same inputs, same seed, same call order → same pixels. No Metal library, no platform UI.
@@ -41,6 +42,12 @@ public final class FaceRenderer: @unchecked Sendable {
     private let framingZoom: CGFloat
     private let framingCenter: CGPoint
     private let blinkMask: CIImage?
+    /// Expression stills: eyes, brows and cheek apples (always), and the whole face (only while the mouth rests).
+    private let exprUpperMask: CIImage
+    /// Surprise: forehead and brows only (the eyes stay the photo's — wide-open eyes read as a stare).
+    private let exprBrowMask: CIImage
+    /// A smile's mouth after the reply (lips, corners, the cheeks right beside them; the eyes keep their own weight).
+    private let exprMouthMask: CIImage
     private let jawMask: CIImage
     private let headMask: CIImage
     private let bodyMask: CIImage
@@ -65,17 +72,39 @@ public final class FaceRenderer: @unchecked Sendable {
         let hold: Double = m.drive == "snap" || (m.minHold ?? 1) >= 3 ? 80 : Self.defaultLipLookaheadMs
         return max(m.lookaheadMs ?? 0, hold)
     }
-    /// Expression events for the current reply (audio-clock ms). Ignored when the layer is off.
-    public func addExpression(_ e: FaceExpressionEvent) {
+    /// Expression events for the current reply (audio-clock ms): the stills layer (`expressionStills`) and, when
+    /// `expressionLayer` is on, the warp layer. `utteranceId` scopes them to their reply (its audio clock).
+    public func addExpression(_ e: FaceExpressionEvent, utteranceId: Int? = nil) {
+        lock.lock(); defer { lock.unlock() }
+        if Self.expressionStills { stills.add(e, utterance: utteranceId) }
+        guard Self.expressionLayer else { return }
         var e = e
         // demo (11/3): laugh over the lip rig reads rubbery; it plays as an open smile
         if Self.laughAsSmileOpen, e.tag == "laugh", flowMorph?.data.map.rig != nil { e.tag = "smileopen" }
-        lock.lock(); flowMorph?.expressionEvents.append(e); lock.unlock()
+        flowMorph?.expressionEvents.append(e)
     }
+    /// Expression stills layer (11/3 night, CEO: "our companion has no facial expressions"): a server `expression`
+    /// event crossfades the prepped Muse Image still of that feeling into the eyes, brows and cheeks (~300 ms), holds
+    /// it through the clause and a short mood hold after it, then relaxes to the photo. The mouth keeps speaking
+    /// from the lip layer; once the mouth has rested a moment the still's own mouth (the smile itself) joins in.
+    /// With no active event nothing is drawn: plain speech keeps the still-face gates (eyes = the photo).
+    nonisolated(unsafe) public static var expressionStills = true
+    /// Expression tuning by name (A = the app's; B = half as strong; C = strong feelings only), for comparisons.
+    @discardableResult public static func useExpressionProfile(_ name: String) -> Bool {
+        guard let p = ExpressionStills.Profile.named(name) else { return false }
+        ExpressionStills.defaultProfile = p; return true
+    }
+    private var stills = ExpressionStills()
+    /// A reply starts (the driver calls this for its first event of any kind): the expression stills drop the old
+    /// reply's events and clock.
+    public func beginUtterance(_ id: Int) { lock.lock(); stills.begin(utterance: id); lock.unlock() }
+    /// Weights of the expression stills drawn at the last frame (tests, QA logs).
+    public var expressionStillWeights: [FaceExpression: Double] { lock.lock(); defer { lock.unlock() }; return stills.shown.mapValues(\.band) }
     /// Laugh events on lip-rig faces play as `smileopen` (demo setting; the laugh warp fights the rig).
     nonisolated(unsafe) public static var laughAsSmileOpen = true
-    /// Cancel / barge-in: drop the mouth's smoothing and held shapes so it rests on the next frame.
-    public func resetMouth() { lock.lock(); flowMorph?.reset(); lock.unlock() }
+    /// Cancel / barge-in: drop the mouth's smoothing and held shapes so it rests on the next frame (an expression
+    /// on screen relaxes smoothly; its reply's events are dropped).
+    public func resetMouth() { lock.lock(); flowMorph?.reset(); stills.cancel(); lock.unlock() }
     /// Parity checks: the next frame uses these flow amounts (in `faceSet.flow.keys` order).
     public func overrideNextFlowAmounts(_ a: [Float]) { lock.lock(); flowMorph?.amountsOverride = a; lock.unlock() }
     /// Key amounts of the last flow-morph frame (empty without flows).
@@ -91,6 +120,7 @@ public final class FaceRenderer: @unchecked Sendable {
         if let a = faceSet.flow?.map.alive ?? (faceSet.flow?.kind == "human" ? FlowMap.Alive() : nil) {
             motion.headGain = a.headGain; motion.nodGain = a.nodGain
             motion.rollGain = a.rollGain ?? a.headGain; motion.nodWidth = a.nodWidth; motion.cameraGain = a.camera
+            motion.lockVertical = a.lockY
         }
         let fr = Self.framing(faceSet)
         framingZoom = fr.zoom
@@ -131,6 +161,15 @@ public final class FaceRenderer: @unchecked Sendable {
             ? Self.ellipseMask(center: CGPoint(x: face.midX, y: (bandTop + bandBottom) / 2),
                                rx: face.width * 0.55, ry: max(4, (bandTop - bandBottom) / 2), inner: 0.6, extent: extent)
             : nil
+        // Expression stills: from the brows down to a mouth height above the lips (where the lip layer's blend
+        // starts, #434), 0.56 face widths across; the lower edge stays above the lips so talking never ghosts.
+        let exprTop = face.maxY - face.height * 0.04, exprBottom = mouth.maxY + mouth.height * 1.4
+        exprUpperMask = Self.ellipseMask(center: CGPoint(x: face.midX, y: (exprTop + exprBottom) / 2), rx: face.width * 0.56,
+                                         ry: max(4, (exprTop - exprBottom) / 2), inner: 0.62, extent: extent)
+        exprMouthMask = Self.ellipseMask(center: CGPoint(x: mouth.midX, y: mouth.midY), rx: max(face.width * 0.3, mouth.width * 0.9),
+                                         ry: max(4, mouth.height * 2.4), inner: 0.5, extent: extent)
+        exprBrowMask = Self.ellipseMask(center: CGPoint(x: face.midX, y: face.maxY - face.height * 0.19), rx: face.width * 0.5,
+                                        ry: max(4, face.height * 0.15), inner: 0.55, extent: extent)
         let (_, un) = Self.jawSpan(face: face, mouth: mouth)
         jawMask = Self.ellipseMask(center: CGPoint(x: face.midX, y: mouth.midY - un * 0.5),
                                    rx: face.width * 0.62, ry: un * 1.3, inner: 0.62, extent: extent)
@@ -236,8 +275,35 @@ public final class FaceRenderer: @unchecked Sendable {
             if open > 0.01 { img = jawWarp(img, open: open) }
         }
 
+        // 3b. expression stills (server events): a short swell in the eyes/cheeks band (surprise: brows only); a smile's
+        // mouth only in the moment after the reply
+        var stillsTotal = 0.0
+        if Self.expressionStills {
+            let shown: [FaceExpression: (band: Double, face: Double)] = {
+                lock.lock(); defer { lock.unlock() }
+                // the reply's own clock: the lip lookahead is for the mouth only (codex P3)
+                return stills.step(at: t, audioMs: context.map { $0.audioMs - lipLookaheadMs }, openness: open, available: Set(bases.keys))
+            }()
+            for (e, w) in shown.sorted(by: { $0.key.rawValue < $1.key.rawValue }) where w.band > 0.002 || w.face > 0.002 {
+                guard let still = bases[e] else { continue }
+                stillsTotal = max(stillsTotal, w.band)
+                var mask = Self.withOpacity(e == .surprised ? exprBrowMask : exprUpperMask, w.band)
+                if w.face > 0.002 {
+                    let u = CIFilter.maximumCompositing()
+                    u.inputImage = Self.withOpacity(exprMouthMask, w.face); u.backgroundImage = mask
+                    mask = u.outputImage!.cropped(to: extent)
+                }
+                let f = CIFilter.blendWithAlphaMask()
+                f.inputImage = still
+                f.backgroundImage = img
+                f.maskImage = mask
+                img = f.outputImage!.cropped(to: extent)
+            }
+        }
+
         // 4. blink
-        let blink = blinkAmount(at: t)
+        // (no blink cut over an expression: the blink still's neutral brows would jump for 120 ms)
+        let blink = stillsTotal > 0.2 ? 0 : blinkAmount(at: t)
         if blink > 0.3, let mask = blinkMask, let closed = bases[.blink] {
             let f = CIFilter.blendWithAlphaMask()
             f.inputImage = closed

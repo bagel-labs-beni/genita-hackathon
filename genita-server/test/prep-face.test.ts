@@ -13,6 +13,9 @@ import {
   makeFaceSet,
   samPrompt,
   MOUTH_PROMPTS,
+  EMOTION_KEYS,
+  emotionKeysOn,
+  faceKeysFor,
   type FaceKey,
 } from "../src/prep/face.ts";
 import { FACE, MOUTH, box, fakeMedia, fakePng } from "./helpers/fakeMedia.ts";
@@ -27,11 +30,35 @@ const keyOf = (kind: "human" | "animal" | "character") => (prompt: string) => {
 const scene = () => fakePng(1000, 2000, "scene");
 const urlFor = (k: string) => `/v1/companion/face/${k}`;
 
-test("face keys: blink/smile/warm + the ten visemes + five conversational mouth keys, rest is the scene", () => {
-  assert.deepEqual([...FACE_EXPRESSIONS], ["blink", "smile", "warm"]);
+test("face keys: blink/smile/warm/surprised/concerned + the ten visemes + five conversational mouth keys, rest is the scene", () => {
+  assert.deepEqual([...FACE_EXPRESSIONS], ["blink", "smile", "warm", "surprised", "concerned"]);
   assert.deepEqual([...VISEMES], ["MBP", "FV", "TH", "L", "WQ", "O", "EI", "A", "U", "CDG"]);
   assert.deepEqual([...MOUTH_KEYS], ["MID", "AH", "AH2", "EH", "OH"]);
-  assert.equal(FACE_KEYS.length, 18);
+  assert.equal(FACE_KEYS.length, 20);
+});
+
+test("expression keys (11/3 night): full-face prompts that move eyes and brows, keep the head still; GENITA_FACE_EMOTION_KEYS=0 drops the new two", () => {
+  assert.deepEqual([...EMOTION_KEYS], ["smile", "warm", "surprised", "concerned"]);
+  for (const kind of ["human", "animal", "character"] as const) {
+    for (const k of ["surprised", "concerned"] as const) {
+      const p = faceEditPrompt(k, kind, false);
+      assert.match(p, /facial expression \(mouth, eyes and eyebrows\)/);
+      assert.match(p, /identity, face, hair, lighting, background, framing and camera exactly the same/);
+      assert.match(faceEditPrompt(k, kind, true), /outside the mouth, eyes and eyebrows stays identical/);
+      assert.doesNotMatch(p, /tongue|wide open|jaw dropped/, "wording that hit the content filter on 11/2");
+    }
+    assert.match(faceEditPrompt("smile", kind, true), /outside the mouth and eyes stays identical/, "the old keys keep their tested wording");
+  }
+  assert.match(faceEditPrompt("surprised", "human", false), /eyebrows raised high/);
+  assert.match(faceEditPrompt("concerned", "human", false), /not smiling/);
+  assert.equal(emotionKeysOn({}), true);
+  for (const off of ["0", "false", "off"]) {
+    assert.equal(emotionKeysOn({ GENITA_FACE_EMOTION_KEYS: off }), false);
+    const keys = faceKeysFor("human", undefined, { GENITA_FACE_EMOTION_KEYS: off });
+    assert.ok(!keys.includes("surprised") && !keys.includes("concerned"));
+    assert.ok(keys.includes("smile") && keys.includes("warm") && keys.includes("blink"));
+  }
+  assert.ok(faceKeysFor("animal", "animal", {}).includes("surprised"));
 });
 
 test("mouth-key prompts (flow morph): jaw wording, nose/eyes kept, not smiling, hold-still line even on the first try", () => {
@@ -130,16 +157,16 @@ test("driftCheck: centre moved > 3% of width, size changed > 6%, or no mouth →
   assert.equal(driftCheck(ref, { face: null, mouth: [0.42, 0.38, 0.58, 0.41] }, size), "no_face");
 });
 
-test("makeFaceSet: 18 edits from the scene, SAM face+mouth on scene and every edit, normalised boxes, manifest shape", async () => {
+test("makeFaceSet: 20 edits from the scene, SAM face+mouth on scene and every edit, normalised boxes, manifest shape", async () => {
   const { media, calls } = fakeMedia({ keyOf: keyOf("human") });
   const saved: string[] = [];
   const st = await makeFaceSet({ metaKey: "k", media, scene: scene(), kind: "human", size: "1024x1820", onItem: async (k, item, bytes) => void saved.push(`${k}:${item.status}:${bytes ? bytes.length > 0 : "-"}`) });
-  assert.equal(calls.edits.length, 18);
+  assert.equal(calls.edits.length, 20);
   assert.ok(calls.edits.every((e) => !e.key.endsWith("!")), "no retries when nothing drifts");
-  assert.equal(calls.sam.length, 2 * 19);
+  assert.equal(calls.sam.length, 2 * 21);
   assert.ok(calls.sam.some((s) => s.tag === "scene" && s.prompt === "the person's face"));
   assert.ok(calls.sam.some((s) => s.tag === "scene" && s.prompt === "the person's mouth"));
-  assert.equal(saved.length, 18);
+  assert.equal(saved.length, 20);
   assert.ok(saved.every((s) => s.endsWith(":done:true")));
 
   const m = faceManifest(st, urlFor);
@@ -147,7 +174,7 @@ test("makeFaceSet: 18 edits from the scene, SAM face+mouth on scene and every ed
   assert.deepEqual(m.size, [1000, 2000]);
   assert.deepEqual(m.faceBox, [0.3, 0.2, 0.7, 0.45]);
   assert.deepEqual(m.mouthBox, [0.42, 0.38, 0.58, 0.41]);
-  assert.deepEqual(Object.keys(m.images), ["neutral", "blink", "smile", "warm"]);
+  assert.deepEqual(Object.keys(m.images), ["neutral", "blink", "smile", "warm", "surprised", "concerned"]);
   assert.equal(m.images.neutral, "/v1/companion/face/neutral");
   assert.deepEqual(Object.keys(m.visemes), [...VISEMES], "the mouth keys stay out of `visemes` (old apps iterate it)");
   assert.equal(m.visemes.MBP, "/v1/companion/face/MBP");
@@ -227,10 +254,13 @@ test("makeFaceSet: rejects an edit whose aspect ratio differs from the scene", a
   await assert.rejects(() => makeFaceSet({ metaKey: "k", media, scene: scene(), kind: "human", size: "1024x1820" }), /every edit failed|size_mismatch/);
 });
 
-test("makeFaceSet: at most 6 edits in flight; resume skips settled keys", async () => {
+test("makeFaceSet: every key in flight at once by default (6 when asked); resume skips settled keys", async () => {
+  const six = fakeMedia({ keyOf: keyOf("human"), delayMs: 15 });
+  await makeFaceSet({ metaKey: "k", media: six.media, scene: scene(), kind: "human", size: "1024x1820", concurrency: 6 });
+  assert.equal(six.calls.maxInFlight, 6);
   const a = fakeMedia({ keyOf: keyOf("human"), delayMs: 15 });
   const first = await makeFaceSet({ metaKey: "k", media: a.media, scene: scene(), kind: "human", size: "1024x1820" });
-  assert.equal(a.calls.maxInFlight, 6);
+  assert.equal(a.calls.maxInFlight, 20, "one wave (11/3: prep 96–126 s → 64–94 s)");
 
   // keep 5 settled items (one of them a rejection), drop the rest: a rerun edits only the 8 missing
   const keep = new Set<FaceKey>(["blink", "smile", "MBP", "FV", "TH"]);
@@ -241,7 +271,7 @@ test("makeFaceSet: at most 6 edits in flight; resume skips settled keys", async 
   assert.equal(b.calls.edits.length, FACE_KEYS.length - 5);
   assert.ok(!b.calls.edits.some((e) => keep.has(e.key as FaceKey)));
   assert.ok(!b.calls.sam.some((s) => s.tag === "scene"), "scene boxes come from the saved state");
-  assert.equal(Object.keys(st.items).length, 18);
+  assert.equal(Object.keys(st.items).length, 20);
   assert.equal(st.items.TH?.status, "rejected");
 });
 
@@ -271,10 +301,10 @@ test("makeFaceSet (codex P1): a SAM error on one edit is an edit_failed retry, a
   });
   let settled = false;
   const late: string[] = [];
-  const st = await makeFaceSet({ metaKey: "k", media, scene: scene(), kind: "human", size: "1024x1820", onItem: async (k) => void (settled && late.push(k)) });
+  const st = await makeFaceSet({ metaKey: "k", media, scene: scene(), kind: "human", size: "1024x1820", concurrency: 6, onItem: async (k) => void (settled && late.push(k)) });
   settled = true;
   assert.deepEqual(faceManifest(st, urlFor).rejected, [{ key: "L", reason: "edit_failed", retried: true }]);
-  assert.equal(Object.keys(st.items).length, 18);
+  assert.equal(Object.keys(st.items).length, 20);
 
   // an unexpected failure (here: saving one key) rejects only after every lane has stopped
   const b = fakeMedia({ keyOf: keyOf("human"), delayMs: 5 });
@@ -283,6 +313,7 @@ test("makeFaceSet (codex P1): a SAM error on one edit is an edit_failed retry, a
   await assert.rejects(
     () =>
       makeFaceSet({
+        concurrency: 6, // fewer lanes than keys: the "no new edit after a failure" path
         metaKey: "k",
         media: b.media,
         scene: scene(),
@@ -298,7 +329,7 @@ test("makeFaceSet (codex P1): a SAM error on one edit is an edit_failed retry, a
   );
   await new Promise((r) => setTimeout(r, 40));
   assert.deepEqual(late, [], "no lane keeps saving after makeFaceSet settled");
-  assert.ok(b.calls.edits.length < 18, "no new edit starts once a lane failed");
+  assert.ok(b.calls.edits.length < 20, "no new edit starts once a lane failed");
 });
 
 test("makeFaceSet (codex P2): a saved set with no kept image is redone, not skipped", async () => {
@@ -309,12 +340,12 @@ test("makeFaceSet (codex P2): a saved set with no kept image is redone, not skip
     () => makeFaceSet({ metaKey: "k", media: first.media, scene: scene(), kind: "human", size: "1024x1820", onRef: async (s) => void (ref = s.ref), onItem: async (k, item) => void (saved[k] = item) }),
     /every edit failed/,
   );
-  assert.equal(Object.keys(saved).length, 18, "all 18 were saved as no_mouth");
+  assert.equal(Object.keys(saved).length, 20, "all 20 were saved as no_mouth");
   const prev = { size: [1000, 2000] as [number, number], ref: ref as any, items: saved as any, ms: { total: 0, edits: 0, sam: 0 } };
   const again = fakeMedia({ keyOf: keyOf("human") });
   const st = await makeFaceSet({ metaKey: "k", media: again.media, scene: scene(), kind: "human", size: "1024x1820", prev });
-  assert.equal(again.calls.edits.length, 18);
-  assert.equal(Object.values(st.items).filter((i) => i?.status === "done").length, 18);
+  assert.equal(again.calls.edits.length, 20);
+  assert.equal(Object.values(st.items).filter((i) => i?.status === "done").length, 20);
 });
 
 test("per-category key sets: a kind generates only its listed mouth keys; prompt overrides per kind", async () => {
@@ -333,4 +364,71 @@ test("per-category key sets: a kind generates only its listed mouth keys; prompt
     MOUTH_KEYS_BY_KIND.animal = saved;
     delete MOUTH_PROMPT_BY_KIND.animal;
   }
+});
+
+// ---------- v9.3 mouth on serve (11/3 18:46) ----------
+
+test("withV93Mouth: people on the rig get the v57c block (openMag 0, jaw 1 px), the v93 motion and a still face", async () => {
+  const { V93_PERIORAL, STILL_FACE, withV93Mouth, v93MouthOn } = await import("../src/prep/face.ts");
+  const map = { rig: { chinLpHz: 2 }, alive: { headX: 3, nodPx: 5 }, motionV2: { amp: 0.35 }, cheek: { spread: 0.8, lift: 3, delayFrames: 1 }, brow: { px: 2.5 } };
+  const out = withV93Mouth(map, "human", true);
+  assert.deepEqual(out.perioral, { ...V93_PERIORAL, jawDropPx: 1 });
+  assert.equal((out.perioral as Record<string, number>).openMag, 0);
+  assert.deepEqual(out.alive, { ...STILL_FACE.alive });
+  assert.deepEqual(out.brow, { px: 0 });
+  assert.deepEqual(out.cheek, { ...STILL_FACE.cheek, delayFrames: 1 });
+  const mv = out.motionV2 as Record<string, unknown>;
+  assert.equal(mv.amp, 0.35);
+  assert.equal(mv.preset, "v93");
+  assert.deepEqual((mv.ladders as Record<string, unknown>).spread, [["EI", 0], ["EH", 0.2]]);
+  assert.equal(map.alive.nodPx, 5, "the stored map is not mutated");
+  assert.equal((map as Record<string, unknown>).perioral, undefined);
+  // switch off: the map as prepped
+  assert.equal(withV93Mouth(map, "human", false), map);
+  // no rig / own perioral: still face only
+  const noRig = withV93Mouth({ alive: { headX: 3 } }, "human", true);
+  assert.equal(noRig.perioral, undefined);
+  assert.deepEqual(noRig.alive, { ...STILL_FACE.alive });
+  const own = withV93Mouth({ rig: {}, perioral: { lipThin: 0.5 } }, "human", true);
+  assert.deepEqual(own.perioral, { lipThin: 0.5 });
+  // switch: default on
+  assert.equal(v93MouthOn({}), true);
+  assert.equal(v93MouthOn({ GENITA_FACE_V93_MOUTH: "1" }), true);
+  for (const v of ["0", "false", "off", " OFF "]) assert.equal(v93MouthOn({ GENITA_FACE_V93_MOUTH: v }), false);
+});
+
+test("withV93Mouth: animals close between syllables, 2D opens sooner, 3D quicker — all with a still head; no human block", async () => {
+  const { withV93Mouth } = await import("../src/prep/face.ts");
+  const animal = withV93Mouth({ drive: "open", shownFloor: 0.6, minHold: 3, jaw: { gain: 1.4, steps: [["AH2", 0.9]], vowel: { A: 1, other: 0.35 } } }, "animal", true);
+  assert.equal(animal.shownFloor, 0);
+  assert.equal(animal.minHold, 2);
+  assert.deepEqual(animal.jaw, { floor: 0, gain: 1.4, steps: [["AH2", 0.9]], vowel: { A: 1, other: 0.1 } });
+  assert.equal(animal.perioral, undefined);
+  assert.equal((animal.alive as Record<string, number>).headX, 0);
+  const twoD = withV93Mouth({ drive: "snap", snap: { hold: 2, minHold: 4, closedBelow: 0.18, rules: [[["A"], 0.75, "WD", 4], [["O"], 0, "OO"], [["EI"], 0.55, "EE"]] } }, "character2d", true);
+  const snap = twoD.snap as Record<string, unknown>;
+  assert.deepEqual([snap.hold, snap.minHold, snap.closedBelow], [1, 2, 0.08]);
+  assert.deepEqual(snap.rules, [[["A"], 0.5, "WD", 2], [["O"], 0, "OO"], [["EI"], 0.4, "EE"]]);
+  const threeD = withV93Mouth({ gain: 1.8, smoothing: { fps: 25, attack: 0.75, release: 0.5 } }, "character3d", true);
+  assert.equal(threeD.gain, 1.8, "gain untouched (it only saturates)");
+  assert.deepEqual(threeD.smoothing, { fps: 25, attack: 0.9, release: 0.7 });
+  assert.equal(threeD.minHold, 1);
+  // a map without a cheek block still gets the still one (the app's default cheek rules move)
+  assert.deepEqual(withV93Mouth({ drive: "open" }, "animal", true).cheek, { spread: 0, pull: 0, lift: 0, cheek: 0, cheekW: 0, naso: 0, nasoW: 0 });
+});
+
+test("faceManifest: the served flow map carries the v9.3 mouth; the switch off serves the prepped map", () => {
+  const st = {
+    size: [1000, 2000],
+    ref: { face: [0.3, 0.2, 0.7, 0.45], mouth: [0.42, 0.38, 0.58, 0.41] },
+    items: {},
+    keys: [],
+    ms: { total: 0, edits: 0, sam: 0 },
+    flow: { version: 1, roi: [0, 0, 1, 1], size: [10, 10], flowSize: [5, 5], keys: [], files: {}, mask: "m.png", neutralRoi: "n.jpg", lockY: 0.5, lockSource: "x", kind: "human", map: { rig: {}, alive: { nodPx: 5 } } },
+  } as unknown as Parameters<typeof faceManifest>[0];
+  const on = faceManifest(st, urlFor, (a) => a, { v93Mouth: true });
+  assert.equal((on.flow!.map.perioral as Record<string, number>).openMag, 0);
+  assert.equal((on.flow!.map.alive as Record<string, unknown>).lockY, true);
+  const off = faceManifest(st, urlFor, (a) => a, { v93Mouth: false });
+  assert.equal(off.flow!.map.perioral, undefined);
 });

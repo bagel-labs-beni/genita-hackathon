@@ -9,12 +9,12 @@
  *   GET  /v1/companion/voices?imageId=      F2-L8  4–6 curated voices for the look, recommended first; available = voice service up
  *   GET  /v1/companion/voices/:id/preview   F2-L8  WAV (cached); device voices → 404 device_preview
  *   PUT  /v1/companion/voice {voiceId}      V04: the picked voice is saved on the companion (404 no companion, 400 unknown_voice)
- *   POST /v1/companion {imageId, voiceId, name?}   F2-L3 subset: create (409 if one exists) + start prep
+ *   POST /v1/companion {imageId, voiceId, name?}   F2-L3 subset: create (409 if one exists; a D41 demo one is replaced) + start prep
  *   POST /v1/companion/name/suggest {imageId}      F2-L26 NM01 pre-fill: Spark → {name, ms, suggested} (10/min/user)
  *   PATCH /v1/companion {name}              F2-L26 rename (1–20 chars, else 400 bad_name)
- *   GET  /v1/companion                      companion + prep + persona
+ *   GET  /v1/companion                      companion + prep + persona + demo
  *   GET  /v1/companion/prep                 F2-L9  {status, progress {done,total}, face (manifest), emotionVideos}
- *   GET  /v1/companion/face/:key            face set image (neutral = scene, blink/smile/warm, visemes, mouth keys) or
+ *   GET  /v1/companion/face/:key            face set image (neutral = scene, blink/smile/warm/surprised/concerned, visemes, mouth keys) or
  *                                           face-flow asset (flow_*: ROI keys, float16 flows, mask), this user's companion only
  *   POST /v1/companion/prep/retry           F2-L9  after `failed`
  *   POST /v1/companion/prefs {depth, answers}      F2-L14 → persona card + SUM lines + session start fields
@@ -26,7 +26,7 @@
  * Auth and the AI-consent gate are checked by server.ts before handle().
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { IMPORT_PROMPT, skipStyleCard, styleProfileText, type StyleCard } from "./importProfile.ts";
 import { MAX_IMAGE_BYTES, PrepError, checkImage, importStyle, orderedVoices, savePrefs, voicePreview, type PrepDeps } from "./pipeline.ts";
 import { needsFaceSet, newPrepState, prepView, type PrepRunner } from "./runner.ts";
@@ -35,6 +35,16 @@ import { flowAssets } from "./faceflow.ts";
 import { sniffImage } from "./classify.ts";
 import type { CompanionRecord } from "./store.ts";
 import { cleanName, renameCompanion, suggestName } from "./naming.ts";
+
+// D41: per-user queue for replacing a demo companion (two concurrent POST /v1/companion over the same demo)
+const demoSwaps = new Map<string, Promise<unknown>>();
+function demoSwap<T>(userId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = demoSwaps.get(userId) ?? Promise.resolve();
+  const next = prev.catch(() => {}).then(fn);
+  demoSwaps.set(userId, next);
+  void next.finally(() => { if (demoSwaps.get(userId) === next) demoSwaps.delete(userId); }).catch(() => {});
+  return next;
+}
 import { PersonalizeError } from "../personalize/service.ts";
 import { getOps } from "../ops/limits.ts";
 
@@ -74,7 +84,7 @@ export function userIdOf(req: IncomingMessage): string {
   return id;
 }
 
-const FACE_ASSETS = new Set<string>(["neutral", ...ALL_FACE_KEYS]);
+const FACE_ASSETS = new Set<string>(["neutral", "person", ...ALL_FACE_KEYS]);
 
 /** All companion kinds animate the Meta face set on the device. */
 function sessionLip(_c: CompanionRecord): "none" {
@@ -89,6 +99,8 @@ export function companionView(c: CompanionRecord, style: StyleCard | null) {
     voiceId: c.voiceId,
     imageId: c.imageId,
     createdAt: c.createdAt,
+    /** D41: the ready-made judge demo companion; POST /v1/companion replaces it */
+    demo: c.demo === true,
     prep: prepView(c),
     prefs: c.prefs ?? null,
     persona: c.persona ?? null,
@@ -215,7 +227,7 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
         voices: r.voices.map((v) =>
           v.locale
             ? { id: v.id, name: v.name, blurb: v.blurb, locale: v.locale, gender: v.gender ?? "neutral", style: v.style ?? "", previewUrl: null }
-            : { id: v.id, name: v.name, blurb: v.blurb, label: `${v.name} · ${v.blurb.split(",")[0].toLowerCase()}`, previewUrl: `/v1/companion/voices/${v.id}/preview` },
+            : { id: v.id, name: v.name, blurb: v.blurb, label: `${v.name} · ${v.blurb.split(",")[0].toLowerCase()}`, ...(v.gender ? { gender: v.gender } : {}), previewUrl: `/v1/companion/voices/${v.id}/preview` },
         ),
         suggested: r.suggested,
         available: r.available,
@@ -252,7 +264,8 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
 
     if (m === "POST" && p === "/v1/companion") {
       const b = await readJson(req);
-      if (await d.store.getCompanion(user)) throw new PrepError(409, "companion_exists", "one companion per user; the face cannot be changed");
+      const existing = await d.store.getCompanion(user);
+      if (existing && !existing.demo) throw new PrepError(409, "companion_exists", "one companion per user; the face cannot be changed");
       const img = typeof b.imageId === "string" ? await d.store.getImage(b.imageId).catch(() => null) : null;
       if (!img || img.rec.userId !== user) throw new PrepError(404, "unknown_image");
       if (!img.rec.check.passed || !img.rec.check.type) throw new PrepError(422, "image_not_passed");
@@ -272,7 +285,20 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
         createdAt: new Date().toISOString(),
         prep: newPrepState(),
       };
-      await d.store.putCompanion(c);
+      // B7 keeps one companion per user: a judge's own companion takes the demo one's place, atomically and only
+      // if that demo is still there (a concurrent create wins once; the other gets 409). Bad requests never get here.
+      if (existing?.demo) {
+        // one replacement per user at a time; inside it the demo is re-checked, so a losing request never stops the
+        // winner's new prep. A resumed/retried demo prep is stopped first (its saves are by user id).
+        const replaced = await demoSwap(user, async () => {
+          const now = await d.store.getCompanion(user);
+          if (!now?.demo || now.id !== existing.id) return false;
+          await runner.stop(user);
+          return d.store.replaceDemoCompanion(existing.id, c);
+        });
+        if (!replaced) throw new PrepError(409, "companion_exists", "one companion per user; the face cannot be changed");
+        d.log("demo.replaced", { companion: existing.id });
+      } else await d.store.putCompanion(c);
       d.log("voice.selected", { companionId: c.id, userId: user, voice_id: voice.id });
       d.log("companion.named", { companionId: c.id, userId: user });
       d.log("companion.created", { companionId: c.id, userId: user, imageId: c.imageId });
@@ -306,6 +332,8 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
     if (m === "GET" && p === "/v1/companion/prep") {
       const c = await d.store.getCompanion(user);
       if (!c) throw new PrepError(404, "no_companion");
+      // a face prepped before the expression keys gets them in the background (served from the next fetch)
+      runner.topUpFace(user, c);
       return send(res, 200, prepView(c));
     }
 
@@ -318,10 +346,19 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
       // only files the manifest lists (a rejected key never is)
       if (isFlow) {
         if (!flowAssets(c.prep.steps.face?.face?.flow).has(fk[1])) throw new PrepError(404, "no_image");
+      } else if (fk[1] === "person") {
+        if (!c.prep.steps.face?.face?.person) throw new PrepError(404, "no_image");
       } else if (fk[1] !== "neutral" && c.prep.steps.face?.face?.items[fk[1] as FaceKey]?.status !== "done") throw new PrepError(404, "no_image");
       const bytes = await d.store.getAsset(user, c.id, fk[1]);
       if (!bytes) throw new PrepError(404, "no_image");
-      res.writeHead(200, { "content-type": sniffImage(bytes) ?? "application/octet-stream", "content-length": bytes.length, "cache-control": "private, max-age=86400" });
+      // same URL for every companion of this account (a judge's own companion replaces the demo one): the app
+      // revalidates, and the ETag (companion + content) answers 304 while the picture is unchanged
+      const etag = `"${c.id.slice(0, 12)}-${createHash("sha1").update(bytes).digest("hex").slice(0, 16)}"`;
+      if (req.headers["if-none-match"] === etag) {
+        res.writeHead(304, { etag, "cache-control": "private, no-cache" });
+        return void res.end();
+      }
+      res.writeHead(200, { "content-type": sniffImage(bytes) ?? "application/octet-stream", "content-length": bytes.length, "cache-control": "private, no-cache", etag });
       return void res.end(bytes);
     }
 

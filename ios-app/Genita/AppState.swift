@@ -73,6 +73,14 @@ struct SavedSetup: Codable {
         companionName, imageId, imageType, styleRows, styleProfile, stylePartial, companionCreated, voiceId, voiceName, deviceVoice, skipInterests, skipReplies, skipAvoid, skipLikes, firstCallPending, serverPersona, accountId, companionDemo }
 
 }
+/// A launch response belongs to the token and authentication lifetime that requested it.
+struct LaunchAuthSnapshot: Equatable, Sendable {
+    let token: String?
+    let generation: Int
+
+    func accepts(_ current: LaunchAuthSnapshot) -> Bool { token != nil && self == current }
+}
+
 @MainActor @Observable final class AppState {
     var setup: SavedSetup { didSet { if oldValue.imageData != setup.imageData { saveImage() }; save() } }
     var history: [Stage] = []
@@ -112,10 +120,24 @@ struct SavedSetup: Codable {
     var sceneImageData: Data? { sceneImage.flatMap { $0.key == sceneKey ? $0.data : nil } }
     /// A02-E-style one-line error for any onboarding call (offline, server)
     var flowError: String?
+    /// D47 HISY v2 cards (I03 → HISY-0 … HISY-7, N1–N3 → S0 … S4). Transient: after a relaunch they're read
+    /// again (`GET /v1/profile/story`).
+    var story: [StoryCard]?
+    /// import | skip — which opener (HISY-0 or S0) and copy the cards get
+    var storySource: String?
+    var storyLoading = false
+    /// no story could be had: HISY-0 "Show me" goes straight to HISY-7
+    var storyFailed = false
+    /// C3: the texts the last correction made new, by card id (drawn with the blue border)
+    var storyChanged: [String: [String]] = [:]
+    /// HISY page: 0 = opener (HISY-0 / S0), 1…n = the cards, n + 1 = HISY-7 "Now give me a face."
+    var hisyPage = 0
     @ObservationIgnored var importTask: Task<Void, Never>?
     @ObservationIgnored var companionTask: Task<Void, Never>?
     @ObservationIgnored var imageCheckTask: Task<Void, Never>?
     @ObservationIgnored var imageCheckTicket: UUID?
+    /// Changes whenever sign-in state changes, so old account responses cannot affect the new account.
+    @ObservationIgnored private var onboardingSession = OnboardingSessionGeneration()
     /// After a sign-in, where to go is asked from the server (`/me`): a returning account gets its companion back
     /// and goes to the call instead of A03. nil = `routeOnLaunch()`; tests swap it.
     @ObservationIgnored var routeAfterSignIn: (() async -> Void)?
@@ -123,7 +145,9 @@ struct SavedSetup: Codable {
     /// Bumped on every sign-in and sign-out: server answers asked under an older value are dropped.
     @ObservationIgnored private(set) var authGeneration = 0
     @ObservationIgnored var onboarding = OnboardingClient()
+    var launchAuthSnapshot: LaunchAuthSnapshot { LaunchAuthSnapshot(token: onboarding.auth.token, generation: authGeneration) }
     var storage: UserDefaults
+    @ObservationIgnored private let onHandoffAccountChange: ((String?) -> Void)?
     let imageURL: URL
     nonisolated static var defaultImageURL: URL { URL.applicationSupportDirectory.appending(path: "Genita/companion.jpg") }
 
@@ -133,8 +157,9 @@ struct SavedSetup: Codable {
     /// (genita-server test "import prompt copies are identical").
     static let prompt: String = Bundle.main.url(forResource: "import-prompt", withExtension: "txt")
         .flatMap { try? String(contentsOf: $0, encoding: .utf8) }?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    init(storage: UserDefaults = .standard, reset: Bool = false, imageURL: URL = AppState.defaultImageURL) {
+    init(storage: UserDefaults = .standard, reset: Bool = false, imageURL: URL = AppState.defaultImageURL, onHandoffAccountChange: ((String?) -> Void)? = nil) {
         self.storage = storage
+        self.onHandoffAccountChange = onHandoffAccountChange
         self.imageURL = imageURL
         if reset { storage.removeObject(forKey: Self.storageKey); storage.removeObject(forKey: Self.signedOutKey); try? FileManager.default.removeItem(at: imageURL) }
         if let data = storage.data(forKey: Self.storageKey), let saved = try? JSONDecoder().decode(SavedSetup.self, from: data) { setup = saved } else { setup = SavedSetup() }
@@ -152,22 +177,7 @@ struct SavedSetup: Codable {
             onboarding = OnboardingClient(auth: GenitaAuthClient(store: InMemoryTokenStore("stub-token")))
         }
         if let raw = ProcessInfo.processInfo.environment["GENITA_REVIEW_STAGE"], let reviewStage = Stage(rawValue: raw) {
-            let variant = ProcessInfo.processInfo.environment["GENITA_REVIEW_VARIANT"] ?? ""
-            setup.name = variant == "empty" ? "" : "Dyno"
-            // screen review fixture: the demo companion's name ({name} in the copy, never hard-coded in the UI)
-            setup.companionName = variant == "empty" ? nil : (ProcessInfo.processInfo.environment["GENITA_REVIEW_NAME"] ?? "Jin")
-            setup.response = variant == "empty" ? "" : "Communication style\n• Warm, direct, and informal.\nResponse preferences\n• Specific feedback and clear alternatives.\nInterests\n• Visual design and building products.\nLikes & dislikes\n• Concrete examples over generic praise.\nBoundaries\n• Ask before taking action for me."
-            setup.voice = variant == "empty" ? nil : 0
-            setup.depth = SetupDepth(rawValue: variant) ?? .right
-            if variant != "empty" {
-                setup.answers = ["help": "Think with me", "relationship": "Trusted partner", "challenge": "2", "tempo": "2", "initiative": "2"]
-                setup.boundaries = ["Message anyone for me"]
-                setup.presence = ["Calm"]
-            }
-            if variant == "image" || reviewStage == .conversation || reviewStage == .connecting,
-               let url = Bundle.main.url(forResource: "companion", withExtension: "png") { setup.imageData = try? Data(contentsOf: url) }
-            else { setup.imageData = nil }
-            setup.stage = reviewStage
+            applyReviewFixture(stage: reviewStage, variant: ProcessInfo.processInfo.environment["GENITA_REVIEW_VARIANT"] ?? "")
         }
         #endif
     }
@@ -205,10 +215,25 @@ struct SavedSetup: Codable {
     static let signedOutKey = "genita.signedOut"
     static let needsConsentKey = "genita.needsConsent"
     static let userKey = "genita.userId"
+    func onboardingSnapshot() -> OnboardingSessionGeneration.Snapshot {
+        onboardingSession.snapshot(token: onboarding.auth.token)
+    }
+    func ownsOnboardingResponse(_ snapshot: OnboardingSessionGeneration.Snapshot, allowingClearedSession: Bool = false) -> Bool {
+        onboardingSession.isCurrent(snapshot, token: onboarding.auth.token, allowingClearedSession: allowingClearedSession)
+    }
+    private func invalidateOnboardingWork() {
+        onboardingSession.invalidate()
+        importTask?.cancel(); importTask = nil
+        companionTask?.cancel(); companionTask = nil
+        imageCheckTask?.cancel(); imageCheckTask = nil; imageCheckTicket = nil
+        importing = false; creatingCompanion = false; checkingImage = false
+    }
     /// CS01 "Not now", an expired session (4401) or sign-out: A02, and a restart stays there.
     func signedOut() {
+        invalidateOnboardingWork()
         authGeneration += 1
         signInRouting?.cancel(); signInRouting = nil
+        onHandoffAccountChange?(nil)
         storage.set(true, forKey: Self.signedOutKey)
         prep = nil; sceneImage = nil
         storage.removeObject(forKey: Self.needsConsentKey)
@@ -218,8 +243,10 @@ struct SavedSetup: Codable {
     /// profile (name, photo, preferences belong to the account that made them). Consent pending → CS01.
     /// `consented` has no default on purpose: every caller states whether CS01 was already agreed (#218).
     func signedIn(userId: String? = nil, consented: Bool) {
+        invalidateOnboardingWork()
         authGeneration += 1
         signInRouting?.cancel(); signInRouting = nil
+        onHandoffAccountChange?(userId)
         storage.removeObject(forKey: Self.signedOutKey)
         if let userId {
             if let previous = storage.string(forKey: Self.userKey), previous != userId { resetLocalProfile() }
@@ -241,11 +268,13 @@ struct SavedSetup: Codable {
     /// Signed in as `id`: if this phone's saved setup (name, photo, imported style) belongs to another
     /// account, drop it — one account's data never goes out under another's token.
     func adopt(accountId id: String) {
+        onHandoffAccountChange?(id)
         guard setup.accountId != id else { return }
         if setup.accountId != nil || setup.companionCreated == true || setup.styleRows != nil {
             var fresh = SavedSetup(); fresh.stage = setup.stage == .consent ? .consent : .name
             setup = fresh
             history = []
+            story = nil; storyChanged = [:]; storyFailed = false; hisyPage = 0
             prep = nil; sceneImage = nil
         }
         setup.accountId = id
@@ -267,6 +296,7 @@ struct SavedSetup: Codable {
         try? FileManager.default.removeItem(at: imageURL)
         history = []
         setup = SavedSetup()
+        story = nil; storyChanged = [:]; storyFailed = false; hisyPage = 0
         prep = nil; sceneImage = nil
     }
     /// The call stopped for a reason reconnecting can't fix (server close 4401 / 4403, F1-L7).
@@ -299,3 +329,35 @@ struct SavedSetup: Codable {
     func toggleBoundary(_ value: String) { if setup.boundaries.contains(value) { setup.boundaries.remove(value) } else { setup.boundaries.insert(value) } }
     func togglePresence(_ value: String) { if setup.presence.contains(value) { setup.presence.remove(value) } else { setup.presence.insert(value) } }
 }
+
+#if DEBUG
+extension AppState {
+    /// What the app knows at review stage `reviewStage` (name, imported style, answers, face), with the demo companion's name.
+    /// One source for the GENITA_REVIEW_STAGE launch environment (UI tests, screen review) and the browser preview menu.
+    func applyReviewFixture(stage reviewStage: Stage, variant: String) {
+        setup.name = variant == "empty" ? "" : "Dyno"
+        // screen review fixture: the demo companion's name ({name} in the copy, never hard-coded in the UI)
+        setup.companionName = variant == "empty" ? nil : (ProcessInfo.processInfo.environment["GENITA_REVIEW_NAME"] ?? "Jin")
+        setup.response = variant == "empty" ? "" : "Communication style\n• Warm, direct, and informal.\nResponse preferences\n• Specific feedback and clear alternatives.\nInterests\n• Visual design and building products.\nLikes & dislikes\n• Concrete examples over generic praise.\nBoundaries\n• Ask before taking action for me."
+        setup.voice = variant == "empty" ? nil : 0
+        setup.depth = SetupDepth(rawValue: variant) ?? .right
+        if variant != "empty" {
+            setup.answers = ["help": "Think with me", "relationship": "Trusted partner", "challenge": "2", "tempo": "2", "initiative": "2"]
+            setup.boundaries = ["Message anyone for me"]
+            setup.presence = ["Calm"]
+        }
+        if variant == "image" || reviewStage == .conversation || reviewStage == .connecting,
+           let url = Bundle.main.url(forResource: "companion", withExtension: "png") { setup.imageData = try? Data(contentsOf: url) }
+        else { setup.imageData = nil }
+        // V02-F review (D26): GENITA_REVIEW_VARIANT=fail-public_figure shows the well-known-person refusal
+        if reviewStage == .imageCheck, variant.hasPrefix("fail-") {
+            if let url = Bundle.main.url(forResource: "companion", withExtension: "png") { setup.imageData = try? Data(contentsOf: url) }
+            let code = String(variant.dropFirst("fail-".count))
+            let label = code == "public_figure" ? "This looks like a well-known person" : "Too blurry to make a face from"
+            let json = #"{"imageId":"review","passed":false,"type":"human","checks":{"oneFaceFrontFacing":true,"sharpAndLit":\#(code == "too_blurry" ? "false" : "true"),"noText":true},"reasons":[{"code":"\#(code)","label":"\#(label)"}]}"#
+            imageCheck = try? JSONDecoder().decode(ImageCheck.self, from: Data(json.utf8))
+        }
+        setup.stage = reviewStage
+    }
+}
+#endif

@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import { sparkJson, type SparkRequest } from "../meta/spark.ts";
 import { museImageEdit, samDetect } from "../meta/media.ts";
 import { buildClassifyRequest, headPrompt, interpretCheck, pickHeadBox, sniffImage, type ClassifyRaw } from "./classify.ts";
-import { buildImportRequest, checkPaste, redactSensitive, toStyleCard, type ImportRaw, type StyleCard } from "./importProfile.ts";
+import { buildImportRequest, checkPaste, importFormat, redactSensitive, toStyleCard, type ImportRaw, type StyleCard } from "./importProfile.ts";
 import { buildPersonaRequest, toPersona, validatePrefs, type PersonaRaw } from "./personaCard.ts";
 import { SCENE_PROMPT, SCENE_SIZE, type CompanionKind } from "./prompts.ts";
 import { isDeviceVoice, previewLine, renderPreview, voicesForKind, type VoiceOption } from "./voices.ts";
@@ -109,7 +109,10 @@ export async function importStyle(d: PrepDeps, userId: string, pasted: unknown):
   const json = d.spark ?? (<T>(req: Parameters<NonNullable<PrepDeps["spark"]>>[0]) => sparkJson<T>(d.metaKey, req));
   const raw = await json<ImportRaw>(buildImportRequest(redacted));
   let card = toStyleCard(raw, "import");
-  if (card.itemCount === 0) throw new PrepError(422, "import_empty", "I couldn't read this one. Paste the whole reply, or try again.");
+  // A reply in the prompt's format whose every section says "Not enough information" (a new Claude/ChatGPT user
+  // with no memory) is not unreadable: it is an empty profile. Keep it; the story says "Most of you, I'll learn as
+  // we talk" and the first calls ask (QA 11/3 P1: never "couldn't read" for it). Only text we can't place is 422.
+  if (card.itemCount === 0 && (importFormat(p.text) === "unknown" || (p.text.match(/not enough information/gi) ?? []).length < 3)) throw new PrepError(422, "import_empty", "I couldn't read this one. Paste the whole reply, or try again.");
   if (storyJob && d.personalize) {
     const grace = new Promise<"late">((r) => setTimeout(() => r("late"), STORY_GRACE_MS).unref?.());
     const s = await Promise.race([storyJob, grace]);
@@ -144,7 +147,7 @@ export async function makeScene(d: PrepDeps, image: Buffer, mime: string, kind: 
 
 // ---------- F2-L8: voices ----------
 
-export const PREVIEW_VERSION = "meta-v2"; // v2: V04 voices renamed (id 0 was Jin, now Coco)
+export const PREVIEW_VERSION = "meta-v3"; // v3 (11/3): the four V04 voices are new speakers 9, 19, 26 (+72)
 
 /**
  * V04's list: the curated voices for this look, recommended default first (no model call).

@@ -1,0 +1,6 @@
+{
+  "type": "error",
+  "code": "daily_limit",
+  "message": "Today's turns for this access code are used up. The limit resets at 00:00 UTC.",
+  "retryable": false
+}

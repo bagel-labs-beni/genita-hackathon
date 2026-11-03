@@ -22,6 +22,22 @@ enum MacSheetInk {
     static func serif(_ size: CGFloat) -> Font { .custom("KMUTTF-SungkokSemiSerif", fixedSize: size) }
 }
 
+/// (Lives here so the cue checks, which compile this file alone, build.) Dark Liquid Glass for pills over the companion's face (sharing chip, call cue, hover label). Falls back to the
+/// 84 % ink pill before macOS 26.
+struct MacDarkGlass<S: Shape>: ViewModifier {
+    var shape: S
+    @ViewBuilder func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content.glassEffect(.regular.tint(MacSheetInk.ink.opacity(0.55)), in: shape).environment(\.colorScheme, .dark)
+        } else {
+            content.background(MacSheetInk.pill, in: shape)
+        }
+    }
+}
+extension View {
+    func macDarkGlass<S: Shape>(in shape: S) -> some View { modifier(MacDarkGlass(shape: shape)) }
+}
+
 /// The call's status pill (S09), Mac copy of the iPhone's cue: "Listening", "{name} is talking"…
 /// At full sheet it carries the card's spoken line (server `card.say`), as MAC-RS-b shows.
 /// **Always one line (#211, Chelsea 11/3):** the whole line when it fits, else its first sentence
@@ -37,7 +53,7 @@ struct MacCallCue: View {
             OneLineText(text: text, font: MacSheetInk.sans(14, .medium), color: MacSheetInk.onInk, alternates: CueLine.summaries(text))
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
-        .background(MacSheetInk.pill, in: RoundedRectangle(cornerRadius: 18))
+        .macDarkGlass(in: RoundedRectangle(cornerRadius: 18))
         .accessibilityElement(children: .combine).accessibilityIdentifier("macCallCue")
     }
 }

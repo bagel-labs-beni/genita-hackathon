@@ -76,7 +76,8 @@ final class GenitaUITests: XCTestCase {
         XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 5))
         XCTAssertTrue(app.buttons["primaryCTA"].waitForExistence(timeout: 5))
         app.buttons["primaryCTA"].tap()
-        XCTAssertTrue(app.staticTexts["Your style\nis ready."].waitForExistence(timeout: 5))
+        // I03 → HISY-0 (D47 v2 replaced I04's "Your style is ready.")
+        XCTAssertTrue(app.descendants(matching: .any)["hisyOpener"].waitForExistence(timeout: 8))
         app.terminate()
         // V04 reads the server's voices; with no server in this test the curated four show greyed and the default stays picked
         // (the server states V04 / V04-P / V04-S / V04-waking are covered in OnboardingUITests against the stub)
@@ -201,9 +202,12 @@ final class GenitaUITests: XCTestCase {
         editor.tap(); editor.typeText("Communication style: warm and direct.\nInterests: design and cooking.")
         if app.keyboards.firstMatch.exists { app.buttons["Dismiss keyboard"].tap() }
         app.buttons["primaryCTA"].tap()
-        XCTAssertTrue(app.staticTexts["Your style\nis ready."].waitForExistence(timeout: 5))
-        app.buttons["primaryCTA"].tap()
-        XCTAssertTrue(app.buttons["uploadImage"].exists)
+        // I03 → HISY-0 (no server: no cards) → HISY-7 → V01
+        XCTAssertTrue(app.descendants(matching: .any)["hisyOpener"].waitForExistence(timeout: 8))
+        app.buttons["hisyShowMe"].tap()
+        XCTAssertTrue(app.buttons["hisyChoosePhoto"].waitForExistence(timeout: 5))
+        app.buttons["hisyChoosePhoto"].tap()
+        XCTAssertTrue(app.buttons["uploadImage"].waitForExistence(timeout: 5))
         app.buttons["uploadImage"].tap()
         XCTAssertTrue(app.buttons["Cancel"].waitForExistence(timeout: 5))
         app.buttons["Cancel"].tap()
@@ -258,6 +262,42 @@ final class GenitaUITests: XCTestCase {
         app.buttons["back"].tap(); app.buttons["primaryCTA"].tap()
         XCTAssertEqual(app.textViews["responseInput"].value as? String, "A local draft")
         let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "AI reply input"; shot.lifetime = .keepAlways; add(shot)
+    }
+
+    /// A02-J (D41): Judge access link → the stock iOS alert with a code field; an unreachable server shows a
+    /// second stock alert, "Try Again" brings the code alert back with the code kept, Cancel returns to A02.
+    func testJudgeAccessSheet() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launchEnvironment = ["GENITA_REVIEW_STAGE": "signIn", "GENITA_REVIEW_VARIANT": "", "GENITA_REVIEW_STILL": "1"]
+        app.launch()
+        let link = app.buttons["judgeAccessLink"]
+        XCTAssertTrue(link.waitForExistence(timeout: 5))
+        let a = XCTAttachment(screenshot: app.screenshot()); a.name = "auth-A02-judge-link"; a.lifetime = .keepAlways; add(a)
+        link.tap()
+        let alert = app.alerts["Judge access"]
+        XCTAssertTrue(alert.waitForExistence(timeout: 5), "A02-J is a system alert")
+        XCTAssertTrue(alert.staticTexts["Enter the code from the submission form. No Apple ID needed."].exists)
+        let field = alert.textFields.element(boundBy: 0)
+        XCTAssertTrue(field.exists)
+        field.tap(); field.typeText("not-a-real-code")
+        let a2 = XCTAttachment(screenshot: app.screenshot()); a2.name = "auth-A02-J-alert"; a2.lifetime = .keepAlways; add(a2)
+        // DEBUG builds: second field points the app at a server; port 1 = nothing listening → offline
+        let server = alert.textFields.element(boundBy: 1)
+        XCTAssertTrue(server.exists, "debug server field")
+        server.tap(); server.typeText("http://127.0.0.1:1")
+        alert.buttons["Continue"].tap()
+        // offline ("Can’t Reach the Server"), or "Judge Access Unavailable" if the simulator blocks plain http
+        let tryAgain = app.alerts.buttons["Try Again"]
+        XCTAssertTrue(tryAgain.waitForExistence(timeout: 10), "failure is a second system alert")
+        XCTAssertFalse(app.alerts["Judge access"].exists)
+        let b = XCTAttachment(screenshot: app.screenshot()); b.name = "auth-A02-J-error"; b.lifetime = .keepAlways; add(b)
+        tryAgain.tap()
+        XCTAssertTrue(alert.waitForExistence(timeout: 5), "Try Again reopens the code alert")
+        XCTAssertEqual(alert.textFields.element(boundBy: 0).value as? String, "not-a-real-code", "the code is kept")
+        alert.buttons["Cancel"].tap()
+        XCTAssertTrue(link.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.alerts.firstMatch.exists)
     }
 
     /// #217 · A02 Terms / Privacy Policy open the live pages in an in-app Safari sheet (and close again).

@@ -56,15 +56,23 @@ function noNetwork(t: { after: (fn: () => void) => void }) {
   return seen;
 }
 
-test("progress (Meta-only): scene + 18 face images; legacy clips and lips are skipped", () => {
+
+/** These tests stop a face step midway: with fewer lanes than keys, no new edit may start after the stop. */
+function sixLanes(t: { after: (fn: () => void) => void }) {
+  const prev = process.env.GENITA_FACE_CONCURRENCY;
+  process.env.GENITA_FACE_CONCURRENCY = "6";
+  t.after(() => { if (prev === undefined) delete process.env.GENITA_FACE_CONCURRENCY; else process.env.GENITA_FACE_CONCURRENCY = prev; });
+}
+
+test("progress (Meta-only): scene + 20 face images; legacy clips and lips are skipped", () => {
   const p = newPrepState();
   assert.equal(p.steps.videos.neutral.status, "skipped");
   assert.equal(p.steps.lips.status, "skipped");
   assert.equal(p.steps.face?.status, "pending");
-  assert.deepEqual(prepProgress(p), { done: 0, total: 19 });
+  assert.deepEqual(prepProgress(p), { done: 0, total: 21 });
   p.steps.scene = { status: "done", attempts: 1, url: "/v1/companion/face/neutral" };
   p.steps.face = { status: "running", attempts: 1, face: { size: [1, 2], ref: { face: [0, 0, 1, 1], mouth: [0, 0, 1, 1] }, items: { blink: { status: "rejected", reason: "face_moved", retried: true }, A: { status: "done", box: { face: [0, 0, 1, 1], mouth: [0, 0, 1, 1] }, retried: false, ms: 1 } }, ms: { total: 0, edits: 0, sam: 0 } } };
-  assert.deepEqual(prepProgress(p), { done: 3, total: 19 });
+  assert.deepEqual(prepProgress(p), { done: 3, total: 21 });
 });
 
 test("runner: scene → face set using the supplied Meta media implementation", async (t) => {
@@ -89,13 +97,13 @@ test("runner: scene → face set using the supplied Meta media implementation", 
   assert.equal(c.prep.steps.scene.url, "/v1/companion/face/neutral");
   assert.equal(c.prep.steps.scene.source, "muse-image");
   assert.equal(calls.edits.filter((e) => e.key === "scene").length, 1);
-  assert.equal(calls.edits.length, 19);
-  assert.ok(progress.includes("19/19"));
+  assert.equal(calls.edits.length, 21);
+  assert.ok(progress.includes("21/21"));
   assert.equal(tagOf((await store.getAsset("u1", "c1", "neutral"))!), "scene");
   assert.equal(tagOf((await store.getAsset("u1", "c1", "A"))!), "A#1");
 
   const v = prepView(c);
-  assert.deepEqual(v.progress, { done: 19, total: 19 });
+  assert.deepEqual(v.progress, { done: 21, total: 21 });
   assert.deepEqual(v.emotionVideos, {});
   assert.equal(v.sceneUrl, "/v1/companion/face/neutral");
   assert.ok(v.face);
@@ -128,9 +136,9 @@ test("runner resume: an interrupted face step redoes only the missing images", a
   await runner.run("u1");
   const c = (await store.getCompanion("u1"))!;
   assert.equal(c.prep.status, "ready");
-  assert.equal(second.calls.edits.length, 18 - kept.length, "only the missing images");
+  assert.equal(second.calls.edits.length, 20 - kept.length, "only the missing images");
   assert.ok(!second.calls.edits.some((e) => e.key === "scene" || (kept as readonly string[]).includes(e.key)));
-  assert.equal(Object.keys(c.prep.steps.face!.face!.items).length, 18);
+  assert.equal(Object.keys(c.prep.steps.face!.face!.items).length, 20);
 });
 
 test("runner: a face step that fails keeps its partial set, and POST retry resumes from it", async (t) => {
@@ -156,7 +164,7 @@ test("runner: a face step that fails keeps its partial set, and POST retry resum
   await r2.run("u1");
   c = (await store.getCompanion("u1"))!;
   assert.equal(c.prep.status, "ready");
-  assert.equal(up.calls.edits.length, 18);
+  assert.equal(up.calls.edits.length, 20);
 });
 
 test("routes (Meta-only): device voices, no previews, face images served per user, session lip none", async (t) => {
@@ -212,6 +220,8 @@ test("routes (Meta-only): device voices, no previews, face images served per use
   assert.equal((await call("GET", "/v1/companion/face/neutral")).status, 200);
   assert.equal((await call("GET", "/v1/companion/face/O", undefined, "u2")).status, 404, "another user has no companion");
   assert.equal((await call("GET", "/v1/companion/face/nope")).status, 404);
+  assert.equal(prep.face.images.person, undefined, "fake SAM sends no masks: no subject matte listed");
+  assert.equal((await call("GET", "/v1/companion/face/person")).status, 404, "an unlisted matte is never served");
   assert.equal((await call("GET", "/v1/companion/face/..%2Fcompanions%2Fu1")).status, 404);
 
   const comp = (await (await call("POST", "/v1/companion/prefs", { depth: "quick", answers: { help: "Be there", relationship: "Close companion", presence: ["Calm"] } })).json()) as Record<string, any>;
@@ -239,9 +249,9 @@ test("resume discards persisted legacy video jobs and makes the Meta face set", 
   await runner.run("u1");
   const c = (await store.getCompanion("u1"))!;
   assert.equal(c.prep.status, "ready");
-  assert.equal(calls.edits.length, 19);
+  assert.equal(calls.edits.length, 21);
   for (const step of [...Object.values(c.prep.steps.videos), c.prep.steps.lips]) assert.deepEqual(step, { status: "skipped", attempts: 0 });
-  assert.deepEqual(prepView(c).progress, { done: 19, total: 19 });
+  assert.deepEqual(prepView(c).progress, { done: 21, total: 21 });
   assert.deepEqual(prepView(c).emotionVideos, {});
 });
 
@@ -262,6 +272,7 @@ test("createPrep: config selects Meta voice or device descriptors", async (t) =>
 
 test("runner (codex P1): companion deleted mid face step → stops, and the face images it wrote are removed", async (t) => {
   noNetwork(t);
+  sixLanes(t);
   const dir = mkdtempSync(join(tmpdir(), "prep-meta-del-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const store = new FileStore(dir);
@@ -288,6 +299,7 @@ test("runner (codex P1): companion deleted mid face step → stops, and the face
 
 test("runner.cancel stops a face step without marking it failed", async (t) => {
   noNetwork(t);
+  sixLanes(t);
   const dir = mkdtempSync(join(tmpdir(), "prep-meta-cancel-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const store = new FileStore(dir);

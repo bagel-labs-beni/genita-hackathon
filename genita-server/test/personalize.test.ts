@@ -10,7 +10,7 @@ import { STORY_IDS, STORY_SCHEMA, buildStoryRequest, cardTexts, storyTextProblem
 import { mergeUpdates } from "../src/personalize/merge.ts";
 import { ASK_CALLS, askLine, beginCall, replyAsks } from "../src/personalize/unknowns.ts";
 import { mightBeCorrection, toAnswer, toCorrectionUpdates, buildCorrectionRequest } from "../src/personalize/corrections.ts";
-import { toCallUpdates } from "../src/personalize/extract.ts";
+import { buildCallExtractRequest, toCallUpdates } from "../src/personalize/extract.ts";
 import { reasonChips, shortTaste, tasteLines } from "../src/personalize/reasons.ts";
 import type { FindCard } from "../src/protocol.ts";
 
@@ -74,7 +74,7 @@ test("toStory: HISY v2 cards — fixed eyebrows/headlines, evidence clamped per 
   const raw = {
     cards: [
       sc("think", { headline: "You decide by comparing.", items: [{ text: "You line up two options.", evidence: "explicit" }] }),
-      sc("talk", { headline: "Warm, direct, and short.", items: [{ text: "You like a friendly tone, but you want the answer up front.", evidence: "explicit" }, { text: "You switch to Korean when relaxed.", evidence: "memory" }], promise: "I'll lead with the answer." }),
+      sc("talk", { headline: "Warm, direct, and short.", items: [{ text: "You like a friendly tone, but you want the answer up front.", evidence: "explicit" }, { text: "You loosen up and joke more when relaxed.", evidence: "memory" }], promise: "I'll lead with the answer." }),
       sc("taste", { headline: "Clean lines, home cooking.", tags: [tag("style", "Clean, minimal"), tag("food", "Korean comfort food"), tag("food", "Cilantro", true), tag("watch", "a".repeat(40))] }),
       sc("help", { headline: "ignored", help: [{ label: "Find clothes that fit your style", sub: "Two picks, with links", mode: "just_do_it" }, { label: "Book a table", sub: "", mode: "ask_first" }] }),
       sc("lines", { items: [{ text: "No advice you didn't ask for.", evidence: "explicit" }] }),
@@ -427,6 +427,17 @@ test("01: the recipe prompt asks for the 'left out' line only when there's a pro
   const { recipePrompt } = await import("../src/finds/pipeline.ts");
   assert.match(recipePrompt("What can I make?", "- Taste: Dislikes seafood."), /left the shrimp out/);
   assert.doesNotMatch(recipePrompt("What can I make?"), /left the shrimp out/);
+  // sweep 11/3 [P2]: the recipe's own "left the X out" line rides on the spoken fridge line (it was dropped 3/3)
+  const { leftOutLine } = await import("../src/finds/pipeline.ts");
+  assert.equal(leftOutLine("Tacos with salsa — and I left the cilantro out."), " And I left the cilantro out.");
+  assert.equal(leftOutLine("Found pico de gallo, I've left out the cilantro."), " And I left the cilantro out.");
+  assert.equal(leftOutLine("Here's a great pho recipe."), "");
+  assert.equal(leftOutLine("I’ve left the cilantro out."), " And I left the cilantro out.", "curly apostrophe (Codex P3)");
+  assert.equal(leftOutLine("I left out cilantro for you."), "", "not 'the cilantro for you' (Codex P2)");
+  assert.equal(leftOutLine("No chopping because you dislike prep."), "", "not a left-out ingredient (Codex P2)");
+  // sweep 11/3 [P2]: a named dish is the dish ("pho" came back as the fridge's kimchi soup)
+  assert.match(recipePrompt("Can you help me make pho?"), /If they name a dish they want to make.*that is the dish/);
+  assert.match(recipePrompt("Can you help me make pho?"), /Pick one simple dish .* unless they named one/);
 });
 
 test("K5: health, religion, politics, sexuality and finances never stored or shown; topic boundaries and a shopping budget are fine", async () => {
@@ -495,4 +506,36 @@ test("Codex round 6: a boundary naming a condition is dropped; a sensitive Budge
   assert.equal(budgetChip("Budget: usually under $100 for clothes.", card(["$89", "Price unavailable"])), null);
   assert.equal(budgetChip("Budget: under ₩100000 for clothes.", card(["$900"])), null);
   assert.equal(budgetChip("Budget: under ₩100000 for clothes.", card(["₩89,000"])), "Your budget: under ₩100000");
+});
+
+test("adaptive style (memory lane 11/3): how-to-talk-to-me phrasings the first prefilter missed reach the correction check", () => {
+  for (const s of ["Can you be more direct with me?", "Just get to the point please.", "Less detail, more answers.", "Skip the small talk today.", "Give it to me in one sentence.", "No more questions, just tell me.", "That's way too long for me.", "Less detail", "More questions", "TL;DR please", "One sentence please", "Just the gist."]) assert.ok(mightBeCorrection(s), s);
+  for (const s of ["Tell me more about Seoul.", "Can you be here at five?", "What's the point of this?", "One more thing about dinner.", "Please just give me a pasta recipe.", "Just give me the recipe.", "Only give me one minute."]) assert.ok(!mightBeCorrection(s), s);
+});
+
+test("adaptive style: the post-call growth prompt asks for lit-up topics and repeated reactions as observed lines (times ≥ 2)", () => {
+  const sk = skipStyleCard({ interests: ["Hiking"], avoid: [] });
+  assert.ok(sk.ok);
+  const req = buildCallExtractRequest((sk as { card: StyleCard }).card, [{ role: "user", text: "Tell me about trail running." }], null);
+  assert.match(req.instructions!, /lit up on/);
+  assert.match(req.instructions!, /label observed/);
+  assert.deepEqual(toCallUpdates({ updates: [{ field: "interests", text: "Trail running.", replaces: [], label: "observed", times: 1 }], answered: { item: "", field: "", text: "" } }, null), [], "once is not a pattern");
+  assert.equal(toCallUpdates({ updates: [{ field: "interests", text: "Trail running.", replaces: [], label: "observed", times: 2 }], answered: { item: "", field: "", text: "" } }, null).length, 1);
+});
+
+test("the first-call nod is a taste guess, never 'I hear' or a look", () => {
+  const card = { ...rawCard({ likes: [f("Style: Clean, minimal clothes in black and grey.")] }), growth: { calls: 1, asked: [] } };
+  const nod = firstCallNod(card)!;
+  assert.match(nod, /guess or tease about their taste/);
+  assert.match(nod, /never say "you look", "looks like"/);
+  assert.doesNotMatch(nod, /like "I hear you're into/);
+});
+
+test("QA K-test P3: a shopping price range always lands in likes as one Budget line, never in interests", async () => {
+  const { asBudget } = await import("../src/personalize/merge.ts");
+  assert.deepEqual(asBudget({ field: "interests", text: "Prefers clothes usually under $100.", replaces: [], label: "explicit" }), { field: "likes", text: "Budget: usually under $100.", replaces: [], label: "explicit" });
+  assert.equal(asBudget({ field: "interests", text: "Into film photography.", replaces: [], label: "explicit" }).field, "interests");
+  const r = mergeUpdates(rawCard(), [{ field: "interests", text: "Prefers clothes usually under $100.", replaces: [], label: "explicit" }], "2026-11-03T12:00:00Z");
+  assert.equal(r.card.sections.likes[0].text, "Budget: usually under $100.");
+  assert.ok(!r.card.sections.interests.some((x) => /\$100/.test(x.text)));
 });

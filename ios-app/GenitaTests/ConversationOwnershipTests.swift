@@ -77,6 +77,28 @@ final class ConversationOwnershipTests: XCTestCase {
         XCTAssertEqual(reopened.state.owner, .mac); XCTAssertEqual(reopened.state.epoch, 7)
         XCTAssertFalse(reopened.isOwner, "Opening the app does not move the conversation")
     }
+    func testAccountSwitchDoesNotPublishPreviousAccountsHighEpoch() {
+        let store = UserDefaults(suiteName: UUID().uuidString)!
+        let (mac, wire) = device(.mac, store)
+        mac.receive(OwnershipClaim(owner: .mac, epoch: 900)) // legacy, unscoped state
+        mac.useAccount("account-a")
+        XCTAssertEqual(mac.state.epoch, 0, "Legacy ownership cannot be attributed to a signed-in account")
+        mac.receive(OwnershipClaim(owner: .mac, epoch: 700))
+        mac.useAccount(nil)
+        mac.useAccount("account-b")
+        mac.publishCurrent()
+        XCTAssertEqual(wire.sent.last, OwnershipClaim(owner: .phone, epoch: 0))
+        mac.receive(OwnershipClaim(owner: .phone, epoch: 3))
+        mac.useAccount("account-a")
+        XCTAssertEqual(mac.state.epoch, 700)
+        XCTAssertTrue(mac.isOwner)
+        mac.useAccount("account-b")
+        XCTAssertEqual(mac.state.epoch, 3)
+        XCTAssertFalse(mac.isOwner)
+        let (reopened, _) = device(.mac, store)
+        reopened.useAccount("account-b")
+        XCTAssertEqual(reopened.state, mac.state)
+    }
     func testClaimMessageRoundTrip() {
         let claim = OwnershipClaim(owner: .mac, epoch: 12)
         XCTAssertEqual(OwnershipClaim(claim.message), claim)

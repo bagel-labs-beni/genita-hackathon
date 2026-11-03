@@ -112,22 +112,45 @@ test("recipe summary lines", () => {
     { id: "3", name: "cooked rice", tier: "buy" as const, from: "recipe" as const },
     { id: "4", name: "sesame oil", tier: "buy" as const, from: "recipe" as const, optional: true },
   ];
-  assert.deepEqual(recipeSummary(items, 15), { subtitle: "About 15 min · You have 2, need cooked rice", status: "Need cooked rice" });
-  assert.deepEqual(recipeSummary(items.slice(0, 2), null), { subtitle: "You have 2, nothing to buy", status: "You have it all" });
+  // a maybe is not had (sweep 11/3 P2): "Have 1 · 1 to check"
+  assert.deepEqual(recipeSummary(items, 15), { subtitle: "15 min · 1 to check · Need cooked rice", status: "Need cooked rice" }, "over 38 chars: the count goes first (#215)");
+  assert.deepEqual(recipeSummary(items.slice(0, 2), null), { subtitle: "Have 1 · 1 to check", status: "1 to check" });
+  assert.deepEqual(recipeSummary([items[0]], null), { subtitle: "Have 1 · Nothing to buy", status: "You have it all" });
+  assert.deepEqual(recipeSummary([items[1], { ...items[1], id: "5", name: "egg" }], 10), { subtitle: "10 min · 2 to check", status: "2 to check" });
+  const long = [items[0], items[1], { id: "6", name: "Shaoxing cooking wine", tier: "buy" as const, from: "recipe" as const }, { id: "7", name: "dried shiitake mushrooms", tier: "buy" as const, from: "recipe" as const }];
+  assert.ok(recipeSummary(long, 15).subtitle.length <= 38, recipeSummary(long, 15).subtitle);
+  // still checking: no count at all (it read "You have 0, nothing to buy")
+  assert.deepEqual(recipeSummary([{ ...items[0], tier: "checking" as const }, items[1]], 15), { subtitle: "15 min", status: "" });
+});
+
+test("#215: the recipe line fits beside the picture and the shopping part is never cut", () => {
+  const it = (name: string, tier: "have" | "buy") => ({ id: name, name, tier, from: "recipe" as const });
+  const six = ["eggs", "rice", "garlic", "onion", "kimchi", "spam"].map((n) => it(n, "have"));
+  // the QA case: "About 15 min · You have 6, need soy sa…" at 390 pt
+  assert.equal(recipeSummary([...six, it("soy sauce", "buy")], 15).subtitle, "15 min · Have 6 · Need soy sauce");
+  // two long names: the count goes first, the names stay
+  assert.equal(recipeSummary([...six, it("gochujang", "buy"), it("scallions", "buy")], 15).subtitle, "15 min · Need gochujang and scallions");
+  // too long either way: how many to buy
+  assert.equal(recipeSummary([...six, it("Shaoxing cooking wine", "buy"), it("dried shiitake mushrooms", "buy")], 25).subtitle, "25 min · Have 6 · Need 2 things");
+  assert.equal(recipeSummary([...six, it("a", "buy"), it("b", "buy"), it("c", "buy")], 15).subtitle, "15 min · Have 6 · Need 3 things");
+  for (const n of [["soy sauce"], ["gochujang", "scallions"], ["Shaoxing cooking wine", "dried shiitake mushrooms"], ["x", "y", "z"]]) {
+    const line = recipeSummary([...six, ...n.map((x) => it(x, "buy"))], 120).subtitle;
+    assert.ok(line.length <= 38, `${line} (${line.length})`);
+  }
 });
 
 test("confirm 맞아?: yes → have; no → buy (recipe) or gone (camera only)", () => {
   const card = { items: [
     { id: "a", name: "kimchi", tier: "maybe", from: "both", hint: box },
     { id: "b", name: "jar", tier: "maybe", from: "camera" },
-  ], subtitle: "About 15 min · You have 2, nothing to buy" } as unknown as FindCard;
+  ], subtitle: "15 min · Have 2 · Nothing to buy" } as unknown as FindCard;
   confirmItem(card, "a", true);
   assert.equal(card.items[0].tier, "have");
   assert.equal(card.items[0].confirmed, "yes");
   assert.equal(card.items[0].hint, undefined);
   confirmItem(card, "b", false);
   assert.equal(card.items.length, 1);
-  assert.match(card.subtitle, /^About 15 min · You have 1/);
+  assert.equal(card.subtitle, "15 min · Have 1 · Nothing to buy");
   const c2 = { items: [{ id: "c", name: "rice", tier: "maybe", from: "recipe" }], subtitle: "" } as unknown as FindCard;
   confirmItem(c2, "c", false);
   assert.equal(c2.items[0].tier, "buy");
@@ -161,6 +184,12 @@ test("intent: link wins; camera + cooking → recipe; camera + clothes → outfi
   assert.deepEqual(classifyTurn("냉장고에 있는 걸로 뭐 해 먹지?", true), { kind: "recipe" });
   assert.deepEqual(classifyTurn("Which one should I wear tonight?", true), { kind: "outfit" });
   assert.deepEqual(classifyTurn("뭐 입을까?", true), { kind: "outfit" });
+  // free-play phrasings (functional sweep 11/3): "looks better on me" with the camera on is an outfit ask
+  assert.deepEqual(classifyTurn("Which of these looks better on me today?", true), { kind: "outfit" });
+  assert.deepEqual(classifyTurn("Does this look good on me?", true), { kind: "outfit" });
+  assert.deepEqual(classifyTurn("Which suits me better, left or right?", true), { kind: "outfit" });
+  assert.equal(classifyTurn("Which of these looks better on me today?", false), null);
+  assert.equal(classifyTurn("Which of these avocados looks ripe?", true), null);
   assert.deepEqual(classifyTurn("look at https://x.com/a", false), { kind: "link", url: "https://x.com/a" });
   assert.equal(classifyTurn("What can I make for dinner?", false), null);
   assert.equal(classifyTurn("Do you like my cat?", true), null);
@@ -272,7 +301,9 @@ test("recipe pipeline: IC-1 list first, card, 3 tiers, onion merged, staples ski
   assert.ok(!v.calls.some((c) => c.includes("salt")));
   assert.equal(last.items.find((i) => i.name === "kimchi")!.hint !== undefined, true);
   assert.equal(last.items.find((i) => i.name === "sesame oil")!.optional, true);
-  assert.equal(last.status, "You have it all");
+  // two maybes (kimchi, onion) are not had yet (sweep 11/3 P2)
+  assert.equal(last.status, "2 to check");
+  assert.equal(last.subtitle?.endsWith("Have 2 · 2 to check"), true, last.subtitle);
   const card = r.card!;
   assert.equal(card.title, "Kimchi fried rice");
   // demo S3 (Chelsea OK 11/3): ingredients may be on a counter, not in a fridge

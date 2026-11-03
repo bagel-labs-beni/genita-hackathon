@@ -33,7 +33,7 @@ import CoreText
             case "mac-rs-half": MacResultFixture.load(.results, into: call.finds, state: .half); override = ""
             case "mac-rs-failed": MacResultFixture.load(.failed, into: call.finds, state: .searching); override = ""
             case "mac-link": MacResultFixture.load(.results, into: call.finds, state: .half); override = "link"
-            case "a02", "a02-j", "a02-m", "a02-m2", "a02-m2-error", "cs01", "mac-2", "mac-3", "mac-3-paired", "mac-4", "mac-4-unpaired", "mac-offline", "launch", "settings": break
+            case "a02", "a02-j", "a02-m", "a02-m2", "a02-m2-error", "cs01", "mac-2", "mac-3", "mac-3-paired", "mac-4", "mac-4-unpaired", "mac-offline", "launch", "settings", "settings-call": break
             case "c01": override = ""
             case "mc-m": MacHandoff.shared.reviewCanMove = true; override = "menu"
             default: setenv("GENITA_MAC_REVIEW", state, 1)
@@ -56,6 +56,8 @@ import CoreText
             case "mac-offline": page = AnyView(MacHomeView(kind: .offline("Check your connection and try again."), name: "Mina", handoff: MacHandoff.shared))
             case "launch": page = AnyView(MacLaunchBlank())
             case "settings": MacCall.shared.reviewAccountLabel("mina@example.com"); page = AnyView(MacSettingsSheet())
+            // Settings from the call window (phone-sized, ~340 pt): the compact width (Mac QA 11/3)
+            case "settings-call": MacCall.shared.reviewAccountLabel("mina@example.com"); page = AnyView(MacSettingsSheet(compact: true))
             default: page = AnyView(MacConversationView(reviewOverride: override).frame(width: 390, height: 844))
             }
             let view = page.environment(\.colorScheme, .light)

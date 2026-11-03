@@ -43,6 +43,15 @@ public final class GenitaAuthClient: @unchecked Sendable {
         return r
     }
 
+    /// A02-J Judge access (D41): a code from the submission form / README → a session for that code's demo account.
+    /// Wrong code = `.unauthorized` (401, nothing stored), too many tries = `.server(status: 429, …)`.
+    @discardableResult
+    public func signInWithJudgeCode(_ code: String, device: GenitaDevice = .iphone) async throws -> GenitaSignInResponse {
+        let r: GenitaSignInResponse = try await send("POST", "/auth/judge", json: ["code": code.trimmingCharacters(in: .whitespacesAndNewlines), "device": device.rawValue], authorized: false)
+        store.save(r.token)
+        return r
+    }
+
     /// Email sign-in, step 1: the server mails a 6-digit code (same answer whether or not an account exists).
     /// Too soon / too many = `.server(status: 429, code: "rate_limited")`; mail off = `.server(status: 503, …)`.
     @discardableResult
@@ -92,6 +101,13 @@ public final class GenitaAuthClient: @unchecked Sendable {
 
     @discardableResult public func consent(version: String = "v1") async throws -> GenitaMe {
         try await send("POST", "/me/consent", json: ["kind": "ai_data", "version": version])
+    }
+
+    /// RP-1 (D37): report a reply, a card or a picture. The server keeps it with the account; the app says "Thanks, noted".
+    public func report(_ reason: GenitaReportReason, note: String, surface: String, text: String? = nil) async throws {
+        var json: [String: Any] = ["reason": reason.rawValue, "note": String(note.prefix(280)), "surface": surface]
+        if let text, !text.isEmpty { json["text"] = String(text.prefix(600)) }
+        let _: EmptyReply = try await send("POST", "/me/report", json: json)
     }
 
     @discardableResult public func setName(_ name: String) async throws -> GenitaMe {
@@ -196,5 +212,21 @@ public enum AuthCallback: Equatable, Sendable {
 extension Data {
     var genitaBase64URL: String {
         base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+    }
+}
+
+/// RP-1 reasons (PRD D37), in the sheet's order.
+public enum GenitaReportReason: String, CaseIterable, Sendable {
+    case inappropriateImage = "inappropriate_image"
+    case harmfulAnswer = "harmful_answer"
+    case someoneElsesPhoto = "someone_elses_photo"
+    case other
+    public var title: String {
+        switch self {
+        case .inappropriateImage: "Inappropriate image"
+        case .harmfulAnswer: "Harmful or wrong answer"
+        case .someoneElsesPhoto: "Someone else's photo"
+        case .other: "Other"
+        }
     }
 }

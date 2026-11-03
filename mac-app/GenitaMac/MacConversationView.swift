@@ -77,16 +77,16 @@ struct MacConversationView: View {
                 }
                 if waitingCopy == nil && handoff.motion == nil && !sheetFull && linkOpened == nil {
                 Button { sharing.requestSharing() } label: {
-                    if displaySharing || permissionVisible {
-                        Circle().fill(Color(red: 231.0 / 255, green: 32.0 / 255, blue: 12.0 / 255)).frame(width: 47, height: 47)
-                            .overlay(resourceImage("glass-share-icon").resizable().frame(width: 25.4, height: 18.4))
-                    } else { MacGlassControl(icon: "glass-share-icon") }
+                    MacGlassControl(icon: "glass-share-icon", tint: displaySharing || permissionVisible ? Color(red: 231.0 / 255, green: 32.0 / 255, blue: 12.0 / 255) : nil)
                 }.buttonStyle(.plain).position(x: 342.5, y: topRowY).onHover { hoverShare = $0 }
                     .accessibilityLabel(displaySharing ? "Stop screen sharing" : "Share screen").accessibilityIdentifier("macShareScreen")
                 }
                 if waitingCopy == nil && !permissionVisible && (hoverShare || reviewState == "hint") {
-                    Text("Share screen").font(.custom("PretendardVariable-SemiBold", size: 12)).foregroundStyle(.white)
-                        .frame(width: 76, height: 25).background(ink, in: RoundedRectangle(cornerRadius: 4)).position(x: 342.5, y: MacDesignV2.enabled ? 92 : 43.5)
+                    // the hover label: a padded capsule (it was a fixed 76 pt box, the text touched both sides)
+                    Text(displaySharing ? "Stop sharing" : "Share screen").font(.custom("PretendardVariable-SemiBold", size: 12)).foregroundStyle(.white).lineLimit(1)
+                        .padding(.horizontal, 10).frame(height: 24).fixedSize().macDarkGlass(in: Capsule())
+                        // right edge on the share button's right edge (366), not hanging past it
+                        .frame(width: 160, alignment: .trailing).position(x: 366 - 80, y: MacDesignV2.enabled ? 92 : 43.5).allowsHitTesting(false)
                 }
                 if let waitingCopy {
                     VStack(spacing: 0) { Spacer(minLength: 0); HandoffWaitingSheet(copy: waitingCopy) { handoff.continueHere() } }.frame(width: 390, height: 844)
@@ -151,15 +151,21 @@ struct MacConversationView: View {
         .onChange(of: reduceMotion) { _, on in call.setFaceReduceMotion(on) }
         // F5: the live call's session id + token reach the screen share (release builds had no watchConfig at all)
         .onChange(of: call.sessionId) { _, id in
-            if let id { sharing.watchConfig = .init(server: call.currentEndpoint.url, token: call.currentEndpoint.token, sessionId: id) }
+            sharing.watchConfig = id.map { .init(server: call.currentEndpoint.url, token: call.currentEndpoint.token, sessionId: $0) }
         }
+        .onChange(of: call.link) { _, link in
+            if link == .idle { sharing.stop(); sharing.watchConfig = nil }
+            else if link != .live { sharing.watchConfig = nil }
+            else if let id = call.sessionId { sharing.watchConfig = .init(server: call.currentEndpoint.url, token: call.currentEndpoint.token, sessionId: id) }
+        }
+        .onChange(of: macCall.isSignedIn) { _, signedIn in if !signedIn { sharing.stop(); sharing.watchConfig = nil } }
         .onChange(of: call.micOn) { _, on in if handoff.ownership.isOwner { MacCall.micRemembered = on } }
-        .sheet(isPresented: $settingsOpen) { MacSettingsSheet() }
+        .sheet(isPresented: $settingsOpen) { MacSettingsSheet(compact: true) }
         .alert("Couldn’t start interpreting", isPresented: Binding(get: { if case .failed = interpret.stage { return true } else { return false } }, set: { if !$0 { interpret.stage = .idle } })) {
             Button("OK") { interpret.stage = .idle }
         } message: { if case let .failed(message) = interpret.stage { Text(message) } }
         .onDisappear { if interpret.isLive { interpret.stop() } }
-        .alert("Screen sharing could not start", isPresented: Binding(get: { sharing.error != nil }, set: { if !$0 { sharing.error = nil } })) { Button("OK") { sharing.error = nil } } message: { Text(sharing.error ?? "") }
+        .alert(sharing.errorTitle, isPresented: Binding(get: { sharing.error != nil }, set: { if !$0 { sharing.error = nil } })) { Button("OK") { sharing.error = nil } } message: { Text(sharing.error ?? "") }
     }
     /// INT-M0 · pick the call app, then Start interpreting.
     private var interpretSheet: some View {
@@ -190,6 +196,7 @@ struct MacConversationView: View {
     private var cueText: String? {
         // MC-M (90:2): the face beside the open menu carries nothing
         if linkOpened != nil || menuOpen { return nil }
+        if sharing.isSharing, let message = sharing.connectionMessage { return message }
         // MS-2 "Reacting" and MS-3 black-screen card own that spot while a share is live
         if sharing.isSharing && (sharing.reacting || sharing.blank) { return nil }
         if ["black", "reacting"].contains(reviewState) { return nil }
@@ -248,11 +255,17 @@ struct MacConversationView: View {
     private func menuLine(_ title: String, icon: AnyView, dim: Bool = false, trailing: String? = nil, height: CGFloat = 48, top: CGFloat = 0, id: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 12) {
-                icon.foregroundStyle(ink).frame(width: 20, height: 20)
-                Text(title).font(MacSheetInk.sans(17)).foregroundStyle(ink)
+                HStack(spacing: 12) {
+                    icon.foregroundStyle(ink).frame(width: 20, height: 20)
+                    Text(title).font(MacSheetInk.sans(17)).foregroundStyle(ink)
+                }.opacity(dim ? 0.4 : 1)
                 Spacer(minLength: 0)
-                if let trailing { Text(trailing).font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.mute) }
-            }.padding(.leading, 32).padding(.trailing, 24).padding(.top, top).frame(width: 299, height: height).opacity(dim ? 0.4 : 1).contentShape(Rectangle())
+                // "Soon" / the Finds count as a padded capsule badge (was bare 14 pt text, dimmed to 0.4 with the row)
+                if let trailing {
+                    Text(trailing).font(MacSheetInk.sans(12, .medium)).foregroundStyle(MacSheetInk.mute).monospacedDigit()
+                        .padding(.horizontal, 8).frame(minWidth: 22, minHeight: 22).background(MacSheetInk.chip, in: Capsule())
+                }
+            }.padding(.leading, 32).padding(.trailing, 24).padding(.top, top).frame(width: 299, height: height).contentShape(Rectangle())
         }.buttonStyle(.plain).accessibilityIdentifier(id)
     }
     private var permissionPanel: some View {
@@ -261,7 +274,7 @@ struct MacConversationView: View {
             Capsule().fill(Color(white: 219.0 / 255)).frame(width: 47, height: 5).position(x: 195.5, y: 14.5)
             Text("Allow screen sharing.").font(.custom("KMUTTF-SungkokSemiSerif", size: 28)).foregroundStyle(ink).position(x: 179, y: 69)
             Text("Allow Genita to record your screen in\nSystem Settings, then try sharing again.\nYou can keep talking without sharing.").font(font(16)).foregroundStyle(ink).fixedSize(horizontal: true, vertical: true).frame(width: 320, alignment: .leading).position(x: 201, y: 131)
-            Button { sharing.openSettings() } label: { Text("Open Settings").font(font(16, medium: true)).foregroundStyle(Color(white: 253.0 / 255)).frame(width: 313, height: 50).background(ink, in: RoundedRectangle(cornerRadius: 6)) }.buttonStyle(.plain).position(x: 194.5, y: 251)
+            MacV2Button(label: "Open Settings", id: "macSharePermissionOpen") { sharing.openSettings() }.frame(width: 313).position(x: 194.5, y: 251)
             Button { sharing.permissionRequired = false } label: { Text("Not now").font(font(15, medium: true)).foregroundStyle(ink).frame(width: 313, height: 36).contentShape(Rectangle()) }.buttonStyle(.plain).position(x: 194.5, y: 307)
         }.frame(width: 390, height: 366, alignment: .topLeading).position(x: 195, y: 661).accessibilityIdentifier("macSharePermission")
     }

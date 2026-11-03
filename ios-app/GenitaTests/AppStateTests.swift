@@ -71,6 +71,19 @@ import UIKit
         XCTAssertFalse(model.setup.hasOnboarded)
         XCTAssertEqual(model.stage, .consent)
     }
+    func testVerifiedIdentityAndLogoutNotifyHandoffEvenWhenSavedAccountIsUnchanged() {
+        var accounts: [String?] = []
+        let model = AppState(storage: store, onHandoffAccountChange: { accounts.append($0) })
+        model.routeAfterSignIn = {}
+        model.setup.accountId = "a" // A saved profile alone must not start a connection.
+        XCTAssertTrue(accounts.isEmpty)
+        model.adopt(accountId: "a") // /me verifies the same saved account on launch.
+        model.signedOut()
+        model.signedIn(userId: "b", consented: false)
+        model.signedOut()
+        model.signedIn(userId: "a", consented: true)
+        XCTAssertEqual(accounts, ["a", nil, "b", nil, "a"])
+    }
     /// Demo (two accounts on one iPhone): signing in as an account that already has a companion must ask the
     /// server where to go (/me → restore the companion → the call), not start onboarding at A03.
     func testSignInAsAnotherAccountAsksTheServerWhereToGo() async {
@@ -119,6 +132,23 @@ import UIKit
         XCTAssertEqual(AppState(storage: store).stage, .consent, "4403 then restart: still CS01, not the call")
         model.consentAccepted()
         XCTAssertEqual(AppState(storage: store).stage, .conversation)
+    }
+    func testAuthCallbacksInvalidateLaunchSnapshotsEvenWithTheSameToken() {
+        let tokens = InMemoryTokenStore("token-a")
+        let model = AppState(storage: store)
+        model.routeAfterSignIn = {}
+        model.onboarding = OnboardingClient(auth: GenitaAuthClient(store: tokens))
+        let request = model.launchAuthSnapshot
+        XCTAssertTrue(request.accepts(model.launchAuthSnapshot))
+        model.signedOut()
+        XCTAssertFalse(request.accepts(model.launchAuthSnapshot), "Logout invalidates /me even before the token is cleared")
+        model.signedIn(userId: "b", consented: true)
+        XCTAssertFalse(request.accepts(model.launchAuthSnapshot))
+        let bRequest = model.launchAuthSnapshot
+        model.signedOut()
+        model.signedIn(userId: "a", consented: true)
+        XCTAssertFalse(request.accepts(model.launchAuthSnapshot))
+        XCTAssertFalse(bRequest.accepts(model.launchAuthSnapshot))
     }
     func testReturnToEditorDoesNotReplayProcessing() {
         let model = AppState(storage: store)
@@ -297,5 +327,19 @@ import UIKit
         state.go(.skipTopics); state.setup.depth = .deep   // an explicit choice at D01 is never overwritten later
         state.go(.preferences)
         XCTAssertEqual(state.setup.depth, .deep)
+    }
+
+    /// UI sweep 11/3: Settings read "Gentle 3/5 Direct" and "Only when asked 3/5 Anticipate"; the preferences block
+    /// had headings and bullets in one style.
+    func testSettingsReadsSliderStopsAsWordsAndSplitsHeadings() {
+        XCTAssertEqual(SettingsView.display("challenge", "2"), "In between")
+        XCTAssertEqual(SettingsView.display("initiative", "0"), "Only when asked")
+        XCTAssertEqual(SettingsView.display("tempo", "4"), "Quick")
+        XCTAssertEqual(SettingsView.display("tempo", "9"), "Quick", "out of range clamps")
+        XCTAssertEqual(SettingsView.display("help", "Think with me"), "Think with me", "non-scale answers unchanged")
+        XCTAssertFalse(SettingsView.display("challenge", "2").contains("/5"))
+        let lines = SettingsView.styleLines("Communication style\n• Warm, direct.\nBoundaries\n• Ask first.")
+        XCTAssertEqual(lines.map(\.heading), [true, false, true, false])
+        XCTAssertEqual(SettingsView.styleLines("Just a pasted paragraph.").map(\.heading), [false], "no bullets: body text")
     }
 }

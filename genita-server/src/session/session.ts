@@ -6,11 +6,13 @@
  */
 import { getOps, type OpsLimits } from "../ops/limits.ts";
 import type { Config } from "../config.ts";
+import type { TurnGate } from "../auth/judge.ts";
 import type { AsrEvent } from "../meta/transcribe.ts";
+import type { WebSearch } from "../finds/webAnswer.ts";
 import { SPARK_MODEL, type InputMessage, type SparkRequest, type SparkStreamEvent, type ContentPart } from "../meta/spark.ts";
 import type { TtsChunk, TtsRequest } from "../tts/types.ts";
 import { pcmDurationMs, PCM_SAMPLE_RATE } from "../tts/types.ts";
-import { avoidRepeatedOpener, buildInstructions, buildInterpretInstructions, type PersonaCard, type UserProfile } from "../prompt/persona.ts";
+import { avoidRepeatedOpener, recentOpeningWords, dropRepeatedName, buildInstructions, buildInterpretInstructions, type PersonaCard, type UserProfile } from "../prompt/persona.ts";
 import { SentenceSplitter } from "../text/sentences.ts";
 import { clauseExpression, parseTaggedSentence, type Expression } from "../text/tags.ts";
 import { NarrationJudge, type NarrationDecision } from "../text/toolNarration.ts";
@@ -39,22 +41,30 @@ import { Interpreter, type InterpretHost } from "../interpret/interpreter.ts";
 import { interpretCommand } from "../interpret/language.ts";
 import { initialTurnState, reduceTurn, type Effect, type TurnEvent, type TurnState } from "./turnMachine.ts";
 import { MemoryCall, type MemoryService, type UsPhotoService } from "../memory/index.ts";
-import { MEMORY_START_BUDGET_MS, within, type MemoryRetryState, type ThreadState } from "../memory/call.ts";
+import { MEMORY_START_BUDGET_MS, within, type MemoryRetryState, type ThreadState , replyMemoryTools } from "../memory/call.ts";
 import type { Memory } from "../memory/repository.ts";
 import type { CompanionFaceResolver } from "../memory/photos.ts";
 import { FindsRunner, type FindsDeps } from "../finds/runner.ts";
+import { isOutfitAsk, isProductAsk } from "../finds/intent.ts";
 import { WatchController, type WatchSink } from "../watch/watch.ts";
+import { PerceptionController } from "../perception/controller.ts";
 import { detectRename } from "./rename.ts";
 import type { CallStart, VoiceUpdate } from "../personalize/service.ts";
 import type { CallTurn } from "../personalize/extract.ts";
 import { ASK_TURNS, replyAsks } from "../personalize/unknowns.ts";
 import { mightBeCorrection } from "../personalize/corrections.ts";
+import { avoidKeys, forgetTarget, isForgetRequest, scrubHistory, type Removed } from "../personalize/forgotten.ts";
+import { isForgetRequest as isMemoryForgetRequest } from "../memory/extract.ts";
 import { localTimeLine } from "../personalize/knows.ts";
 import type { UnknownItem } from "../personalize/story.ts";
 import type { TasteLine } from "../personalize/reasons.ts";
-import { convoV1, initiativeOn } from "../convo/flags.ts";
-import { fallbackLine, guardSentence, type GuardClass } from "../convo/guard.ts";
-import { openerBlock } from "../convo/opener.ts";
+import { backchannelOn, convoV1, englishOnly, initiativeOn } from "../convo/flags.ts";
+import { Backchannel } from "../convo/backchannel.ts";
+import { addressUser, thirdPersonCouldBeUser, fallbackLine, guardSentence, neverSpoken, NO_ANSWER_LINE, LOST_LINE, UPSTREAM_RETRY_MS, realCrisisSignal, nameAsYou, type GuardClass } from "../convo/guard.ts";
+import { isInterjectionOnly } from "../text/toolNarration.ts";
+import { daySeed, openerBlock, openerKind, profileHooks } from "../convo/opener.ts";
+import { mentionsProfile, moodFrom, moodLine, turnHints } from "../convo/rhythm.ts";
+import { forgetOpenerTopics, pickOpenerTopic, storedTopics } from "../convo/openerTopics.ts";
 import { InitiativeGovernor, initiativeBlock, initiativeInput, type InitiativeSource } from "../convo/initiative.ts";
 import type { PerceptionSource } from "../convo/types.ts";
 
@@ -93,6 +103,8 @@ export type SessionDeps = {
   voiceSeats?: VoiceSeats;
   /** Identity is assigned by the authenticated upgrade, never by start.user. */
   userId?: string;
+  /** D41 per-account daily turn cap (judge demo accounts only); unset = no cap. */
+  turnGate?: TurnGate;
   ops?: OpsLimits;
   /** null: shared-token dev identity has no persisted user row. */
   turnUserId?: string | null;
@@ -103,6 +115,10 @@ export type SessionDeps = {
   priorTurns?: (revision: number) => HistoryItem[] | null;
   /** Session memory: the thread those turns belong to (same conversation on the next device), read right after priorTurns */
   priorThread?: (revision: number) => ThreadState | null;
+  /** same-device return visit: the last lines of the call the user just hung up (server.ts), read right after priorTurns */
+  lastCall?: () => { turns: HistoryItem[]; threadId: string | null; covered: number } | null;
+  /** Server handoff ordering: actual history writes, never socket open/close or a copied seed. */
+  onHistoryChange?: (role: HistoryItem["role"]) => void;
   memory?: MemoryService;
   photos?: UsPhotoService;
   resolveCompanionFace?: CompanionFaceResolver;
@@ -111,8 +127,12 @@ export type SessionDeps = {
   finds?: FindsDeps;
   /** F2-L26 rename by voice: persist the companion's new name (server.ts → prep store); unset = this call only */
   renameCompanion?: (userId: string, name: string) => Promise<unknown>;
+  /** Demo S4: iPhone calls only — the account's Mac app is open, so an outfit ask can move to the Mac's camera */
+  macNearby?: () => boolean;
   /** lane 개인화 (src/personalize/service.ts): server profile, first-call asks, voice corrections, post-call growth */
   personalize?: SessionPersonalize;
+  /** server.ts: this call continues the account's conversation from the other device (memory-independent; P1 11/3) */
+  continuesCall?: () => boolean;
   /**
    * Same presence on every device (11/3): the voice saved on this account's companion (prep store). It wins over
    * the start message's voice, so the iPhone and the Mac always speak with one voice. null/unset = the client's.
@@ -120,9 +140,14 @@ export type SessionDeps = {
   companionVoiceId?: () => Promise<string | null | undefined>;
 };
 
+/** Demo S5 (agreed with the convo lane 11/3): the product-ask turn's reply while the search runs in the background. */
+export const PRODUCT_REACTION_LINE =
+  "A shopping search for this is already running in the background and its card will appear on its own. Reply with ONE short sentence (under 10 words): a natural, in-character reaction to what they asked or what you see (taste, color, how it goes with the outfit); talk to them as you. Never say you are searching, looking, checking or pulling anything up, no 'let me…'; don't name products, stores, prices or links.";
 /** The slice of the personalize service a call uses (structural, so tests can fake it). */
 export type SessionPersonalize = {
-  startCall(userId: string): Promise<CallStart | null>;
+  startCall(userId: string, opts?: { plan?: boolean }): Promise<CallStart | null>;
+  /** watch together attached before the question: not a new conversation after all (give the count back) */
+  unplanCall?(userId: string, item: string | null): Promise<void>;
   voiceCorrection(userId: string, line: string, lastAssistant?: string, signal?: AbortSignal, asked?: UnknownItem | null): Promise<VoiceUpdate | null>;
   endCall(userId: string, turns: CallTurn[], asked: string | null, startedAt?: string): Promise<number>;
   /** Knows-Me S1: the user cut two long replies short → observed "short replies" line; null = not saved */
@@ -137,6 +162,10 @@ const MAX_CORRECTION_CHECKS = 12;
 
 /** A slow prep store never holds up `ready`: past this the client's voice stays. */
 const COMPANION_VOICE_WAIT_MS = 800;
+
+/** Demo S4: said once per call, on the first outfit ask while the Mac app is open. */
+export const SUGGEST_MAC_LINE =
+  "The user's Mac is open and its bigger camera can see their whole outfit. Before giving outfit advice, warmly ask them to move this call to their Mac (Move to Mac in the menu) so you can see the whole outfit. Keep it to one or two short sentences.";
 
 const schedule = (fn: () => void, ms: number) => {
   const timer = setTimeout(fn, ms);
@@ -158,12 +187,14 @@ type Reply = {
   chars: number;
   /** server mode: GPU capacity or a voice failure sent this reply to the app as `say` */
   fellBack: boolean;
+  /** Chelsea 11/3: the sources card of a web-searched answer, shown once the answer has played (never after a barge-in) */
+  webAnswer?: (() => void) | null;
 };
 
 /** server clock (ms) for the latency breakdown; logged with turn.answered as `stages` */
 type TurnMetrics = { speechEndAt?: number; completeAt?: number; lastPartialAt?: number; specStartAt?: number };
 /** lang = the language the reply is written in (interpretation: the target) */
-type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null; images: string[]; lang: string };
+type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null; images: string[]; lang: string; suggestMac?: boolean };
 /** firstTextAt: when the speculative stream's first text arrived (it is buffered until the final transcript) */
 type Speculation = { norm: string; abort: AbortController; built: Built; stream: Eager<SparkStreamEvent>; memoryRetry: MemoryRetryState; confirm: () => void; at: number; firstTextAt?: number };
 
@@ -186,6 +217,8 @@ const DEVICE_MS_PER_CHAR = 70;
 const DEVICE_SLACK_MS = 1500;
 const DEVICE_MAX_MS = 60_000;
 const ASR_RETRY_MS = 2000;
+/** F8: interpretation always hears both sides, even when chat listens in English only (prod GENITA_ASR_LANGUAGES=English) */
+const INTERPRET_ASR_LANGUAGES = ["English", "Korean"];
 
 /**
  * Words of `spoken` (the spoken form the voice was given) not yet voiced, given the voiced characters.
@@ -214,6 +247,78 @@ function parseInterpretOptions(v: unknown): InterpretOptionsWire {
   };
 }
 const ANNOUNCE_WAIT_MS = 20_000;
+/** hold cap: the longest the first sound waits on a held line (a pre-tool preamble) before a short beat */
+const HOLD_BEAT_MS = 1500;
+const HOLD_BEATS = ["<curious> Ooh, okay.", "<warm> Mm, okay.", "<curious> Hmm."];
+/** a greeting / initiative sentence that is plainly a question (QA P3: it ended with "." 1/2) */
+const EXPLICIT_REMEMBER = /\b(?:remember|don'?t forget|keep in mind|note) (?:that|this|i|my|me)\b/i;
+/** AI sweep 11/3 [P1 safety]: a real crisis reply must point to real help now */
+export const CRISIS_HELP_LINE = "<sad> Please reach out right now: call or text a crisis line, like 988 in the US, or your local emergency number, or someone you trust. I'm right here.";
+/** real help outside the call — "reach out to me" is not one (Codex #423 final P1) */
+const HELP_POINTER = /\b(?:988|911|112|999|nine eight eight|nine one one|crisis (?:line|text line)|hotline|emergency (?:services|number|room)|someone you trust|samaritans|lifeline|a doctor|a counselor)\b/i;
+const QUESTION_START = /^(?:(?:hey|hi|okay|ok|so|wait|yo)\b[^,.!?]{0,20},?\s*)?(?:so,?\s*)?(?:(?:how|what|when|where|who|why|which)(?:'s|'re|'d| is| am| are| was| were| did| do| does| has| have| had| will| would| can| could| should)\b|(?:did|do|does|are|is|was|were|have|has|can|could|will|would) (?:you|it|they|we|that|this|he|she)\b|you (?:feeling|ready|nervous|excited)\b)/i;
+/** Demo S4 (QA P2: Spark ignored SUGGEST_MAC_LINE 1/4 and gave outfit advice in 8.5 s): the iPhone's outfit ask with the
+ * Mac open always gets this line, at once (no Spark); rotates by utterance */
+const SUGGEST_MAC_TAIL = "<happy> Can you move our call to your Mac? I want to see your whole outfit.";
+export const SUGGEST_MAC_REPLIES = [
+  "<excited> Of course! Can you move our call to your Mac? I want to see your whole outfit.",
+  "<happy> Ooh, yes. Move our call to your Mac real quick? I want to see the whole fit.",
+  "<teasing> Okay, outfit emergency. Can you move our call to your Mac? I need to see all of it.",
+];
+
+/**
+ * Demo S4: pass Spark's suggest-turn reply through once it names the Mac; if two sentences (or 160 chars, or 2.5 s
+ * of text) go by without it, or the reply ends without it, say the fixed line instead and stop reading Spark.
+ * Upstream errors still throw (a failed reply keeps the suggestion for the retry).
+ */
+export async function* mustNameMac(src: AsyncIterable<SparkStreamEvent>, line: string, now: () => number = Date.now, waitMs = 2500): AsyncGenerator<SparkStreamEvent> {
+  let buf = "";
+  let passing = false;
+  let firstTextAt: number | null = null;
+  const fixed = function* (): Generator<SparkStreamEvent> {
+    yield { type: "text", delta: line };
+    yield { type: "done", responseId: null, text: line, status: "completed" };
+  };
+  const it = src[Symbol.asyncIterator]();
+  const STALL = Symbol("stall");
+  try {
+    for (;;) {
+      let res: IteratorResult<SparkStreamEvent> | typeof STALL;
+      if (!passing && firstTextAt !== null) {
+        // a stalled stream after the first words must not hold the turn (Codex #423 P2): the wait runs on its own clock
+        const left = waitMs - (now() - firstTextAt);
+        if (left <= 0) { yield* fixed(); void it.return?.(); return; }
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        res = await Promise.race([it.next(), new Promise<typeof STALL>((r) => { timer = setTimeout(() => r(STALL), left); })]);
+        clearTimeout(timer);
+        if (res === STALL) { yield* fixed(); void it.return?.(); return; }
+      } else res = await it.next();
+      if (res.done) return;
+      const ev = res.value;
+      if (passing) { yield ev; continue; }
+      if (ev.type === "text") {
+        buf += ev.delta;
+        firstTextAt ??= now();
+        if (/\bMac\b/i.test(buf)) { passing = true; yield { type: "text", delta: buf }; continue; }
+        const sentences = (buf.replace(/<[^>]*>|\[[^\]]*\]/g, " ").match(/[.!?](?:\s|$)/g) ?? []).length;
+        if (sentences >= 2 || buf.length > 160 || now() - firstTextAt > waitMs) { yield* fixed(); void it.return?.(); return; }
+        continue;
+      }
+      if (ev.type === "done") {
+        // an incomplete reply keeps its own ending (the suggestion stays unused for the retry, Codex P2 round 3)
+        if (/\bMac\b/i.test(buf) || ev.status !== "completed") { if (buf) yield { type: "text", delta: buf }; yield ev; } else yield* fixed();
+        return;
+      }
+      yield ev;
+    }
+  } catch (err) {
+    // a stream cut mid-reply behaves as before: what was written so far is said, then the error (Codex P2 round 2)
+    if (!passing && buf) yield { type: "text", delta: buf };
+    throw err;
+  }
+}
+/** #387 follow-up: said instead of a reply whose only sentence was the question watch together took back */
+const WATCH_ASK_FALLBACK = "<happy> Ooh, okay. Let's watch.";
 const GREET_PROMPT = "The call just connected. Greet the user.";
 const MAX_GREET_AFTER_MS = 3000;
 
@@ -255,6 +360,8 @@ export class Session {
   private readonly v1 = convoV1();
   /** ms of the user's last message in an earlier call (memory state); null = never; undefined = unknown */
   private lastMessageAt: number | null | undefined = undefined;
+  /** #341: profile things recent greetings opened on (oldest → newest); undefined = not read yet */
+  private openerRecent: string[] | undefined = undefined;
   /** the companion speaks first mid-call (src/convo/initiative.ts); null = off for this call */
   private initiative: InitiativeGovernor | null = null;
   private initiativeTimer: NodeJS.Timeout | null = null;
@@ -263,6 +370,19 @@ export class Session {
   private cueTurn: { source: InitiativeSource; block: string; input: string } | null = null;
   /** memory lines already offered to an initiative this call */
   private offeredThreads = new Set<string>();
+  /** K-test 11/3: personal things this call brought up unprompted (opener hook, a follow-up, the GK-1 question, a
+   *  profile taste said without the user going there); MENTION_RULE's budget is one per call */
+  private personalUsed = 0;
+  /** this call's number for the account (personalize growth.calls), for the engine's closeness line (P1) */
+  private callNumber: number | undefined;
+  /** P1 #345: "mm" / "yeah" mid-turn on a long user turn (GENITA_BACKCHANNEL=1); the app plays its own clip */
+  private backchannel: Backchannel | null = backchannelOn()
+    ? new Backchannel({
+        now: () => this.now(),
+        stillListening: () => this.mode === "chat" && !this.interp && !this.watch && !this.reply && this.turn.phase === "listening" && this.turn.userSpeaking,
+        send: (kind) => { this.client.sendJson({ type: "backchannel", kind }); this.log("convo.backchannel", { kind }); },
+      })
+    : null;
   /** perception lane (camera face reading, GENITA_PERCEPTION): read-only, assigned by its message hook */
   perception: PerceptionSource | null = null;
   private perceptionUnsub: (() => void) | null = null;
@@ -282,7 +402,13 @@ export class Session {
   private historyRevision: number | null = null;
   private recentReplies: string[] = [];
   private frames: Frames | null = null;
+  /** Demo S4: the move-to-Mac suggestion was made in this call */
+  private macSuggested = false;
   private asr: AsrLike | null = null;
+  /** the languages `asr` was opened with (joined), so a mode switch can tell whether it must reopen */
+  private asrLanguagesKey: string | null = null;
+  /** set while `start` runs: `mode` only becomes "interpret" in enterInterpret, after the mic ASR is opened */
+  private startingMode: Mode | null = null;
   /** F8 · set while mode is "interpret" */
   private interp: Interpreter | null = null;
   /** F8 · Mac call interpretation: a second ASR stream for the call's sound */
@@ -312,6 +438,14 @@ export class Session {
   private awaitingAnswer: UnknownItem | null = null;
   private userTurns = 0;
   private callStartedAt: string | null = null;
+  /** profile lines the user removed (personalize): kept out of memory, notes and handed-off turns */
+  private removedLines: Removed[] = [];
+  /** resolves when the running correction check ends (a "forget that …" waits for it instead of being skipped) */
+  private correctionDone: Promise<void> = Promise.resolve();
+  /** this call was counted as a new call by personalize (not a handoff) */
+  private callPlanned = false;
+  /** the question watch together took back: a reply built before still asking it has that sentence dropped */
+  private askDropped: UnknownItem | null = null;
   /** Knows-Me: the user's IANA time zone (start.user.timeZone) and call 1's greeting nod */
   private timeZone: string | undefined;
   private nod: string | null = null;
@@ -323,6 +457,11 @@ export class Session {
   private correctionChecks = 0;
   /** a card's line waiting for the current reply to finish (dropped if the user talks first) */
   private pendingAnnounce: { text: string; at: number } | null = null;
+  /** PERC-1 (#319): sets `perception` (declared above) when GENITA_PERCEPTION is on */
+  private perceptionCtl: PerceptionController | null = null;
+  /** for perception timing: when the companion's last reply ended / the user last stopped speaking */
+  private lastReplyEndAt: number | null = null;
+  private lastUserSpeechAt: number | null = null;
 
   constructor(id: string, client: ClientSink, deps: SessionDeps) {
     this.id = id;
@@ -333,6 +472,22 @@ export class Session {
     // looked up from the socket's open, so `start` rarely waits for it (Codex P2: no input window)
     this.ownedVoice = this.companionVoice();
     this.bargeCfg = { bargeInMinMs: deps.config.bargeInMinMs, bargeInMinWords: deps.config.bargeInMinWords };
+    if (deps.config.perception) {
+      this.perceptionCtl = new PerceptionController({
+        spark: deps.spark,
+        now: this.now,
+        convo: () => ({
+          companionSpeaking: this.turn.phase === "speaking",
+          lastReplyEndAt: this.lastReplyEndAt,
+          userSpeaking: this.turn.userSpeaking,
+          lastUserSpeechAt: this.lastUserSpeechAt,
+        }),
+        log: (event, data) => this.log(event, data),
+        // nobody reacts in interpretation or while watching together: no reads there (also for a waiting frame)
+        active: () => this.mode === "chat" && !this.watch?.isSharing,
+      });
+      this.perception = this.perceptionCtl;
+    }
     if (deps.finds) {
       this.finds = new FindsRunner(deps.finds, {
         emit: (e) => !this.closed && this.client.sendJson(e),
@@ -438,7 +593,13 @@ export class Session {
       case "frames":
         this.setFrames(msg.images);
         return;
+      case "perception.frame":
+        // PERC-1: background face read (the controller skips it in interpretation / watch together)
+        this.perceptionCtl?.frame(msg.image);
+        return;
       case "stop":
+        // the app's hang-up (CallSocket.close sends stop, then a normal close): a new call later is a return, not a move
+        this.endedByUser = true;
         return this.close(1000, "stopped");
       case "find.confirm":
         if (typeof msg.findId === "string" && typeof msg.itemId === "string" && typeof msg.yes === "boolean") this.finds?.confirm(msg.findId, msg.itemId, msg.yes);
@@ -496,6 +657,8 @@ export class Session {
       this.recentReplies = this.history.filter((h) => h.role === "assistant").map((h) => h.text).slice(-3);
     }
     const startMode: Mode = msg.mode === "interpret" ? "interpret" : "chat";
+    // the mic ASR opened during start listens in the start mode's languages (no English-only stream to replace)
+    this.startingMode = startMode;
     this.language = str(msg.language, 40) ?? "English";
     this.pickVoice(str(msg.voiceId, 64) ?? persona.voice?.id, persona.kind);
     const lip = (msg.lip && typeof msg.lip === "object" ? msg.lip : { mode: msg.lip }) as Record<string, unknown>;
@@ -523,6 +686,9 @@ export class Session {
         this.dropSpeculation(); this.dispatch({ type: "client_barge_in" });
         this.history = []; this.recentReplies = []; this.memories = []; this.greeting = null;
         this.historyRevision = revision;
+        // #341: what greetings opened on goes too (Codex #352)
+        this.openerRecent = [];
+        forgetOpenerTopics(userId, memory, (e) => this.log("convo.opener_topic_failed", { message: String(e).slice(0, 120) }));
       });
       // Bounded (Codex 11/3): a store stalled behind the per-user lock must not hold ready/greeting. Past the
       // budget the call starts without memory context, and the late result never touches this call.
@@ -544,17 +710,19 @@ export class Session {
           const state = await memory.state.getState(userId);
           const revision = state.revision;
           // before this call's first user message: the previous call's last one (opener gap, DESIGN §4)
-          if (!abandoned) this.lastMessageAt = state.last_message_at;
+          if (!abandoned) { this.lastMessageAt = state.last_message_at; this.openerRecent = storedTopics(state); }
           if (this.closed) return;
           // a slow start never seeds old turns, but once verified, this call's NEW turns can hand off (Codex 11/3)
           if (abandoned) { if (this.historyRevision === null) this.historyRevision = revision; return; }
           this.historyRevision = revision;
           if (startMode !== "chat" || this.history.length) return;
           const server = this.deps.priorTurns?.(revision) ?? null;
+          if (!server?.length) { const last = this.deps.lastCall?.(); if (last) this.memoryCall?.setLastCall(last.turns, last.threadId, last.covered); }
           const claimed = revision === 0 && msg.handoff === true ? parseHistory(msg.history) : [];
           const seed = server?.length ? server : claimed;
           if (!seed.length) return;
-          this.history = seed.slice(-MAX_HISTORY);
+          // a "forget that…" turn and the reply to it are never carried to the next device (QA post-deploy 11/3)
+          this.history = scrubHistory(seed, []).slice(-MAX_HISTORY);
           // a handoff is the same conversation: one thread, one summary (iPhone and Mac write the same row)
           this.memoryCall?.continueThread(server?.length ? this.deps.priorThread?.(revision) ?? null : null, this.history);
           this.recentReplies = [...this.recentReplies, ...this.history.filter((h) => h.role === "assistant").map((h) => h.text)].slice(-3);
@@ -582,14 +750,26 @@ export class Session {
     if (this.deps.personalize && this.deps.userId && startMode === "chat") {
       try {
         // never hold the call up for the profile store: past STARTCALL_TIMEOUT_MS the app's copy is used
+        // a handoff (iPhone → Mac, seeded or `start.handoff`) is the same conversation: profile only, no question,
+        // no first-call nod, not counted as a call (P1 11/3: the Mac's S4 answer ended with the call-2 question)
+        let continuation = this.continued || msg.handoff === true;
+        try { continuation ||= this.deps.continuesCall?.() ?? false; } catch { /* never fails the call */ }
+        this.callPlanned = !continuation;
         const p = await Promise.race([
-          this.deps.personalize.startCall(this.deps.userId),
+          this.deps.personalize.startCall(this.deps.userId, { plan: !continuation }),
           new Promise<null>((r) => setTimeout(() => r(null), STARTCALL_TIMEOUT_MS).unref?.()),
         ]);
         this.callStartedAt = new Date().toISOString();
         // a stored profile always wins, even an empty one (a deleted preference must not come back from the app's copy)
         if (p) this.user = { ...this.user, profile: p.profile || undefined };
         if (p?.nod) this.nod = p.nod;
+        // what they removed from their profile stays out of memory, notes and the handed-off turns
+        if (p?.removed?.length) {
+          this.removedLines = p.removed;
+          this.memoryCall?.setAvoid(p.removed);
+          this.history = scrubHistory(this.history, avoidKeys(p.removed));
+        }
+        if (p?.calls) this.callNumber = p.calls;
         if (p?.ask && p.askItem) this.ask = { line: p.ask, item: p.askItem, topic: p.askTopic ?? null, asked: false };
         this.taste = p?.taste ?? [];
       } catch (err) {
@@ -614,8 +794,10 @@ export class Session {
       voiceId: this.voiceId,
       bargeIn: { minMs: this.bargeCfg.bargeInMinMs, minWords: this.bargeCfg.bargeInMinWords },
       tts: this.tts,
+      ...(this.perceptionCtl ? { perception: true } : {}),
     });
     this.client.sendJson({ type: "state", state: "listening" });
+    this.startingMode = null;
     if (startMode === "interpret") this.enterInterpret(parseInterpretOptions(msg.interpret));
     if (this.tts === "server" && this.deps.config.voice && !this.voiceOverflow) this.deps.voicePrefetch?.(Number(this.voiceId.slice("seamless:".length)));
     if (startMode === "chat" && initiativeOn()) this.startInitiative();
@@ -664,6 +846,7 @@ export class Session {
     }
     this.leaveInterpret();
     this.mode = "chat";
+    this.retuneMicAsr();
     // back from interpretation: the silence clock starts now, and a call that started interpreting gets a governor
     this.initiative?.activity(this.now());
     if (this.started && initiativeOn()) this.startInitiative();
@@ -679,12 +862,14 @@ export class Session {
       source: opts.source ?? "face",
       other: opts.other ?? null,
       app: opts.app,
-      speculate: this.deps.config.speculate && !(this.deps.ops ?? getOps()).cappedUser(this.limitUserId()),
+      // capped accounts don't guess on partials: a guess calls Spark before the turn is admitted
+      speculate: this.deps.config.speculate && !this.deps.turnGate && !(this.deps.ops ?? getOps()).cappedUser(this.limitUserId()),
       speculateStableMs: this.deps.config.speculateStableMs,
     });
     this.interp.begin();
     if (this.interp.source === "call") void this.ensureCallAsr();
     else this.dropCallAsr();
+    this.retuneMicAsr();
   }
 
   private leaveInterpret(): void {
@@ -718,6 +903,7 @@ export class Session {
         return this.turn.utteranceId;
       },
       // no memory context or recall/remember tools in translation (useMemory = false)
+      // D41 daily cap: each translation is a user turn, charged in admitTurn() together with the D46 cap.
       translate: (req, signal) => this.sparkSource(req, signal, undefined, false),
       tts: (text, signal) =>
         this.deps.tts({ voiceId: this.voiceId, text, emotion: null, model: SEAMLESS_MODEL, signal }),
@@ -743,9 +929,11 @@ export class Session {
     retry.connecting = true;
     let asr: AsrLike | null = null;
     try {
-      asr = this.deps.openAsr(this.deps.config.asrLanguages);
+      // the call's sound is only listened to for interpretation
+      const languages = this.asrLanguages(source === "call" ? "interpret" : this.startingMode ?? this.mode);
+      asr = this.deps.openAsr(languages);
       const stream = asr;
-      if (source === "mic") this.asr = stream;
+      if (source === "mic") { this.asr = stream; this.asrLanguagesKey = languages.join(","); }
       else this.callAsr = stream;
       stream.on("event", (e) => {
         if (this.closed || current() !== stream) return;
@@ -785,6 +973,27 @@ export class Session {
     } finally {
       retry.connecting = false;
     }
+    // the mode changed while this stream was connecting
+    if (source === "mic") this.retuneMicAsr();
+  }
+
+  /** Chat listens in the configured languages; interpretation adds English and Korean (the face-to-face pair). */
+  private asrLanguages(mode: Mode): string[] {
+    const base = this.deps.config.asrLanguages;
+    return mode === "interpret" ? [...new Set([...base, ...INTERPRET_ASR_LANGUAGES])] : base;
+  }
+
+  /** Mode switch: reopen the mic ASR when it listens in the wrong languages (not while one is connecting). */
+  private retuneMicAsr(): void {
+    const stream = this.asr;
+    if (this.closed || !stream || this.asrRetry.mic.connecting) return;
+    const want = this.asrLanguages(this.startingMode ?? this.mode).join(",");
+    if (this.asrLanguagesKey === want) return;
+    this.log("asr.retune", { mode: this.mode, languages: want });
+    this.asr = null;
+    this.asrLanguagesKey = null;
+    try { stream.end(); } catch { /* already unusable */ }
+    if (this.micOn) void this.ensureAsr();
   }
 
   close(code = 1000, reason = "closed"): void {
@@ -797,10 +1006,17 @@ export class Session {
     this.perceptionUnsub?.();
     this.dropSpeculation();
     if (this.reply) {
+      // the call ended while a looked-up answer was still playing: it was said, so it is kept in Finds
+      // (an account delete purges right after)
+      const card = this.reply.webAnswer;
+      this.reply.webAnswer = null;
+      if (card && reason !== "account_deleted" && !this.reply.abort.signal.aborted) card();
       this.reply.abort.abort();
       if (this.reply.doneTimer) clearTimeout(this.reply.doneTimer);
     }
     this.interp?.stop();
+    this.perceptionCtl?.close();
+    this.backchannel?.stop();
     this.dropCallAsr();
     this.asr?.end();
     this.memoryCall?.close();
@@ -837,19 +1053,23 @@ export class Session {
     switch (e.type) {
       case "speechStart":
         this.metrics = {};
+        this.backchannel?.start();
         this.skipPendingGreeting("speech");
         this.client.sendJson({ type: "speech.start", turnId: e.turnId });
         return this.dispatch({ type: "speech_start" });
       case "partial":
         this.metrics.lastPartialAt = t;
+        this.backchannel?.partial(e.text);
         this.client.sendJson({ type: "transcript", final: false, text: e.text });
         this.dispatch({ type: "partial", text: e.text });
         return this.considerSpeculation(e.text);
       case "speechEnd":
+        this.backchannel?.stop();
         this.metrics = { speechEndAt: t, lastPartialAt: this.metrics.lastPartialAt };
         this.client.sendJson({ type: "speech.end", turnId: e.turnId });
         return this.dispatch({ type: "speech_end" });
       case "speechComplete":
+        this.backchannel?.stop();
         this.metrics.completeAt = t;
         // order (11/2): the interpret voice command first, then the watch echo filter, then the turn;
         // exactly one final transcript goes out either way
@@ -939,6 +1159,17 @@ export class Session {
       },
     );
     this.watch.attach(sink);
+    // watch together is not a getting-to-know-you call: drop this call's question and give the count back
+    if (this.callPlanned && this.deps.personalize?.unplanCall && this.deps.userId && !this.ask?.asked) {
+      const item = this.ask?.item ?? null;
+      this.callPlanned = false;
+      this.askDropped = this.ask?.topic ?? null;
+      this.ask = null;
+      this.nod = null;
+      void this.deps.personalize.unplanCall(this.deps.userId, item).catch((err) => this.log("profile.unplan_failed", { message: String(err).slice(0, 120) }));
+      // the stored count goes back one: keep this call's closeness stage the same as the device that takes it over (Codex P2)
+      if (this.callNumber) this.callNumber = Math.max(1, this.callNumber - 1);
+    }
     return this.watch;
   }
 
@@ -958,7 +1189,10 @@ export class Session {
       this.client.sendJson({ type: "state", state: "listening" });
       return;
     }
+    const before = this.turn;
     this.turn = r.state;
+    if (before.phase === "speaking" && r.state.phase !== "speaking") this.lastReplyEndAt = this.now();
+    if (before.userSpeaking && !r.state.userSpeaking) this.lastUserSpeechAt = this.now();
     for (const fx of r.effects) this.run(fx);
     if (!this.turn.userSpeaking && this.quietWaiters.length) for (const w of this.quietWaiters.splice(0)) w();
     if (e.type === "reply_done" && this.turn.phase === "listening" && this.pendingAnnounce && this.mode !== "interpret") {
@@ -1065,7 +1299,8 @@ export class Session {
     // they asked for long answers themselves: two cut-offs don't override that (the server checks the labels too)
     if (/\b(?:long|longer|detailed|thorough|in[- ]depth|whole story)\b[^.\n]{0,30}\b(?:answers?|repl(?:y|ies)|explanations?)\b/i.test(this.user?.profile ?? "")) return;
     // set now so the very next reply says it; cleared if the server doesn't save it
-    const line = "They cut you off twice this call when you ran long. Start this reply by saying, in a few words, that you'll keep it short from now on (\"You cut me off twice, so one line from now on.\"), then answer in one short sentence.";
+    // silent adaptation (main 11/3 P0): just get shorter — never mention the interruptions or the change (meta + guilt on camera)
+    const line = "Keep this reply, and the rest of the call, to one short sentence. Never mention that they interrupted you or that you're keeping it short.";
     this.shorterLine = line;
     void p.noteShorter(this.deps.userId).then(
       (r) => {
@@ -1084,18 +1319,34 @@ export class Session {
   private checkCorrection(text: string): void {
     const p = this.deps.personalize;
     const userId = this.deps.userId;
+    // "forget that …": from this line on, memory, notes and the turns handed on leave its target out (no Spark wait)
+    if (isForgetRequest(text) && this.mode === "chat") {
+      const target = forgetTarget(text);
+      if (target) { this.removedLines = [...this.removedLines, { text: target, forget: true }].slice(-40); this.memoryCall?.setAvoid(this.removedLines); }
+    }
     const asked = this.awaitingAnswer;
     this.awaitingAnswer = null;
     // only lines that will reach Spark count toward the per-call budget
+    // a "forget that …" is never skipped because another check is still running: it runs right after it
+    if (this.correcting && p && userId && this.mode === "chat" && isForgetRequest(text) && !this.closed) {
+      const waitFor = this.correctionDone;
+      void waitFor.then(() => { if (!this.closed) this.checkCorrection(text); });
+      return;
+    }
     if (!p || !userId || this.mode !== "chat" || this.correcting || this.correctionChecks >= MAX_CORRECTION_CHECKS || (!asked && !mightBeCorrection(text))) return;
     const lastAssistant = [...this.history].reverse().find((h) => h.role === "assistant")?.text;
     const abort = new AbortController();
     this.correcting = abort;
     this.correctionChecks++;
+    let done!: () => void;
+    this.correctionDone = new Promise<void>((r) => (done = r));
     void p.voiceCorrection(userId, text, lastAssistant, abort.signal, asked).then(
       (r) => {
         if (!r || this.closed || abort.signal.aborted) return;
         this.user = { ...this.user, profile: r.profile };
+        // "forget that…" in this call: from now on memory, notes and the turns handed on leave it out too
+        const gone = r.applied.flatMap((a) => a.removed);
+        if (gone.length) { this.removedLines = [...this.removedLines, ...gone].slice(-40); this.memoryCall?.setAvoid(this.removedLines); }
         // lines said in this call are "You said: …" on result cards (grey), the stored ones "Your taste: …" (blue)
         const said = new Set(r.applied.filter((a) => a.field === "likes" && a.text).map((a) => a.text));
         // the latest taste lines, even none (a "forget that" can empty them — Codex round 6)
@@ -1105,22 +1356,48 @@ export class Session {
         this.log("profile.updated", { fields: r.applied.map((a) => a.field), answered: r.answered });
       },
       (err) => this.log("profile.correction_failed", { message: String(err).slice(0, 120) }),
-    ).finally(() => { if (this.correcting === abort) this.correcting = null; });
+    ).finally(() => { if (this.correcting === abort) this.correcting = null; done(); });
   }
 
   /** Conversation engine v1 inputs for this turn: style, the greeting's opener, an initiative block, the camera lines. */
-  private v1Extras(turn: { greeting?: { item: Memory | null } | null; cue?: { block: string } | null }): Partial<Parameters<typeof buildInstructions>[0]> {
+  private v1Extras(turn: { greeting?: { item: Memory | null } | null; cue?: { block: string } | null }, userText = ""): Partial<Parameters<typeof buildInstructions>[0]> {
     const last = this.lastMessageAt;
-    const opener = turn.greeting
-      ? openerBlock({ hasProfile: !!this.user?.profile, sinceLastMs: last === undefined || last === null ? last : Math.max(0, (this.deps.memory?.now ?? Date.now)() - last), hasItem: !!turn.greeting.item })
-      : undefined;
+    let opener: string | undefined;
+    if (turn.greeting) {
+      const now = (this.deps.memory?.now ?? Date.now)();
+      const o = { hasProfile: !!this.user?.profile, sinceLastMs: last === undefined || last === null ? last : Math.max(0, now - last), hasItem: !!turn.greeting.item || !!this.memoryCall?.summaries.length || !!this.memoryCall?.lastCall };
+      // ^ notes from the last call (#307) are a thread to pick up too: "followup", not a bare "back" line (eval 11/3)
+      // #341: open on a different profile thing than the last calls (not for a follow-up or a "back already" line)
+      const kind = openerKind(o);
+      const rotates = kind === "first_known" || kind === "known" || kind === "back_today" || kind === "back_days";
+      const hooks = rotates ? profileHooks(this.user?.profile) : [];
+      // read-pick-record in one step for the account (an iPhone and a Mac greeting together never pick the same)
+      const { hook, recent } = pickOpenerTopic(this.deps.userId, hooks, this.openerRecent, daySeed(now) + (kind === "first_known" ? Math.floor(Math.random() * 1000) : 0), this.memoryCall ? this.deps.memory : undefined, (e) => this.log("convo.opener_topic_failed", { message: String(e).slice(0, 120) }), this.deps.memory && this.deps.userId ? this.historyRevision : 0);
+      // rotating kinds with no safe hook pass null (open on the companion's own thing); others pass undefined
+      opener = openerBlock({ ...o, hook: rotates ? hook : undefined, lastHook: recent.at(-1) ?? null, lastMood: this.memoryCall?.summaries[0]?.mood ?? null });
+      if (hook) this.log("convo.opener", { kind, hooks: hooks.length, recent: recent.length });
+      if (hook || o.hasItem) this.personalUsed++;
+    }
     let perception: string | undefined;
     let perceptionHint: string | undefined;
     try {
       perception = this.perception?.contextLine() ?? undefined;
       perceptionHint = turn.greeting || turn.cue ? undefined : this.perception?.pendingHint() ?? undefined;
     } catch { /* the reply never fails on the camera lane */ }
-    return { style: "v1", opener, initiative: turn.cue?.block, perception, perceptionHint };
+    // P1: closeness, question rhythm, mood, what landed, recall — one "This turn:" line on a user turn (never a greeting / cue)
+    let turnLine: string | undefined;
+    if (!turn.greeting && !turn.cue && userText) {
+      const userLines = [...this.history.filter((h) => h.role === "user").map((h) => h.text), userText];
+      turnLine = turnHints({
+        callNumber: this.callNumber,
+        lastReply: this.recentReplies.at(-1),
+        userText,
+        mood: moodLine(moodFrom(userLines)),
+        remembers: this.memories.length > 0 || !!this.memoryCall?.summaries.length,
+        mentionSpent: this.personalUsed > 0,
+      }) ?? undefined;
+    }
+    return { style: "v1", opener, initiative: turn.cue?.block, perception, perceptionHint, turn: turnLine };
   }
 
   private stopInitiative(): void {
@@ -1196,15 +1473,26 @@ export class Session {
 
   /** This call's turns (copy) — for the account's next device after a handoff. */
   historySnapshot(): HistoryItem[] {
-    return this.history.map((h) => ({ ...h }));
+    // the next device never gets a "forget that…" turn or what it removed (QA post-deploy 11/3)
+    return scrubHistory(this.history, avoidKeys(this.removedLines)).map((h) => ({ ...h }));
   }
 
   /** Revision of these turns, not the latest revision at socket close (which may arrive after Forget). */
   get historyForgetRevision(): number | null { return this.historyRevision; }
+  /** stopped or closed, even if its socket has not finished closing yet */
+  get isClosed(): boolean { return this.closed; }
+  /** the user asked to forget something at any point in this call (#447) */
+  forgetAsked = false;
+  /** the user hung up (`stop`), as opposed to a dropped socket or a move to the other device */
+  endedByUser = false;
 
   private remember(role: "user" | "assistant", text: string): void {
+    // whole call, not just the kept history: a forget request anywhere keeps this call's raw lines out of a return visit
+    // either detector: #442's (personalize, drives the do-not-mention scrub) or memory's broader one (#443)
+    if (role === "user" && (isForgetRequest(text) || isMemoryForgetRequest(text))) this.forgetAsked = true;
     this.history.push({ role, text });
     if (this.history.length > MAX_HISTORY) this.history.splice(0, this.history.length - MAX_HISTORY);
+    this.deps.onHistoryChange?.(role);
     if (role === "assistant") this.recentReplies = [...this.recentReplies, text].slice(-3);
   }
 
@@ -1213,7 +1501,9 @@ export class Session {
     const greeting = !!turn.greeting;
     const persona = this.persona!;
     const hangul = isMostlyHangul(text);
-    const interpret = this.mode === "interpret" || hangul;
+    // English only (11/3): in chat a Hangul transcript is answered in English, not auto-interpreted; the explicit
+    // interpretation mode is unchanged. GENITA_ENGLISH_ONLY=0 restores the F8 auto-switch.
+    const interpret = this.mode === "interpret" || (hangul && !englishOnly());
     if (interpret) {
       const from = hangul ? "Korean" : "English";
       const to = hangul ? "English" : "Korean";
@@ -1235,8 +1525,8 @@ export class Session {
       ...this.history.map((h): InputMessage => (h.role === "user" ? { role: "user", content: h.text } : { role: "assistant", content: h.text })),
       { role: "user", content },
     ];
-    const v1 = this.v1 ? this.v1Extras(turn) : {};
-    const instructions = buildInstructions({
+    const v1 = this.v1 ? this.v1Extras(turn, text) : {};
+    const base = buildInstructions({
       persona,
       user: this.user,
       memories: this.memories,
@@ -1246,12 +1536,20 @@ export class Session {
       onScreen: this.finds?.onScreen(),
       renamedFrom,
       // this call's one question rides the first user turns (the turn being built is userTurns + 1)
-      ask: this.ask && !this.ask.asked && this.userTurns < ASK_TURNS ? this.ask.line : undefined,
+      // never while watching together (the question would land on top of the show)
+      // the GK-1 question asks what we DON'T know: not a MENTION_RULE "personal thing you know" (Codex #423 P2: holding
+      // it behind the budget skipped it on every call 1–3 while beginCall had already used it up)
+      ask: this.ask && !this.ask.asked && !this.watch && this.userTurns < ASK_TURNS ? this.ask.line : undefined,
       localTime: localTimeLine(this.timeZone, new Date()) ?? undefined,
       // call 1's greeting only (v1 has its own first_known opener: no second personal mention)
       nod: greeting && this.nod && !this.v1 ? this.nod : turn.cue ? undefined : this.shorterLine ?? undefined,
       ...v1,
     });
+    // a refine after a product search in this call ("another one in black…") stays a search: the Finds runner's own rule
+    const recent = this.history.slice(-6).map((h) => `${h.role === "user" ? "User" : "You"}: ${h.text}`);
+    const afterProduct = this.finds ? this.finds.afterProduct(recent) : recent.some((l) => l.startsWith("User: ") && isProductAsk(l.slice(6)));
+    const suggestMac = !this.macSuggested && isOutfitAsk(text, afterProduct) && this.deps.macNearby?.() === true;
+    const instructions = suggestMac ? `${base}\n${SUGGEST_MAC_LINE}\n` : base;
     // said once, on the next reply the user asked for (not a greeting or an initiative turn)
     if (!greeting && !turn.cue) this.shorterLine = null;
     return {
@@ -1260,11 +1558,13 @@ export class Session {
       // Finds get the camera frames only, never the shared screen
       images: camera,
       lang: this.language,
+      suggestMac,
       req: {
         instructions: watch ? `${instructions}\n${watch.instructions}\n` : instructions,
         input,
         maxOutputTokens: 800,
-        tools: this.deps.config.webSearch ? [{ type: "web_search" }] : undefined,
+        // a real crisis turn answers at once, never after a web search (AI sweep C5: searched for hotlines, said nothing)
+        tools: this.deps.config.webSearch && !realCrisisSignal(text) ? [{ type: "web_search" }] : undefined,
       },
     };
   }
@@ -1316,6 +1616,7 @@ export class Session {
     const ops = this.deps.ops ?? getOps();
     if (ops.cappedUser(this.limitUserId()) && !ops.canSpeculate(this.limitUserId())) return;
     if (check !== this.specCheck || this.turn.phase !== "listening") return;
+    if (this.deps.turnGate && !this.deps.turnGate.peek()) return; // over the judge daily cap: no Spark guess
     const norm = normTranscript(text);
     if (!norm || this.closed || this.spec?.norm === norm) return;
     this.dropSpeculation();
@@ -1375,6 +1676,15 @@ export class Session {
     const reply: Reply = { utteranceId, abort: new AbortController(), spoken: [], firstAudioAt: null, audioMs: 0, doneTimer: null, chars: 0, fellBack: this.deviceVoiceForReply() && this.tts === "server" };
     const device = this.tts === "device";
     this.reply = reply;
+    // D41 daily cap: real user turns were charged in admitTurn(); the greeting and an initiative cue only run
+    // while a turn is left and never spend one. Over the cap: no Spark call, a daily_limit error, the call stays open.
+    if (synthetic && this.deps.turnGate && !this.deps.turnGate.peek()) {
+      this.dropSpeculation();
+      this.dailyLimit();
+      // after the reducer's own effects (state thinking) went out, so the last state is listening
+      queueMicrotask(() => this.finishReply(reply));
+      return;
+    }
     const signal = reply.abort.signal;
     const spec = self ? null : this.spec;
     if (!self) this.spec = null; // this turn was admitted synchronously before start_reply
@@ -1431,24 +1741,57 @@ export class Session {
       this.checkCorrection(text);
       this.userTurns++;
       this.remember("user", text);
+      // an explicit "remember …" goes to the memory extraction now, not after the answer (Codex #423 P1)
+      if (EXPLICIT_REMEMBER.test(text) && !replyMemoryTools().some((t) => "name" in t && t.name === "remember")) this.memoryCall?.saveNow(text);
     }
     // F10: a card pipeline runs beside the spoken answer (answer first, card after)
     let resolveSaid: (t: string | null) => void = () => {};
-    if (!interpret && !self && !synthetic && this.finds) {
+    // Chelsea 11/3: a web-searched answer also lands in the sheet with its sources (not when a card runs for this turn)
+    let cardTurn = false;
+    let searches: WebSearch[] = [];
+    // Demo S4: the suggest turn makes no outfit card from the phone's (maybe still kitchen) frames
+    if (!interpret && !self && !synthetic && this.finds && !built.suggestMac) {
       const said = new Promise<string | null>((r) => (resolveSaid = r));
       // history already holds this turn (remember above): the lines before it
       const recent = this.history.slice(-7, -1).map((h) => `${h.role === "user" ? "User" : "You"}: ${h.text}`);
       const started = this.finds.onTurn({ text, frames: built.images, utteranceId, replyText: said, recent });
+      cardTurn = !!started;
       signal.addEventListener("abort", () => resolveSaid(null), { once: true });
       if (started?.ack) {
         // PF-1: a short line now instead of a full answer (a full answer would guess products and links);
         // the card's own line follows when it lands
         if (spec && speculative === "hit") spec.abort.abort();
         const ack = started.ack;
-        pre = (async function* () {
+        const fixed = (async function* () {
           yield { type: "text" as const, delta: ack };
           yield { type: "done" as const, responseId: null, text: ack, status: "completed" };
         })();
+        if (started.kind === "product") {
+          // demo S5: the search can take 10–30 s, so no silent wait and no "On it." — one quick in-character reaction
+          // (no tools: nothing to narrate, no guessed products); the card and its own line follow when it lands.
+          // A failed reaction falls back to the short ack.
+          // text only: the frames already went to the search, and an image costs the reaction ~1–2 s of first word
+          const textOnly = Array.isArray(req.input)
+            ? req.input.map((m) => ("content" in m && Array.isArray(m.content) ? { ...m, content: m.content.filter((c) => c.type === "input_text").map((c) => (c as { text: string }).text).join(" ") } : m))
+            : req.input;
+          const react = this.sparkSource({ ...req, input: textOnly as typeof req.input, instructions: `${req.instructions ?? ""}\n${PRODUCT_REACTION_LINE}\n`, tools: undefined }, signal, undefined, false);
+          pre = (async function* () {
+            let said = false;
+            try {
+              for await (const ev of react) {
+                if (ev.type === "done") {
+                  if (said) { yield ev; return; }
+                  break; // an empty reaction: the short ack below, never the tool-carrying retry
+                }
+                if (ev.type === "text" && ev.delta.trim()) said = true;
+                yield ev;
+              }
+            } catch (err) {
+              if (said) throw err;
+            }
+            if (!said) yield* fixed;
+          })();
+        } else pre = fixed;
         this.log("finds.ack", { utteranceId, kind: started.kind });
       }
     }
@@ -1456,20 +1799,66 @@ export class Session {
     // Server voice: first clause goes out at its first comma ("Oh wow,") and long sentences split for rhythm
     const splitOptions = !device && this.deps.config.voice ? { eagerFirstClause: true, clauseMaxChars: 140 } : {};
     let splitter = new SentenceSplitter(splitOptions);
-    const sentences: { tts: string; display: string; emotion: string | null; face: { tag: Expression; intensity: number } | null }[] = [];
+    const sentences: { tts: string; display: string; emotion: string | null; face: { tag: Expression; intensity: number } | null; beat?: true; drop?: true }[] = [];
+    // #387 follow-up: watch together took the call's question back. The question is judged as a whole sentence,
+    // never clause by clause: server voice cuts "Weekends for you, | are they packed or lazy?" at the comma.
+    const ends = (d: string) => LOOKS_FINAL.test(d.trim());
+    let askHold: string[] = [];
+    let askReleasing = false;
+    /** a hold beat goes out on its own: it never releases or joins a held question clause (Codex r1 P2) */
+    let beating = false;
+    let droppedAsk = false;
+    /** the queued, not-yet-ended clauses of the sentence in progress (before the next one) */
+    const openClauses = (): number[] => {
+      const out: number[] = [];
+      // a dropped clause is a boundary: the dropped question never joins the next sentence (Codex r1 P2)
+      for (let k = sentences.length - 1; k >= 0 && !sentences[k].beat && !sentences[k].drop && !ends(sentences[k].display); k--) out.unshift(k);
+      return out;
+    };
+    /** Consumer side: clause i is part of a whole queued sentence that asks the dropped question → drop all of it. */
+    const askedAt = (i: number): boolean => {
+      if (!this.askDropped || interpret || self || sentences[i]?.beat) return false;
+      if (sentences[i].drop) return true;
+      let a = i, b = i;
+      while (a > 0 && !sentences[a - 1].beat && !sentences[a - 1].drop && !ends(sentences[a - 1].display)) a--;
+      while (b < sentences.length && !sentences[b].drop && !ends(sentences[b].display)) b++;
+      if (b < sentences.length && sentences[b].drop) return false;
+      if (b >= sentences.length) return false; // the sentence isn't finished yet: its end is judged on enqueue
+      const full = sentences.slice(a, b + 1).map((x) => x.display).join(" ");
+      if (!/\?\s*$/.test(sentences[b].display) || !replyAsks(full, this.askDropped)) return false;
+      // never leave the reply empty: when the question was its only real sentence and nothing else is coming,
+      // a short reaction takes its place (coordinator 11/3)
+      const alone = sparkDone && !sentences.some((x, k) => (k < a || k > b) && !x.beat && !x.drop);
+      for (let k = a; k <= b; k++) sentences[k].drop = true;
+      droppedAsk = true;
+      this.log("profile.ask_dropped", { utteranceId, queued: true, replaced: alone });
+      if (!alone || i < a) return true;
+      const ack = parseTaggedSentence(WATCH_ASK_FALLBACK);
+      sentences[i] = { tts: ack.ttsText, display: ack.displayText, emotion: ack.emotion ?? sentences[i].emotion, face: null };
+      if (jobs[i]) jobs[i] = undefined as never; // a prefetched TTS of the question is not used
+      return false;
+    };
+    /** real sentences only: a hold beat ("Mm, okay.") is never the answer (Codex #384) */
+    const said = () => sentences.filter((x) => !x.beat && !x.drop);
     let emotion: string | null = null;
     const waiter: { wake: (() => void) | null } = { wake: null };
     let sparkDone = false;
     let sparkError: unknown = null;
     let emptyCause: string | null = null;
+    let lostLine = false;
     let droppedOpener = false;
-    const narration = new NarrationJudge(!interpret && !self);
-    const hasAnswer = () => narration.hasAnswer(sentences.map(({ display }) => display));
+    // a she/he in the reply is the user only when their own line is about themselves (the v1 address check)
+    const narration = new NarrationJudge(!interpret && !self, { thirdPersonIsUser: !synthetic && thirdPersonCouldBeUser(text, this.user?.name) });
+    const hasAnswer = () => narration.hasAnswer(said().map(({ display }) => display));
     let onlyOpener: string | null = null;
     // v1 sentence guard (src/convo/guard.ts): the first dropped sentence, spoken only if nothing else is
-    const guarded: { first: { raw: string; cls: GuardClass } | null } = { first: null };
+    const guarded: { first: { raw: string; cls: GuardClass } | null; narration: boolean; tool: boolean } = { first: null, narration: false, tool: false };
     let laughs = 0;
-    const guardCtx = { camera: (built?.images.length ?? 0) > 0, userText: synthetic ? "" : text };
+    // #194 GK-1: this turn carries the call's one still-to-confirm question; the guard lets that question through
+    // (read from the request itself: it was built before this turn was counted)
+    const askTurn = !synthetic && !interpret && !!this.ask && (req.instructions ?? "").includes(this.ask.line);
+    const guardCtx = { camera: (built?.images.length ?? 0) > 0, userText: synthetic ? "" : text, askTurn };
+    let cutBefore = false;
     const enqueueSentences = (list: string[], keepOpener = false) => {
       for (const raw of list) {
         const p = parseTaggedSentence(raw);
@@ -1479,21 +1868,102 @@ export class Session {
         if (!p.displayText) continue;
         let tts = p.ttsText;
         if (!keepOpener && !sentences.length && !interpret && !self) tts = avoidRepeatedOpener(tts, this.recentReplies);
+        // v1: the user's name as a vocative once per few replies, not every line (11/3 tone pass)
+        if (this.v1 && tts && !keepOpener && !interpret && !self) {
+          const named = dropRepeatedName(tts, this.user?.name, [...this.recentReplies.slice(-2), ...sentences.map((x) => x.display)]);
+          if (named !== tts) { tts = named; this.log("convo.name_dropped", { utteranceId }); }
+        }
+        // v1 (AI sweep 11/3): "Summer should know that by now" — the user's name as a sentence subject → "You …"
+        if (this.v1 && tts && !interpret && !self) {
+          const you = nameAsYou(tts, this.user?.name);
+          if (you !== tts) { tts = you; this.log("convo.name_to_you", { utteranceId }); }
+        }
+        // AI sweep C1: "I'm really glad you told me — …" then "…, and I'm really glad you told me." — said once per reply
+        if (this.v1 && tts && !interpret && !self && sentences.some((x) => /\bglad you told me\b/i.test(x.display))) {
+          const once = tts.replace(/,?\s*(?:and\s+)?i'?m (?:really |so |just )?glad you told me(?: that)?(?=\s*[,.!?…]|$)/i, "");
+          if (once !== tts) { tts = once.replace(/\s+([.!?])/, "$1"); this.log("convo.phrase_repeat_dropped", { utteranceId }); }
+        }
+        // v1: "Hmm. Hmm, okay so…" (QA r5, 1/6: a hold beat then Spark's own "Hmm,"): a sentence that opens with the
+        // interjection the previous sentence was made of drops it ("Hmm." + "Hmm, okay so…" → "Hmm." + "Okay so…")
+        const prevSaid = sentences.at(-1)?.display;
+        // only a standalone interjection ("Hmm," / "Oh!"), never a word in use ("Well water…", "Oh Sehun…", Codex P2)
+        const lead = /^(?:\s*\[[^\]]*\]\s*)*([\p{L}']+)[,.!?…—-]/u.exec(tts)?.[1]?.toLowerCase();
+        const prevLead = /[\p{L}']+/u.exec(prevSaid ?? "")?.[0]?.toLowerCase();
+        if (this.v1 && tts && prevSaid && lead && lead === prevLead && isInterjectionOnly(prevSaid) && !interpret && !self) {
+          const once = avoidRepeatedOpener(tts, [prevSaid]);
+          if (once !== tts) { tts = once; this.log("convo.interjection_dropped", { utteranceId }); }
+        }
         if (!tts || !parseTaggedSentence(tts).displayText) {
+          cutBefore = true;
           onlyOpener ??= raw;
           droppedOpener = true; // a whole first clause ("Oh,") was the repeated opener
           continue;
         }
+        // v1: never narrate the user in the third person ("She's holding up the trench…" → "You're holding…", QA #354)
+        if (this.v1 && !interpret && !self) {
+          const addressed = addressUser(tts, { camera: guardCtx.camera, first: !sentences.some((x) => !isInterjectionOnly(x.display)), userText: guardCtx.userText, userName: this.user?.name });
+          if (addressed !== tts) { tts = addressed; this.log("convo.addressed_user", { utteranceId }); }
+        }
+        // watch together took this call's question back: a reply already asking it (built before) drops that sentence
+        if (this.askDropped && !interpret && !self && !askReleasing && !beating) {
+          const shown = parseTaggedSentence(tts).displayText;
+          // a clause that may start the question waits for the rest of its sentence
+          if (!ends(shown) && (askHold.length || replyAsks(`${shown.replace(/[\s,;:—-]+$/u, "")}?`, this.askDropped))) {
+            askHold.push(raw);
+            continue;
+          }
+          if (askHold.length || /\?\s*$/.test(shown)) {
+            const held = askHold;
+            askHold = [];
+            const queued = openClauses();
+            const full = [...queued.map((k) => sentences[k].display), ...held.map((h) => parseTaggedSentence(h).displayText), shown].join(" ");
+            if (/\?\s*$/.test(shown) && replyAsks(full, this.askDropped)) {
+              for (const k of queued) sentences[k].drop = true; // its first clause, queued before watch attached
+              droppedAsk = true;
+              this.log("profile.ask_dropped", { utteranceId });
+              continue;
+            }
+            if (held.length) {
+              askReleasing = true;
+              try { enqueueSentences(held, keepOpener); } finally { askReleasing = false; }
+            }
+          }
+        }
         if (this.v1 && !keepOpener && !interpret && !self) {
-          const cls = guardSentence(parseTaggedSentence(tts).displayText, guardCtx);
+          const found = guardSentence(parseTaggedSentence(tts).displayText, guardCtx);
+          // an announcement only leads a reply: once content was spoken, a later "lookup" sentence is kept (Codex #356 r6)
+          const cls = found === "narration" && sentences.some((x) => !isInterjectionOnly(x.display)) ? null : found;
           if (cls) {
-            guarded.first ??= { raw, cls };
+            // narration never becomes the spoken fallback; a style drop does (the first one kept)
+            if (!neverSpoken(cls)) guarded.first ??= { raw, cls };
+            else guarded.narration = true;
             this.log("convo.guard", { utteranceId, cls });
+            cutBefore = true;
             continue;
           }
         }
-        if (droppedOpener && !sentences.length) tts = tts.replace(/^(\s*(?:\[[^\]]*\]\s*)*)(\p{Ll})/u, (_, lead, c) => lead + c.toUpperCase());
+        // a sentence start is never lower case (QA P3: a guard dropped "Summer," after the hold beat → "Hmm. told you
+        // you'd crush it"); a clause after a comma ("Oh wow," + "that's huge") keeps its case
+        const prevEnd = sentences.at(-1)?.display.trim();
+        // only where a guard cut something (Codex #423 P2: "npm install ws." must stay as written)
+        if ((droppedOpener && !sentences.length) || (this.v1 && !interpret && (cutBefore || tts !== p.ttsText) && (!prevEnd || /[.!?…]["')\]]*$/.test(prevEnd)))) tts = tts.replace(/^(\s*(?:\[[^\]]*\]\s*)*)(\p{Ll})/u, (_, lead, c) => lead + c.toUpperCase());
+        // …and the other way round (QA P3 2/3: "Got you, Black top…"): mid-sentence after a comma piece, a word a guard
+        // capitalised goes back to how Spark wrote it
+        if (this.v1 && !interpret && prevEnd && !/[.!?…]["')\]]*$/.test(prevEnd) && tts !== p.ttsText) {
+          const w = /^(\s*(?:\[[^\]]*\]\s*)*)(\p{Lu})([\p{Ll}']*)/u.exec(tts);
+          if (w && w[2] + w[3] !== "I" && !new RegExp(`\\b${w[2]}${w[3]}\\b`, "u").test(p.ttsText) && new RegExp(`\\b${w[2].toLowerCase()}${w[3]}\\b`, "u").test(p.ttsText)) tts = w[1] + w[2].toLowerCase() + tts.slice(w[1].length + 1);
+        }
+        // QA P3: a returning greeting's question ended with "." 1/2 ("…how's the prep going.") — a greeting or initiative
+        // sentence that is plainly a question ends with "?"
+        if (this.v1 && synthetic && QUESTION_START.test(parseTaggedSentence(tts).displayText) && /\.\s*$/.test(tts) && !/\.\.\.\s*$/.test(tts)) tts = tts.replace(/\.\s*$/, "?");
         const display = tts === p.ttsText ? p.displayText : parseTaggedSentence(tts).displayText;
+        // a memory tool's follow-up round may repeat what was already said before the call (bug-fix lane smoke 11/3:
+        // "I knew you'd crush it… I knew you'd crush it…"): a sentence already spoken in this reply is not said twice
+        if (this.v1 && !interpret && !self) {
+          const key = normTranscript(display);
+          // only after a tool ran in this reply: an intentional repeat ("Breathe in. Breathe out." ×2) is kept (Codex r23)
+          if (key && guarded.tool && !isInterjectionOnly(display) && sentences.some((x) => normTranscript(x.display) === key)) { this.log("convo.duplicate_dropped", { utteranceId }); continue; }
+        }
         if (m.firstSentenceAt === undefined) {
           m.firstSentenceAt = this.now();
           m.firstSentenceChars = tts.length;
@@ -1503,6 +1973,7 @@ export class Session {
         // v1: one laugh per reply, none on a sad turn (DESIGN §7.2)
         if (this.v1 && face?.tag === "laugh") face = laughs++ > 0 || emotion === "sad" ? null : face;
         sentences.push({ tts, display, emotion, face });
+        cutBefore = false;
         // captions go out per sentence: the opener guard may rewrite the first one
         if (display) this.client.sendJson({ type: "reply.delta", utteranceId, text: (sentences.length > 1 ? " " : "") + display });
       }
@@ -1515,6 +1986,14 @@ export class Session {
       }
       enqueueSentences(speak);
     };
+    /** a held clause whose sentence never ended was not the question: say it */
+    const releaseAskHold = () => {
+      if (!askHold.length) return;
+      const held = askHold;
+      askHold = [];
+      askReleasing = true;
+      try { enqueueSentences(held); } finally { askReleasing = false; }
+    };
     const pushSentences = (list: string[]) => {
       for (const raw of list) {
         const p = parseTaggedSentence(raw);
@@ -1524,6 +2003,24 @@ export class Session {
     };
 
     // Producer: Spark stream → sentences
+    // hold cap (prod smoke 11/3 13:0x: a held pre-tool line kept a memory turn silent 5.9 s): if nothing has been
+    // said 1.5 s after Spark's first text, one short human beat goes out — never narration, never "let me…"
+    let beatTimer: NodeJS.Timeout | null = null;
+    const armBeat = () => {
+      if (beatTimer || !this.v1 || interpret || self) return;
+      beatTimer = setTimeout(() => {
+        if (signal.aborted || this.reply !== reply || sentences.length) return;
+        const before = sentences.length;
+        beating = true;
+        // never the opening word of the last replies (QA P3: "Hmm." started 2/4 return replies); Ooh / Mm before Hmm
+        const used = recentOpeningWords(this.recentReplies);
+        const beat = HOLD_BEATS.find((b) => !used.includes(b.replace(/<[^>]*>/g, "").trim().split(/[\s,.]/)[0].toLowerCase())) ?? HOLD_BEATS[utteranceId % HOLD_BEATS.length];
+        try { enqueueSentences([beat], true); } finally { beating = false; }
+        for (let i = before; i < sentences.length; i++) sentences[i].beat = true;
+        this.log("convo.hold_beat", { utteranceId });
+      }, HOLD_BEAT_MS);
+      beatTimer.unref?.();
+    };
     const producer = (async () => {
       try {
         if (self) {
@@ -1540,15 +2037,19 @@ export class Session {
           let status = "";
           let attemptError: unknown = null;
           try {
-            const stream = attempt === 0 ? (pre ?? this.sparkSource(req, signal, greeting?.item, !interpret && !cue, undefined, undefined, memoryRetry)) : this.sparkSource(req, signal, greeting?.item, !interpret && !cue, undefined, 1, memoryRetry);
+            const raw = attempt === 0 ? (pre ?? this.sparkSource(req, signal, greeting?.item, !interpret && !cue, undefined, undefined, memoryRetry)) : this.sparkSource(req, signal, greeting?.item, !interpret && !cue, undefined, 1, memoryRetry);
+            // Demo S4 (QA P2): the suggest turn must name the Mac; a reply that doesn't is swapped for the fixed line
+            const stream = built.suggestMac && !interpret && !self ? mustNameMac(raw, SUGGEST_MAC_REPLIES[utteranceId % SUGGEST_MAC_REPLIES.length], this.now) : raw;
             for await (const ev of stream) {
               if (signal.aborted) return;
               if (ev.type === "text") {
+                if (ev.delta.trim()) armBeat();
                 // a speculation hit's tokens waited in a buffer: count from when Spark sent the first one
                 if (ev.delta.trim() && m.firstTokenAt === undefined) m.firstTokenAt = attempt === 0 && pre && spec?.firstTextAt !== undefined ? Math.min(spec.firstTextAt, this.now()) : this.now();
                 gotText ||= !!ev.delta.trim();
                 pushSentences(splitter.push(ev.delta));
               } else if (ev.type === "tool") {
+                guarded.tool = true;
                 if (!interpret) {
                   // A tool may follow a sentence with no trailing space, or an unfinished clause.
                   pushSentences(splitter.flush());
@@ -1557,6 +2058,8 @@ export class Session {
                 }
                 if (m.firstTokenAt === undefined) m.toolsBeforeText = (m.toolsBeforeText ?? 0) + 1;
                 this.client.sendJson({ type: "tool", utteranceId, name: ev.name, status: ev.status });
+              } else if (ev.type === "sources") {
+                if (!interpret && searches.length < 4) searches.push({ query: ev.query, urls: ev.urls.slice(0, 10) });
               } else if (ev.type === "done") status = ev.status;
             }
           } catch (err) {
@@ -1566,19 +2069,37 @@ export class Session {
           if (signal.aborted) return;
           pushSentences(splitter.flush());
           applyNarration(narration.finish());
+          releaseAskHold();
           // A bare "Yes!"/"Okay." is a valid answer. Defer a dropped eager
           // opener until EOF so "Oh, the rest" still loses the repeated Oh.
-          if (!sentences.length && guarded.first) {
+          if (!said().length && guarded.first && !neverSpoken(guarded.first.cls)) {
             // never an empty reply: a style drop speaks its sentence; a safety drop says the fallback line
             const fb = fallbackLine(guarded.first.cls);
             enqueueSentences(fb ? [fb] : [guarded.first.raw], true);
           }
-          if (!sentences.length && onlyOpener) enqueueSentences([onlyOpener], true);
+          if (!said().length && onlyOpener) enqueueSentences([onlyOpener], true);
+          // the retry also only announced a lookup and NO tool ran: say so honestly. With a tool, never "not sure"
+          // right before (or instead of) the real result — say nothing (main 11/3: Scene 4 map, Scene 5 products)
+          if (!said().length && attempt === 1 && guarded.narration && !guarded.tool) enqueueSentences([NO_ANSWER_LINE], true);
+          // the only real sentence was the question watch together took back: a short reaction instead of a retry
+          if (!said().length && droppedAsk) enqueueSentences([WATCH_ASK_FALLBACK], true);
+          // AI sweep 11/3 [P1 safety] (2/13): a real crisis hint answered with a promise or "I'm staying with you" and no
+          // pointer to real help gets one fixed line (DESIGN §8.1)
+          // a reply the help line now covers is not an error card either (Codex gate P2)
+          if (this.v1 && !interpret && !self && !synthetic && realCrisisSignal(text) && !sentences.some((x) => HELP_POINTER.test(x.display))) { enqueueSentences([CRISIS_HELP_LINE], true); lostLine = true; }
+          // S4: a guard dropped the Mac sentence ("You look great already, but move our call to your Mac…", camera off):
+          // the ask is still said (Codex #423 final P2)
+          if (built.suggestMac && !interpret && !self && !sparkError && (guarded.first || guarded.narration) && sentences.length && !sentences.some((x) => /\bMac\b/i.test(x.display))) enqueueSentences([SUGGEST_MAC_TAIL], true);
           if (hasAnswer()) { sparkError = attemptError; break; }
           emptyCause = attemptError ? "upstream_error_before_text" : gotText ? "filtered_only_content" : `${status || "stream_ended"}_without_text`;
           if (attempt === 0) this.log("spark.empty_retry", { utteranceId, cause: emptyCause, status });
           if (attempt === 1) sparkError = attemptError;
+          // a 504 / dropped call: a short pause before the one retry, not straight back into the same spike
+          if (attempt === 0 && attemptError) await new Promise((r) => setTimeout(r, UPSTREAM_RETRY_MS));
+          if (signal.aborted) return;
           splitter = new SentenceSplitter(splitOptions);
+          searches = [];
+          askHold = [];
           onlyOpener = null;
           guarded.first = null;
           laughs = 0;
@@ -1586,11 +2107,31 @@ export class Session {
           droppedOpener = false;
           m.firstTokenAt = undefined;
         }
+        // both tries came back empty or failed: the call goes on — one line in character, never the error card
+        if (!signal.aborted && !hasAnswer() && !interpret && !self) {
+          // a real crisis turn never gets "say that again": the help line instead (AI sweep, P1 safety)
+          enqueueSentences([this.v1 && realCrisisSignal(text) ? CRISIS_HELP_LINE : LOST_LINE], true);
+          lostLine = true;
+          this.log("spark.lost_line", { utteranceId, cause: emptyCause, error: sparkError instanceof Error ? sparkError.message.slice(0, 120) : null });
+        }
       } catch (err) {
         if (!signal.aborted) sparkError = err;
       } finally {
-        if (!signal.aborted) applyNarration(narration.finish());
+        if (!signal.aborted) {
+          applyNarration(narration.finish());
+          releaseAskHold();
+          // the consumer dropped the only real sentence while Spark was still writing (nothing else came)
+          if (!said().length && droppedAsk) enqueueSentences([WATCH_ASK_FALLBACK], true);
+          // AI sweep 11/3 [P1 safety] (2/13): a real crisis hint answered with a promise or "I'm staying with you" and no
+          // pointer to real help gets one fixed line (DESIGN §8.1)
+          // a reply the help line now covers is not an error card either (Codex gate P2)
+          if (this.v1 && !interpret && !self && !synthetic && realCrisisSignal(text) && !sentences.some((x) => HELP_POINTER.test(x.display))) { enqueueSentences([CRISIS_HELP_LINE], true); lostLine = true; }
+          // S4: a guard dropped the Mac sentence ("You look great already, but move our call to your Mac…", camera off):
+          // the ask is still said (Codex #423 final P2)
+          if (built.suggestMac && !interpret && !self && !sparkError && (guarded.first || guarded.narration) && sentences.length && !sentences.some((x) => /\bMac\b/i.test(x.display))) enqueueSentences([SUGGEST_MAC_TAIL], true);
+        }
         sparkDone = true;
+        if (beatTimer) clearTimeout(beatTimer);
         waiter.wake?.();
       }
     })();
@@ -1598,7 +2139,7 @@ export class Session {
     // Consumer: sentences → TTS (one sentence prefetched ahead) → client
     const jobs: Eager<TtsChunk>[] = [];
     const startJob = (i: number) => {
-      if (jobs[i] || !sentences[i]) return;
+      if (jobs[i] || !sentences[i] || askedAt(i)) return;
       const s = sentences[i];
       jobs[i] = new Eager(
         this.deps.tts({
@@ -1637,6 +2178,9 @@ export class Session {
       while (!sentences[i] && !sparkDone && !signal.aborted) await new Promise<void>((r) => (waiter.wake = r));
       waiter.wake = null;
       if (signal.aborted || !sentences[i]) break;
+      // watch together attached while this question was queued (or its TTS prefetched): it is not said
+      // (read the sentence after the check: the only sentence may have been replaced by the short reaction)
+      if (askedAt(i)) continue;
       const s = sentences[i];
       if (device || reply.fellBack) {
         if (reply.firstAudioAt === null) await this.untilUserQuiet(signal);
@@ -1757,7 +2301,8 @@ export class Session {
       return;
     }
     if (sparkError) {
-      this.error("spark_unavailable", "The companion could not answer. Try again.", true);
+      // the lost-you line already covered it: no error card over a call that goes on
+      if (!lostLine) this.error("spark_unavailable", "The companion could not answer. Try again.", true);
       this.log("spark.error", { message: sparkError instanceof Error ? sparkError.message.slice(0, 200) : "unknown" });
     }
     if (device) {
@@ -1773,6 +2318,11 @@ export class Session {
     // its script would otherwise be extracted as something the user said
     if (full && !interpret) { this.remember("assistant", full); if (!self) this.memoryCall?.assistantMessage(full); }
     if (full && !interpret && !synthetic && !self) this.memoryCall?.completedTurn(text, full);
+    // Demo S4: counted as asked only once the reply actually named the Mac (a failed or cut-off reply can ask again)
+    if (built.suggestMac && /\bMac\b/i.test(full)) { this.macSuggested = true; this.log("handoff.suggest_mac", { utteranceId }); }
+    if (this.v1 && full && !interpret && !self && !greeting && !cue) {
+      if (mentionsProfile(full, this.user?.profile, text)) { this.personalUsed++; this.log("convo.personal_mention", { utteranceId, used: this.personalUsed }); }
+    }
     // GK-1: this reply asked the call's planned question → "Getting to know you · {topic}"; the next line may answer it
     if (full && !interpret && !self && this.ask?.topic && !this.ask.asked && replyAsks(full, this.ask.topic)) {
       this.ask.asked = true;
@@ -1820,6 +2370,16 @@ export class Session {
     const playEnd = reply.firstAudioAt === null ? 0 : reply.firstAudioAt + reply.audioMs + (device ? 0 : PLAYBACK_SLACK_MS);
     const wait = Math.max(0, playEnd - this.now());
     reply.doneTimer = setTimeout(() => this.finishReply(reply), wait);
+    // speech first, sheet after: the sources card when the answer has played (finishReply: playback_done or the estimate)
+    if (searches.length && full && !interpret && !self && !synthetic && !cardTurn && !sparkError && this.finds) {
+      const finds = this.finds;
+      const looked = searches;
+      reply.webAnswer = () => {
+        if (this.finds !== finds) return;
+        const findId = finds.webAnswer({ utteranceId, question: text, said: full, searches: looked });
+        if (findId) this.log("finds.web_answer", { utteranceId, findId, searches: looked.length });
+      };
+    }
   }
 
   /**
@@ -1850,19 +2410,35 @@ export class Session {
     reply.doneTimer = null;
     if (this.reply !== reply) return;
     this.reply = null;
+    const card = reply.webAnswer;
+    reply.webAnswer = null;
+    if (card && !reply.abort.signal.aborted && !this.closed && this.mode !== "interpret") card();
     this.initiative?.activity(this.now());
     if (reply.firstAudioAt !== null) this.client.sendJson({ type: "speaking", on: false, utteranceId: reply.utteranceId });
     this.dispatch({ type: "reply_done", utteranceId: reply.utteranceId });
+  }
+
+  private dailyLimit(): void {
+    this.log("turn.daily_limit", {});
+    this.error("daily_limit", "Today's turns for this access code are used up. The limit resets at 00:00 UTC.", false);
   }
 
   private limitUserId(): string | null | undefined {
     return this.deps.turnUserId === null ? null : this.deps.turnUserId ?? this.deps.userId;
   }
 
+  /** One admission point for both caps: the D41 judge cap is checked first and spent only when the D46 cap
+   * also admits the turn, so a refusal by either never charges the other. */
   private admitTurn(): boolean {
     if (this.closed) return false;
+    const gate = this.deps.turnGate;
+    if (gate && !gate.peek()) {
+      this.dailyLimit();
+      return false;
+    }
     let admitted = false;
     (this.deps.ops ?? getOps()).userTurn(this.limitUserId(), () => { admitted = true; }, (message) => this.error("spark_unavailable", message, false));
+    if (admitted && gate) gate.take();
     return admitted;
   }
 

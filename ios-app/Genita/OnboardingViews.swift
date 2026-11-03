@@ -12,7 +12,9 @@ struct RootView: View {
                 case .welcome: ReferenceWelcomeView { model.go(.signIn) }
                 case .signIn: ReferenceSignInView(model: model)
                 case .consent: ConsentView(model: model)
-                case .name, .prompt, .paste, .preparing, .preferences, .image, .voice, .depth, .help, .relationship, .challenge, .tempo, .initiative, .boundaries, .presence, .summary: ReferenceOnboardingView(model: model)
+                // D47 HISY v2: I03 / N3 → HISY-0 (S0) → cards → HISY-7 (the six I04 rows are still saved)
+                case .preferences: HISYView(model: model)
+                case .name, .prompt, .paste, .preparing, .image, .voice, .depth, .help, .relationship, .challenge, .tempo, .initiative, .boundaries, .presence, .summary: ReferenceOnboardingView(model: model)
                 case .imageCheck: ImageCheckView(model: model)
                 case .companionName: CompanionNameView(model: model)
                 case .bringing: BringingView(model: model)
@@ -57,11 +59,9 @@ struct RootView: View {
     /// What V04 shows when the server can't be reached at all: the same curated four per look (greyed).
     static func fallback(kind: String?) -> [OnboardingClient.CompanionVoice] {
         func v(_ id: String, _ name: String, _ blurb: String) -> OnboardingClient.CompanionVoice { .init(id: id, name: name, blurb: blurb) }
-        switch kind {
-        case "animal": return [v("16", "Pip", "Cheery, light"), v("22", "Mochi", "Soft, gentle"), v("34", "Juno", "Lively, bright"), v("80", "Rue", "Mellow, easy")]
-        case "character": return [v("68", "Nova", "Bright, clear"), v("64", "Ivy", "Sparkly, light"), v("44", "Wren", "Dreamy, soft"), v("0", "Coco", "Playful, quick")]
-        default: return [v("72", "Tara", "Warm, bright"), v("120", "Leah", "Soft, steady"), v("36", "Leo", "Calm, low"), v("24", "Dan", "Easygoing")]
-        }
+        // 11/3: the same four for every look (2 women + 2 men), as genita-server src/prep/voices.ts DEFAULT_VOICES
+        _ = kind
+        return [v("72", "Tara", "Warm, bright (female)"), v("9", "Leah", "Soft, easygoing (female)"), v("19", "Leo", "Calm, deep (male)"), v("26", "Dan", "Friendly, relaxed (male)")]
     }
 
     func load(client: OnboardingClient, imageId: String?, kind: String?) async {

@@ -16,15 +16,21 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 
 | date | change |
 |---|---|
+| 11/3 | `backchannel {kind: "mm" \| "yeah"}` (server → app, convo P1 #345): during a long user turn, a 1.2 s mid-sentence pause → play a soft listening sound from the app's own clips; it is not a reply and changes no state. Server flag `GENITA_BACKCHANNEL=1`, off by default. Additive: older apps decode it as unknown and ignore it. |
+| 11/3 | Proximity handoff: `/v1/presence` gets `proximity.arm` / `proximity.disarm` (iPhone) and `proximity.seen {token}` (Mac), answered with `proximity.token`, `proximity.unavailable`, `proximity.result`, plus `proximity.peer {armed}` to Macs; new claim trigger `proximity` (section **Handoff → Proximity**). Additive; older builds never send them. |
 | 11/3 | D34 / #153 prep: scene → Meta face set only. Session hints use `lip:"none"` for humans, animals and characters; the device animates the face set. Legacy prep response keys remain neutral (`emotionVideos:{}`, video/lip steps `skipped`, lip URL `null`). See [PREP_API.md](PREP_API.md). |
 | 11/2 | D34 / #153: removed non-Meta voice and remote lip-worker paths. Binary kind 2 is reserved and never emitted. Unknown legacy lip modes safely select `none`; `atlas` playback, kind 1 audio, `say` and protocol v1 remain supported. |
 | 11/2 | v1 published. |
+| 11/3 | Watch together, screen text (additive): `start.title` and a new `context {title}` message carry the shared window's title (a browser tab: "<YouTube video title> - YouTube"), read on the Mac with the ScreenCaptureKit window title (no OCR, no extra permission). Server: control/bidi characters stripped, ≤ 160 chars, handed to Spark as quoted data (memo + question context), cleared on stop. A name written on screen (title, caption) may be used as written; the no-face-identity rule is unchanged. Old clients simply never send it. |
 | 11/3 | Watch together, motion + reactions (additive): `frame.motion` (optional); the Mac sends ≤ 3 fps at ≤ 768 px. The memo (scene timeline) runs every 3 s while the screen changes, 1.2 s after a finished video line, and 0.7 s after a motion spike, on a 5-frame sequence ~0.6 s apart; a turn gets the last ~1.4 s as 3 frames. Proactive reactions: ≥ 25 s apart, held for a pause (never over the video's dialogue or anyone talking), face tag `[smileopen]` (funny), `[smile]` (sweet), `[surprised]`. A black video inside a visible page (DRM, e.g. Netflix) gets one honest line instead of a guess. |
 | 11/3 | Watch together, realtime (no wire change): a turn while sharing gets the newest screen frame (last) plus one ~2 s older (was 4 over ≈6 s), the memo refreshes every 5 s while the screen changes (was 12 s), the echo check decides from the video's partial line instead of waiting up to 1.5 s, and the prompt takes the user's naming of someone on screen as given and answers with what is visible (no face-based identity). |
 | 11/3 | Handoff (#199): with server memory on, a call starting while the account has another live call (or one ended < 10 min ago) is seeded with that call's turns and skips the greeting; optional `start.handoff: true` lets the app's own `history` seed it when the server has none. Additive. |
 | 11/2 | F0-L4: TS + Swift types and shared samples. Added optional `turn.metrics.speculative` (`hit`/`miss`/`none`). No breaking change. |
 | 11/2 | F10 Finds (F5-L3, F5-L8, F10-L3~L6): new events `find.started`, `find.progress`, `find.items`, `observe.boxes`, `find.created`, `find.image`, `find.failed`; new client messages `find.confirm`, `find.stop`; optional `text.findId`, `start.user.id`, `start.user.timeZone`; REST `/v1/finds`. A turn may now get one server-initiated reply after it (the card's line; an ordinary `state`/`reply.delta`/`audio`/`reply` sequence with a new `utteranceId`). Additive. |
 | 11/2 | F1-L5: the bearer can be the user's session JWT (from `POST /auth/apple` or `/auth/exchange`); the shared `GENITA_SESSION_TOKEN` keeps working as a dev fallback. Auth failures now complete the upgrade and close with `4401` (was HTTP 401 before the upgrade); a signed-in user without AI-data consent gets `4403`. Clients that treated any failed connect as "can't connect" keep working; to route correctly, map 4401 → sign in (A02), 4403 → consent (CS01). |
+| 11/3 | D41 Judge access: `POST /auth/judge {code, device?}` → the same body as `POST /auth/apple` (session JWT + `/me` view) for the demo account that code belongs to. 401 wrong code, 400 no code, 429 after 5 wrong tries per IP in 10 min, 404 when `GENITA_JUDGE_CODES` is unset. Additive; WS and other routes unchanged. |
+| 11/3 | D41 judge demo companion: a Judge access account with no companion gets a ready-made "Jin" at sign-in (copied from the `demo:template` account, `npm run demo:template`). `/me` (and the sign-in body) adds `companionDemo: boolean`; `GET /v1/companion` adds `demo: boolean`; `POST /v1/companion` replaces a `demo:true` companion instead of `409` (see PREP_API.md). Additive. |
+| 11/3 | D41 Judge access daily cap: new `error` code `daily_limit` (retryable `false`) when a judge demo account has used today's turns (per code, UTC day, `GENITA_JUDGE_DAILY_TURNS`, default 200). The socket stays open; the refused turn gets no reply. Additive: apps that don't know the code just log it. |
 | 11/2 | F8-L1 interpretation: new events `interpret.pair` and `interpret.bubble` (two-language bubbles with speaker side); new app message `hold`; `start` and `mode` take optional `interpret {source, other, app}`; Mac call mode sends app→server binary frames with a `GA` header (kind `3` mic, `4` call sound); `mode.changed.by` can be `model` (voice switch). In interpret mode speech no longer cancels Genita (only `barge_in` does). Additive: a chat-only app sees nothing new. |
 | 11/3 | Pill line: optional `FindCard.pill` and `find.items.pill` — the status pill's text for a card, ≤ 28 characters (one line on iPhone and Mac). `say` is spoken, `pill` is shown. Product: same as `say`. Additive. |
 | 11/3 | #199: `find.started` and `find.progress` take optional `evidence {style, situation}` on product searches — the import line the search follows (top Likes line at start, the line the picks follow once known); show as-is when present. A product ask on a call continued from the other device refines the search asked there (from the conversation's turns). Additive. |
@@ -41,8 +47,10 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 | 11/2 | F6-L7: conversation owner. New socket `/v1/presence` and `GET /v1/handoff`, `POST /v1/handoff/claim|release` (section **Handoff**). `/v1/session?device=iphone\|mac` now plays audio only while that device owns the conversation; a call without `device` is not gated (old builds keep working). Call sockets also get the `ownership` event (unknown to old builds → ignored). After a move the old device's reply ends with `utterance.cancelled` reason `client`, so every build flushes its queue. No breaking change. |
 | 11/3 | L4 lip timing (Meta MMS forced aligner): new event `audio.timing {utteranceId, sentence, seq, words, phonemes}` after each clause's audio when the server runs with `GENITA_VOICE_ALIGN=1`. Additive: unknown to old builds → ignored; `audio` events are unchanged. |
 | 11/3 | Expression layer: new event `expression {utteranceId, sentence, tag, intensity, startMs, endMs}` (tag `smile\|smileopen\|laugh\|surprised\|concerned`), at most one per reply clause, server voice only, after that clause's audio. Nothing for neutral clauses. `GENITA_EXPRESSION=0` turns it off. Additive: unknown to old builds → ignored. |
+| 11/3 | PERC-1 perception (#319): new app message `perception.frame {image}` and optional `ready.perception: true` (sent only when the server runs `GENITA_PERCEPTION=1`). The app sends face crops only when it sees `ready.perception`. No server event; the companion just reacts more like a person. Additive: off by default, old apps send nothing and see nothing new. |
 | 11/3 | App config: new public REST `GET /v1/app-config` (copy, flags, tuning, update nudges, remote asset URLs; ETag/304). No WebSocket change. Additive. |
 | 11/3 | D27 voice GPU capacity: above `GENITA_VOICE_MAX_CALLS` (default 3, 0 = unlimited), chat and interpretation replies use the existing `say` fallback; server voice resumes from the next reply once a seat is free. Voice never switches mid-reply. No wire or `ready` changes. |
+| 11/3 | D27 capacity for judging: `GENITA_VOICE_MAX_CALLS` default 3 → 8 (the voice GPU now autoscales early, up to 4 containers). A full GPU queue answers 503 `busy` within 2.5 s; that sentence uses the existing `say` fallback and server voice is retried after 2 s (other failures still 30 s). No wire changes. |
 
 ```
 wss://<host>/v1/session
@@ -83,6 +91,7 @@ queues and plays it, and flushes the queue on `utterance.cancelled`.
 | `audio_start` | — | mic on (default after `start` unless `mic:false`) |
 | `audio_stop` | — | mic off; server pads 0.8 s silence so a cut sentence still ends |
 | `text` | `text`, optional `frames` | typed message (S08). Cancels any reply in progress, starts a new one. |
+| `perception.frame` | `image: jpeg` | PERC-1: one fixed upper-centre crop of the front-camera frame (the selfie face region, no face detection on device), base64 JPEG 256–384 px, < 300 k chars, for perception. Only when `ready.perception` is true, camera on, chat mode; on face change (≥ 1 s apart) or every 2.5 s. Ignored otherwise; never stored. See **Perception**. |
 | `frames` | `images: [jpeg]` (≤2) | camera frames for the **next** user turn (voice or text), valid 15 s. Base64 JPEG or `data:image/jpeg;base64,…`, each < 1.5 MB. Two frames measured 2.1 s first token vs 6.5 s for a video upload. |
 | `barge_in` | — | user tapped to interrupt; cancels immediately |
 | `playback_done` | `utteranceId` | app finished playing the reply; ends `speaking` earlier than the server's estimate |
@@ -212,6 +221,7 @@ contracts and offline/live checks: [`src/memory/README.md`](src/memory/README.md
 | `ready` | `protocol`, `sessionId`, `mode`, `audio {in,out,frameHeaderBytes}`, `lip {requested, active, reason}`, `voiceId`, `bargeIn`, `tts` | session is live; `tts` = the voice mode actually used (`server` \| `device`) |
 | `state` | `state: listening \| thinking \| speaking \| interrupted` | `interrupted` is momentary, always followed by `listening` |
 | `speech.start` / `speech.end` | `turnId` | ASR heard the user start / stop |
+| `backchannel` | `kind: mm \| yeah` | mid user turn (≥ 12 words, 1.2 s pause, ≤ 2 per turn, ≥ 6 s apart): play a short soft listening clip; not a reply, no state change. Only with `GENITA_BACKCHANNEL=1` |
 | `transcript` | `text`, `final`, `turnId?`, `source?: voice \| text` | partials are cumulative; `final:true` is the user's turn |
 | `interpret.detected` | `from`, `to` | chat mode only: a Korean turn is being passed on to the user instead of answered |
 | `interpret.pair` | `user`, `other` (string or null), `source`, `by: auto \| client`, `app?` | interpret mode started (`other: null` = INT-1 "listening for the other language") or the other language was just detected (INT-2 bar "Korean ↔ English") |
@@ -356,6 +366,15 @@ Threat line (no new endpoint on genita-server): the voice service is called only
 token from SSM, constant-time compare, 400-char text cap, max 3 GPU containers, daily request cap
 (`VOICE_DAILY_CAP`, 429 → device voice). Data sent = reply text only.
 
+## Perception (PERC-1, camera reactions)
+
+Off unless the server runs `GENITA_PERCEPTION=1`; then `ready.perception: true`. While the camera is on in chat mode the app
+sends `perception.frame` (a fixed upper-centre crop of the front-camera frame; no on-device AI, runtime AI is Meta-only) at most every second, normally every 2.5 s or when the face changes. The server reads one
+crop at a time with Muse Spark (strict JSON: expression, intensity, gaze, engagement, notable, confidence), smooths the reads
+and keeps only that in memory for the call; the crop is dropped right after the read. Nothing comes back on the socket: the
+conversation engine uses the state to react (a smile at its joke, a laugh, confusion, tiredness, looking away) at most once a
+minute. No new server events. Design: `conversation-engine/PERCEPTION.md`.
+
 ## Watch together (F5, Mac screen share)
 
 A second WebSocket per call, opened by the Mac only while it shares its screen.
@@ -374,7 +393,7 @@ from hitting the 120 s idle close.
 
 | Direction | Frame | Content |
 |---|---|---|
-| app → server | text | `start {source?}` first (source = shared app name, "Safari"; sent again while sharing = the share moved to another window or display), then `frame {image, blank?, motion?}`, `stop`, `ping {t}`. `motion` (11/3, optional): 0–1 change from the previous sent frame (mean abs luma, 32×18); ≥ 0.1 = a cut or a big move |
+| app → server | text | `start {source?}` first (source = shared app name, "Safari"; sent again while sharing = the share moved to another window or display), then `frame {image, blank?, motion?}`, `context {title}` (title changed, 11/3), `stop`, `ping {t}`. `start.title` = window title. `motion` (11/3, optional): 0–1 change from the previous sent frame (mean abs luma, 32×18); ≥ 0.1 = a cut or a big move |
 | app → server | binary | the shared screen's **system audio**, PCM s16le mono 24 kHz, real time (ScreenCaptureKit `capturesAudio`, `excludesCurrentProcessAudio` so Genita's voice is never in it). Gaps are padded with silence on the server. |
 | server → app | text | events below |
 
@@ -593,6 +612,9 @@ The server pings every 2 s and drops a socket silent for 6 s, so the other devic
 | `release` | `epoch?` | the owner gives it up → owner null until the next call `start` or claim |
 | `move.request` | `to` | Move to Mac / Move to iPhone. Relayed to the other device, which answers by sending `claim`. |
 | `presence` | `active` | `false` on lock/background, `true` on return. A locked device does not take move requests. |
+| `proximity.arm` | — | iPhone only: "I own the conversation in a live call, give me a Bluetooth token". Re-sent every 30 s to rotate. |
+| `proximity.disarm` | — | iPhone only: the call ended, moved, or the app left the front; its tokens stop counting |
+| `proximity.seen` | `token` | Mac only: this account's iPhone token was held close (RSSI over the threshold for 0.5 s) |
 | `ping` | `t` | → `pong {t}` |
 
 | server → app | fields | meaning |
@@ -602,6 +624,10 @@ The server pings every 2 s and drops a socket silent for 6 s, so the other devic
 | `peer` | `device`, `online`, `active` | the other device's presence |
 | `move.request` | `from` | the other device asked to move here: claim if the app is in front |
 | `move.failed` | `to`, `reason: peer_offline \| peer_inactive` | at once, no 5 s wait (MV-E) |
+| `proximity.token` | `token`, `expiresIn` (s) | answer to `proximity.arm`: advertise this as the BLE local name |
+| `proximity.unavailable` | `reason: not_owner \| not_in_call` | answer to `proximity.arm` (`not_owner` = the Mac has it): don't advertise |
+| `proximity.peer` | `armed` | to Macs: this account's iPhone is (not) advertising a token now. Sent on connect and on every change; the Mac scans (and asks for Bluetooth) only while `armed` |
+| `proximity.result` | `accepted`, `reason: ok \| unknown_token \| expired \| not_owner \| not_in_call \| phone_inactive \| mac_inactive \| cooldown \| rate_limited` | answer to `proximity.seen`. `ok` → the server already claimed for the Mac (`ownership` with trigger `proximity` follows) |
 | `error` | `code` | `bad_message`, `bad_epoch`, `unknown_type`, `server_error` |
 
 What the server does on a claim that changes the owner: (1) shuts the audio gate and cancels the current
@@ -616,6 +642,23 @@ a `start` while the other device owns it does not move it.
 HTTP (same auth): `GET /v1/handoff` → `{owner, epoch, conversationId}` ·
 `POST /v1/handoff/claim {device, epoch?, trigger?}` / `POST /v1/handoff/release {device, epoch?}` → `{accepted, owner, epoch, conversationId}` (400 on a bad device or an epoch outside int4).
 
+### Proximity: bring the iPhone close to the Mac (no code, no tap)
+
+Both apps are signed in to the same account, so they are already paired: the server knows both presences. During a
+live iPhone call the iPhone (owner) sends `proximity.arm`; the server answers with an 8-symbol token (Crockford base32,
+40 random bits, valid 60 s, at most two live per account). The iPhone advertises it over Bluetooth LE: service
+`6E1D0001-7A2B-4C3D-9E4F-6A656E697461`, local name = the token. The Mac app scans for that service while the iPhone owns
+the conversation and reports a token whose RSSI held at or above the threshold (default −45 dBm, re-armed below
+−55 dBm) for 0.5 s. The server accepts it only when the token was issued to this account, is unexpired, its iPhone
+presence socket is open and in front, the Mac has not taken the conversation since the token was issued (same epoch; a fresh conversation nobody claimed counts as the iPhone's), the account
+has a started call (`start` accepted, not closed), the reporting Mac is in front, and no proximity move happened in the
+last 10 s. All of that is checked inside the account's serial claim section, right before the write, so a tap, lock or
+disarm that arrives first wins. Then it claims for the Mac with trigger `proximity` (the usual gate, cancel and
+`ownership` broadcast), and all of that account's tokens are spent. Locking the iPhone (`presence {active:false}`) drops
+its tokens. A stranger's token never matches another account. One report per account per 200 ms, across all its Mac
+sockets (`rate_limited`). Tokens are
+never logged; a rejection logs `handoff.proximity_rejected {reason}`.
+
 Events for analytics: the server logs `handoff.preparing {from, to, trigger}`, `handoff.committed {from, to, total_ms, trigger, epoch}`, `handoff.failed {reason}`.
 One process holds the gate (in memory); several server instances would need a shared channel for it.
 
@@ -626,6 +669,7 @@ One process holds the gate (in memory); several server instances would need a sh
 | `spark_unavailable` | yes | show the "couldn't answer" state (S09-F); nothing was made up |
 | `tts_unavailable` | yes | show captions for this reply; the next reply tries voice again |
 | `asr_unavailable` | yes | voice input down; offer text (S08) |
+| `daily_limit` | no | this account's turns for today are used up (Judge access codes, `GENITA_JUDGE_DAILY_TURNS`, D41). The turn was not answered and nothing was made up; the call stays open. Show the "couldn't answer" state; the limit resets at 00:00 UTC |
 | `not_started`, `already_started`, `bad_persona`, `bad_message`, `unknown_type`, `frame_too_large` | no | client bug |
 
 ## Measured (11/2, local server, real vendors, `npm run smoke -- --turns=20`)

@@ -14,6 +14,7 @@ import { createPrepRoutes } from "../src/prep/routes.ts";
 import type { PrepDeps } from "../src/prep/pipeline.ts";
 import type { PrepRunner } from "../src/prep/runner.ts";
 import { Personalize } from "../src/personalize/service.ts";
+import { cardTexts } from "../src/personalize/story.ts";
 import { toStyleCard, type StyleCard } from "../src/prep/importProfile.ts";
 
 type Req = { schemaName: string; input: unknown; instructions?: string };
@@ -48,7 +49,7 @@ function harness(handler: Handler) {
   }) as unknown as PrepDeps["spark"];
   const logs: Array<[string, Record<string, unknown>]> = [];
   const p = new Personalize({ store, json: json!, log: (e, d) => logs.push([e, d]) });
-  return { dir, store, p, calls, logs, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  return { dir, store, p, calls, logs, cleanup: () => rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }) };
 }
 
 async function http(p: Personalize, store: FileStore, handlerJson: PrepDeps["spark"]) {
@@ -127,13 +128,21 @@ test("PATCH /v1/profile (C1→C3): marked lines + what's right → profile chang
   t.after(srv.close);
   const r = await fetch(`${srv.base}/v1/profile`, { method: "PATCH", body: JSON.stringify({ cardId: "taste", items: ["Clean, minimal"], text: "No logos, ever." }) });
   assert.equal(r.status, 200);
-  const body = (await r.json()) as { ack: string; card: { id: string; headline: string }; changed: string[]; profile: string; rows: Array<{ key: string }> };
+  const body = (await r.json()) as { ack: string; card: { id: string; headline: string; tags: Array<{ text: string }> }; changed: string[]; profile: string; rows: Array<{ key: string }> };
   assert.equal(body.ack, "Got it. I'll remember that.");
+  // S1 (≤ 1 s): the answer doesn't wait for Spark — the card as shown, the marked tag out, their own words in
   assert.equal(body.card.id, "taste");
-  assert.equal(body.card.headline, "Plain, no logos.");
-  assert.deepEqual(body.changed, ["Plain basics", "Not for you: logos"]);
-  assert.match(body.profile, /Dislikes logos/);
-  assert.doesNotMatch(body.profile, /Clean, minimal clothes/);
+  assert.equal(body.card.headline, "taste headline.", "headline kept until the reworded card lands");
+  assert.ok(!body.card.tags.some((t) => t.text === "Clean, minimal"), "the marked tag is gone");
+  assert.deepEqual(body.changed, ["No logos, ever."]);
+  // Spark's profile update and the reword land in the store right after; GET story shows them
+  await h.p.drainRewrites();
+  const profile = (await h.p.startCall("u1"))?.profile ?? "";
+  assert.match(profile, /Dislikes logos/);
+  assert.doesNotMatch(profile, /Clean, minimal clothes/);
+  const reworded = (await h.p.story("u1")).cards.find((c) => c.id === "taste")!;
+  assert.equal(reworded.headline, "Plain, no logos.");
+  assert.deepEqual(cardTexts(reworded).filter((x) => /logos|Plain/.test(x)), ["Plain basics", "Not for you: logos"]);
   const storyReq = h.calls.find((c) => c.schemaName === "story_cards")!;
   assert.match(storyReq.instructions!, /only these cards: taste\./);
   assert.match(String(h.calls[0].input), /marked these as wrong: \"Clean, minimal\"/);
@@ -170,6 +179,7 @@ test("PATCH unknowns: telling one now answers that topic and it leaves the list"
   t.after(srv.close);
   const r = (await (await fetch(`${srv.base}/v1/profile`, { method: "PATCH", body: JSON.stringify({ cardId: "unknowns", items: ["Reminder frequency"], text: "One a day is fine." }) })).json()) as { card: { unknowns: Array<{ item: string }> } };
   assert.ok(!r.card.unknowns.some((u) => u.item === "Reminder frequency"));
+  await h.p.drainRewrites(); // S1: the answer is saved in the background
   assert.equal((await h.store.getStyle("u1"))!.sections.boundaries[0].text, "One reminder a day is fine.");
 });
 
@@ -285,6 +295,7 @@ test("Codex round 2: a slow earlier sheet correction can't undo a later one", as
   await h.p.correct("u1", { cardId: "taste", text: "No wait, I hate cilantro" });
   releaseA();
   await a;
+  await h.p.drainRewrites();
   const likes = (await h.store.getStyle("u1"))!.sections.likes.map((x) => x.text);
   assert.ok(likes.includes("Dislikes cilantro, really."));
   assert.ok(!likes.includes("Loves cilantro."));
@@ -298,4 +309,246 @@ test("S1: noteShorter saves an observed line, never over an explicit one about t
   assert.equal(r!.text, "Updated: shorter replies");
   const resp = (await h.store.getStyle("u1"))!.sections.response;
   assert.deepEqual([resp[0].text, resp[0].label], ["Short replies, one or two sentences.", "observed"]);
+});
+
+test("QA K-test P2: a line forgotten by voice leaves the story at once (before the stale card is rewritten); what's still said stays", async (t) => {
+  const h = harness((req) => (req.schemaName === "story_cards" ? new Promise(() => {}) : { updates: [{ field: "likes", text: "", replaces: ["Media: slow-burn dramas; lo-fi while working."], chip: "forgot lo-fi" }, { field: "likes", text: "Media: slow-burn dramas.", replaces: [], chip: "" }], answered: { field: "", text: "", chip: "" } }));
+  t.after(h.cleanup);
+  const base = toStyleCard({ ...IMPORT_RAW, sections: { ...IMPORT_RAW.sections, likes: [f("Media: slow-burn dramas; lo-fi while working.")] } }, "import");
+  const { toStory } = await import("../src/personalize/story.ts");
+  const { cards, topics } = toStory({ cards: [card("taste", "Slow stories.", { tags: [{ group: "watch", text: "Slow-burn dramas", dislike: false }, { group: "watch", text: "Lo-fi while working", dislike: false }] })], topics: [] }, base);
+  await h.store.putStyle("u1", { ...base, story: { version: 2, cards, topics, at: "2026-11-03T00:00:00Z", from: "text" } });
+  const r = await h.p.voiceCorrection("u1", "Forget that I said I listen to lo-fi.");
+  assert.ok(r);
+  const s = await h.p.story("u1", 0);
+  const tags = s.cards.find((c) => c.id === "taste")!.tags!.map((x) => x.text);
+  assert.deepEqual(tags, ["Slow-burn dramas"]);
+});
+
+test("S1 perf: PATCH /v1/profile answers before any Spark call (slow correction and story calls run behind it)", async (t) => {
+  let storyCalls = 0;
+  const h = harness(async (req) => {
+    if (req.schemaName === "profile_correction") await new Promise((r) => setTimeout(r, 1500));
+    if (req.schemaName === "profile_correction") return { updates: [{ field: "likes", text: "Dislikes logos and loud prints.", replaces: ["Style: Clean, minimal clothes."], chip: "no logos" }], answered: { field: "", text: "", chip: "" } };
+    if (req.schemaName === "story_cards") {
+      if (++storyCalls > 1) await new Promise((r) => setTimeout(r, 1500)); // the reword after the import's story
+      return { cards: [card("taste", "Plain, no logos.")], topics: [] };
+    }
+    return null;
+  });
+  t.after(h.cleanup);
+  await withStory(h);
+  const t0 = performance.now();
+  const r = await h.p.correct("u1", { cardId: "taste", items: ["Clean, minimal"], text: "No logos, ever." });
+  const ms = performance.now() - t0;
+  assert.ok(ms < 300, `answered in ${Math.round(ms)} ms (the 1.5 s correction and 1.5 s reword run after)`);
+  assert.equal(r.card!.headline, "taste headline.");
+  await h.p.drainRewrites();
+  assert.equal((await h.p.story("u1")).cards.find((c) => c.id === "taste")!.headline, "Plain, no logos.");
+});
+
+test("Codex S1: a reword of an older profile never lands over a newer correction; the interim card is stored and correctable", async (t) => {
+  let n = 0;
+  let releaseFirst!: () => void;
+  const gate = new Promise<void>((r) => (releaseFirst = r));
+  let clock = Date.parse("2026-11-03T10:00:00Z");
+  const h = harness(async (req) => {
+    if (req.schemaName === "profile_correction") {
+      n++;
+      return n === 1
+        ? { updates: [{ field: "likes", text: "Food: Italian.", replaces: [], chip: "Italian" }], answered: { field: "", text: "", chip: "" } }
+        : { updates: [{ field: "likes", text: "Food: Thai.", replaces: ["Food: Italian."], chip: "Thai" }], answered: { field: "", text: "", chip: "" } };
+    }
+    if (req.schemaName === "story_cards") {
+      const s = JSON.stringify(req.input);
+      if (/only these cards/.test(String(req.instructions)) && /Italian/.test(s) && !/Thai/.test(s)) { await gate; return { cards: [card("taste", "Loves Italian.")], topics: [] }; }
+      if (/Thai/.test(s)) return { cards: [card("taste", "Loves Thai.")], topics: [] };
+      return STORY_RAW;
+    }
+    return null;
+  });
+  t.after(h.cleanup);
+  (h.p as unknown as { now: () => Date }).now = () => new Date((clock += 1000));
+  await withStory(h);
+  const first = await h.p.correct("u1", { cardId: "taste", text: "I love Italian food." });
+  // the interim card is stored: a second correction marking one of its new lines validates
+  const newLine = first.changed[0] ?? cardTexts(first.card!)[0];
+  await h.p.correct("u1", { cardId: "taste", items: [newLine], text: "Actually Thai, not Italian." });
+  releaseFirst();
+  await h.p.drainRewrites();
+  const taste = (await h.p.story("u1")).cards.find((c) => c.id === "taste")!;
+  assert.equal(taste.headline, "Loves Thai.", "the late Italian reword was dropped");
+});
+
+test("Codex S1: a text-only correction that replaced an unmarked fact answers with the plain corrected card", async (t) => {
+  const h = harness((req) => {
+    if (req.schemaName === "profile_correction") return { updates: [{ field: "response", text: "Long, detailed answers.", replaces: ["Short answers first."], chip: "detail" }], answered: { field: "", text: "", chip: "" } };
+    if (req.schemaName === "story_cards") return STORY_RAW;
+    return null;
+  });
+  t.after(h.cleanup);
+  await withStory(h);
+  const r = await h.p.correct("u1", { cardId: "talk", text: "I want long detailed answers now." });
+  assert.ok(cardTexts(r.card!).includes("I want long detailed answers now."), "their own words, at once");
+  await h.p.drainRewrites();
+  const profile = (await h.p.startCall("u1"))?.profile ?? "";
+  assert.match(profile, /Long, detailed answers/);
+  assert.doesNotMatch(profile, /Short answers first/);
+});
+
+test("S1: Spark down — the save still answers, is kept pending, and is applied on a later read once Spark is back", async (t) => {
+  let tries = 0;
+  let down = true;
+  const h = harness(async (req) => {
+    if (req.schemaName === "profile_correction") {
+      tries++;
+      if (down) throw new Error("meta 504: request timed out");
+      return { updates: [{ field: "likes", text: "Dislikes logos and loud prints.", replaces: ["Style: Clean, minimal clothes."], chip: "no logos" }], answered: { field: "", text: "", chip: "" } };
+    }
+    if (req.schemaName === "story_cards") return STORY_RAW;
+    return null;
+  });
+  t.after(h.cleanup);
+  await withStory(h);
+  const r = await h.p.correct("u1", { cardId: "taste", items: ["Clean, minimal"], text: "No logos, ever." });
+  assert.deepEqual(r.changed, ["No logos, ever."]);
+  await h.p.drainRewrites();
+  assert.equal(tries, 2, "one retry");
+  assert.ok(h.logs.some(([e]) => e === "profile.correct_failed"));
+  assert.equal((await h.store.getStyle("u1"))!.pendingCorrections?.length, 1, "kept for later");
+  down = false;
+  await h.p.story("u1"); // a later read replays it
+  await h.p.drainRewrites();
+  assert.equal((await h.store.getStyle("u1"))!.pendingCorrections?.length ?? 0, 0);
+  assert.match((await h.p.startCall("u1"))?.profile ?? "", /Dislikes logos/);
+});
+
+test("S1: an answered unknown leaves GET story at once, before Spark merges it", async (t) => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const h = harness(async (req) => {
+    if (req.schemaName === "profile_correction") { await gate; return { updates: [], answered: { field: "boundaries", text: "One reminder a day is fine.", chip: "one a day" } }; }
+    if (req.schemaName === "story_cards") return STORY_RAW;
+    return null;
+  });
+  t.after(h.cleanup);
+  await withStory(h);
+  await h.p.correct("u1", { cardId: "unknowns", items: ["Reminder frequency"], text: "One a day is fine." });
+  const unknowns = (await h.p.story("u1")).cards.find((c) => c.id === "unknowns");
+  assert.ok(!unknowns?.unknowns?.some((u) => u.topic === "Reminder frequency"));
+  release();
+  await h.p.drainRewrites();
+});
+
+test("Codex P1: 'forget that I have diabetes' stores nothing and sends nothing on; a plain target is kept out", async (t) => {
+  const h = harness(() => ({ updates: [], answered: { field: "", text: "", chip: "" } }));
+  t.after(h.cleanup);
+  await h.store.putStyle("u1", toStyleCard({ ...IMPORT_RAW, sections: { ...IMPORT_RAW.sections, likes: [f("Likes leather accessories.")] } }, "import"));
+  await h.p.voiceCorrection("u1", "Forget that I have diabetes.");
+  assert.ok(!JSON.stringify((await h.store.getStyle("u1"))!.removed ?? []).includes("diabetes"));
+  assert.doesNotMatch((await h.p.startCall("u1"))?.profile ?? "", /diabetes/);
+  await h.p.voiceCorrection("u1", "Actually, forget that I like leather accessories.");
+  const removed = (await h.store.getStyle("u1"))!.removed ?? [];
+  assert.deepEqual(removed.filter((r) => r.forget).map((r) => [r.text, r.forget]), [["leather accessories", true]]);
+  assert.ok(!(await h.store.getStyle("u1"))!.sections.likes.some((x) => /leather/.test(x.text)), "the line itself is gone");
+});
+
+test("Codex P1 r2: a sensitive sheet correction is never stored or shown; an email hidden by punctuation stripping is never kept", async (t) => {
+  const h = harness(() => ({ updates: [], answered: { field: "", text: "", chip: "" } }));
+  t.after(h.cleanup);
+  await withStory(h);
+  const r = await h.p.correct("u1", { cardId: "taste", text: "Forget that I have diabetes." });
+  assert.deepEqual(r.changed, []);
+  const stored = (await h.store.getStyle("u1"))!;
+  assert.ok(!JSON.stringify(stored).includes("diabetes"));
+  await h.p.voiceCorrection("u1", "Forget that my email is alice@example.com.");
+  assert.ok(!JSON.stringify((await h.store.getStyle("u1"))!).includes("alice"));
+  assert.doesNotMatch((await h.p.startCall("u1"))?.profile ?? "", /alice|example/);
+});
+
+test("Codex P1 r3: an address is never stored (voice forget or sheet), 'lives in hoodies' is still a taste", async (t) => {
+  const { isSensitiveDetail } = await import("../src/personalize/sensitive.ts");
+  assert.ok(isSensitiveDetail("Forget that I live at 12 Example Street."));
+  assert.ok(isSensitiveDetail("My address is 123 Example Street, Apt 4."));
+  assert.ok(!isSensitiveDetail("Lives in hoodies and plain sneakers."));
+  assert.ok(isSensitiveDetail("My home is 42 5th Avenue."));
+  const h = harness(() => ({ updates: [], answered: { field: "", text: "", chip: "" } }));
+  t.after(h.cleanup);
+  await withStory(h);
+  await h.p.voiceCorrection("u1", "Forget that I live at 12 Example Street.");
+  await h.p.correct("u1", { cardId: "taste", text: "My address is 123 Example Street, Apt 4." });
+  await h.p.voiceCorrection("u1", "Forget that my home is 42 5th Avenue.");
+  assert.ok(!JSON.stringify((await h.store.getStyle("u1"))!).includes("Example"));
+  assert.ok(!JSON.stringify((await h.store.getStyle("u1"))!).includes("5th Avenue"));
+});
+
+test("Codex r5: a forget target is only kept when the stored profile speaks about it ('asthma' never stored)", async (t) => {
+  const h = harness(() => ({ updates: [], answered: { field: "", text: "", chip: "" } }));
+  t.after(h.cleanup);
+  await h.store.putStyle("u1", toStyleCard({ ...IMPORT_RAW, sections: { ...IMPORT_RAW.sections, likes: [f("Likes leather accessories.")] } }, "import"));
+  await h.p.voiceCorrection("u1", "Actually, forget that I have asthma.");
+  assert.ok(!JSON.stringify((await h.store.getStyle("u1"))!).includes("asthma"));
+  await h.p.voiceCorrection("u1", "Actually, forget that I like leather accessories.");
+  assert.deepEqual(((await h.store.getStyle("u1"))!.removed ?? []).filter((r) => r.forget).map((r) => r.text), ["leather accessories"]);
+});
+
+test("Codex r6: only the stored profile's own words are kept ('asthma when running' with 'Likes running.' keeps 'running')", async (t) => {
+  const h = harness(() => ({ updates: [], answered: { field: "", text: "", chip: "" } }));
+  t.after(h.cleanup);
+  await h.store.putStyle("u1", toStyleCard({ ...IMPORT_RAW, sections: { ...IMPORT_RAW.sections, likes: [f("Likes running.")] } }, "import"));
+  await h.p.voiceCorrection("u1", "Actually, forget that I have asthma when running.");
+  const stored = JSON.stringify((await h.store.getStyle("u1"))!);
+  assert.ok(!stored.includes("asthma"));
+  assert.deepEqual(((await h.store.getStyle("u1"))!.removed ?? []).filter((r) => r.forget).map((r) => r.text), ["running"]);
+});
+
+test("Codex r7: 'Forget that I have asthma' on the sheet stores and shows nothing; a profile thing is kept out by its own words", async (t) => {
+  const h = harness(() => ({ updates: [], answered: { field: "", text: "", chip: "" } }));
+  t.after(h.cleanup);
+  await withStory(h);
+  const r = await h.p.correct("u1", { cardId: "taste", text: "Forget that I have asthma." });
+  assert.deepEqual(r.changed, []);
+  assert.ok(!JSON.stringify((await h.store.getStyle("u1"))!).includes("asthma"));
+  await h.p.correct("u1", { cardId: "taste", text: "Forget that I like clean minimal clothes." });
+  const removed = ((await h.store.getStyle("u1"))!.removed ?? []).filter((x) => x.forget).map((x) => x.text);
+  assert.ok(removed.length === 1 && /clean|minimal|clothes/.test(removed[0]), JSON.stringify(removed));
+  assert.ok(!JSON.stringify((await h.store.getStyle("u1"))!.pendingCorrections ?? []).includes("Forget"));
+});
+
+test("Codex r8: the sheet's 'forget that I like leather accessories' really removes the line (no Spark), not 'Likes running' for 'asthma when running'", async (t) => {
+  const h = harness(() => ({ updates: [], answered: { field: "", text: "", chip: "" } }));
+  t.after(h.cleanup);
+  await h.store.putStyle("u1", toStyleCard({ ...IMPORT_RAW, sections: { ...IMPORT_RAW.sections, likes: [f("Likes leather accessories."), f("Likes running.")] } }, "import"));
+  const { toStory } = await import("../src/personalize/story.ts");
+  const c0 = (await h.store.getStyle("u1"))!;
+  const { cards, topics } = toStory(STORY_RAW, c0);
+  await h.store.putStyle("u1", { ...c0, story: { version: 2, cards, topics, at: "", from: "text" } });
+  await h.p.correct("u1", { cardId: "taste", text: "Forget that I like leather accessories." });
+  await h.p.voiceCorrection("u1", "Actually, forget that I have asthma when running.");
+  const likes = (await h.store.getStyle("u1"))!.sections.likes.map((x) => x.text);
+  assert.deepEqual(likes, ["Likes running."]);
+  assert.doesNotMatch((await h.p.startCall("u1"))?.profile ?? "", /leather accessories\./);
+});
+
+test("Codex r9: a voice forget that removed the line up front still updates the call (profile, taste, chip) when Spark changes nothing more", async (t) => {
+  const h = harness(() => ({ updates: [{ field: "likes", text: "", replaces: ["Likes leather accessories."], chip: "forgot leather" }], answered: { field: "", text: "", chip: "" } }));
+  t.after(h.cleanup);
+  await h.store.putStyle("u1", toStyleCard({ ...IMPORT_RAW, sections: { ...IMPORT_RAW.sections, likes: [f("Likes leather accessories.")] } }, "import"));
+  const r = await h.p.voiceCorrection("u1", "Actually, forget that I like leather accessories.");
+  assert.ok(r, "an update comes back");
+  assert.doesNotMatch(r!.profile, /leather accessories\./);
+  assert.ok(!r!.taste.some((x) => /leather/.test(x.text)));
+  assert.match(r!.events[0].text, /^Updated: forgot/);
+});
+
+test("Codex P2 #432: a removed line doesn't hide a tag two remaining lines still support together", async (t) => {
+  const h = harness((req) => (req.schemaName === "story_cards" ? new Promise(() => {}) : { updates: [{ field: "likes", text: "Food: noodles.", replaces: ["Food: noodles, tofu and cilantro."], chip: "no cilantro" }, { field: "likes", text: "Food: tofu.", replaces: [], chip: "" }], answered: { field: "", text: "", chip: "" } }));
+  t.after(h.cleanup);
+  const base = toStyleCard({ ...IMPORT_RAW, sections: { ...IMPORT_RAW.sections, likes: [f("Food: noodles, tofu and cilantro.")] } }, "import");
+  const { toStory } = await import("../src/personalize/story.ts");
+  const { cards, topics } = toStory({ cards: [card("taste", "Noodles and tofu.", { tags: [{ group: "food", text: "Noodles and tofu", dislike: false }, { group: "food", text: "Cilantro", dislike: false }] })], topics: [] }, base);
+  await h.store.putStyle("u1", { ...base, story: { version: 2, cards, topics, at: "2026-11-03T00:00:00Z", from: "text" } });
+  await h.p.voiceCorrection("u1", "Actually I don't want cilantro anymore, just noodles and tofu.");
+  const tags = (await h.p.story("u1", 0)).cards.find((c) => c.id === "taste")!.tags!.map((x) => x.text);
+  assert.deepEqual(tags, ["Noodles and tofu"]);
 });

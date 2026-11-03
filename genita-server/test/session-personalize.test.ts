@@ -256,10 +256,12 @@ test("S1: two long replies cut off → Updated: shorter replies, the next reply 
   const ev = await s.client.waitFor((m) => m.type === "profile.updated");
   assert.deepEqual(ev, { type: "profile.updated", text: "Updated: shorter replies", fields: ["response"] });
   assert.equal(noted, 1);
-  assert.match(s.sparkCalls[2].instructions!, /cut you off twice/);
+  // silent adaptation (main 11/3 P0): shorter, never a line about the interruptions
+  assert.match(s.sparkCalls[2].instructions!, /one short sentence\. Never mention that they interrupted you/);
+  assert.doesNotMatch(s.sparkCalls[2].instructions!, /cut me off/);
   await sleep(500);
   await say(s, "Ok.", s.client.json.filter((m) => m.type === "reply").length + 1);
-  assert.doesNotMatch(s.sparkCalls.at(-1)!.instructions!, /cut you off twice/, "said once");
+  assert.doesNotMatch(s.sparkCalls.at(-1)!.instructions!, /Never mention that they interrupted you/, "the one-shot line is sent once");
   s.session.close();
 });
 
@@ -279,7 +281,7 @@ test("Codex round 6: short replies cut off don't count; 'forget' can empty the t
     await l.client.waitFor(() => l.client.json.filter((m) => m.type === "reply.delta").length >= i);
     await sleep(60);
   }
-  assert.ok(!l.sparkCalls.some((c) => /cut you off twice/.test(c.instructions!)));
+  assert.ok(!l.sparkCalls.some((c) => /Never mention that they interrupted you/.test(c.instructions!)));
   l.session.close();
 });
 
@@ -289,5 +291,341 @@ test("Knows-Me × v1: no second personal mention — the nod stays out, the loca
   await s.client.waitFor(() => s.client.json.filter((m) => m.type === "reply").length === 1);
   assert.doesNotMatch(s.sparkCalls[0].instructions!, /NOD-LINE/);
   assert.match(s.sparkCalls[0].instructions!, /for the user\. Use it only for timing/);
+  s.session.close();
+});
+
+// ---------- P1 11/3 (demo S4): no getting-to-know-you question on a handoff or while watching together ----------
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { FileStore } from "../src/prep/store.ts";
+import { Personalize } from "../src/personalize/service.ts";
+import { toStyleCard } from "../src/prep/importProfile.ts";
+
+const f1 = (text: string) => ({ text, label: "explicit" as const, scope: "any" });
+function realPersonalize(t: { after: (fn: () => void) => void }) {
+  const dir = mkdtempSync(join(tmpdir(), "p1-handoff-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const store = new FileStore(dir);
+  const p = new Personalize({ store, json: (async () => ({ updates: [], answered: { field: "", text: "", chip: "" } })) as never });
+  return { store, p };
+}
+const RAW = {
+  sections: { tendencies: [], communication: [f1("Warm and direct.")], response: [f1("Short answers first.")], help: [], support: [], interests: [], likes: [f1("Style: Clean, minimal clothes.")], boundaries: [], approach: [] },
+  rules: [],
+  to_confirm: ["Reminder frequency", "Favorite shows", "Weekend rhythm"],
+};
+async function call(p: Personalize, start: Record<string, unknown>) {
+  const client = new Client();
+  const calls: SparkRequest[] = [];
+  const asr = Object.assign(new EventEmitter(), { isOpen: false, async connect() { this.isOpen = true; }, sendAudio() {}, end() { this.isOpen = false; } });
+  const session = new Session("h", client, {
+    config,
+    openAsr: () => asr,
+    async *spark(req) { calls.push(req); yield { type: "text", delta: "<happy> Sure." }; yield { type: "done", responseId: "r", text: "", status: "completed" }; },
+    async *tts() {},
+    userId: "u1",
+    personalize: p,
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false, ...start }));
+  for (let i = 1; i <= 3; i++) {
+    await session.onClientText(JSON.stringify({ type: "text", text: `Turn ${i}, hello.` }));
+    await client.waitFor(() => client.json.filter((m) => m.type === "reply").length === i);
+    await sleep(20);
+  }
+  return { session, calls, asks: calls.filter((c) => /ask one casual question to learn about/.test(c.instructions!)).length };
+}
+
+test("P1 S4: phone call → Mac handoff: the Mac call never asks and isn't counted; calls 1–3 still ask one each", async (t) => {
+  const { store, p } = realPersonalize(t);
+  await store.putStyle("u1", toStyleCard(RAW, "import"));
+  const phone = await call(p, {});
+  assert.ok(phone.asks > 0, "call 1 asks its question");
+  phone.session.close();
+  const mac = await call(p, { handoff: true, history: [{ role: "user", text: "Find a jacket for Friday." }] });
+  assert.equal(mac.asks, 0, "the continued call on the Mac asks nothing");
+  mac.session.close();
+  assert.equal((await store.getStyle("u1"))!.growth!.calls, 1, "a handoff is not a new call");
+  // the next real calls are calls 2 and 3: one question each, then none
+  for (const want of [true, true, false]) {
+    const c = await call(p, {});
+    assert.equal(c.asks > 0, want);
+    c.session.close();
+  }
+  assert.equal((await store.getStyle("u1"))!.growth!.calls, 4);
+});
+
+test("P1: watch together attached before the question → no question, the call count and topic are given back", async (t) => {
+  const { store, p } = realPersonalize(t);
+  await store.putStyle("u1", toStyleCard(RAW, "import"));
+  const client = new Client();
+  const calls: SparkRequest[] = [];
+  const asr = Object.assign(new EventEmitter(), { isOpen: false, async connect() { this.isOpen = true; }, sendAudio() {}, end() { this.isOpen = false; } });
+  const session = new Session("w", client, {
+    config,
+    openAsr: () => asr,
+    async *spark(req) { calls.push(req); yield { type: "text", delta: "<happy> Ha." }; yield { type: "done", responseId: "r", text: "", status: "completed" }; },
+    async *tts() {},
+    userId: "u1",
+    personalize: p,
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  assert.ok(session.attachWatch({ send() {}, sendJson() {}, close() {} } as never));
+  await session.onClientText(JSON.stringify({ type: "text", text: "This show is wild." }));
+  await client.waitFor(() => client.json.some((m) => m.type === "reply"));
+  assert.doesNotMatch(calls[0].instructions!, /ask one casual question to learn about/);
+  await sleep(30);
+  const g = (await store.getStyle("u1"))!.growth!;
+  assert.equal(g.calls, 0);
+  assert.ok(!g.asked.some((a) => a.item === "Reminder frequency"), "the topic is free for the next call");
+  session.close();
+});
+
+test("Codex P1 #1: a handoff the server sees (other device) is a continuation even with memory off and no start.handoff", async (t) => {
+  const { store, p } = realPersonalize(t);
+  await store.putStyle("u1", toStyleCard(RAW, "import"));
+  const client = new Client();
+  const calls: SparkRequest[] = [];
+  const asr = Object.assign(new EventEmitter(), { isOpen: false, async connect() { this.isOpen = true; }, sendAudio() {}, end() { this.isOpen = false; } });
+  const session = new Session("m", client, {
+    config,
+    openAsr: () => asr,
+    async *spark(req) { calls.push(req); yield { type: "text", delta: "<happy> Sure." }; yield { type: "done", responseId: "r", text: "", status: "completed" }; },
+    async *tts() {},
+    userId: "u1",
+    personalize: p,
+    continuesCall: () => true,
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "Find a jacket for Friday." }));
+  await client.waitFor(() => client.json.some((m) => m.type === "reply"));
+  assert.doesNotMatch(calls[0].instructions!, /ask one casual question to learn about/);
+  assert.equal((await store.getStyle("u1"))!.growth?.calls ?? 0, 0);
+  session.close();
+});
+
+test("Codex P1 #2: a reply already asking the question when watch together attaches drops that sentence", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const s = setup({ async unplanCall() {} });
+  // a slow reply that asks the planned question ("Weekend rhythm" / "Busy or slow?")
+  (s.session as unknown as { deps: SessionDeps }).deps.spark = async function* () {
+    await gate;
+    yield { type: "text", delta: "<happy> Fun. Are your weekends busy, or slow?" };
+    yield { type: "done", responseId: "r", text: "", status: "completed" };
+  };
+  await s.session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await s.session.onClientText(JSON.stringify({ type: "text", text: "Let's watch something." }));
+  await sleep(20);
+  assert.ok(s.session.attachWatch({ send() {}, sendJson() {}, close() {} } as never));
+  release();
+  const reply = await s.client.waitFor((m) => m.type === "reply");
+  assert.equal(reply.text, "Fun.");
+  assert.ok(!s.client.json.some((m) => m.type === "profile.asking"));
+  s.session.close();
+});
+
+// #387 Codex round 2 follow-ups: the question is judged as a whole sentence, and a queued one is not said.
+const voiceCfg = { url: "https://v", token: "t", speakers: { human: 3, animal: 5, character: 9 }, speed: 1, timeoutMs: 500, model: "seamless" as const };
+
+test("#387 follow-up: server voice splits the question at its comma — watch together still drops the whole sentence", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const s = setup({ async unplanCall() {} });
+  const deps = (s.session as unknown as { deps: SessionDeps }).deps;
+  const said: string[] = [];
+  deps.config = { ...deps.config, serverTts: true, voice: voiceCfg };
+  deps.tts = async function* (req) { said.push(req.text); yield { audio: Buffer.alloc(4800), alignment: null, model: "seamless-m4t-v2" }; };
+  // eager first clause: "Weekends for you," goes out on its own; "are they packed or lazy?" shares no topic word
+  deps.spark = async function* () {
+    await gate;
+    yield { type: "text", delta: "<happy> Weekends for you, are they packed or lazy? Either way, I'm in." };
+    yield { type: "done", responseId: "r", text: "", status: "completed" };
+  };
+  await s.session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await s.session.onClientText(JSON.stringify({ type: "text", text: "Let's watch something." }));
+  await sleep(20);
+  assert.ok(s.session.attachWatch({ send() {}, sendJson() {}, close() {} } as never));
+  release();
+  const reply = await s.client.waitFor((m) => m.type === "reply");
+  assert.equal(reply.text, "Either way, I'm in.");
+  assert.ok(!said.some((t) => /Weekends for you|packed or lazy/.test(t)), `never voiced: ${JSON.stringify(said)}`);
+  s.session.close();
+});
+
+test("#387 follow-up: a question already queued (TTS prefetch) when watch together attaches is not said", async () => {
+  const s = setup({ async unplanCall() {} });
+  const deps = (s.session as unknown as { deps: SessionDeps }).deps;
+  const said: string[] = [];
+  let attached = false;
+  deps.config = { ...deps.config, serverTts: true, voice: voiceCfg };
+  deps.tts = async function* (req) {
+    said.push(req.text);
+    // the first sentence is still being voiced when watch together attaches
+    if (!attached) { await sleep(80); }
+    yield { audio: Buffer.alloc(4800), alignment: null, model: "seamless-m4t-v2" };
+  };
+  deps.spark = async function* () {
+    yield { type: "text", delta: "<happy> Fun one. Are your weekends busy or slow? " };
+    yield { type: "done", responseId: "r", text: "", status: "completed" };
+  };
+  await s.session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await s.session.onClientText(JSON.stringify({ type: "text", text: "Let's watch something." }));
+  await sleep(30);
+  assert.ok(s.session.attachWatch({ send() {}, sendJson() {}, close() {} } as never));
+  attached = true;
+  const reply = await s.client.waitFor((m) => m.type === "reply");
+  assert.equal(reply.text, "Fun one.");
+  assert.ok(!said.some((t) => /weekends/i.test(t)), `never voiced: ${JSON.stringify(said)}`);
+  s.session.close();
+});
+
+test("#387 follow-up: a held clause that turns out not to be the question is still said, in order", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const s = setup({ async unplanCall() {} });
+  const deps = (s.session as unknown as { deps: SessionDeps }).deps;
+  const said: string[] = [];
+  deps.config = { ...deps.config, serverTts: true, voice: voiceCfg };
+  deps.tts = async function* (req) { said.push(req.text); yield { audio: Buffer.alloc(4800), alignment: null, model: "seamless-m4t-v2" }; };
+  deps.spark = async function* () {
+    await gate;
+    yield { type: "text", delta: "<happy> Weekends are for this, honestly. Good pick." };
+    yield { type: "done", responseId: "r", text: "", status: "completed" };
+  };
+  await s.session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await s.session.onClientText(JSON.stringify({ type: "text", text: "Let's watch something." }));
+  await sleep(20);
+  assert.ok(s.session.attachWatch({ send() {}, sendJson() {}, close() {} } as never));
+  release();
+  const reply = await s.client.waitFor((m) => m.type === "reply");
+  assert.equal(reply.text, "Weekends are for this, honestly. Good pick.");
+  s.session.close();
+});
+
+test("#387 follow-up (Codex r1): a dropped question's queued first clause never swallows the next question", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const s = setup({ async unplanCall() {} });
+  const deps = (s.session as unknown as { deps: SessionDeps }).deps;
+  const said: string[] = [];
+  deps.config = { ...deps.config, serverTts: true, voice: voiceCfg };
+  deps.tts = async function* (req) { said.push(req.text); yield { audio: Buffer.alloc(4800), alignment: null, model: "seamless-m4t-v2" }; };
+  deps.spark = async function* () {
+    yield { type: "text", delta: "<happy> Weekends for you, " };
+    await gate;
+    yield { type: "text", delta: "are they packed or lazy? What should we watch first?" };
+    yield { type: "done", responseId: "r", text: "", status: "completed" };
+  };
+  await s.session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await s.session.onClientText(JSON.stringify({ type: "text", text: "Let's watch something." }));
+  await sleep(30);
+  assert.ok(s.session.attachWatch({ send() {}, sendJson() {}, close() {} } as never));
+  release();
+  await s.client.waitFor((m) => m.type === "reply");
+  assert.ok(!said.some((t) => /packed or lazy/.test(t)), `question rest not voiced: ${JSON.stringify(said)}`);
+  assert.ok(said.some((t) => /What should we watch first\?/.test(t)), `the next question is said: ${JSON.stringify(said)}`);
+  s.session.close();
+});
+
+test("#387 follow-up (Codex r1): a hold beat never releases or splits a held question", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const s = setup({ async unplanCall() {} });
+  const deps = (s.session as unknown as { deps: SessionDeps }).deps;
+  const said: string[] = [];
+  deps.config = { ...deps.config, serverTts: true, voice: voiceCfg };
+  deps.tts = async function* (req) { said.push(req.text); yield { audio: Buffer.alloc(4800), alignment: null, model: "seamless-m4t-v2" }; };
+  deps.spark = async function* () {
+    await gate;
+    yield { type: "text", delta: "<happy> Weekends for you, " };
+    await sleep(1_700); // longer than the 1.5 s hold beat
+    yield { type: "text", delta: "are they packed or lazy? Either way, I'm in." };
+    yield { type: "done", responseId: "r", text: "", status: "completed" };
+  };
+  await s.session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await s.session.onClientText(JSON.stringify({ type: "text", text: "Let's watch something." }));
+  await sleep(20);
+  assert.ok(s.session.attachWatch({ send() {}, sendJson() {}, close() {} } as never));
+  release();
+  const reply = await s.client.waitFor((m) => m.type === "reply", 5_000);
+  assert.ok(!said.some((t) => /Weekends for you|packed or lazy/.test(t)), `never voiced: ${JSON.stringify(said)}`);
+  assert.match(String(reply.text), /Either way, I'm in\.$/);
+  s.session.close();
+});
+
+test("#387 follow-up (edge): the question was the reply's only sentence → a short reaction, never silence", async () => {
+  // dropped while streaming (producer side)
+  {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const s = setup({ async unplanCall() {} });
+    const deps = (s.session as unknown as { deps: SessionDeps }).deps;
+    let sparkCalls = 0;
+    deps.spark = async function* () {
+      sparkCalls++;
+      await gate;
+      yield { type: "text", delta: "<happy> Are your weekends busy or slow?" };
+      yield { type: "done", responseId: "r", text: "", status: "completed" };
+    };
+    await s.session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+    await s.session.onClientText(JSON.stringify({ type: "text", text: "Let's watch something." }));
+    await sleep(20);
+    assert.ok(s.session.attachWatch({ send() {}, sendJson() {}, close() {} } as never));
+    release();
+    const reply = await s.client.waitFor((m) => m.type === "reply");
+    assert.equal(reply.text, "Ooh, okay. Let's watch.");
+    assert.equal(sparkCalls, 1, "no Spark retry for it");
+    s.session.close();
+  }
+  // already queued and prefetched when watch attaches (consumer side), server voice
+  {
+    const s = setup({ async unplanCall() {} });
+    const deps = (s.session as unknown as { deps: SessionDeps }).deps;
+    const said: string[] = [];
+    let attached = false;
+    deps.config = { ...deps.config, serverTts: true, voice: voiceCfg };
+    deps.tts = async function* (req) {
+      said.push(req.text);
+      if (!attached) await sleep(80);
+      yield { audio: Buffer.alloc(4800), alignment: null, model: "seamless-m4t-v2" };
+    };
+    deps.spark = async function* () {
+      yield { type: "text", delta: "<happy> Mm. Are your weekends busy or slow? " };
+      yield { type: "done", responseId: "r", text: "", status: "completed" };
+    };
+    await s.session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+    await s.session.onClientText(JSON.stringify({ type: "text", text: "Let's watch something." }));
+    await sleep(30);
+    assert.ok(s.session.attachWatch({ send() {}, sendJson() {}, close() {} } as never));
+    attached = true;
+    const reply = await s.client.waitFor((m) => m.type === "reply");
+    assert.equal(reply.text, "Mm.", "another real sentence was said, so the question just goes");
+    assert.ok(!said.some((t) => /weekends/i.test(t)), JSON.stringify(said));
+    s.session.close();
+  }
+});
+
+test("QA post-deploy: a removed line stays out of memory notes, and the handed-off turns drop the forget request", async () => {
+  const s = setup({ async startCall() { return { profile: "- Taste: Clean, minimal.", taste: [], removed: ["Likes leather accessories."] }; } });
+  const avoid: string[][] = [];
+  (s.session as unknown as { memoryCall: unknown }).memoryCall = null;
+  await s.session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await say(s, "Actually, forget about the leather bag thing.", 1);
+  await say(s, "Find me a jacket.", 2);
+  const snap = s.session.historySnapshot();
+  assert.ok(!snap.some((h) => /forget|leather/i.test(h.text)), JSON.stringify(snap));
+  void avoid;
+  s.session.close();
+});
+
+test("a 'forget that …' said while another correction check runs is not skipped: it runs right after", async () => {
+  const lines: string[] = [];
+  const s = setup({ slowCorrectionMs: 200, async voiceCorrection(_u, line) { lines.push(line); await sleep(200); return null; } });
+  await s.session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await say(s, "Actually I don't like mushrooms anymore.", 1);
+  await say(s, "Actually, forget that I like leather accessories.", 2);
+  await sleep(500);
+  assert.deepEqual(lines, ["Actually I don't like mushrooms anymore.", "Actually, forget that I like leather accessories."]);
   s.session.close();
 });

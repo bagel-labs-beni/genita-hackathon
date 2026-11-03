@@ -6,6 +6,7 @@
 //   reply.delta            → handle(replyDelta:)
 //   audio + binary kind 1  → handle(audio:pcm:)
 //   speaking               → handle(speaking:)
+//   expression             → handle(expression:intensity:startMs:endMs:utteranceId:)
 //   utterance.cancelled    → cancel(utteranceId:)
 //   playbackClock          = { audio.playbackPositionMs(utteranceId: driver.currentUtteranceId ?? -1) }
 
@@ -78,6 +79,9 @@ public final class FaceDriver: ObservableObject {
 
     public func handle(speaking s: ServerEvent.Speaking) {
         if s.on { guard switchUtterance(s.utteranceId) else { return } }
+        // the reply-wide emotion no longer swaps the whole face: the expression stills layer follows the server's
+        // per-clause `expression` events instead (deliberate, timed to the words; nothing during plain speech)
+        guard !FaceRenderer.expressionStills else { return }
         setEmotion(s.on ? s.emotion : nil)
     }
 
@@ -99,11 +103,12 @@ public final class FaceDriver: ObservableObject {
         newestUtteranceId = nil
     }
 
-    /// Server `expression` (per clause, reply audio clock). Behind `FaceRenderer.expressionLayer`.
+    /// Server `expression` (per clause, reply audio clock): the expression stills layer (`FaceRenderer.expressionStills`)
+    /// and, when on, the warp layer (`FaceRenderer.expressionLayer`).
     public func handle(expression tag: String, intensity: Double, startMs: Int, endMs: Int, utteranceId: Int) {
         guard switchUtterance(utteranceId) else { return }
         let r = renderer, e = FaceExpressionEvent(tag: tag, intensity: intensity, startMs: startMs, endMs: endMs)
-        queue.async { r.addExpression(e) }
+        queue.async { r.addExpression(e, utteranceId: utteranceId) }
     }
 
     public func setEmotion(_ emotion: String?) {
@@ -121,6 +126,8 @@ public final class FaceDriver: ObservableObject {
         timeline.reset()
         currentUtteranceId = id
         newestUtteranceId = id
+        let r = renderer
+        queue.async { r.beginUtterance(id) }
         return true
     }
 

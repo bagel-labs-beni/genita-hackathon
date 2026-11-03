@@ -29,6 +29,8 @@ struct ReferenceSignInView: View {
     @State private var signingIn = false
     /// A02-E: "Couldn't reach Apple…" for 4 s; a cancel stays silent (board §1).
     @State private var signInFailed = false
+    /// A02-J Judge access alert (D41)
+    @State private var judgeAlert = false
     /// A02-M Continue with email (NEW · design check)
     @State private var emailSheet = false
     var referenceViewport = false
@@ -57,6 +59,9 @@ struct ReferenceSignInView: View {
                     emailButton.frame(width: size.width - 77, height: 50).position(x: (size.width - 1) / 2, y: 659 + bottom)
                     // #217: real Buttons (the old transparent boxes sat on fixed points and did nothing on device).
                     LegalLinks { legalPage = $0 }.position(x: size.width / 2, y: 752.5 + bottom)
+                    // D41: a small text link between the provider buttons and the legal line; no new design
+                    Button { if !signingIn { judgeAlert = true } } label: { Text("Judge access").font(TypeStyle.body(14, .medium)).underline().foregroundStyle(.white.opacity(0.72)).frame(minWidth: 88, minHeight: 44).contentShape(Rectangle()) }
+                        .position(x: size.width / 2, y: 710 + bottom).accessibilityIdentifier("judgeAccessLink")
                 }.frame(width: size.width, height: size.height).clipped()
             }.ignoresSafeArea(.container)
         }.preferredColorScheme(.dark)
@@ -73,6 +78,7 @@ struct ReferenceSignInView: View {
                     .transition(.opacity).accessibilityElement(children: .combine).accessibilityAddTraits(.isStaticText).accessibilityIdentifier("signInFailed")
             }
         }
+        .judgeAccessAlert(isPresented: $judgeAlert, busy: $signingIn, model: model)
         #if DEBUG
         .onAppear { if ProcessInfo.processInfo.environment["GENITA_REVIEW_SIGNIN_FAILED"] == "1" { signInFailed = true } }
         #endif
@@ -84,8 +90,9 @@ struct ReferenceSignInView: View {
         }
         .alert("\(provider ?? "") sign-in", isPresented: Binding(get: { provider != nil }, set: { if !$0 { provider = nil } })) {
             #if DEBUG
-            // UI-test hook only: Release builds have no way past A02 without a real account, so CS01 can never be skipped (#218)
-            Button("Continue in demo") { model.signedIn(consented: true); provider = nil }
+            // UI-test hook only: Release builds have no way past A02 without a real account, so CS01 can never be skipped (#218).
+            // Appetize preview: the demo path still goes through the consent screen (CS01)
+            Button("Continue in demo") { model.signedIn(consented: !BrowserPreview.isActive); provider = nil }
             Button("Cancel", role: .cancel) { provider = nil }
             #else
             Button("OK", role: .cancel) { provider = nil }
@@ -113,7 +120,13 @@ struct ReferenceSignInView: View {
 
     /// Same white button as Apple / Google; envelope glyph in the logo's slot.
     var emailButton: some View {
-        Button { emailSheet = true } label: {
+        Button {
+            #if DEBUG
+            // Appetize preview: no real e-mail sign-in (it would sign in to the live service), the local demo instead
+            if BrowserPreview.isActive { provider = "Email"; return }
+            #endif
+            emailSheet = true
+        } label: {
             ZStack {
                 RoundedRectangle(cornerRadius: 12).fill(.white).overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(white: 0.9373), lineWidth: 2))
                 HStack(spacing: 11) {
@@ -140,6 +153,10 @@ struct ReferenceSignInView: View {
     /// F1-L2: native Sign in with Apple → session JWT. First sign-in (or no consent yet) → CS01, else back in.
     func signInWithApple() {
         guard !signingIn else { return }
+        #if DEBUG
+        // Appetize preview: no Apple login in a simulator stream, offer the local demo instead
+        if BrowserPreview.isActive { provider = "Apple"; return }
+        #endif
         signingIn = true
         Task { @MainActor in
             defer { signingIn = false }

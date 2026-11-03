@@ -58,6 +58,9 @@ struct PhonePairingView: View {
                 if clean.count == 6 { handoff.connect() }
             })).keyboardType(.numberPad).focused($focused).textContentType(.oneTimeCode)
                 .foregroundStyle(.clear).tint(.clear).frame(width: 304, height: 52).opacity(0.02)
+                // the sheet is white but the call behind it runs dark: the number pad follows the sheet, not the call
+                // (UI sweep 11/3: three of the four pairing shots had a dark keypad under the white sheet)
+                .environment(\.colorScheme, .light)
                 .accessibilityLabel("Pairing code").accessibilityIdentifier("pairingCode")
         }.frame(width: 304, height: 52, alignment: .leading)
     }
@@ -106,7 +109,7 @@ struct PhonePairingView: View {
                 HStack { Text("Center down \(Int(handoff.tracker.centerDownMM)) mm"); Slider(value: Binding(get: { handoff.tracker.centerDownMM }, set: { handoff.tracker.centerDownMM = $0 }), in: 0...90, step: 1) }
                 HStack { Text("Right \(Int(handoff.tracker.centerRightMM)) mm"); Slider(value: Binding(get: { handoff.tracker.centerRightMM }, set: { handoff.tracker.centerRightMM = $0 }), in: -35...35, step: 1) }
                 Button("Forget this Mac", role: .destructive, action: handoff.forgetMac)
-            }.font(.footnote).padding(.top, 8)
+            }.font(.custom("PretendardVariable-Regular", fixedSize: 12)).padding(.top, 8)
         }.font(.custom("PretendardVariable-Regular", fixedSize: 13)).foregroundStyle(mute).tint(mute).padding(.top, 4).accessibilityIdentifier("pairingAdjust")
     }
 

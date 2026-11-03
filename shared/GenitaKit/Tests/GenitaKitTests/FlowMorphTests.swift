@@ -407,4 +407,113 @@ struct LipThinTests {
         #expect(pr.lipThin == 0.95 && pr.lipThinPx == 0.02 && !pr.isOff)
         #expect(FlowMap.Perioral.release.lipThin == 0.8 && FlowMap.Perioral.release.mbpChinPx == 1.1)
     }
+
+    @Test func openMagnifierDecodesAndIsInTheRelease() throws {
+        let pr = try JSONDecoder().decode(FlowMap.Perioral.self, from: Data(#"{"openMag":3,"openDnPx":0.02,"openUpPx":0.001,"openWide":0.9}"#.utf8))
+        #expect(pr.openMag == 1.5 && pr.openDnPx == 0.02 && pr.openUpPx == 0.001 && pr.openWide == 0.3 && !pr.isOff)
+        let off = try JSONDecoder().decode(FlowMap.Perioral.self, from: Data(#"{"lipThin":0.8}"#.utf8))
+        #expect(off.openMag == 0)       // a prep block without openMag keeps the old mouth
+        #expect(FlowMap.Perioral.release.openMag == 0.0 && FlowMap.Perioral.release.openDnPx == 0.024 && FlowMap.Perioral.release.openWide == 0.2)
+    }
+
+    @Test func v59MotionClosesBetweenSyllablesAndIsQuicker() {
+        var sent = MotionV2Params(); sent.idle = 0.2; sent.amp = 0.35; sent.springHz = 9; sent.consonantJaw = 0.1
+        let p = sent.v59()
+        #expect(p.idle == 0 && p.consonantJaw == 0.05 && p.amp == 0.5 && p.springHz == 11 && p.jawAttackMs == 40)
+        var hot = MotionV2Params(); hot.amp = 0.8; hot.springHz = 14
+        #expect(hot.v59().amp == 0.8 && hot.v59().springHz == 14)     // never weakens a stronger prep value
+    }
+
+    @Test func mapLaddersAndSpreadShareDecode() throws {
+        let p = try JSONDecoder().decode(MotionV2Params.self, from: Data(#"{"spreadNeutral":0.1,"ladders":{"round":[["U",0],["OH",0.35]],"spread":[["EI",0],["EH",0.2]],"neutral":[["AH",0],["AH2",0.45]]}}"#.utf8))
+        #expect(p.spreadNeutral == 0.1)
+        let m = MotionV2(params: p, faceNorm: 1)
+        let l = try #require(m.mapLadders)
+        #expect(l[0].map { $0.0 } == ["U", "OH"] && l[1][1].1 == 0.2 && l[2][0].0 == "AH")
+        let none = MotionV2(params: MotionV2Params(), faceNorm: 1)
+        #expect(none.mapLadders == nil && MotionV2Params().spreadNeutral == 0.4)   // no map ladders = the built-in ones
+    }
+
+    @Test func aJawBlockWithoutFloorStillDrivesTheMouth() throws {
+        let j = try JSONDecoder().decode(FlowMap.Jaw.self, from: Data(#"{"gain":1.4,"gamma":0.85,"steps":[["C2",0.9]]}"#.utf8))
+        #expect(j.floor == 0 && j.gain == 1.4 && j.steps.count == 1)
+    }
+
+    @Test func aV93PresetKeepsThePrepMotionAsSent() throws {
+        let p = try JSONDecoder().decode(MotionV2Params.self, from: Data(#"{"preset":"v93","idle":0.2,"amp":0.35}"#.utf8))
+        #expect(p.preset == "v93" && p.v59() == p)
+    }
+
+    @Test func aliveLockYDecodesAndDefaultsOn() throws {
+        let a = try JSONDecoder().decode(FlowMap.Alive.self, from: Data(#"{"headX":3,"nodPx":5}"#.utf8))
+        #expect(a.lockY)
+        let b = try JSONDecoder().decode(FlowMap.Alive.self, from: Data(#"{"lockY":false}"#.utf8))
+        #expect(!b.lockY)
+    }
+}
+
+/// 11/3 night stillness gate (CI): with the served "still face" map only the mouth and jaw may move. Renders the
+/// animal fixture talking (loud / quiet syllables) and measures the frame-to-frame |diff| in bands that are never
+/// mouth or jaw: the top 40 % (background, ears, eyes, forehead) and the bottom 12 % (chest). Background level ≈ 0.
+struct StillnessGateTests {
+    static func grey(_ img: CGImage) -> [Float] {
+        let w = img.width, h = img.height
+        var px = [UInt8](repeating: 0, count: w * h * 4)
+        let ctx = CGContext(data: &px, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                            space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        ctx.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
+        return (0..<(w * h)).map { i in 0.299 * Float(px[i * 4]) + 0.587 * Float(px[i * 4 + 1]) + 0.114 * Float(px[i * 4 + 2]) }
+    }
+
+    @Test func onlyTheMouthAndJawMoveWithTheStillFaceMap() throws {
+        let src = Bundle.module.url(forResource: "face-flow-animal", withExtension: nil, subdirectory: "Fixtures")!
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("still-gate-\(UUID().uuidString)")
+        try FileManager.default.copyItem(at: src, to: dir)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let mURL = dir.appendingPathComponent("manifest.json")
+        var m = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: mURL)) as? [String: Any])
+        var flow = try #require(m["flow"] as? [String: Any])
+        var map = try #require(flow["map"] as? [String: Any])
+        // what the server serves (prep face.ts STILL_FACE)
+        map["alive"] = ["headX": 0, "headRoll": 0, "nodPx": 0, "browPx": 0, "lockY": true]
+        map["brow"] = ["px": 0]
+        map["cheek"] = ["spread": 0, "pull": 0, "lift": 0, "cheek": 0, "cheekW": 0, "naso": 0, "nasoW": 0]
+        flow["map"] = map; m["flow"] = flow
+        try JSONSerialization.data(withJSONObject: m).write(to: mURL)
+
+        let set = try FaceSet(directory: dir)
+        let r = FaceRenderer(faceSet: set, outputSize: CGSize(width: 270, height: 480), seed: 2)
+        let tl = LipTimeline()
+        var pcm = Data()
+        for i in 0..<8 { pcm.append(lipTestPCM(amplitude: i % 2 == 0 ? 0.5 : 0.02, ms: 250)) }
+        tl.appendPCM(pcm, offsetMs: 0)
+        tl.appendText("a moment of the warm afternoon light")
+        tl.finishAudio()
+        var prev: [Float]? = nil
+        var top: [Float] = [], bottom: [Float] = [], mouthMoved = false
+        let w = 270, h = 480, yTop = Int(Double(h) * 0.40), yBot = Int(Double(h) * 0.88)
+        for i in 0..<50 {
+            let t = Double(i) / 25
+            let img = try #require(r.render(at: t, lip: tl.sample(atMs: t * 1000 + r.lipLookaheadMs)))
+            let g = Self.grey(img)
+            if let p = prev {
+                var a: Float = 0, b: Float = 0, c: Float = 0
+                for y in 0..<yTop { for x in 0..<w { a += abs(g[y * w + x] - p[y * w + x]) } }
+                for y in yBot..<h { for x in 0..<w { b += abs(g[y * w + x] - p[y * w + x]) } }
+                for y in yTop..<yBot { for x in 0..<w { c += abs(g[y * w + x] - p[y * w + x]) } }
+                top.append(a / Float(yTop * w)); bottom.append(b / Float((h - yBot) * w))
+                if c / Float((yBot - yTop) * w) > 0.2 { mouthMoved = true }
+            }
+            prev = g
+        }
+        // blink frames: drop the frames above 4x the median of the top band
+        let med = top.sorted()[top.count / 2]
+        let keep = top.indices.filter { top[$0] <= 4 * max(med, 0.02) }
+        let topMean = keep.map { top[$0] }.reduce(0, +) / Float(max(1, keep.count))
+        let botMean = bottom.reduce(0, +) / Float(max(1, bottom.count))
+        print(String(format: "STILL_GATE top %.3f bottom %.3f (frames kept %d/%d) mouth moved %@", topMean, botMean, keep.count, top.count, mouthMoved ? "yes" : "no"))
+        #expect(mouthMoved)
+        #expect(topMean <= 0.10)
+        #expect(botMean <= 0.10)
+    }
 }

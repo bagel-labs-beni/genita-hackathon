@@ -7,7 +7,7 @@
  *   GENITA_FIND_IMAGES=0    → no Muse Image illustrations (cards say nothing about pictures)
  *   GENITA_SHOP_REGION      → where product search shops (default "US")
  *   GENITA_SAM_MASKS=1      → camera ingredient boxes also carry a pixel mask (observe.boxes items[].mask)
- *   GENITA_PRODUCT_HEDGE    → identical product searches raced, first good one wins (default 2, 1 = off)
+ *   GENITA_PRODUCT_HEDGE    → identical product searches raced, first good one wins (default 3, 1 = off; S5 speed)
  */
 import { join } from "node:path";
 import { FileFindsStore } from "./store.ts";
@@ -22,7 +22,8 @@ export function findsFromEnv(metaKey: string, env: NodeJS.ProcessEnv = process.e
     images: env.GENITA_FIND_IMAGES !== "0",
     imageBase: "/v1/finds",
     shopRegion: /^[A-Za-z .-]{2,40}$/.test(env.GENITA_SHOP_REGION ?? "") ? env.GENITA_SHOP_REGION : "US",
-    productHedge: Math.min(3, Math.max(1, Number.parseInt(env.GENITA_PRODUCT_HEDGE ?? "2", 10) || 2)),
+    productHedge: Math.min(3, Math.max(1, Number.parseInt(env.GENITA_PRODUCT_HEDGE ?? "3", 10) || 3)),
+    productPrefetch: env.GENITA_PRODUCT_PREFETCH !== "0",
   };
 }
 

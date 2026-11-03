@@ -48,10 +48,17 @@ final class OwnershipCoordinator {
     var onChange: ((_ old: ConversationDevice, _ new: ConversationDevice) -> Void)?
     private(set) var state: ConversationOwnership { didSet { save() } }
     private let store: UserDefaults
-    private let key: String
+    private let baseKey: String
+    private var key: String?
     init(device: ConversationDevice, store: UserDefaults = .standard, key: String = "genita.handoff.ownership") {
-        self.device = device; self.store = store; self.key = key
+        self.device = device; self.store = store; self.baseKey = key; self.key = key
         state = store.data(forKey: key).flatMap { try? JSONDecoder().decode(ConversationOwnership.self, from: $0) } ?? ConversationOwnership()
+    }
+    /// Account switches load only that user's epoch. Unscoped legacy data is never migrated blindly.
+    /// The caller stops the old transports before selecting another account.
+    func useAccount(_ accountID: String?) {
+        key = HandoffAccountScope.storageKey(base: baseKey, accountID: accountID)
+        state = key.flatMap { store.data(forKey: $0) }.flatMap { try? JSONDecoder().decode(ConversationOwnership.self, from: $0) } ?? ConversationOwnership()
     }
     var isOwner: Bool { state.owner == device }
     /// The tap that moves the conversation here. It takes effect at once, with or without a link.
@@ -70,5 +77,5 @@ final class OwnershipCoordinator {
     /// Sent on every (re)connect so the device with the older epoch learns the newest claim.
     func publishCurrent() { transport?.publish(OwnershipClaim(owner: state.owner, epoch: state.epoch)) }
     func surface(peerReachable: Bool) -> HandoffSurface { state.surface(on: device, peerReachable: peerReachable) }
-    private func save() { if let data = try? JSONEncoder().encode(state) { store.set(data, forKey: key) } }
+    private func save() { if let key, let data = try? JSONEncoder().encode(state) { store.set(data, forKey: key) } }
 }

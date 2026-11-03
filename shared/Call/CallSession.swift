@@ -116,12 +116,20 @@ enum CallStop: Equatable {
     /// Client-side latency per answered turn: ASR end of speech → reply audio playing.
     private(set) var latencies: [Int] = []
     var companionName = ""
+    /// D48 ①: "Updated: no cilantro" — a correction said in the call was saved (`profile.updated`). Shown for
+    /// `profileChipMs`, then nil. A second one replaces the first and restarts the clock.
+    private(set) var profileChip: String?
+    /// GK-1 "Getting to know you · {topic}": the companion just asked this call's question (`profile.asking`).
+    /// A soft chip for `askingChipMs`, or until the answer is saved (CC-1 "Noted: …").
+    private(set) var askingChip: String?
     /// F8 interpretation screens (INT-1~6, INT-M1/M2), from interpret.* events.
     private(set) var interpretBoard = InterpretBoard()
     /// Mac call interpretation: plays utterances whose route is whisper/speaker (InterpretAudioOutput).
     /// Unset = everything plays through CallAudio as usual.
     /// The app saves a name the server changed in the call (`companion.named`).
     @ObservationIgnored var onCompanionNamed: ((String) -> Void)?
+    /// A recovered authenticated call is also an opportunity to retry missing handoff identity.
+    @ObservationIgnored var onConnected: (() -> Void)?
     @ObservationIgnored var routeInterpretAudio: ((Data, InterpretBoard.Route, Int) -> Void)?
     @ObservationIgnored var flushRoutedAudio: (() -> Void)?
     @ObservationIgnored private var routed: Set<Int> = []
@@ -137,6 +145,9 @@ enum CallStop: Equatable {
     let finds = FindsModel()
 
     @ObservationIgnored let camera = CallCamera()
+    /// PERC-2: face crops for the server's perception, only while `ready.perception` is true.
+    @ObservationIgnored private let perception = PerceptionSampler()
+    @ObservationIgnored private var perceptionOn = false
     @ObservationIgnored private let audio: any CallAudioPlaying
     @ObservationIgnored private let voice: any CallVoiceRendering
     @ObservationIgnored private let makeSocket: () -> any CallConnection
@@ -160,6 +171,8 @@ enum CallStop: Equatable {
     @ObservationIgnored private var reconnectSince: Date?
     @ObservationIgnored private var reconnectTask: Task<Void, Never>?
     @ObservationIgnored private var holdTask: Task<Void, Never>?
+    @ObservationIgnored private var profileChipTask: Task<Void, Never>?
+    @ObservationIgnored private var askingChipTask: Task<Void, Never>?
     @ObservationIgnored private var pingTask: Task<Void, Never>?
     @ObservationIgnored private var userEnded = true
     @ObservationIgnored private var capturePermissions = CapturePermissionRequests()
@@ -318,12 +331,13 @@ enum CallStop: Equatable {
     func end() {
         capturePermissions.invalidate()
         userEnded = true
-        reconnectTask?.cancel(); pingTask?.cancel(); holdTask?.cancel()
+        reconnectTask?.cancel(); pingTask?.cancel(); holdTask?.cancel(); profileChipTask?.cancel(); profileChip = nil; askingChipTask?.cancel(); askingChip = nil
         socket?.close()
         socket = nil
         voice.cancel()
         audio.stop()
         camera.stop()
+        perception.stop(); perceptionOn = false
         micOn = false; cameraOn = false; playing = false; link = .idle
         reconnectSince = nil; cancelled = []; seqToUtterance = [:]; lookedUp = []; findsCount = 0
         routed = []; interpretBoard = InterpretBoard(companionName: companionName); uplink.callFraming = false
@@ -387,7 +401,7 @@ enum CallStop: Equatable {
     static var micWasOn: Bool {
         get {
             #if DEBUG
-            if ProcessInfo.processInfo.arguments.contains("--uitesting") { return false }
+            if ProcessInfo.processInfo.arguments.contains("--uitesting") || BrowserPreview.isActive { return false }
             #endif
             return UserDefaults.standard.bool(forKey: "genita.mic.lastOn")
         }
@@ -439,6 +453,19 @@ enum CallStop: Equatable {
     }
 
     func flipCamera() { camera.flip(); cameraFront = camera.front; finds.boxes.clear() }
+
+    /// PERC-2: ~2 fps look at the camera; a face crop goes up when it changed (≥ 1 s apart) or every 2.5 s.
+    private func startPerception() {
+        guard !perception.isRunning else { return }
+        perception.start(
+            frame: { [weak self] in self?.camera.latestFrontImage() },
+            active: { [weak self] in
+                guard let self else { return false }
+                return PerceptionGate.active(serverOn: self.perceptionOn, cameraOn: self.cameraOn, front: self.camera.front, mode: self.mode, live: self.link == .live)
+            },
+            send: { [weak self] image in self?.socket?.send(.perceptionFrame(image: image)) }
+        )
+    }
 
     /// S09-X hold. Debug UI tests on slow simulators can lengthen it (GENITA_INTERRUPT_HOLD_MS).
     static var interruptedHoldMs: Int {
@@ -593,6 +620,7 @@ enum CallStop: Equatable {
         log.info("socket closed: \(String(describing: closure), privacy: .public)")
         socket = nil
         pingTask?.cancel()
+        perception.stop() // a new `ready` restarts it (Codex P2)
         flushPlayback()
         restFace()
         playing = false
@@ -680,7 +708,10 @@ enum CallStop: Equatable {
             interpretBoard.apply(event)
             phase = .listening
             keepAlive()
+            perceptionOn = r.perception == true
+            if perceptionOn { startPerception() } else { perception.stop() }
             log.info("ready session=\(r.sessionId, privacy: .public) lip=\(r.lip.active.rawValue, privacy: .public) tts=\(self.tts.rawValue, privacy: .public)")
+            onConnected?()
         case let .state(s):
             setPhase(s.state)
         case .speechStart:
@@ -747,7 +778,8 @@ enum CallStop: Equatable {
             if t.name == "web_search", lookedUp.insert(t.utteranceId).inserted { findsCount += 1 }
         case let .error(e):
             log.error("server error \(e.code, privacy: .public): \(e.message, privacy: .public)")
-            if e.code == "spark_unavailable" { answerFailed = true }
+            // daily_limit (D41 judge cap): the turn got no answer either; same "couldn't answer" state
+            if e.code == "spark_unavailable" || e.code == "daily_limit" { answerFailed = true }
         case let .modeChanged(m):
             mode = m.mode
             if m.mode == .chat { start?.interpret = nil; uplink.callFraming = false }
@@ -780,13 +812,22 @@ enum CallStop: Equatable {
             start?.persona.name = n.name   // a reconnect's start carries the new name too
             interpretBoard.companionName = n.name
             onCompanionNamed?(n.name)
-        case .expression:
-            // expression layer (11/3, #284): FaceDriver consumes it in a follow-up; nothing to do here yet
-            break
+        case let .profileUpdated(p):
+            // CC-1 "Updated: …" / "Noted: …" (it answers the GK-1 question, so that chip goes)
+            askingChip = nil; askingChipTask?.cancel()
+            showProfileChip(p.text)
+        case let .profileAsking(a):
+            showAskingChip(a.topic)
+        case let .expression(x):
+            // expression layer (11/3, #284): one clause's feeling → the face's expression stills (eyes, brows, cheeks)
+            if !cancelled.contains(x.utteranceId), !routed.contains(x.utteranceId) {
+                let id = faceId(x.utteranceId)
+                feedFace(x.utteranceId) { $0.handle(expression: x.tag, intensity: x.intensity, startMs: x.startMs, endMs: x.endMs, utteranceId: id) }
+            }
         case .interpretDetected, .asrStatus, .pong, .unknown:
             break
-        case .profileUpdated, .profileAsking:
-            // lane 개인화 chips (CC-1, GK-1): drawn by the app PR (#195)
+        case .backchannel:
+            // convo P1 #345: the server flag is off by default; playing a soft clip is a follow-up
             break
         }
     }
@@ -813,6 +854,48 @@ enum CallStop: Equatable {
         if let playbackSink { playbackSink(AudioFrameHeader.payload(of: data), utterance); return }
         #endif
         audio.enqueue(pcm: AudioFrameHeader.payload(of: data), utteranceId: utterance)
+    }
+
+    /// `profile.updated` chip: 2.5 s (PROTOCOL.md). Debug UI tests on slow simulators can lengthen it (GENITA_PROFILE_CHIP_MS).
+    static var profileChipMs: Int {
+        #if DEBUG
+        if let ms = ProcessInfo.processInfo.environment["GENITA_PROFILE_CHIP_MS"].flatMap(Int.init) { return ms }
+        #endif
+        return 2500
+    }
+
+    /// GK-1 time on screen. Debug UI tests can change it (GENITA_ASKING_CHIP_MS).
+    static var askingChipMs: Int {
+        #if DEBUG
+        if let ms = ProcessInfo.processInfo.environment["GENITA_ASKING_CHIP_MS"].flatMap(Int.init) { return ms }
+        #endif
+        return 6000
+    }
+
+    private func showAskingChip(_ raw: String) {
+        let topic = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !topic.isEmpty else { return }
+        askingChip = "Getting to know you · " + String(topic.prefix(48))
+        askingChipTask?.cancel()
+        askingChipTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(Self.askingChipMs))
+            guard !Task.isCancelled else { return }
+            self?.askingChip = nil
+        }
+        log.info("profile.asking chip")
+    }
+
+    private func showProfileChip(_ raw: String) {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        profileChip = String(text.prefix(60))
+        profileChipTask?.cancel()
+        profileChipTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(Self.profileChipMs))
+            guard !Task.isCancelled else { return }
+            self?.profileChip = nil
+        }
+        log.info("profile.updated chip")
     }
 
     private func setPhase(_ next: Phase) {

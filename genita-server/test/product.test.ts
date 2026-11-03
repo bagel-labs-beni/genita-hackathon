@@ -14,6 +14,14 @@ import { checkServerEvent, type ServerEvent } from "../src/protocol.ts";
 test("product intent: voice alone starts it; shopping beats the camera; other asks stay chat", () => {
   assert.deepEqual(classifyTurn("Jin, can we look for a jacket for this weekend?", false), { kind: "product" });
   assert.deepEqual(classifyTurn("Find a couple that match my style, and send me the links.", false), { kind: "product" });
+  // sweep 11/3 [P1]: "send me the links" alone is not a shopping ask — a web answer with its sources sheet
+  assert.equal(classifyTurn("What are the best ramen places in Seoul? Send me the links.", false), null);
+  assert.equal(classifyTurn("send me the links", false), null);
+  assert.deepEqual(classifyTurn("send me the links", false, true), { kind: "product" }, "right after a product search it still is");
+  assert.deepEqual(classifyTurn("Can you send me the links for those sneakers?", false), { kind: "product" });
+  assert.deepEqual(classifyTurn("Any product links?", false), { kind: "product" });
+  assert.deepEqual(classifyTurn("Send me the links for black heels.", false), { kind: "product" }, "Codex P2");
+  assert.deepEqual(classifyTurn("Can you send me the links for earrings?", false), { kind: "product" });
   assert.deepEqual(classifyTurn("can you find me some white sneakers", true), { kind: "product" }, "shopping words win over the camera");
   assert.deepEqual(classifyTurn("Which jacket should I wear, this or that?", true), { kind: "outfit" });
   assert.deepEqual(classifyTurn("What can I make with what's in my fridge?", true), { kind: "recipe" });
@@ -393,4 +401,26 @@ test("#214: the 'Searched the web' line fits one card line", () => {
   assert.equal(searchedLine(["quince.com", "target.com"]), "Searched the web · quince.com, target.com");
   assert.equal(searchedLine(["northline.example.com", "fieldandco.example.com"]), "Searched the web · northline.example.com +1");
   assert.equal(searchedLine(["onlyone.example.com"]), "Searched the web · onlyone.example.com");
+});
+
+test("S5 speed: the search prompt asks for one product search (GENITA_PRODUCT_ONE_SEARCH=0 brings back two)", async () => {
+  const run = async () => {
+    const v = vendors({ items: [ITEM1, ITEM2], output: [SEARCH, OPEN(P1), OPEN(P2)], facts: { [P1]: { kind: "product" }, [P2]: { kind: "product" } } });
+    await runProduct(ctxFor(v).ctx);
+    return v.prompts[0];
+  };
+  assert.match(await run(), /Be quick: one product search, then open the pages\./);
+  process.env.GENITA_PRODUCT_ONE_SEARCH = "0";
+  try { assert.match(await run(), /at most 2 product searches/); } finally { delete process.env.GENITA_PRODUCT_ONE_SEARCH; }
+});
+
+test("QA 11/3: shoes for an outfit are never slippers / sandals / mules unless asked; the prompt says so", async () => {
+  const { offOccasion, productPrompt } = await import("../src/finds/product.ts");
+  const ask = "Can you find me some shoes that match my style?";
+  for (const p of ["Shearling slipper https://shop.example.com/p/slipper-123", "Leather slide sandal", "Suede mules https://x.com/products/suede-mules", "Classic flip-flops"]) assert.equal(offOccasion(p, ask), true, p);
+  for (const p of ["Chelsea boots https://shop.example.com/p/chelsea-boot", "Penny loafers", "Leather sneakers"]) assert.equal(offOccasion(p, ask), false, p);
+  assert.equal(offOccasion("Leather slide sandal", "find me sandals for the beach"), false, "asked for");
+  assert.equal(offOccasion("Leather slide buckle belt", "find me a black belt"), false, "a belt, not a shoe (Codex P2)");
+  assert.equal(offOccasion("Leather slide buckle belt", ask), false);
+  assert.match(productPrompt({ question: ask, recent: [], taste: [], city: null, region: "US", today: "Tuesday, November 3" }), /never slippers, sandals, slides, flip-flops or mules unless they asked/);
 });

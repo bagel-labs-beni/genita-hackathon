@@ -57,6 +57,21 @@ public struct FaceManifest: Codable, Equatable, Sendable {
 
 public enum FaceExpression: String, CaseIterable, Sendable {
     case neutral, blink, smile, warm
+    /// Expression layer stills (prep 11/3 night, Muse Image): only shown while a server `expression` event is active.
+    case surprised, concerned
+
+    /// The still a server `expression` tag shows, in preference order (a face prepped before a key existed falls back).
+    /// A soft smile (intensity < 0.55: a warm reply) is the tender `warm` look, a fuller one the `smile`. A laugh is the
+    /// full smile too (a frozen open-mouth laugh still read as fake; half-blended laugh eyes read as sleepy).
+    public static func stills(forTag tag: String, intensity: Double) -> [FaceExpression] {
+        switch tag {
+        case "smile": return intensity < 0.55 ? [.warm, .smile] : [.smile, .warm]
+        case "smileopen", "laugh": return [.smile, .warm]
+        case "surprised": return [.surprised]
+        case "concerned": return [.concerned]
+        default: return []
+        }
+    }
 
     /// The speaking emotion's base face.
     public init(emotion: String?) {

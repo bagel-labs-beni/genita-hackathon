@@ -18,12 +18,15 @@ import type { VoiceConfig } from "../config.ts";
 import type { TtsChunk, TtsRequest } from "./types.ts";
 import { pauseAfterMs, spokenText } from "../voice/normalize.ts";
 import { parseClauseTiming, shiftTiming } from "../lips/visemes.ts";
+import { g2pOn, relabelPhonemes } from "../lips/g2p.ts";
 
 export const SEAMLESS_MODEL = "seamless-m4t-v2";
 export const FILLERS = ["Hmm,", "Oh!", "Yeah.", "Oh wow,", "Okay,", "Right,", "Mm-hm.", "Aw,", "Haha,", "Well,", "So,", "Oh no,"];
 const CACHE_MAX_CHARS = 14;
 const CACHE_MAX = 400;
 const DOWN_MS = 30_000;
+/** D27: the GPU's queue was full (503 {"error":"busy"}): park briefly so the next sentences go straight to the device */
+const BUSY_DOWN_MS = 2_000;
 
 /** The service takes ≤ 400 chars; cut longer spoken text at a clause or word boundary (≤ 380 each). */
 export function splitForService(text: string, max = 380): string[] {
@@ -45,6 +48,21 @@ export function splitForService(text: string, max = 380): string[] {
 }
 
 export type SeamlessRequest = TtsRequest & { lang?: string };
+
+/**
+ * The reply's <emotion> → speaking rate (11/3 tone pass). Seamless has no style or emotion input; its one prosody
+ * knob is speed (the service scales the unit durations). Excited and teasing lines run a little quicker, sad and
+ * whisper a little slower, so a reply's mood is heard and not only seen. Short clauses (≤ CACHE_MAX_CHARS, the
+ * prefetched fillers like "Oh wow,") stay at the base rate so the filler cache still answers the first sound.
+ */
+export const EMOTION_SPEED: Record<string, number> = {
+  excited: 1.1, surprised: 1.08, teasing: 1.06, happy: 1.05, curious: 1.03, neutral: 1.03, warm: 1, sad: 0.94, whisper: 0.95,
+};
+export function speedFor(base: number, emotion: string | null | undefined, text: string): number {
+  if (text.length <= CACHE_MAX_CHARS) return base;
+  const f = EMOTION_SPEED[(emotion ?? "").toLowerCase()] ?? 1;
+  return Math.round(Math.min(1.3, Math.max(0.8, base * f)) * 100) / 100;
+}
 
 /** BCP-47 / Spark language → Seamless lang code (the two the app uses). */
 export function seamlessLang(lang: string | undefined, text: string): "eng" | "kor" {
@@ -80,7 +98,7 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
   let downUntil = 0;
   const modelName = cfg.model === "mms" ? "mms-tts" : SEAMLESS_MODEL;
 
-  async function* request(text: string, lang: "eng" | "kor", speaker: number, tailMs: number, signal?: AbortSignal): AsyncGenerator<TtsChunk> {
+  async function* request(text: string, lang: "eng" | "kor", speaker: number, tailMs: number, speed: number, signal?: AbortSignal, extra: Record<string, unknown> = {}): AsyncGenerator<TtsChunk> {
     const ctl = new AbortController();
     // no first byte, or a stalled stream: give up after timeoutMs without progress (reset on every chunk)
     let timer = setTimeout(() => ctl.abort(new Error("voice_timeout")), cfg.timeoutMs);
@@ -96,7 +114,7 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
         r = await doFetch(`${cfg.url}/v1/tts`, {
           method: "POST",
           headers: { authorization: `Bearer ${cfg.token}`, "content-type": "application/json" },
-          body: JSON.stringify({ text, lang, speaker, speed: cfg.speed, tail_ms: tailMs, model: cfg.model, ...(cfg.align ? { align: true } : {}) }),
+          body: JSON.stringify({ text, lang, speaker, speed, tail_ms: tailMs, model: cfg.model, ...(cfg.align ? { align: true } : {}), ...extra }),
           signal: ctl.signal,
         });
       } catch (err) {
@@ -120,7 +138,9 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
         }
         if ("timing" in j) {
           // word + phoneme timing for the audio above; a malformed one is dropped (the app falls back)
-          const timing = cfg.align ? parseClauseTiming(j.timing) : null;
+          const parsed = cfg.align ? parseClauseTiming(j.timing) : null;
+          // the aligner's letter-guessed phoneme labels → dictionary labels on its word times (lips/g2p.ts)
+          const timing = parsed && g2pOn() ? relabelPhonemes(parsed) : parsed;
           return timing ? { audio: Buffer.alloc(0), alignment: null, model: modelName, timing } : null;
         }
         const audio = Buffer.from(j.audio_base64 ?? "", "base64");
@@ -157,7 +177,7 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
     }
   }
 
-  const key = (lang: string, speaker: number, text: string, tail: number) => `${lang}|${speaker}|${tail}|${text}`;
+  const key = (lang: string, speaker: number, text: string, tail: number, speed: number) => `${lang}|${speaker}|${tail}|${speed}|${text}`;
   const remember = (k: string, chunks: TtsChunk[]) => {
     if (cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value as string);
     cache.set(k, chunks);
@@ -170,7 +190,12 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
     const speaker = speakerOf(req.voiceId);
     const spk = Number.isFinite(speaker) ? speaker : 0;
     const tail = pauseAfterMs(text);
-    const k = key(lang, spk, text, tail);
+    const speed = speedFor(cfg.speed, req.emotion, text);
+    // 11/3 post chain: the reply's emotion also shapes pitch/brightness on the voice GPU (deploy/modal-voice/post.py).
+    // Short clauses (the cached fillers, the first sound) go without it, like the rate. GENITA_VOICE_POST=0 = raw voice.
+    const emo = text.length > CACHE_MAX_CHARS ? (req.emotion ?? "").toLowerCase() : "";
+    const extra: Record<string, unknown> = { ...(emo && emo !== "neutral" ? { emotion: emo } : {}), ...(cfg.post === false ? { post: false } : {}) };
+    const k = key(lang, spk, text, tail, speed);
     const hit = cache.get(k);
     if (hit) {
       yield* hit;
@@ -185,7 +210,7 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
       let offsetSec = 0;
       for (const [n, piece] of pieces.entries()) {
         let pieceSec = 0;
-        for await (const c of request(piece, lang, spk, n === pieces.length - 1 ? tail : 0, req.signal)) {
+        for await (const c of request(piece, lang, spk, n === pieces.length - 1 ? tail : 0, speed, req.signal, extra)) {
           let shifted = offsetSec && c.alignment
             ? { ...c, alignment: { ...c.alignment, startsSec: c.alignment.startsSec.map((t) => t + offsetSec), endsSec: c.alignment.endsSec.map((t) => t + offsetSec) } }
             : c;
@@ -201,8 +226,10 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
       const status = err instanceof UpstreamError ? err.status : null;
       const outage = status === null || status >= 500 || status === 429 || status === 401 || status === 403;
       if (!req.signal?.aborted && outage) {
-        downUntil = now() + DOWN_MS;
-        opts.log?.("voice.down", { message: err instanceof Error ? err.message.slice(0, 160) : "unknown", forMs: DOWN_MS });
+        const busy = status === 503 && err instanceof Error && /"busy"/.test(err.message);
+        const forMs = busy ? BUSY_DOWN_MS : DOWN_MS;
+        downUntil = Math.max(downUntil, now() + forMs); // a busy answer never shortens a running 30 s outage (Codex P2)
+        opts.log?.("voice.down", { message: err instanceof Error ? err.message.slice(0, 160) : "unknown", forMs });
       }
       throw err;
     }

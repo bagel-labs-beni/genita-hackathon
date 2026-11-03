@@ -70,10 +70,35 @@ async function contract(store: PrepStore, userId: string) {
   assert.equal((await store.getVoicePreview("v1", "p1"))?.toString(), "mp3");
 }
 
+/** D41 judge demo companion: the flag round-trips, and the companion can be removed so the user can make their own. */
+async function demoContract(store: PrepStore, userId: string) {
+  assert.equal((await store.getCompanion(userId))!.demo, undefined);
+  await store.patchCompanion(userId, (x) => ({ ...x, demo: true }));
+  assert.equal((await store.getCompanion(userId))!.demo, true);
+  // replace swaps only the expected demo companion, never a real one
+  const cur = (await store.getCompanion(userId))!;
+  const mine = { ...cur, id: "comp_own", demo: undefined, name: "Mine" };
+  assert.equal(await store.replaceDemoCompanion("other_id", mine), false);
+  assert.equal((await store.getCompanion(userId))!.id, cur.id);
+  assert.equal(await store.replaceDemoCompanion(cur.id, mine), true);
+  assert.equal((await store.getCompanion(userId))!.name, "Mine");
+  assert.equal((await store.getCompanion(userId))!.demo, undefined);
+  assert.ok(await store.getImage(cur.imageId), "a photo the new companion reuses is kept");
+  assert.equal(await store.replaceDemoCompanion("comp_own", { ...mine, id: "comp_x" }), false, "a real companion is never replaced");
+  assert.equal(await store.deleteCompanion(userId), true);
+  assert.equal(await store.getCompanion(userId), null);
+  await store.deleteImage(userId, cur.imageId);
+  assert.equal(await store.getImage(cur.imageId), null);
+  assert.equal(await store.deleteCompanion(userId), false);
+  assert.deepEqual(await store.listCompanions(), []);
+}
+
 test("PrepStore contract: FileStore", async () => {
   const dir = mkdtempSync(join(tmpdir(), "prep-file-"));
   try {
-    await contract(new FileStore(dir), "user_1");
+    const store = new FileStore(dir);
+    await contract(store, "user_1");
+    await demoContract(store, "user_1");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -84,13 +109,40 @@ test("PrepStore contract: PgPrepStore (Postgres + blobs), legacy video JSON stil
   const db = await testDb();
   try {
     const { user } = await new Accounts(db).upsertUser({ provider: "dev", sub: "contract" });
-    await contract(new PgPrepStore(db, new FsBlobStore(dir)), user.id);
+    const store = new PgPrepStore(db, new FsBlobStore(dir));
+    await contract(store, user.id);
     const em = await db.query("SELECT emotion, video_url FROM companion_emotions");
     assert.deepEqual(em.rows, []);
     // face images live under users/<id>/, the prefix DELETE /me removes
     assert.equal(existsSync(join(dir, "users", user.id, "companions", "comp_a1", "face", "A")), true);
     const job = await db.query("SELECT status, attempts FROM clip_jobs");
     assert.deepEqual(job.rows, [{ status: "running", attempts: 0 }]);
+    await demoContract(store, user.id);
+  } finally {
+    await db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("PgPrepStore.deleteCompanion: drops the companion's rows, its photo and its files, nothing else of the user", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "prep-pg-del-"));
+  const db = await testDb();
+  try {
+    const { user } = await new Accounts(db).upsertUser({ provider: "dev", sub: "del" });
+    const blobs = new FsBlobStore(dir);
+    const store = new PgPrepStore(db, blobs);
+    const img = { id: "img_d1", userId: user.id, mime: "image/jpeg", bytes: 4, check: { passed: true, type: "human" } as any, headBox: null as any, rightsAck: true, createdAt: "2026-11-02T00:00:00.000Z", ms: {} } as ImageRecord;
+    await store.putImage(img, Buffer.from([1, 2, 3, 4]));
+    await store.putCompanion({ id: "comp_d1", userId: user.id, imageId: "img_d1", type: "human", voiceId: "v1", name: "Jin", createdAt: "2026-11-02T00:00:01.000Z", prep: newPrepState() });
+    await blobs.put(`users/${user.id}/companions/comp_d1/face/blink`, Buffer.from("b"), "image/webp");
+    await blobs.put(`users/${user.id}/memory/keep`, Buffer.from("m"), "application/octet-stream");
+    assert.equal(await store.deleteCompanion(user.id), true);
+    assert.equal(await store.getImage("img_d1"), null);
+    assert.deepEqual(await blobs.list(`users/${user.id}/companions/`), []);
+    assert.deepEqual(await blobs.list(`users/${user.id}/images/`), []);
+    assert.deepEqual(await blobs.list(`users/${user.id}/memory/`), [`users/${user.id}/memory/keep`]);
+    const left = await db.query("SELECT (SELECT count(*)::int FROM companions) AS c, (SELECT count(*)::int FROM clip_jobs) AS j, (SELECT count(*)::int FROM companion_images) AS i");
+    assert.deepEqual(left.rows[0], { c: 0, j: 0, i: 0 });
   } finally {
     await db.close();
     rmSync(dir, { recursive: true, force: true });

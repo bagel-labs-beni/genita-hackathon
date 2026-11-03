@@ -22,7 +22,7 @@
  */
 import type { SparkRequest } from "../meta/spark.ts";
 import { SENSITIVE_RULE, isSensitiveDetail } from "./sensitive.ts";
-import { looksLikeInjection, redactSensitive, type EvidenceLabel, type Finding, type StyleCard } from "../prep/importProfile.ts";
+import { isLanguagePreference, looksLikeInjection, redactSensitive, type EvidenceLabel, type Finding, type StyleCard } from "../prep/importProfile.ts";
 import { shortTaste } from "./reasons.ts";
 
 export const STORY_IDS = ["think", "talk", "taste", "help", "lines", "unknowns"] as const;
@@ -174,6 +174,7 @@ export function storyInstructions(only?: SparkStoryId[]): string {
     `Write only these cards: ${ids.join(", ")}. One object per card.`,
     ...ids.map((id) => CARD_GUIDE[id]),
     "headline: at most 8 words, ends with a period. items: each text is 1-2 short sentences to the user as \"you\" (e.g. \"You like a friendly tone, but you want the answer up front. Long replies lose you.\"), restating what the profile says in plain words, with the evidence of the lines behind it: explicit (they said it), observed (a repeated pattern), memory (a memory summary). A [Suggested] line is not a fact about them: never write it as one.",
+    "Genita talks in English: never mention which language the user speaks or wants, in any card. A line marked \"(direction only)\" is a lean, not a fact: say it as one (\"You seem to lean toward …\") and never as their stated taste.",
     "promise: one short sentence starting \"So I'll\" for think and talk; \"\" for the others. evidence: the strongest evidence behind the card.",
     "Never name a personality type or trait label, never diagnose, never praise or flatter, never guess beyond the profile. If the profile has nothing for a card, return it with headline \"\", items [], tags [], help [].",
     "topics: for each still-to-confirm item, {item: copied exactly, topic: what to learn in 3-6 words (\"How chatty calls should be\"), sub: a short either/or question (\"Quiet company, or lots of talk?\")}.",
@@ -232,7 +233,7 @@ function promiseOf(v: unknown): string | undefined {
   p = p.replace(/^so,?\s+i\s*(?:'|’|wi)ll\b/i, "So I'll").replace(/^i\s*(?:'|’|wi)ll\b/i, "So I'll");
   if (!/^So I'll\b/.test(p)) return undefined;
   if (!/[.!?]$/.test(p)) p += ".";
-  if (p.split(/(?<=[.!?])\s+/).length > 1 || p.length > 160 || storyTextProblem(p)) return undefined;
+  if (p.split(/(?<=[.!?])\s+/).length > 1 || p.length > 160 || storyTextProblem(p) || isLanguagePreference(p)) return undefined;
   return p;
 }
 
@@ -246,7 +247,7 @@ function headlineOf(v: unknown): string | null {
 /** Best label behind a card among facts (suggestions never count). null = nothing to show. */
 function bestFact(card: StyleCard, keys: Array<keyof StyleCard["sections"]>): Evidence | null {
   let best: Evidence | null = null;
-  for (const k of keys) for (const f of card.sections?.[k] ?? []) if (f.label !== "suggested" && (best === null || RANK[f.label] > RANK[best])) best = f.label as Evidence;
+  for (const k of keys) for (const f of card.sections?.[k] ?? []) if (f.label !== "suggested" && !f.direction && (best === null || RANK[f.label] > RANK[best])) best = f.label as Evidence;
   return best;
 }
 const clamp = (claimed: unknown, best: Evidence): Evidence => (EVIDENCE.includes(claimed as Evidence) && RANK[claimed as Evidence] <= RANK[best] ? (claimed as Evidence) : best);
@@ -285,7 +286,8 @@ export function openUnknowns(card: StyleCard): UnknownItem[] {
 }
 
 export function unknownsCard(card: StyleCard, missing: SparkStoryId[] = [], topics: UnknownItem[] = card.story?.topics ?? []): StoryCard {
-  const head = UNKNOWN_HEAD[card.source === "skip" ? "skip" : "import"];
+  // an import that said nothing (a new assistant user, every section "Not enough information") reads like a skip
+  const head = UNKNOWN_HEAD[card.source === "skip" || !card.itemCount ? "skip" : "import"];
   const unknowns = unknownItems(card, missing, topics);
   return {
     id: "unknowns",
@@ -298,7 +300,7 @@ export function unknownsCard(card: StyleCard, missing: SparkStoryId[] = [], topi
   };
 }
 
-const facts = (card: StyleCard, id: SparkStoryId) => SOURCES[id].flatMap((k) => (card.sections?.[k] ?? []).filter((f) => f.label !== "suggested" && !storyTextProblem(f.text))).sort((a, b) => RANK[b.label] - RANK[a.label]);
+const facts = (card: StyleCard, id: SparkStoryId) => SOURCES[id].flatMap((k) => (card.sections?.[k] ?? []).filter((f) => f.label !== "suggested" && !f.direction && !storyTextProblem(f.text))).sort((a, b) => RANK[b.label] - RANK[a.label]);
 
 const FALLBACK_HEAD: Record<SparkStoryId, string> = {
   think: "How you work things out.",
@@ -320,14 +322,14 @@ function fallbackCard(id: SparkStoryId, card: StyleCard): StoryCard | null {
 
 function tasteFallback(card: StyleCard, base: StoryCard): StoryCard {
   const tags: StoryTag[] = [];
-  for (const f of card.sections.likes.filter((x) => x.label !== "suggested")) {
+  for (const f of card.sections.likes.filter((x) => x.label !== "suggested" && !x.direction)) {
     if (/^\s*budget:/i.test(f.text)) { const t = budgetTag(f.text); if (t) tags.push({ group: "style", text: t, dislike: false }); continue; }
     const text = shortTaste(f.text);
     if (!text || storyTextProblem(text)) continue;
     const dislike = /^\s*(?:dislikes?|avoids?|hates?|not into|no |never )/i.test(f.text);
     tags.push({ group: /^(?:food|cooking|cuisine)/i.test(f.text) ? "food" : /^(?:watch|media|shows|music|film)/i.test(f.text) ? "watch" : "style", text: text[0].toUpperCase() + text.slice(1), dislike });
   }
-  for (const f of card.sections.interests.filter((x) => x.label !== "suggested").slice(0, 4)) {
+  for (const f of card.sections.interests.filter((x) => x.label !== "suggested" && !x.direction).slice(0, 4)) {
     const text = shortTaste(f.text);
     if (text && text.length <= 28 && !storyTextProblem(text)) tags.push({ group: "interest", text: text[0].toUpperCase() + text.slice(1), dislike: false });
   }
@@ -376,7 +378,9 @@ const isDislikeLine = (t: string) => /^\s*(?:dislikes?|avoids?|hates?|not into|n
 type RawItem = { text?: unknown; evidence?: unknown };
 type RawCard = { id?: unknown; headline?: unknown; items?: unknown; promise?: unknown; evidence?: unknown; tags?: unknown; help?: unknown };
 
-const keyWords = (t: string) => new Set((t.toLowerCase().match(/[\p{L}]{4,}/gu) ?? []).map((w) => w.slice(0, 6)));
+/** category words every taste line shares ("Food: …", "Style: …"): never evidence on their own (Codex P2, #432) */
+const CATEGORY = new Set(["food", "foods", "style", "styles", "media", "music", "shows", "show", "films", "movies", "games", "books", "aesthetics", "aesthetic", "places", "activities", "products", "brands", "cooking", "fashion", "clothes", "things", "stuff", "taste", "tastes", "leans", "toward", "likes", "dislikes"].map((w) => w.slice(0, 6)));
+const keyWords = (t: string) => new Set((t.toLowerCase().match(/[\p{L}]{4,}/gu) ?? []).map((w) => w.slice(0, 6)).filter((w) => !CATEGORY.has(w)));
 /**
  * Evidence for one shown line: the best label among the card's source lines it echoes. A line that only echoes
  * suggestions is not shown (null); a line that echoes nothing gets the weakest fact label behind the card.
@@ -385,10 +389,11 @@ function lineEvidence(text: string, card: StyleCard, id: SparkStoryId): Evidence
   const words = keyWords(text);
   const sources = SOURCES[id].flatMap((k) => card.sections?.[k] ?? []);
   const hits = sources.filter((f) => [...keyWords(f.text)].some((w) => words.has(w)));
-  const factHits = hits.filter((f) => f.label !== "suggested");
+  // a lean (direction only) is not a fact: a line that only echoes one is not shown as their taste
+  const factHits = hits.filter((f) => f.label !== "suggested" && !f.direction);
   if (factHits.length) return factHits.reduce((b, f) => (RANK[f.label] > RANK[b] ? (f.label as Evidence) : b), factHits[0].label as Evidence);
   if (hits.length) return null;
-  const facts = sources.filter((f) => f.label !== "suggested");
+  const facts = sources.filter((f) => f.label !== "suggested" && !f.direction);
   return facts.length ? facts.reduce((w, f) => (RANK[f.label] < RANK[w] ? (f.label as Evidence) : w), facts[0].label as Evidence) : null;
 }
 
@@ -403,7 +408,8 @@ function sparkCard(id: SparkStoryId, r: RawCard, card: StyleCard, best: Evidence
         const ev = text ? lineEvidence(text, card, id) : null;
         return { text, evidence: ev ? clamp(i?.evidence, ev) : null };
       })
-      .filter((i): i is StoryItem => !!i.text && !!i.evidence && !storyTextProblem(i.text))
+      // Genita talks in English: no "casual Korean" promise on a card (QA 11/3 P2)
+      .filter((i): i is StoryItem => !!i.text && !!i.evidence && !storyTextProblem(i.text) && !isLanguagePreference(i.text))
       .slice(0, id === "lines" ? 4 : 2);
     if (!items.length) return null;
     sc.items = items;
@@ -478,6 +484,58 @@ export function cardsForField(field: keyof StyleCard["sections"]): StoryId[] {
 }
 
 /** Every text on a card the user can mark as "off" in C1 (items, tags, tiles, topics). */
+/**
+ * PATCH /v1/profile answers before Spark rewrites the card (S1: 9.6–14.8 s → one Spark call): the card as shown,
+ * minus the lines the user marked, plus the new facts the correction put in the profile (the plain fallback
+ * wording for those lines only). The Spark rewrite replaces it in the store moments later.
+ */
+export function interimCard(shown: StoryCard, marked: string[], before: StyleCard, card: StyleCard): StoryCard | null {
+  if (shown.id === "unknowns") return shown;
+  const fb = fallbackCard(shown.id as SparkStoryId, card);
+  if (!fb) return null;
+  // only the lines the correction brought in (the plain wording of facts that were there before stays out)
+  const old = fallbackCard(shown.id as SparkStoryId, before);
+  // the correction also replaced facts the user didn't mark (text only: "I want long answers now"): the card as
+  // shown may still say the old thing — answer with the plain card built from the corrected profile instead (Codex)
+  const now = new Set(cardTexts(fb));
+  if (old && cardTexts(old).some((t) => !now.has(t)) && !marked.length) return fb;
+  const had = new Set([...cardTexts(shown), ...(old ? cardTexts(old) : [])]);
+  const gone = new Set(marked);
+  const tagText = (t: StoryTag) => (t.dislike ? `Not for you: ${t.text.toLowerCase()}` : t.text);
+  const items = [...shown.items.filter((i) => !gone.has(i.text)), ...fb.items.filter((i) => !had.has(i.text))].slice(0, shown.id === "lines" ? 4 : 3);
+  const tags = shown.tags || fb.tags ? [...(shown.tags ?? []).filter((t) => !gone.has(tagText(t))), ...(fb.tags ?? []).filter((t) => !had.has(tagText(t)))] : undefined;
+  const help = shown.help || fb.help ? [...(shown.help ?? []).filter((h) => !gone.has(h.label)), ...(fb.help ?? []).filter((h) => !had.has(h.label))].slice(0, 3) : undefined;
+  if (!items.length && !tags?.length && !help?.length) return null;
+  return { ...shown, items, ...(tags ? { tags } : {}), ...(help ? { help } : {}) };
+}
+
+/**
+ * S1 save, before any Spark: the card as shown with the marked lines out and the user's own words in (one line,
+ * as they typed it, evidence "explicit"). Spark's profile update and reword replace it in the background.
+ */
+export function optimisticCard(shown: StoryCard, marked: string[], text: string): StoryCard | null {
+  const gone = new Set(marked);
+  const tagText = (t: StoryTag) => (t.dislike ? `Not for you: ${t.text.toLowerCase()}` : t.text);
+  const said = text.replace(/\s+/g, " ").trim().slice(0, 120);
+  const line = said ? said[0].toUpperCase() + said.slice(1) : "";
+  if (shown.id === "unknowns") {
+    const unknowns = (shown.unknowns ?? []).filter((u) => !gone.has(u.topic) && !(said && u === shown.unknowns?.[0] && !marked.length));
+    return unknowns.length ? { ...shown, unknowns } : null;
+  }
+  const items = shown.items.filter((i) => !gone.has(i.text));
+  const tags = shown.tags?.filter((t) => !gone.has(tagText(t)));
+  const help = shown.help?.filter((h) => !gone.has(h.label));
+  // a chip is short: cut at a word, with an ellipsis (never mid-word: "…earth to")
+  const chip = (t: string) => (t.length <= 40 ? t : t.slice(0, 39).replace(/\s+\S*$/, "").replace(/[\s,.;:!?-]+$/, "") + "…");
+  if (line) {
+    if (shown.id === "taste" && tags) tags.push({ group: "style", text: chip(line), dislike: false });
+    else if (shown.id === "help" && help) help.push({ label: chip(line), sub: "", mode: "ask_first" });
+    else items.push({ text: line, evidence: "explicit" as Evidence });
+  }
+  if (!items.length && !tags?.length && !help?.length) return null;
+  return { ...shown, items, ...(tags ? { tags } : {}), ...(help ? { help } : {}) };
+}
+
 export function cardTexts(c: StoryCard): string[] {
   return [
     ...c.items.map((i) => i.text),
