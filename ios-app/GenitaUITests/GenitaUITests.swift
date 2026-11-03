@@ -76,7 +76,8 @@ final class GenitaUITests: XCTestCase {
         XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 5))
         XCTAssertTrue(app.buttons["primaryCTA"].waitForExistence(timeout: 5))
         app.buttons["primaryCTA"].tap()
-        XCTAssertTrue(app.staticTexts["Your style\nis ready."].waitForExistence(timeout: 5))
+        // I03 → HISY-0 (D47 v2 replaced I04's "Your style is ready.")
+        XCTAssertTrue(app.descendants(matching: .any)["hisyOpener"].waitForExistence(timeout: 8))
         app.terminate()
         // V04 reads the server's voices; with no server in this test the curated four show greyed and the default stays picked
         // (the server states V04 / V04-P / V04-S / V04-waking are covered in OnboardingUITests against the stub)
@@ -201,9 +202,12 @@ final class GenitaUITests: XCTestCase {
         editor.tap(); editor.typeText("Communication style: warm and direct.\nInterests: design and cooking.")
         if app.keyboards.firstMatch.exists { app.buttons["Dismiss keyboard"].tap() }
         app.buttons["primaryCTA"].tap()
-        XCTAssertTrue(app.staticTexts["Your style\nis ready."].waitForExistence(timeout: 5))
-        app.buttons["primaryCTA"].tap()
-        XCTAssertTrue(app.buttons["uploadImage"].exists)
+        // I03 → HISY-0 (no server: no cards) → HISY-7 → V01
+        XCTAssertTrue(app.descendants(matching: .any)["hisyOpener"].waitForExistence(timeout: 8))
+        app.buttons["hisyShowMe"].tap()
+        XCTAssertTrue(app.buttons["hisyChoosePhoto"].waitForExistence(timeout: 5))
+        app.buttons["hisyChoosePhoto"].tap()
+        XCTAssertTrue(app.buttons["uploadImage"].waitForExistence(timeout: 5))
         app.buttons["uploadImage"].tap()
         XCTAssertTrue(app.buttons["Cancel"].waitForExistence(timeout: 5))
         app.buttons["Cancel"].tap()

@@ -116,6 +116,12 @@ enum CallStop: Equatable {
     /// Client-side latency per answered turn: ASR end of speech → reply audio playing.
     private(set) var latencies: [Int] = []
     var companionName = ""
+    /// D48 ①: "Updated: no cilantro" — a correction said in the call was saved (`profile.updated`). Shown for
+    /// `profileChipMs`, then nil. A second one replaces the first and restarts the clock.
+    private(set) var profileChip: String?
+    /// GK-1 "Getting to know you · {topic}": the companion just asked this call's question (`profile.asking`).
+    /// A soft chip for `askingChipMs`, or until the answer is saved (CC-1 "Noted: …").
+    private(set) var askingChip: String?
     /// F8 interpretation screens (INT-1~6, INT-M1/M2), from interpret.* events.
     private(set) var interpretBoard = InterpretBoard()
     /// Mac call interpretation: plays utterances whose route is whisper/speaker (InterpretAudioOutput).
@@ -165,6 +171,8 @@ enum CallStop: Equatable {
     @ObservationIgnored private var reconnectSince: Date?
     @ObservationIgnored private var reconnectTask: Task<Void, Never>?
     @ObservationIgnored private var holdTask: Task<Void, Never>?
+    @ObservationIgnored private var profileChipTask: Task<Void, Never>?
+    @ObservationIgnored private var askingChipTask: Task<Void, Never>?
     @ObservationIgnored private var pingTask: Task<Void, Never>?
     @ObservationIgnored private var userEnded = true
     @ObservationIgnored private var capturePermissions = CapturePermissionRequests()
@@ -323,7 +331,7 @@ enum CallStop: Equatable {
     func end() {
         capturePermissions.invalidate()
         userEnded = true
-        reconnectTask?.cancel(); pingTask?.cancel(); holdTask?.cancel()
+        reconnectTask?.cancel(); pingTask?.cancel(); holdTask?.cancel(); profileChipTask?.cancel(); profileChip = nil; askingChipTask?.cancel(); askingChip = nil
         socket?.close()
         socket = nil
         voice.cancel()
@@ -803,13 +811,16 @@ enum CallStop: Equatable {
             start?.persona.name = n.name   // a reconnect's start carries the new name too
             interpretBoard.companionName = n.name
             onCompanionNamed?(n.name)
+        case let .profileUpdated(p):
+            // CC-1 "Updated: …" / "Noted: …" (it answers the GK-1 question, so that chip goes)
+            askingChip = nil; askingChipTask?.cancel()
+            showProfileChip(p.text)
+        case let .profileAsking(a):
+            showAskingChip(a.topic)
         case .expression:
             // expression layer (11/3, #284): FaceDriver consumes it in a follow-up; nothing to do here yet
             break
         case .interpretDetected, .asrStatus, .pong, .unknown:
-            break
-        case .profileUpdated, .profileAsking:
-            // lane 개인화 chips (CC-1, GK-1): drawn by the app PR (#195)
             break
         }
     }
@@ -836,6 +847,48 @@ enum CallStop: Equatable {
         if let playbackSink { playbackSink(AudioFrameHeader.payload(of: data), utterance); return }
         #endif
         audio.enqueue(pcm: AudioFrameHeader.payload(of: data), utteranceId: utterance)
+    }
+
+    /// `profile.updated` chip: 2.5 s (PROTOCOL.md). Debug UI tests on slow simulators can lengthen it (GENITA_PROFILE_CHIP_MS).
+    static var profileChipMs: Int {
+        #if DEBUG
+        if let ms = ProcessInfo.processInfo.environment["GENITA_PROFILE_CHIP_MS"].flatMap(Int.init) { return ms }
+        #endif
+        return 2500
+    }
+
+    /// GK-1 time on screen. Debug UI tests can change it (GENITA_ASKING_CHIP_MS).
+    static var askingChipMs: Int {
+        #if DEBUG
+        if let ms = ProcessInfo.processInfo.environment["GENITA_ASKING_CHIP_MS"].flatMap(Int.init) { return ms }
+        #endif
+        return 6000
+    }
+
+    private func showAskingChip(_ raw: String) {
+        let topic = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !topic.isEmpty else { return }
+        askingChip = "Getting to know you · " + String(topic.prefix(48))
+        askingChipTask?.cancel()
+        askingChipTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(Self.askingChipMs))
+            guard !Task.isCancelled else { return }
+            self?.askingChip = nil
+        }
+        log.info("profile.asking chip")
+    }
+
+    private func showProfileChip(_ raw: String) {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        profileChip = String(text.prefix(60))
+        profileChipTask?.cancel()
+        profileChipTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(Self.profileChipMs))
+            guard !Task.isCancelled else { return }
+            self?.profileChip = nil
+        }
+        log.info("profile.updated chip")
     }
 
     private func setPhase(_ next: Phase) {

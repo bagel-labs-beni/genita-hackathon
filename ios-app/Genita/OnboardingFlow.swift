@@ -119,6 +119,7 @@ extension AppState {
         importTask?.cancel()
         importError = nil
         let text = setup.response
+        story = nil; storyChanged = [:]; storyFailed = false; hisyPage = 0
         guard serverWired else { importing = false; return }
         let request = onboardingSnapshot()
         importing = true
@@ -171,6 +172,51 @@ extension AppState {
         setup.styleRows = style.rows
         setup.styleProfile = style.profile
         setup.stylePartial = style.partial
+        // a new import / N1–N3 answers: the old cards are gone (nil → HISY reads the new story), back to the opener
+        story = style.story?.isEmpty == false ? style.story : nil
+        storySource = style.source
+        storyChanged = [:]; storyFailed = false; hisyPage = 0
+    }
+
+    // MARK: HISY "How I see you" (D47 v2)
+
+    /// The story when the import didn't bring it (N1–N3, or written late): the server holds each ask up to 8 s
+    /// while it writes; `processing` asks again (3 tries). Nothing → HISY-0 "Show me" goes to HISY-7.
+    func loadStory() async {
+        guard serverWired, story == nil, !storyLoading, !importing else { return }
+        storyLoading = true; storyFailed = false
+        defer { storyLoading = false }
+        for _ in 0..<3 {
+            do {
+                let r = try await onboarding.story(wait: 8)
+                if story != nil { return }   // the import landed meanwhile
+                if r.status == .ready, !r.cards.isEmpty { story = r.cards; storySource = r.source ?? storySource; return }
+                if r.status == .none { break }
+            } catch {
+                route(error); break
+            }
+        }
+        if story == nil { storyFailed = true }
+    }
+
+    /// C1 Save: the marked texts and/or what's right. The card comes back rewritten (C3: the new texts get the blue
+    /// border) or nil when the correction emptied it (it leaves the deck); the six I04 rows and the call's profile
+    /// text follow. Returns the error line to show in the sheet (nil = done).
+    func correctStory(cardId: String, items: [String], text: String?) async -> String? {
+        do {
+            let r = try await onboarding.correct(cardId: cardId, items: items, text: text)
+            if var cards = story, let i = cards.firstIndex(where: { $0.id == cardId }) {
+                if let card = r.card { cards[i] = card } else { cards.remove(at: i); hisyPage = min(hisyPage, cards.count + 1) }
+                story = cards
+            }
+            storyChanged[cardId] = r.changed
+            if !r.rows.isEmpty { setup.styleRows = r.rows; setup.stylePartial = r.rows.contains { $0.items.isEmpty } }
+            setup.styleProfile = r.profile   // "" too: the last line was taken out, the call mustn't bring it back
+            return nil
+        } catch {
+            route(error)
+            return Self.errorLine(error)
+        }
     }
 
     /// I04: the six rows as read-only text (I04-P rows say "Not enough information yet.").
