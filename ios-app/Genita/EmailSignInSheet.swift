@@ -32,7 +32,7 @@ struct EmailSignInSheet: View {
         VStack(alignment: .leading, spacing: 0) {
             Text(step == .address ? "Continue with email" : "Check your email").font(TypeStyle.title(28)).foregroundStyle(CallInk.ink).padding(.top, 32)
                 .accessibilityAddTraits(.isHeader).accessibilityIdentifier("emailSheetTitle")
-            Text(step == .address ? "We’ll send a 6-digit code to sign you in. No Apple ID needed." : "Enter the 6-digit code we sent to \(sentTo).")
+            Text(step == .address ? "We’ll send a 6-digit code to sign you in. No Apple\u{00A0}ID\u{00A0}needed." : "Enter the 6-digit code we sent to \(sentTo).")
                 .font(TypeStyle.text(16)).foregroundStyle(CallInk.mute).padding(.top, 12).fixedSize(horizontal: false, vertical: true)
             Group {
                 if step == .address {

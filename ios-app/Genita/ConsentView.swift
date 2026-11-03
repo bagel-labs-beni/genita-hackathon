@@ -22,7 +22,7 @@ struct ConsentView: View {
             VStack(alignment: .leading, spacing: 0) {
             Text("Before we start.").font(TypeStyle.title(35)).foregroundStyle(CallInk.ink).padding(.top, 54)
                 .accessibilityAddTraits(.isHeader)
-            Text("Genita uses AI services to make your companion and talk with you. Here’s what goes to them, and when.")
+            Text("Genita uses AI services to make your companion and talk with you. Here’s what goes to them, and\u{00A0}when.")
                 .font(TypeStyle.text(16)).foregroundStyle(CallInk.mute).padding(.top, 16).fixedSize(horizontal: false, vertical: true)
             VStack(alignment: .leading, spacing: 20) {
                 ForEach(rows, id: \.0) { row in
