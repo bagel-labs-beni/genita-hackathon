@@ -107,20 +107,24 @@ export function activeSparkOpen(env: NodeJS.ProcessEnv = process.env): SparkOpen
  * → one tiny completion; a 200 also counts as available. Otherwise not_listed. A network failure keeps the
  * last result (error when there is none). Logs `llm.spark_open` when the status changes; never the key.
  */
-export async function probeSparkOpen(env: NodeJS.ProcessEnv = process.env): Promise<SparkOpenState> {
+export async function probeSparkOpen(env: NodeJS.ProcessEnv = process.env, signal?: AbortSignal): Promise<SparkOpenState> {
   const t = sparkOpenTarget(env);
   if (!t) { probed = null; return "no_key"; }
+  // generation paused (ops kill switch): no vendor request at all, not even the probe's tiny call (Codex P2)
+  if (getOps().isPaused("spark_open")) return sparkOpenState(env);
+  const budget = (ms: number) => (signal ? AbortSignal.any([signal, AbortSignal.timeout(ms)]) : AbortSignal.timeout(ms));
   const headers = { authorization: `Bearer ${t.key}`, "content-type": "application/json" };
   const before = sparkOpenState(env);
   let status: "available" | "not_listed" | "error";
   let detail: Record<string, unknown> = {};
   try {
-    const r = await fetch(t.base + "/models", { headers, signal: AbortSignal.timeout(10_000) });
+    const r = await fetch(t.base + "/models", { headers, signal: budget(10_000) });
     const ids = r.ok ? (((await r.json()) as { data?: Array<{ id?: string }> }).data ?? []).map((m) => m.id) : (await r.body?.cancel().catch(() => {}), []);
     if (ids.includes(t.model)) { status = "available"; detail = { listed: true }; }
     else {
+      signal?.throwIfAborted();
       const c = await fetch(t.base + "/chat/completions", {
-        method: "POST", headers, signal: AbortSignal.timeout(60_000),
+        method: "POST", headers, signal: budget(60_000),
         body: JSON.stringify({ model: t.model, messages: [{ role: "user", content: "Reply with: ok" }], max_tokens: 64 }),
       });
       await c.body?.cancel().catch(() => {});
@@ -136,14 +140,22 @@ export async function probeSparkOpen(env: NodeJS.ProcessEnv = process.env): Prom
   return status;
 }
 
-let probeTimer: ReturnType<typeof setInterval> | null = null;
-/** Boot: probe now, then every 10 min (a later credit grant is picked up without a redeploy). Once per process. */
-export function startSparkOpenProbe(everyMs = 10 * 60_000): void {
-  if (probeTimer) return;
-  const run = () => { void probeSparkOpen().catch(() => {}); };
+let stopProbe: (() => void) | null = null;
+/**
+ * Boot: probe now, then every 10 min (a later credit grant is picked up without a redeploy). One per process;
+ * nothing starts without a configured target in `env`. Returns stop (timer + any in-flight probe request).
+ */
+export function startSparkOpenProbe(env: NodeJS.ProcessEnv = process.env, everyMs = 10 * 60_000): () => void {
+  if (stopProbe) return stopProbe;
+  if (!sparkOpenTarget(env)) return () => {};
+  const ac = new AbortController();
+  const run = () => { if (!ac.signal.aborted) void probeSparkOpen(env, ac.signal).catch(() => {}); };
+  const timer = setInterval(run, everyMs);
+  timer.unref?.();
+  const stop = () => { clearInterval(timer); ac.abort(); if (stopProbe === stop) stopProbe = null; };
+  stopProbe = stop;
   run();
-  probeTimer = setInterval(run, everyMs);
-  probeTimer.unref?.();
+  return stop;
 }
 
 /** /healthz: state + where, never the key. */

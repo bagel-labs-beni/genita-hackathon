@@ -8,7 +8,7 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import {
-  SPARK_OPEN_MODEL, backgroundJson, markSparkOpen, probeSparkOpen, setLlmLog, sparkOpenJson, sparkOpenKey, sparkOpenState, sparkOpenStatus, sparkOpenTarget,
+  SPARK_OPEN_MODEL, backgroundJson, markSparkOpen, probeSparkOpen, startSparkOpenProbe, setLlmLog, sparkOpenJson, sparkOpenKey, sparkOpenState, sparkOpenStatus, sparkOpenTarget,
 } from "../src/meta/sparkOpen.ts";
 import { sparkJson } from "../src/meta/spark.ts";
 import { UpstreamError } from "../src/meta/http.ts";
@@ -32,17 +32,19 @@ function fake(t: TestContext, o: { open?: Reply; meta?: Reply; key?: string | nu
   // originals saved once per test: a second fake() in the same test must not "restore" the first fake (Codex P2)
   if (!restoring.has(t)) {
     restoring.add(t);
-    const env = { key: process.env.BASETEN_API_KEY, flag: process.env.GENITA_SPARK_OPEN, hop: process.env.GENITA_SPARK_OPEN_HOP_MS, provider: process.env.GENITA_SPARK_OPEN_PROVIDER, modalKey: process.env.MODAL_ENDPOINT_KEY, url: process.env.GENITA_SPARK_OPEN_URL };
+    const env = { key: process.env.BASETEN_API_KEY, flag: process.env.GENITA_SPARK_OPEN, hop: process.env.GENITA_SPARK_OPEN_HOP_MS, provider: process.env.GENITA_SPARK_OPEN_PROVIDER, modalKey: process.env.MODAL_ENDPOINT_KEY, url: process.env.GENITA_SPARK_OPEN_URL, model: process.env.GENITA_SPARK_OPEN_MODEL };
     const original = globalThis.fetch;
     t.after(() => {
       globalThis.fetch = original;
       setLlmLog(null);
       markSparkOpen(null);
-      for (const [name, v] of [["BASETEN_API_KEY", env.key], ["GENITA_SPARK_OPEN", env.flag], ["GENITA_SPARK_OPEN_HOP_MS", env.hop], ["GENITA_SPARK_OPEN_PROVIDER", env.provider], ["MODAL_ENDPOINT_KEY", env.modalKey], ["GENITA_SPARK_OPEN_URL", env.url]] as const) {
+      for (const [name, v] of [["BASETEN_API_KEY", env.key], ["GENITA_SPARK_OPEN", env.flag], ["GENITA_SPARK_OPEN_HOP_MS", env.hop], ["GENITA_SPARK_OPEN_PROVIDER", env.provider], ["MODAL_ENDPOINT_KEY", env.modalKey], ["GENITA_SPARK_OPEN_URL", env.url], ["GENITA_SPARK_OPEN_MODEL", env.model]] as const) {
         if (v === undefined) delete process.env[name]; else process.env[name] = v;
       }
     });
   }
+  // every Spark Open setting starts from the test default, whatever the shell has (Codex P2)
+  for (const name of ["GENITA_SPARK_OPEN_MODEL", "GENITA_SPARK_OPEN_PROVIDER", "GENITA_SPARK_OPEN_URL", "MODAL_ENDPOINT_KEY", "GENITA_SPARK_OPEN_HOP_MS"]) delete process.env[name];
   const seen: Seen[] = [];
   const logs: Array<{ event: string; data: Record<string, unknown> }> = [];
   if (o.key === null) delete process.env.BASETEN_API_KEY; else process.env.BASETEN_API_KEY = o.key ?? "test-baseten";
@@ -320,4 +322,22 @@ test("probe: listed → available; hidden but callable → available; neither �
   f = fake(t, { key: null, state: null });
   assert.equal(await probeSparkOpen(), "no_key");
   assert.equal(f.seen.length, 0);
+});
+
+test("probe: paused generation sends nothing; startSparkOpenProbe uses the env it is given and stops cleanly (Codex P2)", async (t) => {
+  const { configureOps } = await import("../src/ops/limits.ts");
+  const f = fake(t, { state: null });
+  configureOps({ paused: true });
+  t.after(() => { configureOps({}); });
+  assert.equal(await probeSparkOpen(), "unknown");
+  assert.equal(f.seen.length, 0);
+  configureOps({});
+  // a server started with GENITA_SPARK_OPEN=0 never probes, whatever process.env has
+  const stopOff = startSparkOpenProbe({ ...process.env, GENITA_SPARK_OPEN: "0" });
+  stopOff();
+  assert.equal(f.seen.length, 0);
+  const stop = startSparkOpenProbe(process.env, 60_000);
+  stop();
+  await new Promise((r) => setImmediate(r));
+  assert.ok(!f.seen.some((s) => s.path === "/v1/chat/completions"), `stop ends the probe before its paid call: ${f.seen.map((s) => s.path)}`);
 });

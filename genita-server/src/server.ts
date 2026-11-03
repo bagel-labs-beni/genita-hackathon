@@ -111,7 +111,8 @@ export async function startServer(
   // background structured calls → Muse Spark Open on Baseten (meta/sparkOpen.ts); one boot line for partner verification
   setLlmLog(log);
   // boot probe + every 10 min: is the model open to us yet? (llm.spark_open on each change; nothing without a key)
-  startSparkOpenProbe();
+  // uses the env this server was started with (tests pass their own); stopped when the server closes
+  const stopSparkOpenProbe = startSparkOpenProbe(env);
   // P0 11/3: without GENITA_MEMORY_FILE, memory lived in this process and every deploy erased it.
   // With accounts on, long-term memory goes to Postgres (migration 005), keyed by users.id.
   if (accounts && deps.memory?.ephemeral) deps.memory.useStore(new PgMemoryRepository(accounts.db));
@@ -501,5 +502,6 @@ export async function startServer(
     for (const userId of lastTurns.keys()) dropLastTurns(userId);
     void accounts?.close().catch(() => {});
   });
+  http.once("close", stopSparkOpenProbe);
   return new Promise((resolve) => http.listen(config.port, config.host, () => resolve(http)));
 }
