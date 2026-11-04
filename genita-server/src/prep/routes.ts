@@ -43,6 +43,7 @@ import { sniffImage } from "./classify.ts";
 import type { CompanionRecord } from "./store.ts";
 import { cleanName, renameCompanion, suggestName } from "./naming.ts";
 import { checkPhotoInput } from "./photoInput.ts";
+import { preferenceRows, withPreferenceRows } from "./preferenceRows.ts";
 import { PolishFailed, headsView, polishImage, uploadPolish } from "./polish.ts";
 
 // D41: per-user queue for replacing a demo companion (two concurrent POST /v1/companion over the same demo)
@@ -57,7 +58,6 @@ function demoSwap<T>(userId: string, fn: () => Promise<T>): Promise<T> {
 import { PersonalizeError } from "../personalize/service.ts";
 import { InsightsError } from "../insights/service.ts";
 import { picksFromSkip } from "../insights/report.ts";
-import { preferenceRows, withPreferenceRows } from "./preferenceRows.ts";
 import { getOps } from "../ops/limits.ts";
 
 const JSON_LIMIT = 256 * 1024;
