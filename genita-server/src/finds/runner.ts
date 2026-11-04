@@ -15,6 +15,7 @@ import { randomUUID } from "node:crypto";
 import type { FindCard, FindKind, ServerEvent } from "../protocol.ts";
 import { classifyTurn, isBareAccept, isGoesWithFollowUp, isLinksAsk, isProductAsk, refersToScreen } from "./intent.ts";
 import { PRODUCT_COUNT, SEARCH_TITLE, decidePick, guessLabel, runProduct, shortLabel, tasteLines as productTaste } from "./product.ts";
+import { runNamedRecipe } from "./namedRecipe.ts";
 import { choiceForSearch, isColorWord } from "./choice.ts";
 import { confirmItem, FRIDGE_UNCLEAR, IDENTIFY_UNSURE, runIdentify, runLink, runOutfit, runRecipe, type PipelineCtx, type PipelineResult } from "./pipeline.ts";
 import { cacheGet, cacheKey, cachePut, cardFitsColors, cardIsKind, categoryOf, claimWarm, colorAsks, colorPhrases, colorsOf, plainAsk, releaseWarm, type CachedProducts } from "./productCache.ts";
@@ -153,7 +154,7 @@ export type TurnInput = {
 };
 
 /** reaction: S5 — the spoken line made from the same pick the search shops (null = say the plain ack) */
-export type TurnStarted = { findId: string; kind: FindKind | "identify"; ack?: string; reaction?: Promise<string | null> };
+export type TurnStarted = { findId: string; kind: FindKind | "identify"; named?: true; ack?: string; reaction?: Promise<string | null> };
 
 /** "What's this?": a reaction while it looks (the name comes after the checks, like the fridge) */
 export const IDENTIFY_ACK = "Ooh, let me look.";
@@ -337,11 +338,11 @@ export class FindsRunner {
       this.startJudge(input);
       return null;
     }
-    return this.start(intent0, t, followUp, false);
+    return this.start(intent0, t, followUp, false, choice || null);
   }
 
   /** The keyword intent or the judge's pick, started the same way. `judged`: the turn already answered out loud. */
-  private start(intent: NonNullable<Intent>, t: TurnInput, followUp: boolean, judged: boolean): TurnStarted | null {
+  private start(intent: NonNullable<Intent>, t: TurnInput, followUp: boolean, judged: boolean, choice: string | null = null): TurnStarted | null {
     const silentFail = (e: ServerEvent): ServerEvent => (e.type === "find.failed" && e.reason !== "stopped" ? { ...e, reason: "stopped", message: "" } : e);
     // the share when there is no camera picture, or when the line points at it; otherwise the camera (Codex r1 P2)
     const useScreen = !!t.screen && !followUp && (
@@ -351,7 +352,7 @@ export class FindsRunner {
     const findId = randomUUID();
     if (intent.kind === "identify") return this.startIdentify(findId, t, useScreen);
     // P0 11/4: a dark / blurry fridge is answered by the conversation itself (no find, no canned line)
-    if (intent.kind === "recipe" && t.unclear) return null;
+    if (intent.kind === "recipe" && t.unclear && !intent.named) return null;
     const abort = new AbortController();
     const ctx: PipelineCtx = {
       findId,
@@ -440,6 +441,10 @@ export class FindsRunner {
         if (r.card && !prefetching && !c.signal.aborted && !forgotSince()) this.startPrefetch(r.card, r.card.say ?? null, turn);
         return r;
       };
+    } else if (intent.kind === "recipe" && intent.named) {
+      // P0 11/4: a dish by name — the web recipe card, never the camera's ingredient check
+      const recent = t.recent ?? [];
+      run = (c) => runNamedRecipe({ ...c, frames: [], recent });
     } else run = intent.kind === "recipe" ? runRecipe : intent.kind === "answer" ? runGeneral : runLink;
     const release = this.deps.store.work.track(this.owner, () => this.close({ purge: true }));
     const tasteAtStart = this.tasteText(); // a profile change while it searched: not cached (Codex #522 r5 P1)
@@ -477,7 +482,7 @@ export class FindsRunner {
     if (ACK[intent.kind]) this.acked.add(findId);
     // an outfit pick is answered out loud by the turn itself: its card only shows it (demo S4, one verdict)
     else if (intent.kind === "outfit") this.answered.set(findId, t.replyText);
-    return { findId, kind: intent.kind, ...(ACK[intent.kind] ? { ack: ACK[intent.kind] } : {}), ...(pickP ? { reaction: pickP.then((p) => p?.say || null, () => null) } : {}) };
+    return { findId, kind: intent.kind, ...(intent.named ? { named: true as const } : {}), ...(ACK[intent.kind] ? { ack: ACK[intent.kind] } : {}), ...(pickP ? { reaction: pickP.then((p) => p?.say || null, () => null) } : {}) };
   }
 
   /**

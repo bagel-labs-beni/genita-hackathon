@@ -341,14 +341,17 @@ test("recipe pipeline: nothing seen → find.failed unclear (IC-4), no card, no 
   assert.ok(!events.some((e) => e.type === "find.created"));
 });
 
-test("recipe pipeline: a failed illustration is reported, the card text stays", async () => {
+// Chelsea 11/4 ("Air fryer peaches" grey square): no pending slot on the card and no "failed" event — a picture
+// that never comes leaves no empty square; the card text stays
+test("recipe pipeline: a failed illustration sends no picture slot at all, the card text stays", async () => {
   const v = fakeVendors({ seen: "eggs | 6 | carton\n", recipe: RECIPE_JSON, imageFail: true });
   const { ctx, events } = ctxFor("recipe", v);
   const r = await runRecipe(ctx);
   assert.ok(r.card);
+  assert.equal(r.card!.hero, undefined);
+  assert.ok(r.card!.steps.every((st) => !st.image));
   const imgs = events.filter((e) => e.type === "find.image") as Extract<ServerEvent, { type: "find.image" }>[];
-  assert.equal(imgs.length, 4);
-  assert.ok(imgs.every((e) => e.status === "failed"));
+  assert.equal(imgs.length, 0);
 });
 
 test("outfit pipeline: agrees with the spoken pick, taste reason, SAM box per option", async () => {
