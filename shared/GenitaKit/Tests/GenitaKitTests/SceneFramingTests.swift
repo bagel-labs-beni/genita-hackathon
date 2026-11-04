@@ -81,6 +81,20 @@ struct SceneFramingTests {
         #expect(before.share > o.share)
     }
 
+    /// Codex P2: a flow file that didn't download drops the flow, never the crop (the server's `framing` assumes it).
+    @Test func aDroppedFlowKeepsTheCrop() throws {
+        var m = try JSONDecoder().decode(FaceManifest.self, from: Data(contentsOf: Self.flowDir.appendingPathComponent("manifest.json")))
+        let with = SceneFraming(Self.flowSet)
+        m.dropFlow()
+        #expect(m.flow == nil)
+        let set = try FaceSet(manifest: m) { ref in
+            try Data(contentsOf: Self.flowDir.appendingPathComponent(URL(string: ref)?.lastPathComponent ?? ref))
+        }
+        #expect(set.flow == nil)
+        #expect(with.zoom > 1.001)   // an animal: zoomed
+        #expect(SceneFraming(set) == with)
+    }
+
     @Test func prepDecodesTheFraming() throws {
         let p = try JSONDecoder().decode(PrepProgress.self, from: Data(#"{"status":"running","framing":{"zoom":1.2,"cx":0.5,"cy":0.37}}"#.utf8))
         #expect(p.framing == SceneFraming(zoom: 1.2, cx: 0.5, cy: 0.37))

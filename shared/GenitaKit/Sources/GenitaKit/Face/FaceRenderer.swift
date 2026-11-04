@@ -164,10 +164,10 @@ public final class FaceRenderer: @unchecked Sendable {
     public var expressionStillWeights: [FaceExpression: Double] { lock.lock(); defer { lock.unlock() }; return stills.shown.mapValues(\.band) }
     /// Laugh events on lip-rig faces play as `smileopen` (demo setting; the laugh warp fights the rig).
     nonisolated(unsafe) public static var laughAsSmileOpen = true
-    /// Cancel / barge-in: drop the mouth's smoothing and held shapes so it rests on the next frame (an expression
-    /// on screen relaxes smoothly; its reply's events are dropped).
     /// The next frame starts the alive motion still again and eases it in (`AliveMotion.restartRun`).
     public func restartMotion() { lock.lock(); motion.restartRun(); lock.unlock() }
+    /// Cancel / barge-in: drop the mouth's smoothing and held shapes so it rests on the next frame (an expression
+    /// on screen relaxes smoothly; its reply's events are dropped).
     public func resetMouth() { lock.lock(); flowMorph?.reset(); stills.cancel(); browTracker = BrowFlash.Tracker(); lock.unlock() }
     /// Parity checks: the next frame uses these flow amounts (in `faceSet.flow.keys` order).
     public func overrideNextFlowAmounts(_ a: [Float]) { lock.lock(); flowMorph?.amountsOverride = a; lock.unlock() }
@@ -559,8 +559,9 @@ public final class FaceRenderer: @unchecked Sendable {
     static func framing(_ set: FaceSet) -> (zoom: CGFloat, center: CGPoint) {
         let f = set.faceBox, H = Double(set.pixelSize.height)
         let fh = Double(f.height) / max(1, H)
-        let fr = set.flow?.map.framing
-        let human = (set.flow?.kind ?? "human") == "human"
+        // the manifest's kind and map framing, also when the flow didn't load (server `framing` uses them; Codex P2)
+        let fr = set.mapFraming
+        let human = (set.framingKind ?? "human") == "human"
         var z = fr?.zoom ?? (human || fh <= 0 ? 1 : min(1.35, max(1, 0.35 / fh)))
         z = z.isFinite ? min(2, max(1, z)) : 1
         let cy = fr?.cy.map { $0 * H } ?? (Double(f.midY) - 0.1 * Double(f.height))

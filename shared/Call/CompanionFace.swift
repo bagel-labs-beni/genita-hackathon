@@ -56,7 +56,9 @@ enum CompanionFace {
     static var sceneFraming: Bool {
         flag(ProcessInfo.processInfo.environment["GENITA_SCENE_FRAMING"]) ?? flag(Bundle.main.object(forInfoDictionaryKey: "GENITA_SCENE_FRAMING")) ?? sceneFramingDefault
     }
-    static let sceneFramingDefault = false
+    /// On (11/4 lead, gate passed: human PSNR 51.0 dB, 2D 61.2 dB, first live frame 0 px over Δ25;
+    /// `_qa-scripts/genita-audit-1104/sceneframe-gate.md`). Rollback: `GENITA_SCENE_FRAMING=0` or false here.
+    static let sceneFramingDefault = true
 }
 
 /// Draws the face driver's latest frame above the still, aspect-filled like the still. Layers (face → mouth →
@@ -175,7 +177,7 @@ struct CompanionFaceLoader: Sendable {
         let images = bytes
         // A flow set with any file missing is dropped as a whole: the face uses its key patches.
         var useManifest = manifest
-        if !flowNames.isEmpty, flowNames.contains(where: { refs[$0].map { images[$0] == nil } ?? true }) { useManifest.flow = nil }
+        if !flowNames.isEmpty, flowNames.contains(where: { refs[$0].map { images[$0] == nil } ?? true }) { useManifest.dropFlow() }
         let finalManifest = useManifest
         let set = try await Task.detached(priority: .userInitiated) {
             try FaceSet(manifest: finalManifest) { ref in
