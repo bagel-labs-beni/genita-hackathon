@@ -36,7 +36,7 @@ class Client implements ClientSink {
 }
 
 /** Spark's greeting after `sparkMs`; each voice request renders in `renderMs` (100 ms of audio per clause). */
-function run(sparkMs: number, renderMs: number) {
+function run(sparkMs: number, renderMs: number, fails: { opener?: number; answer?: number } = {}) {
   const client = new Client();
   const calls: { t: number; text: string }[] = [];
   const session = new Session("gap", client, {
@@ -51,6 +51,8 @@ function run(sparkMs: number, renderMs: number) {
       if ((req as { cachedOnly?: boolean }).cachedOnly) throw new Error("voice: not_cached");
       calls.push({ t: Date.now(), text: req.text });
       await sleep(renderMs);
+      const kind = /Summer/.test(req.text) ? "opener" : "answer";
+      if ((fails[kind] ?? 0) > 0) { fails[kind]!--; throw new Error("voice network: voice_timeout"); }
       if (req.signal?.aborted) return;
       yield { audio: Buffer.alloc(4800), alignment: null, model: "seamless-m4t-v2" };
     },
@@ -115,4 +117,16 @@ test("GENITA_GREET_OPENER_WAIT_MS=0: the opener goes out at once (the old order)
     if (saved === undefined) delete process.env.GENITA_GREET_OPENER_WAIT_MS;
     else process.env.GENITA_GREET_OPENER_WAIT_MS = saved;
   }
+});
+
+test("Codex #708 P1: a cold GPU that fails the opener twice and the early answer once still voices the answer", async () => {
+  const { client, calls, session } = run(50, 10, { opener: 2, answer: 1 });
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false, user: { name: "Summer" }, greetAfterMs: 0 }));
+  await client.waitFor((m) => m.type === "reply" && m.final === true, 8000);
+  await sleep(100);
+  const answers = calls.filter((c) => /interview/.test(c.text));
+  assert.ok(answers.length >= 2, `the failed early answer was asked for again (${answers.length})`);
+  assert.equal(client.json.filter((x) => x.m.type === "audio").length, 2, "opener + answer voiced");
+  assert.equal(client.json.filter((x) => x.m.type === "error").length, 0, "no tts_unavailable");
+  session.close();
 });

@@ -3141,6 +3141,9 @@ export class Session {
           // watch together may have taken the question back (or swapped it for the short reaction) meanwhile:
           // the loop head judges it again (Codex review P2)
           jobs[i] = sentences[i] === s && !sentences[i]?.drop ? ttsJob(s, true, last && !heard ? COLD_WAIT_MS : undefined) : (undefined as never);
+          // a later clause asked for ahead (the greeting opener's answer) may hold the same outage's failure: ask again
+          // once this one is through (Codex #708 P1)
+          for (let k = i + 1; k < jobs.length; k++) if (jobs[k]) jobs[k] = undefined as never;
           i--;
           continue;
         }
