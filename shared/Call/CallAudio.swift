@@ -517,17 +517,32 @@ import UIKit
             // with call-style output processing. Now: .videoChat (echo cancellation stays on, wide-band speaker
             // route/EQ) at a preferred 48 kHz, set before activation; the 24 kHz reply player is converted up by the
             // main mixer. The voice processing on the input node (setVoiceProcessingEnabled) is unchanged.
+            // b16 (TF 381, Chelsea 21:38 AirPods): no `.allowBluetoothA2DP` in a call. With it iOS may route AirPods as
+            // A2DP — output only, no input ("route in= out=BluetoothA2DPOutput", in=0ch): the mic disappeared and the
+            // engine came up without one. HFP is the only Bluetooth route that carries a mic AND sound, so it is the
+            // only one a call allows; no headset = built-in mic + speaker.
             try session.setCategory(.playAndRecord, mode: Self.useVoiceProcessing ? .videoChat : .default,
-                                    options: [.defaultToSpeaker, .allowBluetoothHFP, .allowBluetoothA2DP])
+                                    options: Self.categoryOptions)
             try? session.setPreferredSampleRate(48_000)
             try session.setPreferredIOBufferDuration(0.02)
             try session.setActive(true)
+            // belt and braces: a route that still has no input (an output-only device) gets the built-in mic
+            if session.currentRoute.inputs.isEmpty,
+               let builtIn = session.availableInputs?.first(where: { $0.portType == .builtInMic }) {
+                try? session.setPreferredInput(builtIn)
+                log.error("audio session: route had no input; preferred input set to the built-in mic \(Self.routeLog(), privacy: .public)")
+            }
             log.info("audio session: playAndRecord mode=\(Self.useVoiceProcessing ? "videoChat (VPIO)" : "default (no voice processing)", privacy: .public) rate=\(session.sampleRate, privacy: .public) \(Self.routeLog(), privacy: .public)")
         } catch {
             log.error("audio session: \(error.localizedDescription, privacy: .public)")
         }
         #endif
     }
+
+    #if os(iOS)
+    /// b16: the call's session options — speaker by default, Bluetooth only as HFP (mic + sound), never A2DP.
+    nonisolated static let categoryOptions: AVAudioSession.CategoryOptions = [.defaultToSpeaker, .allowBluetoothHFP]
+    #endif
 
     /// Rebuilds the graph. With the mic, voice processing (AEC) is turned on first; if the platform refuses
     /// (some simulators), the mic still works without it and `voiceProcessing` says so.
@@ -767,6 +782,15 @@ import UIKit
                 guard let self else { return }
                 let route = Self.routeDescription()
                 self.log.info("audio route change: reason=\(raw ?? 0, privacy: .public) built for \(self.builtRoute, privacy: .public) now \(Self.routeLog(), privacy: .public)")
+                // b16 (TF 381 21:38:14): a category change / override left the route with no input (A2DP out only)
+                // during a call (mic on or not): set the call's session again and rebuild (not in the background; at most one
+                // every 2 s so our own setCategory, which posts reason=3 too, cannot loop)
+                let now = ProcessInfo.processInfo.systemUptime
+                if Self.mayStartAudio(), now - self.lastRecover >= 2,
+                   AVAudioSession.sharedInstance().currentRoute.inputs.isEmpty {
+                    self.recover("route change \(raw ?? 0): no input", watchdog: "route watchdog")
+                    return
+                }
                 guard reason == .newDeviceAvailable || reason == .oldDeviceUnavailable, route != self.builtRoute else { return }
                 self.engineConfigurationChanged()
             }
@@ -776,7 +800,20 @@ import UIKit
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.log.info("audio interruption \(began ? "began" : "ended", privacy: .public) \(Self.routeLog(), privacy: .public)")
-                if began { self.needsResume = true; self.onInterrupted?() } else { self.recover("interruption ended") }
+                if began {
+                    self.needsResume = true
+                    self.onInterrupted?()
+                    // b16: iOS does not always post "ended" (TF 381: began + A2DP route, then silence). Still in the
+                    // foreground 1.5 s later with the engine down: re-configure and rebuild instead of waiting forever.
+                    let token = self.audioToken
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                        MainActor.assumeIsolated {
+                            guard let self, token == self.audioToken, self.needsResume, Self.mayStartAudio(),
+                                  !self.engine.isRunning || AVAudioSession.sharedInstance().currentRoute.inputs.isEmpty else { return }
+                            self.recover("interruption began, no end after 1.5 s", watchdog: "interruption watchdog")
+                        }
+                    }
+                } else { self.recover("interruption ended") }
             }
         })
         // b14 (Chelsea 21:12: robot voice / no sound after leaving the app and coming back): back from the background

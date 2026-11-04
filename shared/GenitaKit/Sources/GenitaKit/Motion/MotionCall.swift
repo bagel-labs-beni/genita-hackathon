@@ -67,7 +67,7 @@ public struct MotionPillIcon: View {
         self.level = level
     }
     public var body: some View {
-        TimelineView(.animation) { ctx in
+        TimelineView(.animation(minimumInterval: 1 / 30)) { ctx in
             let t = ctx.date.timeIntervalSinceReferenceDate
             Group {
                 switch kind {
@@ -139,7 +139,7 @@ public struct MotionVoiceRing: View {
     }
     public var body: some View {
         if active && MotionDetails.live(reduceMotion: reduceMotion) {
-            TimelineView(.animation) { ctx in
+            TimelineView(.animation(minimumInterval: 1 / 30)) { ctx in
                 let v = CGFloat(smoother.next(level(), at: ctx.date.timeIntervalSinceReferenceDate))
                 Circle().strokeBorder(color, lineWidth: 2)
                     .frame(width: diameter, height: diameter)

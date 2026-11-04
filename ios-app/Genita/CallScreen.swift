@@ -97,7 +97,7 @@ struct StillSpeech: ViewModifier {
     @ViewBuilder
     func body(content: Content) -> some View {
         if on {
-            TimelineView(.animation) { timeline in
+            TimelineView(.animation(minimumInterval: 1 / 30)) { timeline in
                 let t = timeline.date.timeIntervalSinceReferenceDate
                 let level = Self.level(at: t)
                 content
@@ -362,7 +362,7 @@ private struct CueDot: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         let live = MotionDetails.live(reduceMotion: reduceMotion)
-        TimelineView(.animation(paused: !live)) { ctx in
+        TimelineView(.animation(minimumInterval: 1 / 30, paused: !live)) { ctx in
             let s = !live ? 1 : (1 - cos(ctx.date.timeIntervalSinceReferenceDate / MotionCall.breathSeconds * 2 * .pi)) / 2
             Circle().fill(CallInk.blueOnInk).frame(width: 8, height: 8).scaleEffect(0.8 + 0.35 * s).opacity(0.55 + 0.45 * s)
         }
@@ -374,7 +374,7 @@ private struct CueThinkingDots: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         let live = MotionDetails.live(reduceMotion: reduceMotion)
-        TimelineView(.animation(paused: !live)) { ctx in
+        TimelineView(.animation(minimumInterval: 1 / 30, paused: !live)) { ctx in
             let t = ctx.date.timeIntervalSinceReferenceDate
             HStack(spacing: 3) {
                 ForEach(0..<3, id: \.self) { i in
@@ -411,7 +411,7 @@ struct CueSpinner: View {
 private struct CueWave: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
-        TimelineView(.animation(paused: reduceMotion || CallMotion.reviewStill)) { context in
+        TimelineView(.animation(minimumInterval: 1 / 30, paused: reduceMotion || CallMotion.reviewStill)) { context in
             let t = context.date.timeIntervalSinceReferenceDate
             HStack(spacing: 2) {
                 ForEach(0..<4, id: \.self) { i in

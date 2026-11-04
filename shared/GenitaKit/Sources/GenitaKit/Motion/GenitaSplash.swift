@@ -271,7 +271,11 @@ public struct GenitaSplash: View {
 
     @MainActor private func run() async {
         if Self.frozenAt != nil { return } // review shot: hold the frame until tapped
-        while start == nil { try? await Task.sleep(for: .milliseconds(10)) } // the clock starts at the first frame
+        // the clock starts at the first frame. b16 (TF 381, 1228 CPU wakes/s at launch): a cancelled task (the splash
+        // gone before its first frame) made `try? Task.sleep` return at once, so this spun on the main actor forever,
+        // and the tilt below (60 Hz device motion) then started after onDisappear had already stopped it.
+        while start == nil, !Task.isCancelled { try? await Task.sleep(for: .milliseconds(10)) }
+        guard !Task.isCancelled else { return }
         if still == nil {
             leanSource.start { l in withAnimation(.interactiveSpring(response: 0.35, dampingFraction: 0.85)) { lean = l } }
         }
@@ -290,6 +294,7 @@ public struct GenitaSplash: View {
             // endTime already follows a tap (skipAt + 0.38 s), so a skip also ends on the held clock (Codex P2)
             if elapsed >= endTime { finish() }
         }
+        leanSource.stop()   // b16: the tilt never outlives the splash's clock
     }
 
     /// iPhone only: a scene that isn't active holds the splash clock (macOS reports inactive for a window that's
