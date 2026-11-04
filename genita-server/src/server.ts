@@ -608,7 +608,7 @@ export async function startServer(
     sessionDevices.set(id, callDevice);
     const gen = ++nextGen;
     sessionGens.set(id, gen);
-    log("session.open", { session: id, sessions: sessions.size, auth: who.kind, ...(who.judge ? { judge: who.judge } : {}) });
+    log("session.open", { session: id, sessions: sessions.size, auth: who.kind, gated: !!device, ...(who.judge ? { judge: who.judge } : {}) });
     let idle = setTimeout(() => session.close(4000, "idle"), IDLE_MS);
     const touch = () => {
       clearTimeout(idle);

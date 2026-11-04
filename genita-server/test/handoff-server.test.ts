@@ -311,3 +311,53 @@ test("MV-01 GATE-A: the apps' call URL (device + last known owner) opts into the
   assert.equal(lateMac.bin.length, 0, "a non-owner never gets audio frames (GATE-A)");
   for (const c of [macCall, phoneCall, lateMac]) c.ws.close();
 });
+
+/** 11/4 TestFlight 331: a stale stored owner "mac" (no Mac connected) and the iPhone app's own call URL saying owner=mac */
+async function staleMacThenPhoneCall(base: string, user: string) {
+  const mac = await open(base, "/v1/presence?device=mac", user);
+  mac.send({ type: "claim", trigger: "proximity" });
+  assert.equal((await mac.waitFor((m) => m.type === "claim.result")).owner, "mac");
+  mac.ws.close();
+  const phone = await open(base, "/v1/session?device=iphone&owner=mac&epoch=1", user);
+  phone.send({ type: "start", persona: { name: "Jin" } });
+  await phone.waitFor((m) => m.type === "ready");
+  for (let i = 0; i < 20; i++) {
+    phone.ws.send(Buffer.alloc(640), { binary: true }); // 20 ms of 16 kHz mic
+    await sleep(10);
+  }
+  return phone;
+}
+
+test("GATE-A default: stale owner=mac + iPhone call ?device=iphone&owner=mac → the iPhone's mic never reaches the ASR and no audio goes out", async (t) => {
+  const { base, asrs } = await boot(t);
+  const phone = await staleMacThenPhoneCall(base, "stale-on");
+  try {
+  assert.equal(asrs.reduce((n, a) => n + a.audio, 0), 0, "mic dropped (server.ts gated.call.mayPlay() is false)");
+  phone.send({ type: "text", text: "hello?" });
+  await phone.waitFor((m) => m.type === "reply" && m.text);
+  assert.equal(phone.bin.length, 0, "no sound either");
+  } finally { phone.ws.close(); }
+});
+
+test("GENITA_AUDIO_GATE=0: the same stale owner=mac iPhone call is ungated — mic reaches the ASR, audio goes out; presence still hears ownership", async (t) => {
+  const prev = process.env.GENITA_AUDIO_GATE;
+  process.env.GENITA_AUDIO_GATE = "0";
+  t.after(() => (prev === undefined ? delete process.env.GENITA_AUDIO_GATE : (process.env.GENITA_AUDIO_GATE = prev)));
+  const { base, asrs, events } = await boot(t);
+  const watcher = await open(base, "/v1/presence?device=iphone", "stale-off");
+  await watcher.waitFor((m) => m.type === "ownership");
+  const phone = await staleMacThenPhoneCall(base, "stale-off");
+  try {
+  assert.ok(asrs.reduce((n, a) => n + a.audio, 0) > 0, "mic reaches the session");
+  phone.send({ type: "text", text: "hello?" });
+  await phone.waitFor((m) => m.type === "reply");
+  assert.ok(phone.bin.length > 0, "sound goes out like an older build's call");
+  assert.equal(phone.json.filter((m) => m.type === "ownership").length, 0, "an ungated call isn't part of ownership, as with older builds");
+  assert.ok(events.some((e) => e.event === "session.open" && e.data.gated === false), "the log says the call ran ungated");
+  // presence and handoff still work: a claim from the iPhone's presence moves the owner and is announced
+  watcher.send({ type: "claim", trigger: "button" });
+  const r = await watcher.waitFor((m) => m.type === "claim.result");
+  assert.deepEqual([r.accepted, r.owner], [true, "iphone"]);
+  await watcher.waitFor((m) => m.type === "ownership" && m.owner === "iphone" && m.trigger === "button");
+  } finally { phone.ws.close(); watcher.ws.close(); }
+});
