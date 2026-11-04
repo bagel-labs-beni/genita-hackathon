@@ -398,9 +398,9 @@ function lineEvidence(text: string, card: StyleCard, id: SparkStoryId): Evidence
   return facts.length ? facts.reduce((w, f) => (RANK[f.label] < RANK[w] ? (f.label as Evidence) : w), facts[0].label as Evidence) : null;
 }
 
-// filler an item wraps around the headline ("You want it …"); "not", "at", "when" etc. are left out on purpose:
-// a condition, an exception or a negation is something new (Codex P2)
-const STOP = new Set(["a", "an", "the", "and", "or", "to", "of", "you", "your", "you're", "it", "is", "are", "be", "so", "that", "this", "i", "me", "my", "by", "like", "want", "prefer", "need", "love", "really", "always"]);
+// only the filler an item wraps around the headline ("You want it …"); joining, comparing, frequency and negation
+// words count, so "planning to comparing" never matches "planning and comparing" (Codex P2)
+const STOP = new Set(["a", "an", "the", "you", "your", "you're", "it", "is", "are", "be", "so", "that", "this", "i", "me", "my", "want"]);
 const contentWords = (s: string) =>
   s.toLowerCase().replace(/[’']/g, "'").split(/[^\p{L}\p{N}']+/u).filter((w) => w.length > 1 && !STOP.has(w)).map((w) => w.replace(/(ing|ed|es|s)$/, ""));
 
@@ -413,15 +413,6 @@ export function restatesHeadline(headline: string, text: string): boolean {
   return body.length === head.length && body.every((w, i) => w === head[i]);
 }
 
-/** Cards already saved before the rule (or Spark slipping): restating items are dropped on read; a card that would be
- *  left with none keeps what it has (Codex P2). */
-export function withoutRestatements(cards: StoryCard[]): StoryCard[] {
-  return cards.map((c) => {
-    if (!c.items?.length || !c.headline) return c;
-    const items = c.items.filter((i) => !restatesHeadline(c.headline, i.text));
-    return items.length && items.length < c.items.length ? { ...c, items } : c;
-  });
-}
 
 function sparkCard(id: SparkStoryId, r: RawCard, card: StyleCard, best: Evidence): StoryCard | null {
   const headline = FIXED_HEADLINE[id] ?? headlineOf(r.headline);
