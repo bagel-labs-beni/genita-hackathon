@@ -43,6 +43,12 @@ struct CallWaitStage: View {
         .accessibilityValue(leaving ? "leaving" : "waiting")
     }
 
+    private func startBreathing() {
+        var still = Transaction(); still.disablesAnimations = true
+        withTransaction(still) { breathe = false }
+        withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) { breathe = true }
+    }
+
     @ViewBuilder private func orb(_ d: CGFloat, calm: Bool) -> some View {
         // calm (Reduce Motion, review stills): the still orb, no breathing — the live orb keeps moving (Codex P3)
         if SoulOrbFlag.isOn && !calm {
@@ -51,11 +57,10 @@ struct CallWaitStage: View {
             // orb.png carries wide transparent margins (the mock's -212 pt inset on a 250 pt box)
             Image(resource: "orb").resizable().scaledToFit().frame(width: d * 674 / 250, height: d * 674 / 250)
                 .shadow(color: Self.glow.opacity(0.35), radius: 24)
-                .scaleEffect(breathe ? 1.04 : 1).opacity(breathe ? 1 : 0.82)
-                .onAppear {
-                    guard !calm else { breathe = true; return }
-                    withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) { breathe = true }
-                }
+                // calm holds it at rest even mid-breath (Reduce Motion turned on while waiting; Codex P3)
+                .scaleEffect(calm || !breathe ? 1 : 1.04).opacity(calm || breathe ? 1 : 0.82)
+                .onAppear { if !calm { startBreathing() } }
+                .onChange(of: calm) { _, now in if !now { startBreathing() } }
         }
     }
 }

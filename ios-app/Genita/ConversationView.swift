@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 struct ConversationView: View {
@@ -44,11 +45,13 @@ struct ConversationView: View {
         #endif
         guard !hasFacePicture, model.prep?.isFailed != true else { return false }
         let prepRunning = model.prep.map { !$0.isReady } ?? false
-        // a face set request on the wire (17–48 s seen on CI), or a loaded set whose poster is being drawn (Codex P2);
+        // a face set request on the wire (17–48 s seen on CI), or a loaded set whose first picture is being drawn (Codex P2);
         // the pauses between failed retries are idle (the 20 s cap applies)
         return prepRunning || call.faceFetching || call.face != nil || !waitCapOver
     }
-    private var hasFacePicture: Bool { companionImage != nil || call.facePoster != nil || call.faceStill != nil }
+    private var hasFacePicture: Bool { companionImage != nil || call.facePoster != nil || call.faceStill != nil || liveFrameDrawn }
+    /// the live face drew its first frame (it can beat the poster; Codex P2)
+    @State private var liveFrameDrawn = false
     /// the wait stage gives up after this long when nothing is being made (a scene or face set that never loads)
     @State private var waitCapOver = false
     @State private var connectedTaps = 0
@@ -319,6 +322,11 @@ struct ConversationView: View {
             if !Task.isCancelled { debugWaitHold = false }
         }
         #endif
+        .task(id: call.face.map(ObjectIdentifier.init)) {
+            liveFrameDrawn = false
+            guard let face = call.face else { return }
+            for await frame in face.$frame.values where frame != nil { liveFrameDrawn = true; break }
+        }
         .sensoryFeedback(trigger: faceArrivedTaps) { _, _ in MotionDetails.live(reduceMotion: reduceMotion) ? .impact(weight: .medium) : nil }
         .task(id: connecting) {
             guard !connecting, !waitCapOver else { return }
