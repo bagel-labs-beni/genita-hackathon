@@ -953,7 +953,7 @@ test("AU-42: a Mac start without a name uses the name the account's iPhone sent 
   const mac = await open("mac");
   mac.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
   // (right after the iPhone call the Mac may continue it without a greeting: ask something instead)
-  await pause(300); const n = mac.replies(); mac.ws.send(JSON.stringify({ type: "text", text: "what should I eat" }));
+  await pause(); const n = mac.replies(); mac.ws.send(JSON.stringify({ type: "text", text: "what should I eat" }));
   try {
     await waitFor(() => mac.replies() > n);
     assert.match(requests.at(-1)!.instructions ?? "", /The user's name is Summer/);
