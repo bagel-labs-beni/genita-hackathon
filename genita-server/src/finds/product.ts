@@ -595,12 +595,12 @@ export function productSoftMs(env: NodeJS.ProcessEnv = process.env): number {
 
 /**
  * QA 11/4 (#726 on live vendors): waiting for a second page that fits the pick took the card to ~26 s. Past this, one
- * fitting page is shown (topped up if another lane has more). GENITA_PRODUCT_HARD_MS, default 7 s (was 16 s; 16000
- * restores it); 35000 = always wait.
+ * fitting page is shown (topped up if another lane has more). GENITA_PRODUCT_HARD_MS, default 16 s (Chelsea 11/4 option c:
+ * verified links only, ~16 s; 7000 = the faster one-link card); 35000 = always wait.
  */
 export function productHardMs(env: NodeJS.ProcessEnv = process.env): number {
   const n = Number(env.GENITA_PRODUCT_HARD_MS);
-  return Number.isFinite(n) && n >= 2000 && n <= 60_000 ? n : 7000;
+  return Number.isFinite(n) && n >= 2000 && n <= 60_000 ? n : 16_000;
 }
 
 export async function hedgedSearch(vendors: FindsVendors, prompt: string, n: number, signal: AbortSignal, images: string[] = [], opts: { background?: boolean; softMs?: number; hardMs?: number; keep?: (name: string) => boolean } = {}): Promise<SearchResult | null> {
