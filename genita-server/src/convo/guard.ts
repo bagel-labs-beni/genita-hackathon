@@ -313,11 +313,15 @@ const INCOME = new RegExp(String.raw`\b${NUM_WORD}(?:[\s-]+${NUM_WORD})*\s?(?:k|
 const APPEARANCE_WORDS = /\b(?:smile|face|skin|hair|eyes|lips|body|figure|glow\w*|complexion|cheeks|jawline|curves|cute|hot|pretty|gorgeous|beautiful|handsome|sexy|stunning|adorable|radiant)\b/i;
 // demo S4 (0/6 "warm undertones"): asked what to wear / which color, neutral color-season styling is advice, not a
 // judgment of their looks — never with a rating word
-const STYLE_ASK = /\b(?:what (?:should i|to|do i) wear|which (?:one|color|colou?r|top|dress|shirt|coat|jacket|outfit)\b[^.!?]{0,40}\b(?:better|best|suit|go|wear)|looks? (?:better|best|good) on me|suits? me|colou?rs? (?:look good|suit|work) on me|colou?r (?:advice|season)|outfit|what goes with)\b/i;
+const STYLE_ASK = /\b(?:what (?:should i|to|do i) wear|which (?:one|color|colou?r|top|dress|shirt|coat|jacket|outfit)\b[^.!?]{0,40}\b(?:better|best|suit|go|wear)|looks? (?:better|best|good) on me|suits? me|colou?rs? (?:look good|suit|work) on me|colou?r (?:advice|season)|(?:pick|choose|help me (?:with|pick)) (?:an |my |the )?outfit|outfit (?:advice|help|check)|which outfit|what goes with)\b/i;
 const STYLE_COLOR = /\b(?:undertones?|skin ?tone|colou?r season|(?:warm|cool|neutral|olive) (?:tones?|undertones?|coloring|colouring)|(?:true |soft |deep )?(?:autumn|spring|summer|winter) palette)\b/i;
 const LOOKS_RATING = /\b(?:cute|hot|pretty|gorgeous|beautiful|handsome|sexy|stunning|adorable|radiant|glow\w*|flawless|perfect skin|clear skin|attractive|ugly|pale|tan(?:ned)?|dark-skinned|light-skinned)\b/i;
 export function colorStyling(sentence: string, userText: string): boolean {
-  return STYLE_ASK.test(userText) && STYLE_COLOR.test(sentence) && !LOOKS_RATING.test(sentence);
+  // Codex #675 r1: the color words are spared, never the rest of the sentence ("Your body is too fat … even with warm
+  // undertones" stays an appearance line): with the color note taken out, nothing about their looks may be left
+  if (!STYLE_ASK.test(userText) || !STYLE_COLOR.test(sentence) || LOOKS_RATING.test(sentence)) return false;
+  const rest = sentence.replace(new RegExp(STYLE_COLOR.source, "gi"), " ").replace(/\bskin\b/gi, " ");
+  return !(APPEARANCE_WORDS.test(rest) && CLASSES.find(([c]) => c === "appearance")![1].test(rest));
 }
 /** they asked about it themselves ("should I dye my hair?"): talking about it is fine */
 const APPEARANCE_WORDS_USER = /\bmy (?:smile|face|skin|hair|eyes|lips|makeup)\b/i;

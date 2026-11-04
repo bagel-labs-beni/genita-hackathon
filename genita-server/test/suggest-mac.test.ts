@@ -314,3 +314,18 @@ test("demo S4 rehearsal leak (1/6): after the move-to-Mac sentence, an outfit pi
   assert.doesNotMatch(text, /black top|still the move/);
   s.close();
 });
+
+test("Codex #675 r1: a sentence that asks to move to the Mac is never dropped as an early pick", async () => {
+  const { deps, sink, events } = setup(() => true);
+  deps.spark = async function* (): AsyncGenerator<SparkStreamEvent> {
+    yield { type: "text", delta: "Your Mac is open. I'd go with moving this call to your Mac so I can see the whole outfit." };
+    yield { type: "done", responseId: "r", text: "", status: "completed" };
+  };
+  const s = new Session("p10", sink, deps);
+  await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  await s.onClientText(JSON.stringify({ type: "text", text: ASK }));
+  await waitFor(() => events.some((e) => e.type === "reply" && (e as { final?: boolean }).final === true));
+  const reply = String((events.filter((e) => e.type === "reply").at(-1) as { text?: string }).text);
+  assert.match(reply, /moving this call to your Mac/);
+  s.close();
+});

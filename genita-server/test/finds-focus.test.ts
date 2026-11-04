@@ -87,4 +87,7 @@ test("demo S5 return visit: 'what shoes did you find for me earlier?' gets this 
   assert.match(line, /Warm brown goes with your black trench/);
   assert.doesNotMatch(line, /soup|Someone else/);
   assert.equal(runner.foundBefore("what should I cook tonight"), undefined, "only when they ask about it");
+  // Codex #675 r1: "you find" in ordinary talk is no ask about earlier finds
+  for (const t of ["What do you find relaxing?", "What did you find funny about that movie?"]) assert.equal(runner.foundBefore(t), undefined, t);
+  assert.ok(runner.foundBefore("which boots did you pick?"));
 });

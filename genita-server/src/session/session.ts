@@ -2501,7 +2501,8 @@ export class Session {
           if (named !== tts) { tts = named; this.log("convo.name_dropped", { utteranceId }); }
         }
         // demo S4 rehearsal (1/6): after the "move to your Mac" sentence, no outfit pick before the Mac camera sees it
-        if (built.suggestMac && tts && !interpret && !self && sentences.some((x) => /\bMac\b/i.test(x.display)) && EARLY_PICK.test(tts)) {
+        // Codex #675 r1: a sentence that itself asks to move to the Mac is the ask, never dropped
+        if (built.suggestMac && tts && !interpret && !self && sentences.some((x) => /\bMac\b/i.test(x.display)) && !/\bMac\b/i.test(tts) && EARLY_PICK.test(tts)) {
           this.log("handoff.early_pick_dropped", { utteranceId });
           tts = "";
         }

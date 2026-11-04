@@ -150,7 +150,8 @@ type Running = { abort: AbortController; done: Promise<PipelineResult> };
 
 /** demo S5: how far back "what did you find for me earlier" looks */
 const RECENT_FINDS_MS = 72 * 3_600_000;
-const FOUND_ASK = /\b(?:what|which)\b[^.?!]{0,50}\b(?:did you|you)\s+(?:find|found|pick|picked|pull|pulled|show|showed|recommend|recommended|suggest|suggested)\b|\b(?:the|those|that) (?:shoes|boots|picks|ones|finds|products|options|stuff|things) you (?:found|picked|showed|pulled|recommended)\b|\b(?:what you|you) found (?:for me|earlier|last time|before)\b|\bmy finds\b/i;
+// Codex #675 r1: an ask about earlier finds, never "what do you find relaxing" / "what did you find funny about that movie"
+const FOUND_ASK = /\b(?:what|which)\s+(?:shoes|boots|sneakers|products|items|stuff|things|options|picks|ones|jackets?|coats?|dress(?:es)?|tops?|recipes?)\b[^.?!]{0,30}\b(?:did you|you)\s+(?:find|found|pick|picked|pull|pulled|show|showed|recommend|recommended|suggest|suggested)\b|\b(?:what|which)\b[^.?!]{0,40}\b(?:did you|you)\s+(?:find|found|pick|picked|pull|pulled|recommend|recommended)\s+(?:for me\b|earlier|last time|before|yesterday)|\b(?:the|those|that) (?:shoes|boots|picks|ones|finds|products|options|stuff|things) you (?:found|picked|showed|pulled|recommended)\b|\b(?:what you|you) found (?:for me|earlier|last time|before)\b|\bmy finds\b/i;
 export class FindsRunner {
   private readonly deps: FindsDeps;
   private readonly hooks: RunnerHooks;

@@ -1914,3 +1914,9 @@ test("demo S4: asked which to wear, a neutral undertone / color-season note is a
   assert.equal(guardSentence("You look so pretty in the black one.", { camera: true, userText: ask }), "appearance");
   assert.equal(guardSentence("Your warm skin tone looks great.", { camera: true, userText: "how was your day" }), "appearance", "no style ask: still a comment on them");
 });
+
+test("Codex #675 r1: a body judgment next to 'warm undertones' is still an appearance line; 'explain the word outfit' is no style ask", async () => {
+  const { guardSentence } = await import("../src/convo/guard.ts");
+  assert.equal(guardSentence("Your body is too fat for that dress, even with warm undertones.", { camera: true, userText: "Which outfit should I wear?" }), "appearance");
+  assert.equal(guardSentence("You have warm undertones, so dark brown shoes or leather accessories will pull it together.", { camera: true, userText: "Which one looks better on me, the white one or the black one?" }), null);
+});
