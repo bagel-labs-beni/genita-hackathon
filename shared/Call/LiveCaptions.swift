@@ -145,8 +145,8 @@ struct LiveCaptions: Equatable {
             reply?.ends[t.sentence] = t.words.map(\.e).max() ?? 0
         case let .say(s):
             if reply?.utteranceId != s.utteranceId { reply = Reply(utteranceId: s.utteranceId) }
+            // 11/4 (TF 341): `say` is never spoken (CaptionOnlyVoice), so it is no audio: the caption shows at once
             reply?.device = true
-            reply?.anyAudio = true
             reply?.says.append(s.text)
         case let .utteranceCancelled(c):
             guard reply?.utteranceId == c.utteranceId, reply?.endedAt == nil else { break }
@@ -235,7 +235,7 @@ struct LiveCaptions: Equatable {
         if let p = playheadMs, p >= 0 { r.heardMs = max(r.heardMs, p) }
         let all = words(of: r)
         var n = 0
-        if r.heardMs >= 0 || (!r.anyAudio && r.finalAt.map { now - $0 >= Self.noAudioMs } == true) {
+        if r.heardMs >= 0 || (r.device && !r.anyAudio) || (!r.anyAudio && r.finalAt.map { now - $0 >= Self.noAudioMs } == true) {
             n = revealed(r, total: all.count)
         }
         r.shown = max(r.shown, min(n, all.count))
