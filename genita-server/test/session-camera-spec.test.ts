@@ -123,6 +123,7 @@ test("camera: on a hit the card pipeline gets the newest frames (A+B), not only 
     onScreen: () => undefined,
     foundBefore: () => undefined,
     afterProduct: () => false,
+    walkTurn: () => null,
     close: () => {},
   };
   await cameraTurn(h, "I finally finished my big project today.");
