@@ -81,6 +81,15 @@ import UIKit
     private var lastMicHeal: TimeInterval = 0
     /// heals in a row that brought no buffer (backoff, Codex #705 P2)
     private var micHeals = 0
+    /// iOS P0 (TF 351): when the engine was last built, and the formats it was built with (config-change guard)
+    private var lastBuildAt: TimeInterval = -.infinity
+    private var builtOutRate: Double = 0
+    private var configRebuilds: [TimeInterval] = []
+    private var configCheckPending = false
+    /// the one heal for a mic that delivers only digital silence after a build (per mic-on)
+    private var zeroHealDone = false
+    private var micTicks = 0
+    private var framesLogged = 0
     private let log = Logger(subsystem: "ai.thebeni.genita", category: "call-audio")
 
     init() {}
@@ -126,6 +135,7 @@ import UIKit
         pipeline?.enabled = true
         micOpenedAt = now
         micHeals = 0
+        zeroHealDone = false
         watchMic()
         return true
     }
@@ -149,15 +159,90 @@ import UIKit
             engine.inputNode.isVoiceProcessingInputMuted = false
         }
         let now = ProcessInfo.processInfo.systemUptime
-        let stalled = engineHasMic ? MicStall.stalled(now: now, lastBuffer: pipeline?.lastBufferUptime, since: max(micOpenedAt, lastMicHeal)) : true
+        micTicks += 1
+        if micTicks % 4 == 0 { logMicLevel(now: now) }
+        let since = max(micOpenedAt, lastMicHeal, lastBuildAt)
+        // TF 351: after a build the tap must deliver real samples within 1 s; digital silence gets one heal per mic-on
+        let quiet = engineHasMic && !zeroHealDone && MicStall.silentSinceBuild(now: now, lastNonZero: pipeline?.lastNonZeroUptime, since: since)
+        let stalled = engineHasMic ? (quiet || MicStall.stalled(now: now, lastBuffer: pipeline?.lastBufferUptime, since: max(micOpenedAt, lastMicHeal))) : true
         if !stalled { micHeals = 0; return }
         guard MicStall.mayHeal(now: now, lastHeal: lastMicHeal, heals: micHeals, engineHasMic: engineHasMic, queuedBuffers: queuedBuffers) else { return }
         lastMicHeal = now
         micHeals += 1
+        if quiet {
+            zeroHealDone = true
+            log.error("mic: only digital silence for \(MicStall.nonZeroWithinS, privacy: .public)s after the engine came up; healing once")
+        }
         log.error("mic: no input for \(MicStall.thresholdS, privacy: .public)s while on (running=\(self.engine.isRunning, privacy: .public), heal \(self.micHeals, privacy: .public)); resetting the session and rebuilding the engine")
         configureSession()
         buildEngine(withMic: true)
         if !engineHasMic { log.error("mic: rebuild found no input") }
+    }
+
+    /// TF 351 diagnosis: every 2 s while the mic is on — its level, whether real samples come, and the frames the
+    /// pipeline handed to the uplink.
+    private func logMicLevel(now: TimeInterval) {
+        let frames = pipeline?.framesOut ?? 0
+        let added = frames - framesLogged
+        framesLogged = frames
+        let nonZeroAgo = pipeline?.lastNonZeroUptime.map { now - $0 } ?? -1
+        log.info("mic: level=\(self.inputMeter.value, privacy: .public) uplink frames sent \(frames, privacy: .public) (+\(added, privacy: .public)/2s) nonzeroAgo=\(nonZeroAgo, privacy: .public)s running=\(self.engine.isRunning, privacy: .public) hasMic=\(self.engineHasMic, privacy: .public)")
+    }
+
+    /// iOS P0 (TF 351): an AVAudioEngineConfigurationChange. Our own rebuild (voice processing on) posts one, which
+    /// rebuilt again — 7 rebuilds in 3 s and the tap never settled. Now: changes within `MicStall.coalesceS` of a build
+    /// are looked at once that window ends; a change that left the formats as built only restarts the engine in place;
+    /// only a real format/route change (or a lost mic) rebuilds, and at most `maxConfigRebuilds` per 5 s.
+    private func engineConfigurationChanged() {
+        let now = ProcessInfo.processInfo.systemUptime
+        configRebuilds.removeAll { now - $0 > 5 }
+        let wantMic = MicStall.rebuildWithMic(micOpen: micOpen, engineHasMic: engineHasMic)
+        let inRate = engineHasMic ? engine.inputNode.outputFormat(forBus: 0).sampleRate : 0
+        let outRate = engine.outputNode.outputFormat(forBus: 0).sampleRate
+        let action = MicStall.onConfigChange(now: now, lastBuild: lastBuildAt, wantMic: wantMic, hasMic: engineHasMic,
+                                             builtIn: micRate, nowIn: inRate, builtOut: builtOutRate, nowOut: outRate,
+                                             running: engine.isRunning, recentRebuilds: configRebuilds.count)
+        log.info("config change: \(String(describing: action), privacy: .public) wantMic=\(wantMic, privacy: .public) hasMic=\(self.engineHasMic, privacy: .public) in=\(self.micRate, privacy: .public)→\(inRate, privacy: .public) out=\(self.builtOutRate, privacy: .public)→\(outRate, privacy: .public) running=\(self.engine.isRunning, privacy: .public)")
+        switch action {
+        case .keep:
+            break
+        case let .wait(seconds):
+            guard !configCheckPending else { return }
+            configCheckPending = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.configCheckPending = false
+                    self.engineConfigurationChanged()
+                }
+            }
+        case .restart:
+            if !restartInPlace() { rebuildForConfig(wantMic: wantMic, now: now) }
+        case .rebuild:
+            rebuildForConfig(wantMic: wantMic, now: now)
+        }
+    }
+
+    private func rebuildForConfig(wantMic: Bool, now: TimeInterval) {
+        configRebuilds.append(now)
+        buildEngine(withMic: wantMic)
+        log.info("config change: rebuilt mic=\(wantMic, privacy: .public) hasMic=\(self.engineHasMic, privacy: .public) micOpen=\(self.micOpen, privacy: .public) inputRate=\(self.micRate, privacy: .public) running=\(self.engine.isRunning, privacy: .public)")
+        if micOpen, !engineHasMic { watchMic() }
+    }
+
+    /// Same graph, same formats: start the stopped engine again instead of rebuilding (no new voice-processing unit,
+    /// so no new configuration change).
+    private func restartInPlace() -> Bool {
+        guard Self.mayStartAudio() else { return true }
+        if !engine.isRunning {
+            engine.prepare()
+            do { try engine.start() } catch {
+                log.error("config change: restart failed: \(error.localizedDescription, privacy: .public)")
+                return false
+            }
+        }
+        if !player.isPlaying, !scheduled.isEmpty { play(player) }
+        return engine.isRunning
     }
 
     func closeMic() {
@@ -365,6 +450,8 @@ import UIKit
                 log.error("engine start failed mic=\(withMic, privacy: .public) aec=\(self.voiceProcessing, privacy: .public) micRate=\(self.micRate, privacy: .public): \(error.localizedDescription, privacy: .public)")
             }
         }
+        lastBuildAt = ProcessInfo.processInfo.systemUptime
+        builtOutRate = engine.outputNode.outputFormat(forBus: 0).sampleRate
         log.info("engine built mic=\(self.engineHasMic, privacy: .public) aec=\(self.voiceProcessing, privacy: .public) running=\(started, privacy: .public) micRate=\(self.micRate, privacy: .public) out=\(self.engine.outputNode.inputFormat(forBus: 0).sampleRate, privacy: .public)")
         if !started, withMic, retry, Self.mayStartAudio() {
             // the VP unit of the engine just dropped may still hold the device for a moment: one fresh try, with
@@ -483,15 +570,10 @@ import UIKit
         observers.append(center.addObserver(forName: .AVAudioEngineConfigurationChange, object: nil, queue: .main) { [weak self] note in
             MainActor.assumeIsolated {
                 guard let self, (note.object as? AVAudioEngine) === self.engine else { return }
-                // Route or format changed (headphones, AirPods, the first reply on the speaker). Rebuild with the mic
-                // the user has on. iOS P0 (TF 341): right after the change the input can report 0 Hz, so the rebuild
-                // comes up without the mic. That used to turn `micOpen` off here, silently: the call still said
-                // Listening, nothing went up, and the mic watch (which runs only while `micOpen`) stopped too. Now the
-                // mic stays on and the watch rebuilds it as soon as the input is back (`MicStall.decide`).
-                let mic = MicStall.rebuildWithMic(micOpen: self.micOpen, engineHasMic: self.engineHasMic)
-                self.buildEngine(withMic: mic)
-                self.log.info("config change: rebuilt mic=\(mic, privacy: .public) hasMic=\(self.engineHasMic, privacy: .public) micOpen=\(self.micOpen, privacy: .public) inputRate=\(self.micRate, privacy: .public) running=\(self.engine.isRunning, privacy: .public)")
-                if self.micOpen, !self.engineHasMic { self.watchMic() }
+                // Route or format changed (headphones, AirPods, the first reply on the speaker, our own voice-processing
+                // build). TF 341: a rebuild never turns the user's mic off. TF 351: our own rebuild must not rebuild
+                // again (see engineConfigurationChanged).
+                self.engineConfigurationChanged()
             }
         })
         #if os(iOS)
@@ -588,6 +670,12 @@ final class MicPipeline: @unchecked Sendable {
     private var _lastBufferUptime: TimeInterval?
     /// When the input tap last delivered a buffer (system uptime), muted or not; nil before the first.
     var lastBufferUptime: TimeInterval? { lock.withLock { _lastBufferUptime } }
+    private var _lastNonZeroUptime: TimeInterval?
+    /// When a converted buffer last held a sample that was not exactly 0 (a live mic never gives pure digital silence).
+    var lastNonZeroUptime: TimeInterval? { lock.withLock { _lastNonZeroUptime } }
+    private var _framesOut = 0
+    /// 80 ms frames handed to the uplink since this pipeline was made.
+    var framesOut: Int { lock.withLock { _framesOut } }
 
     func process(_ buffer: AVAudioPCMBuffer) -> [Data] {
         let at = ProcessInfo.processInfo.systemUptime
@@ -607,6 +695,7 @@ final class MicPipeline: @unchecked Sendable {
         guard error == nil, out.frameLength > 0, let samples = out.int16ChannelData?[0] else { return [] }
         let chunk = Array(UnsafeBufferPointer(start: samples, count: Int(out.frameLength)))
         if let meter { meter.value = VoiceLevel.level(int16: chunk) }
+        if chunk.contains(where: { $0 != 0 }) { lock.withLock { _lastNonZeroUptime = at } }
         var resumed = false
         let frames: [Data] = lock.withLock {
             if ProcessInfo.processInfo.systemUptime < silencedUntil {
@@ -614,7 +703,9 @@ final class MicPipeline: @unchecked Sendable {
                 let rms = chunk.isEmpty ? 0 : (sum / Double(chunk.count)).squareRoot()
                 if rms >= MicPipeline.cueVoiceRMS { silencedUntil = 0; resumed = true }
             }
-            return framer.append(chunk)
+            let made = framer.append(chunk)
+            _framesOut += made.count
+            return made
         }
         if resumed { onSpeechDuringCue?() }
         return frames
@@ -629,6 +720,44 @@ enum MicStall {
     static let healGapS: TimeInterval = 3
     /// the gap before the next heal after `afterHeals` that brought nothing: 3, 6, 12, 24, then every 30 s
     static func gap(afterHeals n: Int) -> TimeInterval { min(30, healGapS * pow(2, Double(max(0, n - 1)))) }
+
+    /// TF 351: config changes within this long of our own build are looked at once it has passed (one rebuild at most
+    /// per window; the voice-processing build posts a change of its own)
+    static let coalesceS: TimeInterval = 0.75
+    /// at most this many config-change rebuilds in 5 s; past it a change only restarts the engine in place
+    static let maxConfigRebuilds = 3
+    /// after a build the tap must deliver a non-zero sample within this long
+    static let nonZeroWithinS: TimeInterval = 1.0
+
+    enum ConfigAction: Equatable, CustomStringConvertible {
+        case keep, restart, rebuild
+        case wait(TimeInterval)
+        var description: String {
+            switch self {
+            case .keep: return "keep"
+            case .restart: return "restart"
+            case .rebuild: return "rebuild"
+            case let .wait(s): return "wait \(Int((s * 1000).rounded()))ms"
+            }
+        }
+    }
+
+    /// What an AVAudioEngineConfigurationChange does (TF 351: 7 self-induced rebuilds in 3 s).
+    static func onConfigChange(now: TimeInterval, lastBuild: TimeInterval, wantMic: Bool, hasMic: Bool,
+                               builtIn: Double, nowIn: Double, builtOut: Double, nowOut: Double,
+                               running: Bool, recentRebuilds: Int) -> ConfigAction {
+        if now - lastBuild < coalesceS { return .wait(lastBuild + coalesceS - now) }
+        let micAsBuilt = wantMic == hasMic && (!hasMic || (nowIn > 0 && nowIn == builtIn))
+        let same = micAsBuilt && nowOut == builtOut
+        if same || recentRebuilds >= maxConfigRebuilds { return running ? .keep : .restart }
+        return .rebuild
+    }
+
+    /// No real sample since `since` (a build or mic-on) for `nonZeroWithinS`: the input delivers digital silence.
+    static func silentSinceBuild(now: TimeInterval, lastNonZero: TimeInterval?, since: TimeInterval) -> Bool {
+        guard now - since > nonZeroWithinS else { return false }
+        return (lastNonZero ?? -.infinity) < since
+    }
 
     /// iOS P0 (TF 341): an engine change never turns the user's mic off. A rebuild takes the mic when the user has it on.
     static func rebuildWithMic(micOpen: Bool, engineHasMic: Bool) -> Bool { micOpen || engineHasMic }

@@ -70,4 +70,41 @@ final class MicStallTests: XCTestCase {
         XCTAssertTrue(MicStall.mayHeal(now: 100, lastHeal: 0, heals: 0, engineHasMic: true, queuedBuffers: 0))
         XCTAssertFalse(MicStall.mayHeal(now: 100, lastHeal: 98, heals: 1, engineHasMic: true, queuedBuffers: 0))
     }
+
+    // MARK: TF 351 — our own voice-processing build posted a configuration change that rebuilt again (7 in 3 s)
+
+    private func change(now: TimeInterval = 10, lastBuild: TimeInterval = 9.6, wantMic: Bool = true, hasMic: Bool = true,
+                        builtIn: Double = 48_000, nowIn: Double = 48_000, builtOut: Double = 48_000, nowOut: Double = 48_000,
+                        running: Bool = true, recent: Int = 0) -> MicStall.ConfigAction {
+        MicStall.onConfigChange(now: now, lastBuild: lastBuild, wantMic: wantMic, hasMic: hasMic, builtIn: builtIn, nowIn: nowIn,
+                                builtOut: builtOut, nowOut: nowOut, running: running, recentRebuilds: recent)
+    }
+
+    func testAChangeRightAfterOurOwnBuildWaitsForTheWindowToPass() {
+        guard case let .wait(s) = change(now: 10, lastBuild: 9.6) else { return XCTFail("rebuilt inside the window") }
+        XCTAssertEqual(s, 0.35, accuracy: 0.001)
+    }
+
+    func testAChangeThatLeftTheFormatsAsBuiltNeverRebuilds() {
+        XCTAssertEqual(change(lastBuild: 0, running: true), .keep, "the self-induced change of the TF 351 loop")
+        XCTAssertEqual(change(lastBuild: 0, running: false), .restart, "stopped by the change: start it again in place")
+    }
+
+    func testARealRouteOrFormatChangeRebuilds() {
+        XCTAssertEqual(change(lastBuild: 0, nowOut: 44_100), .rebuild, "speaker 48 → 44.1 kHz")
+        XCTAssertEqual(change(lastBuild: 0, nowIn: 0), .rebuild, "the mic reads 0 Hz")
+        XCTAssertEqual(change(lastBuild: 0, wantMic: true, hasMic: false, builtIn: 0, nowIn: 0), .rebuild, "the mic is on, the engine has none")
+    }
+
+    func testConfigRebuildsAreCappedPerFiveSeconds() {
+        XCTAssertEqual(change(lastBuild: 0, nowOut: 44_100, recent: 3), .keep)
+        XCTAssertEqual(change(lastBuild: 0, nowOut: 44_100, running: false, recent: 3), .restart)
+    }
+
+    func testAMicThatGivesOnlyDigitalSilenceAfterABuildIsCaught() {
+        XCTAssertFalse(MicStall.silentSinceBuild(now: 10.5, lastNonZero: nil, since: 10), "it gets 1 s")
+        XCTAssertTrue(MicStall.silentSinceBuild(now: 11.2, lastNonZero: nil, since: 10))
+        XCTAssertTrue(MicStall.silentSinceBuild(now: 11.2, lastNonZero: 9.9, since: 10), "a sample from the engine before does not count")
+        XCTAssertFalse(MicStall.silentSinceBuild(now: 11.2, lastNonZero: 10.3, since: 10))
+    }
 }
