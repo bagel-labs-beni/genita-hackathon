@@ -89,10 +89,12 @@ test("pick → save → call: a man's face is suggested Leo; the voice the user 
   assert.ok(spoken.length > 0 && spoken.every((v) => v === "seamless:9"), JSON.stringify(spoken));
 });
 
-test("config: the phone-voice fallback is off unless GENITA_VOICE_DEVICE_FALLBACK=1", () => {
+// 11/4 18:3x (Chelsea, TF 341: "robot voice" in calls): never the phone's voice in a server-voice call. The old
+// GENITA_VOICE_DEVICE_FALLBACK=1 opt-in is ignored, so a stale env/SSM value can't bring the robot voice back.
+test("config: the phone-voice fallback is never on from the env, even with GENITA_VOICE_DEVICE_FALLBACK=1", () => {
   const base = { MODEL_API_KEY: "k", GENITA_VOICE_URL: "https://v", GENITA_VOICE_TOKEN: "t" };
   assert.equal(loadConfig(base).voice?.deviceFallback, undefined);
-  assert.equal(loadConfig({ ...base, GENITA_VOICE_DEVICE_FALLBACK: "1" }).voice?.deviceFallback, true);
+  for (const v of ["1", "true", "yes"]) assert.equal(loadConfig({ ...base, GENITA_VOICE_DEVICE_FALLBACK: v }).voice?.deviceFallback, undefined, v);
 });
 
 test("config: raw Seamless voice by default (post:false, no emotion pitch/tone sent); GENITA_VOICE_POST=1 turns post.py on", async () => {
