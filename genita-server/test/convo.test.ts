@@ -1723,3 +1723,35 @@ test("Codex #541 r3: no camera-off hint on a crisis line", { skip: !v1 }, async 
   assert.doesNotMatch(calls.at(-1)!.instructions ?? "", /camera is off right now/);
   session.close();
 });
+
+test("tone 11/4: 'That sounds heavy' / 'I'm right here with you' on a non-crisis line are counselor lines; on a real crisis line they stay", () => {
+  for (const s of ["That sounds heavy.", "I'm right here with you.", "That's a lot to carry today.", "That sounds draining."]) assert.equal(guardSentence(s, { camera: false, userText: "this orgo exam is killing me lol" }), "counselor", s);
+  assert.equal(guardSentence("I'm right here with you.", { camera: false, userText: "I want to kill myself" }), null);
+});
+
+test("Codex #610 P1: after a crisis line in the call, 'I'm right here with you — put the pills down' is never filtered", { skip: !v1 }, async () => {
+  const { client, session } = setup(["<sad> Please call 988 right now, I care about you.", "<sad> I'm right here with you, put the pills down and step away. Is your sister still there?"]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "I want to kill myself." }));
+  await client.waitFor((m) => m.type === "reply" && m.final === true);
+  const n = client.json.filter((m) => m.type === "reply" && m.final === true).length;
+  await session.onClientText(JSON.stringify({ type: "text", text: "Yes, I have the pills beside me" }));
+  const reply = await client.waitFor((m) => m.type === "reply" && m.final === true && client.json.filter((x) => x.type === "reply" && x.final === true).length > n);
+  assert.match(String(reply.text), /put the pills down/);
+  session.close();
+});
+
+test("Codex #610 r2: crisisInCall spares staying/help lines only — a salary said back is still dropped", () => {
+  assert.equal(guardSentence("I'm right here with you.", { camera: false, userText: "ok", crisisInCall: true }), null);
+  assert.equal(guardSentence("Eighty five K, nice.", { camera: false, userText: "I make 85k now", crisisInCall: true }), "sensitive");
+  // Codex #610 r3: guilt stays guarded after a crisis; a filler that goes on to advice is kept
+  assert.equal(guardSentence("I'm all you need, you don't need them.", { camera: false, userText: "My sister is here to help now, should I go talk to her?", crisisInCall: true }), "guilt");
+  assert.equal(guardSentence("That sounds heavy, use a trolley instead of lifting it alone.", { camera: false, userText: "Can I carry this 40 kg box upstairs on my own?" }), null);
+});
+
+test("Codex #610 r4: 'That feels hard, use a trolley…' keeps the advice; 'That feels pretty hard.' alone is filler", async () => {
+  const { guardSentence } = await import("../src/convo/guard.ts");
+  const ctx = { camera: false, userText: "Can I carry a 40kg box upstairs alone?" } as any;
+  assert.equal(guardSentence("That feels hard, use a trolley instead of lifting it alone.", ctx), null);
+  assert.equal(guardSentence("That feels pretty hard.", { camera: false, userText: "work was rough today" } as any), "counselor");
+});

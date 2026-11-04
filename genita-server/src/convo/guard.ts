@@ -16,6 +16,8 @@ export type GuardContext = {
   userText: string;
   /** personalization's one still-to-confirm question is due this turn (#194 GK-1): its question is not intake */
   askTurn?: boolean;
+  /** a real crisis line came earlier in this call (session crisisInCall): a friend staying is never filtered (Codex #610 P1) */
+  crisisInCall?: boolean;
 };
 
 const CLASSES: Array<[GuardClass, RegExp]> = [
@@ -310,6 +312,9 @@ function energyLabel(s: string): boolean {
   return ENERGY_ABOUT_YOU.test(s) && /\byou\b/i.test(s) && !/\b(?:it|that|this|which|they|these|those|(?:the|that|this|its|your)\s+[\w'-]+)\s+(?:has|have|got|gives?|is|'s)\b/i.test(s) && !/\benergy\s+to\b/i.test(s);
 }
 
+/** tone 11/4 (#610): therapy filler (Codex r4: "feels"/"pretty" only here, never inside the partial-match class) said as a whole sentence on an ordinary sad line ("That sounds heavy.", "I'm right
+ * here with you.") — never when the sentence goes on to real content (Codex r3: "That sounds heavy, use a trolley…") */
+const FILLER_ONLY = /^(?:yeah,?\s+|oh,?\s+|aw,?\s+|ugh,?\s+)?(?:that (?:sounds|feels) (?:really |so |super |pretty )?(?:draining|heavy|like a lot|painful|tough|hard|rough|exhausting|overwhelming)|i'?m (?:right )?here with you|(?:that'?s|that is) (?:a lot|so much) to (?:carry|handle|deal with)(?: today| right now)?)[\s,.!…]*(?:summer)?[\s.!…]*$/i;
 export function guardSentence(sentence: string, ctx: GuardContext): GuardClass | null {
   // emergency help and real crisis turns first (Codex #372 r2: "You can cut me off and call 911 right now")
   if (INTERRUPTION.test(sentence) && !EMERGENCY_HELP.test(sentence) && !realCrisisSignal(ctx.userText)) return "interruption";
@@ -321,6 +326,7 @@ export function guardSentence(sentence: string, ctx: GuardContext): GuardClass |
   // a real crisis or danger turn: only an AI denial is dropped. "Stay with me", "you're not alone", a referral
   // are the friend staying, not therapy-speak or clinginess (Codex 11/3 P1)
   if (realCrisisSignal(ctx.userText)) return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;
+  if (!ctx.crisisInCall && FILLER_ONLY.test(sentence.trim())) return "counselor";
   if (!ctx.camera && (WEARING_NOW.test(sentence) || CLOTHES_NOW.test(sentence)) && !USER_ON_CLOTHES.test(ctx.userText)) return "unseen";
   // a greeting / initiative turn (nothing said yet this turn): never claim to hear them ("your voice sounds super alive")
   if (!ctx.userText.trim() && (UNHEARD.test(sentence) || heardBeforeSpeech(sentence.replace(/’/g, "'")))) return "unseen";
@@ -332,6 +338,9 @@ export function guardSentence(sentence: string, ctx: GuardContext): GuardClass |
     if (cls === "unseen" && ctx.camera) continue;
     if (cls === "appearance") continue;
     if (cls === "intake" && ctx.askTurn) continue;
+    // Codex #610 r2: after a crisis line in this call only the staying / help lines are spared (never the number,
+    // appearance or unseen guards)
+    if (ctx.crisisInCall && (cls === "counselor" || cls === "referral")) continue;
     return cls;
   }
   return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;
