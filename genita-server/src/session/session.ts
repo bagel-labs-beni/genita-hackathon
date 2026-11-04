@@ -74,9 +74,12 @@ import { Backchannel } from "../convo/backchannel.ts";
 import { EOT, eotTuning, joinSegments, judgeEndOfTurn, type EotKind, type EotVerdict } from "../convo/endOfTurn.ts";
 import { noFinallyTone, noInventedOpener, noRepeatGreeting, noUnpromptedGoodbye } from "../convo/greetOnce.ts";
 import { FACE_RETRY_LINE, isFaceTurn, noPolicyTalk } from "../convo/faceTalk.ts";
-import { isStyleTurn, styleFollowLine, styleLine, styleReasonOn } from "../convo/styleReason.ts";
+import { asksColoring, COLORING_QUESTION, isOfferOnly, isStyleTurn, isWhyNotTurn, STYLE_FALLBACK, STYLE_RETRY_LINE, STYLE_SAID_MAX, styleFollowLine, styleLine, styleReasonOn } from "../convo/styleReason.ts";
+import { emptyFiller, retryContext } from "../convo/emptyFiller.ts";
+import { PetWordCap, petWordLine, petWordsOn, STOCK_REACTION_HINT } from "../convo/petWords.ts";
+import { DashScrubber, noDashOn, scrubDashes } from "../text/noDash.ts";
 import { isGoesWithFollowUp } from "../finds/intent.ts";
-import { addressUser, thirdPersonCouldBeUser, fallbackLine, guardSentence, neverSpoken, NO_FRAME_RETRY_LINE, NO_ANSWER_LINE, LOST_LINE, UPSTREAM_RETRY_MS, realCrisisSignal, mayBeSelfHarm, nameAsYou, type GuardClass } from "../convo/guard.ts";
+import { addressUser, thirdPersonCouldBeUser, fallbackLine, guardSentence, neverSpoken, NO_FRAME_RETRY_LINE, NO_ANSWER_LINE, UPSTREAM_RETRY_MS, realCrisisSignal, mayBeSelfHarm, nameAsYou, type GuardClass } from "../convo/guard.ts";
 import { isInterjectionOnly } from "../text/toolNarration.ts";
 import { daySeed, openerBlock, openerKind, profileHooks } from "../convo/opener.ts";
 import { mentionsProfile, moodFrom, moodLine, turnHints, type Mood } from "../convo/rhythm.ts";
@@ -186,6 +189,8 @@ export const RECIPE_REACTION_LINE =
 /** P0 11/4: a dish by name — the recipe card (photo, ingredients, steps) appears on its own; never read the recipe out */
 export const RECIPE_NAMED_REACTION_LINE =
   "A recipe card with the ingredients and steps for this dish is about to appear on their screen. Reply now with ONE short, warm sentence (under 12 words) reacting to the dish, as you. Don't list ingredients or steps, no amounts, no links, and never say you are searching or looking it up.";
+/** messages kept from before `start` (audio_start, hold, frames…); more are dropped */
+const PRE_START_MAX = 16;
 export const PRODUCT_REACTION_LINE =
   "A shopping search for this is already running in the background and its card will appear on its own. Reply with ONE short sentence (under 10 words): a natural, in-character reaction to what they asked or what you see (taste, color, how it goes with the outfit); talk to them as you. Never say you are searching, looking, checking or pulling anything up, no 'let me…'; don't name products, stores, prices or links.";
 /** The slice of the personalize service a call uses (structural, so tests can fake it). */
@@ -260,7 +265,7 @@ type Reply = {
 /** textAt: a typed line arrived (its "speech end", as the app counts it) */
 type TurnMetrics = { speechEndAt?: number; completeAt?: number; lastPartialAt?: number; specStartAt?: number; textAt?: number };
 /** lang = the language the reply is written in (interpretation: the target) */
-type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null; images: string[]; lang: string; suggestMac?: boolean; /** the shared screen right now (watch together), for Finds (Chelsea 11/4 D) */ screen?: string; /** any camera or shared-screen frame went with this request */ seen?: boolean };
+type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null; images: string[]; lang: string; suggestMac?: boolean; /** the shared screen right now (watch together), for Finds (Chelsea 11/4 D) */ screen?: string; /** any camera or shared-screen frame went with this request */ seen?: boolean; /** a style verdict turn (styleReason.ts): `asks` = it carries the once-per-call coloring question */ style?: { asks: boolean } };
 /** firstTextAt: when the speculative stream's first text arrived (it is buffered until the final transcript) */
 /** ctx: what the request was built from besides the words (speculationContext); a hit needs both to match */
 /** keepsFrames: the guess carries this question's first camera frame and is not about the view — newer frames keep it */
@@ -720,6 +725,11 @@ export class Session {
   private styleAsked = false;
   private lastStyleAt: number | null = null;
   private styleSaid: string[] = [];
+  /** 11/5 eval 5c: a reaction word ("elite") is said at most once per call (convo/petWords.ts) */
+  private petCap = new PetWordCap();
+  /** client messages that came before `start` (see onClientText) */
+  private preStart: string[] = [];
+  private preStartLogged = false;
   private styleTurnPending = false;
   /** resolves when the running correction check ends (a "forget that …" waits for it instead of being skipped) */
   private correctionDone: Promise<void> = Promise.resolve();
@@ -782,7 +792,8 @@ export class Session {
         emit: (e) => {
           if (this.closed) return;
           if (e.type === "observe.boxes") this.log("observe.boxes_sent", { findId: e.findId.slice(0, 64), n: e.items.length, frame: e.frame });
-          this.client.sendJson(e);
+          // Chelsea 11/5: a card's say-line has no em/en dashes either
+          this.client.sendJson(e.type === "find.created" && e.card.say && noDashOn() ? { ...e, card: { ...e.card, say: scrubDashes(e.card.say) } } : e);
         },
         announce: (text) => this.announce(text),
         log: (event, data) => this.log(event, data),
@@ -800,7 +811,7 @@ export class Session {
     // the call's own turns go too, like a memory Forget — not left to the memory subscription, which a failed memory
     // start may not have (Codex #583 r22)
     this.dropSpeculation(); this.dispatch({ type: "client_barge_in" });
-    this.history = []; this.recentReplies = []; this.memories = []; this.greeting = null; this.styleAsked = false; this.lastStyleAt = null; this.styleSaid = []; this.styleTurnPending = false;
+    this.history = []; this.recentReplies = []; this.memories = []; this.greeting = null; this.styleAsked = false; this.lastStyleAt = null; this.styleSaid = []; this.styleTurnPending = false; this.petCap = new PetWordCap();
     this.user = { ...this.user, profile: undefined };
     this.taste = [];
     this.ask = null;
@@ -886,7 +897,14 @@ export class Session {
     const type = msg.type;
     if (type === "start") return this.start(msg);
     if (type === "ping") return this.client.sendJson({ type: "pong", t: msg.t ?? null });
-    if (!this.started) return this.error("not_started", "Send start first", false);
+    if (!this.started) {
+      // Mac log 11/5 03:33 (after a proximity handoff): CallSession.begin/rejoin turns the mic on (audio_start) while the
+      // new socket is still opening, and `start` goes out only on open. A message before start is kept (a few, in order)
+      // and handled right after start, never an error card
+      if (this.preStart.length < PRE_START_MAX) this.preStart.push(raw);
+      if (!this.preStartLogged) { this.preStartLogged = true; this.log("session.before_start", { type: typeof type === "string" ? type.slice(0, 40) : null }); }
+      return;
+    }
     switch (type) {
       case "audio_start":
         this.micOn = true;
@@ -1064,6 +1082,12 @@ export class Session {
     const g = msg.greetAfterMs;
     const greetAfterMs = typeof g === "number" && Number.isFinite(g) ? Math.round(Math.min(MAX_GREET_AFTER_MS, Math.max(0, g))) : null;
     this.started = true;
+    // what came before start (audio_start from a handoff/rejoin) is handled now, in order, after this start's own setup
+    if (this.preStart.length) {
+      const queued = this.preStart;
+      this.preStart = [];
+      setImmediate(() => { for (const raw of queued) if (!this.closed) void this.onClientText(raw); });
+    }
     // first sound on connect (Chelsea 05:04, p50 ≤ 1 s): where start → ready goes, per stage
     const spanT0 = this.now();
     const spans: Record<string, number> = {};
@@ -1080,7 +1104,7 @@ export class Session {
         this.dropHeld(); this.asrEpoch++; this.bcGen++; this.backchannel?.stop(); this.cuedTurn = false;
         if (this.segmentOpen) { this.dropLateFinal = true; this.segmentOpen = false; }
         this.dropSpeculation(); this.dispatch({ type: "client_barge_in" });
-        this.history = []; this.recentReplies = []; this.memories = []; this.greeting = null; this.styleAsked = false; this.lastStyleAt = null; this.styleSaid = []; this.styleTurnPending = false;
+        this.history = []; this.recentReplies = []; this.memories = []; this.greeting = null; this.styleAsked = false; this.lastStyleAt = null; this.styleSaid = []; this.styleTurnPending = false; this.petCap = new PetWordCap();
         this.handedPast = false; // Codex #536 r2: after a Forget the other device's turns are gone as a past too
         this.historyRevision = revision;
         // #341: what greetings opened on goes too (Codex #352)
@@ -2281,7 +2305,7 @@ export class Session {
     this.deps.onHistoryChange?.(role);
     if (role === "assistant") this.recentReplies = [...this.recentReplies, text].slice(-3);
     // prompt-100 style: only earlier style verdicts count as used reasons (chit-chat about black isn't a verdict, No-AI eval)
-    if (role === "assistant" && this.styleTurnPending) { this.styleSaid = [...this.styleSaid, text].slice(-4); this.styleTurnPending = false; }
+    if (role === "assistant" && this.styleTurnPending) { this.styleSaid = [...this.styleSaid, text].slice(-STYLE_SAID_MAX); this.styleTurnPending = false; }
   }
 
   /** Pure apart from consuming pending camera frames. */
@@ -2347,6 +2371,7 @@ export class Session {
     // prompt-100 style (Chelsea 11/4): a style call on camera gives one personal reason, rotates it, asks coloring once;
     // "find me some" right after keeps that reason and says it once (GENITA_STYLE_REASON=0 = off)
     let style = "";
+    let styleTurn: { asks: boolean } | null = null;
     if (styleReasonOn() && !suggestMac && !interpret && !greeting && !turn.cue) {
       const follow = this.lastStyleAt !== null && this.now() - this.lastStyleAt < 120_000 && (isGoesWithFollowUp(text) || /\b(?:find|show|get) (?:me )?(?:some |a pair of |a )?[a-z]+(?: [a-z]+)? (?:for|to go with|that go with) (?:it|this|that|them)\b/i.test(text));
       // only a verdict that survives this call's forgets is quoted (Codex r9 P1); a forgotten one is not followed up
@@ -2357,14 +2382,17 @@ export class Session {
         style = last && last === lastAll ? styleFollowLine(last.text) : "";
         this.lastStyleAt = null;
       }
-      else if (camera.length > 0 && (outfitPick || isStyleTurn(text))) {
+      else if (camera.length > 0 && (outfitPick || isStyleTurn(text) || (isWhyNotTurn(text) && this.styleSaid.length > 0))) {
         // the earlier verdicts of this call, minus what was forgotten
         const kept = new Set(forgetInCall(this.history, this.removedLines).filter((h) => h.role === "assistant").map((h) => h.text));
         const said = this.styleSaid.filter((t) => kept.has(t));
-        const s = styleLine({ profile: this.user?.profile, memories: this.memories, said, askedColoring: this.styleAsked });
+        // 11/5 (8/72): "why not this one?" gets the other option's own reason, not the last one turned around
+        const whyNot = said.length > 0 && isWhyNotTurn(text);
+        const s = styleLine({ profile: this.user?.profile, memories: this.memories, said, askedColoring: this.styleAsked, whyNot });
         this.styleTurnPending = true;
         if (s.asks) this.styleAsked = true;
         style = s.line;
+        styleTurn = { asks: s.asks };
         this.lastStyleAt = this.now();
       }
     }
@@ -2376,6 +2404,11 @@ export class Session {
     // P0 11/4: guided cooking of the recipe card ("Walk me through it", then "next"): one step a turn (finds/walkthrough.ts)
     const walk = !greeting && !turn.cue ? this.finds?.walkTurn(text) ?? null : null;
     if (walk) finalInstructions += `\n${walk.line}\n`;
+    // 11/5 eval 5c ("elite" 16/16): the reaction words this call already used are named, so it reaches for another
+    const pets = !greeting && petWordsOn() ? petWordLine(this.history.filter((h) => h.role === "assistant").map((h) => h.text)) : null;
+    if (pets) finalInstructions += `\n${pets}\n`;
+    // P0 11/5 (utt 6): the reply named products ("a cute oversized panda set…") 10 s before the search came back with others
+    if (this.finds && !greeting && !turn.cue) finalInstructions += `\n${NO_PRODUCT_GUESS_LINE}\n`;
     if (this.cardAsk && !greeting && !turn.cue && normTranscript(this.cardAsk) !== normTranscript(text)) finalInstructions += `\n${earlierAskLine(this.cardAsk)}\n`;
     if (greeting && !interpret && this.deps.greetOpener === true) {
       this.greetOpener = pickGreetOpener(this.user?.name);
@@ -2390,6 +2423,7 @@ export class Session {
       seen: images.length > 0,
       lang: this.language,
       suggestMac,
+      ...(styleTurn ? { style: styleTurn } : {}),
       req: {
         instructions: finalInstructions,
         input,
@@ -2695,7 +2729,7 @@ export class Session {
             : req.input;
           // P0 11/4: the recipe turn too gets its own generated line (not a fixed "Ooh, let me see."); what is in view is
           // said after the ingredient check (D23), so this line never lists ingredients
-          const reactLine = started.kind === "recipe" ? (started.named ? RECIPE_NAMED_REACTION_LINE : RECIPE_REACTION_LINE) : PRODUCT_REACTION_LINE;
+          const reactLine = started.kind === "recipe" ? (started.named ? RECIPE_NAMED_REACTION_LINE : RECIPE_REACTION_LINE) : petWordsOn() ? `${PRODUCT_REACTION_LINE} ${STOCK_REACTION_HINT}` : PRODUCT_REACTION_LINE;
           const react = this.sparkSource({ ...req, input: textOnly as typeof req.input, instructions: `${req.instructions ?? ""}\n${reactLine}\n`, tools: undefined }, signal, undefined, false);
           // P0 11/4 (Codex #738): an empty recipe reaction falls back to the normal generated answer, never the fixed ack
           const recipeTurn = started.kind === "recipe";
@@ -2724,6 +2758,12 @@ export class Session {
     // Server voice: first clause goes out at its first comma ("Oh wow,") and long sentences split for rhythm
     const splitOptions = !device && this.deps.config.voice ? { eagerFirstClause: true, clauseMaxChars: 140 } : {};
     let splitter = new SentenceSplitter(splitOptions);
+    // Chelsea 11/5: no em/en dashes in the companion's lines (text/noDash.ts); never in interpretation
+    const dashFree = !interpret && noDashOn();
+    let dashes = new DashScrubber();
+    /** Spark's text into the splitter, dashes replaced on the way (a dash split across chunks is held a chunk) */
+    const feed = (delta: string) => splitter.push(dashFree ? dashes.push(delta) : delta);
+    const flushText = () => [...(dashFree ? splitter.push(dashes.flush()) : []), ...splitter.flush()];
     const sentences: { tts: string; display: string; emotion: string | null; face: { tag: Expression; intensity: number } | null; beat?: true; drop?: true; opener?: true }[] = [];
     // #387 follow-up: watch together took the call's question back. The question is judged as a whole sentence,
     // never clause by clause: server voice cuts "Weekends for you, | are they packed or lazy?" at the comma.
@@ -2789,8 +2829,14 @@ export class Session {
     const askTurn = !synthetic && !interpret && !!this.ask && (req.instructions ?? "").includes(this.ask.line);
     const guardCtx = { camera: (built?.images.length ?? 0) > 0, userText: synthetic ? "" : text, askTurn, crisisInCall: this.crisisInCall };
     let cutBefore = false;
+    /** style turn: offer sentences held until the attempt ends (see enqueueSentences) */
+    let heldOffer: string[] = [];
+    let releasingOffer = false;
     const enqueueSentences = (list: string[], keepOpener = false) => {
-      for (const raw of list) {
+      for (const line of list) {
+        // fixed lines and anything that skipped the stream scrubber (a whole sentence: a trailing dash is a period)
+        const dashed = dashFree ? scrubDashes(line) : line;
+        const raw = !interpret && petWordsOn() ? this.petCap.apply(dashed) : dashed;
         const p = parseTaggedSentence(raw);
         if (p.emotion) emotion = p.emotion;
         // Delivery/emotion tags alone cannot be displayed or spoken. Do not
@@ -2955,6 +3001,9 @@ export class Session {
         // sentence that is plainly a question ends with "?"
         if (this.v1 && synthetic && QUESTION_START.test(parseTaggedSentence(tts).displayText) && /\.\s*$/.test(tts) && !/\.\.\.\s*$/.test(tts)) tts = tts.replace(/\.\s*$/, "?");
         const display = tts === p.ttsText ? p.displayText : parseTaggedSentence(tts).displayText;
+        // 11/5 eval 5c (style unknown 1/3): a verdict turn said only "Want me to find black heels for it?". On a style
+        // turn the offer waits for the end of the answer: said after the pick, dropped (and retried) when it is all there is
+        if (built.style && !keepOpener && !releasingOffer && isOfferOnly(display)) { heldOffer.push(line); continue; }
         // a memory tool's follow-up round may repeat what was already said before the call (bug-fix lane smoke 11/3:
         // "I knew you'd crush it… I knew you'd crush it…"): a sentence already spoken in this reply is not said twice
         if (this.v1 && !interpret && !self) {
@@ -3077,7 +3126,8 @@ export class Session {
         if (self) {
           m.firstTokenAt = this.now();
           // a card line has no tag of its own: say it warmly; watch reactions carry theirs ("<laugh> ha")
-          pushSentences(splitter.push(self === "card" ? `<warm> ${text}` : text));
+          const line = dashFree ? scrubDashes(text) : text;
+          pushSentences(splitter.push(self === "card" ? `<warm> ${line}` : line));
           pushSentences(splitter.flush());
           return;
         }
@@ -3098,8 +3148,11 @@ export class Session {
           try {
             // prompt-100 11/4 (Mac stage, frame not there yet): the first try only described what it "saw" → the retry is
             // told no frame came and answers from their words, never an empty reply or "lost you"
-            const retryLine = attempt === 1 ? [guarded.unseen ? NO_FRAME_RETRY_LINE : "", guarded.face ? FACE_RETRY_LINE : ""].filter(Boolean).join("\n") : "";
-            const retryReq = retryLine ? { ...req, instructions: `${req.instructions ?? ""}\n${retryLine}\n` } : req;
+            // 11/5 eval 5c: a retried style answer still gives the pick and its reason ("Yeah, that one suits you." alone isn't one)
+            const retryLine = attempt === 1 ? [guarded.unseen ? NO_FRAME_RETRY_LINE : "", guarded.face ? FACE_RETRY_LINE : "", built.style ? STYLE_RETRY_LINE : ""].filter(Boolean).join("\n") : "";
+            // 11/5 sign-off (2/96 empty): the one retry carries a shorter context (the last few lines), convo/emptyFiller.ts
+            const retryBase = retryContext(req);
+            const retryReq = retryLine ? { ...retryBase, instructions: `${req.instructions ?? ""}\n${retryLine}\n` } : retryBase;
             const raw0 = attempt === 0 ? (pre ?? this.sparkSource(req, signal, greeting?.item, !interpret && !cue, undefined, undefined, memoryRetry)) : this.sparkSource(retryReq, signal, greeting?.item, !interpret && !cue, undefined, 1, memoryRetry);
             const raw = oneSentence ? firstSentenceOnly(raw0) : raw0;
             // Demo S4 (QA P2): the suggest turn must name the Mac; a reply that doesn't is swapped for the fixed line
@@ -3111,7 +3164,7 @@ export class Session {
                 // a speculation hit's tokens waited in a buffer: count from when Spark sent the first one
                 if (ev.delta.trim() && m.firstTokenAt === undefined) m.firstTokenAt = attempt === 0 && pre && spec?.firstTextAt !== undefined ? Math.min(spec.firstTextAt, this.now()) : this.now();
                 gotText ||= !!ev.delta.trim();
-                pushSentences(splitter.push(ev.delta));
+                pushSentences(feed(ev.delta));
               } else if (ev.type === "tool") {
                 guarded.tool = true;
                 if (ev.name === "web_search") {
@@ -3122,7 +3175,7 @@ export class Session {
                 }
                 if (!interpret) {
                   // A tool may follow a sentence with no trailing space, or an unfinished clause.
-                  pushSentences(splitter.flush());
+                  pushSentences(flushText());
                   // Completion alone is also tool evidence; some streams omit the start event.
                   applyNarration(narration.onToolCall());
                 }
@@ -3137,9 +3190,18 @@ export class Session {
             attemptError = err;
           }
           if (signal.aborted) return;
-          pushSentences(splitter.flush());
+          pushSentences(flushText());
           applyNarration(narration.finish());
           releaseAskHold();
+          // style turn: a pick was said → the coloring question if it was asked for and is missing, then the held offer;
+          // offer only → nothing (the retry asks for the pick)
+          if (built.style && said().length) {
+            if (built.style.asks && !asksColoring(said().map((x) => x.display).join(" "))) { enqueueSentences([COLORING_QUESTION], true); this.log("style.coloring_question_added", { utteranceId }); }
+            const held = heldOffer;
+            heldOffer = [];
+            releasingOffer = true;
+            try { enqueueSentences(held); } finally { releasingOffer = false; }
+          } else if (built.style && heldOffer.length) this.log("style.offer_only", { utteranceId, attempt });
           // A bare "Yes!"/"Okay." is a valid answer. Defer a dropped eager
           // opener until EOF so "Oh, the rest" still loses the repeated Oh.
           if (!said().length && guarded.first && !neverSpoken(guarded.first.cls)) {
@@ -3169,8 +3231,11 @@ export class Session {
           if (attempt === 0 && attemptError) await new Promise((r) => setTimeout(r, UPSTREAM_RETRY_MS));
           if (signal.aborted) return;
           splitter = new SentenceSplitter(splitOptions);
+          dashes = new DashScrubber();
           searches = [];
           askHold = [];
+          // the lone offer is not said: the retry gives the pick and its own offer
+          if (attempt === 0) heldOffer = [];
           onlyOpener = null;
           guarded.first = null;
           laughs = 0;
@@ -3178,13 +3243,14 @@ export class Session {
           droppedOpener = false;
           m.firstTokenAt = undefined;
         }
-        // both tries came back empty or failed: the call goes on — one line in character, never the error card
+        // both tries came back empty or failed: the call goes on — one line in character, never the error card, and
+        // never "Sorry, I lost you" (11/5 sign-off): a short filler about their own words (convo/emptyFiller.ts)
         // AU-45: a greeting whose "Hey, Summer!" opener already went out is a fine greeting on its own — never followed by
         // "Sorry, I lost you… say that again?" before the user said anything
         if (!signal.aborted && !hasAnswer() && !interpret && !self && !openerSpoken()) {
           // a real crisis turn never gets "say that again": the help line instead (AI sweep, P1 safety)
           // a general search turn: the sheet is already filling, so the hedge, never "lost you" (P0 11/4)
-          enqueueSentences([this.v1 && realCrisisSignal(text) ? CRISIS_HELP_LINE : oneSentence ? GENERAL_HEDGE : LOST_LINE], true);
+          enqueueSentences([this.v1 && realCrisisSignal(text) ? CRISIS_HELP_LINE : oneSentence ? GENERAL_HEDGE : built.style ? STYLE_FALLBACK : emptyFiller(text, utteranceId)], true);
           lostLine = true;
           this.log("spark.lost_line", { utteranceId, cause: emptyCause, error: sparkError instanceof Error ? sparkError.message.slice(0, 120) : null });
         }
@@ -3753,3 +3819,6 @@ export function earlierAskLine(ask: string): string {
   const q = ask.replace(/["\n]/g, " ").replace(/\s+/g, " ").trim().slice(0, 120);
   return `Their earlier question ("${q}") is already answered by the card on their screen. Answer only what they just said. Don't go back to that earlier question or recap its results unless they ask about it now.`;
 }
+
+/** Prod 11/5: products are only ever named from a card; a find in progress gets a short "on it" line. */
+export const NO_PRODUCT_GUESS_LINE = "Never name, list or describe specific products, items for sale, shops or prices unless they are on the card on their screen. When they want you to find or buy something, say in a few words that you're pulling some up, tied to what they asked and their taste (like \"Black and roomy, got it, pulling some up.\"); the results come on a card.";

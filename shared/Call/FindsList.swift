@@ -135,7 +135,11 @@ struct FindsRow: Identifiable, Equatable {
             if card.page?.opened == false { return "Your link · couldn’t open" }
             return "Your link" + (card.status.map { " · " + $0 } ?? "")
         case .product:
-            let n = card.products?.count ?? 0
+            // b18 (411 QA: "3 links" over a card showing 1): the count the card shows — the shops with a picture, or
+            // two as text when none has one (FindCardPage.product)
+            let all = card.products ?? []
+            let pictured = all.filter { $0.image.map { $0.status != .failed && $0.omit != true } ?? false }.count
+            let n = pictured > 0 ? pictured : min(2, all.count)
             return "Products · \(n) link\(n == 1 ? "" : "s")"
         case .unknown:
             return card.status ?? ""
@@ -174,6 +178,14 @@ struct FindsSection: Identifiable, Equatable {
     /// The one Finds number every surface shows (drawer badge, More sheet): what the list holds once it is loaded.
     /// Before the first load only, the finds made on this call stand in so the number is not 0 for a moment.
     func displayCount(thisCall: Int = 0) -> Int { phase == .loaded ? cards.count : max(cards.count, thisCall) }
+    /// The More sheet's Finds row (b16, QA 11/4 22:14: "Nothing looked up yet" over a list of 13): "Nothing looked up
+    /// yet" only once the list is loaded and empty. While it loads, or when it could not load, the row does not claim 0.
+    func moreSubtitle(thisCall: Int = 0) -> String { Self.moreSubtitle(count: displayCount(thisCall: thisCall), known: phase == .loaded) }
+    static func moreSubtitle(count n: Int, known: Bool) -> String {
+        if n == 1 { return "1 thing I looked up" }
+        if n > 1 { return "\(n) things I looked up" }
+        return known ? "Nothing looked up yet" : "What I looked up on our calls"
+    }
     #if DEBUG
     func testSeed(_ list: [FindCard]) { cards = list; phase = .loaded }
     #endif

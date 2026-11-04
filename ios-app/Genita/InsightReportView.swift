@@ -373,7 +373,8 @@ struct InsightChipView: View {
     var body: some View {
         HStack(spacing: 5) {
             if dislike { Text("✕").insightText(13, .medium, line: 18, color: HISYInk.dislike).accessibilityHidden(true) }
-            Text(label).insightText(15, .medium, line: 20, color: dislike ? HISYInk.dislike : InsightInk.blueText).lineLimit(1)
+            // b17 (scorecard F4 chip casing): every chip starts with a capital, as on YOUR CARD ("noodles" → "Noodles")
+            Text(InsightShareCard.chipLabel(label)).insightText(15, .medium, line: 20, color: dislike ? HISYInk.dislike : InsightInk.blueText).lineLimit(1)
         }
         .padding(.horizontal, 13).frame(height: 32)
         .background(dislike ? Color.white : InsightInk.blueSoft, in: RoundedRectangle(cornerRadius: 16))
@@ -523,6 +524,14 @@ struct InsightShareCard: View {
     let type: InsightType
     let title: String
     let signature: [String]
+    /// b16 (Appetize YOUR CARD): every pill starts with a capital ("noodles" → "Noodles"); the rest is left as written.
+    static func chipLabel(_ s: String) -> String {
+        let t = s.trimmingCharacters(in: .whitespaces)
+        guard let first = t.first else { return t }
+        // a word already cased on purpose ("iPhone", "eBay") stays as it is
+        if t.prefix(while: { $0 != " " }).dropFirst().contains(where: \.isUppercase) { return t }
+        return first.uppercased() + t.dropFirst()
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             card.frame(maxWidth: .infinity)
@@ -551,7 +560,7 @@ struct InsightShareCard: View {
                 Text(type.name).font(TypeStyle.title(32)).foregroundStyle(InsightInk.ink).frame(maxWidth: 240, alignment: .leading).fixedSize(horizontal: false, vertical: true)
                 // Chips wrap; the bottom inset keeps them ≥ 12 pt above the "genita" mark (18 pt line + 18 pt inset).
                 HISYFlow(spacing: 6) {
-                    ForEach(signature, id: \.self) { s in Text(s).insightText(13, .medium, line: 18).padding(.horizontal, 10).frame(height: 26).background(.white, in: Capsule()) }
+                    ForEach(signature, id: \.self) { s in Text(Self.chipLabel(s)).insightText(13, .medium, line: 18).padding(.horizontal, 10).frame(height: 26).background(.white, in: Capsule()) }
                 }
                 .padding(.top, 8)
             }

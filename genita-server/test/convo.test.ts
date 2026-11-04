@@ -2,6 +2,9 @@
  * Conversation engine v1 (src/convo, DESIGN ./genita-hackathon/conversation-engine/DESIGN.md).
  * Red → green: these fail on the 11/2 engine (GENITA_CONVO_V1=0 / origin/main) and pass with v1.
  */
+import { STYLE_RETRY_LINE } from "../src/convo/styleReason.ts";
+import { PetWordCap, petWordLine, petWordsIn } from "../src/convo/petWords.ts";
+import { backstoryWithTakes } from "../src/convo/ownTakes.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { guardSentence, realCrisisSignal, fallbackLine } from "../src/convo/guard.ts";
@@ -1539,11 +1542,14 @@ test("prompt-100 style (session): a style ask on camera gets the personal-reason
   const first = calls.at(-1)!.instructions ?? "";
   assert.match(first, /Style call: your pick first, then one personal reason/);
   assert.match(first, /warm or cool tones usually work for you\?/, "coloring unknown → asked once");
+  // 11/5 eval 5c: the model skipped the asked-for question → it is added after the pick
+  const firstReply = client.json.filter((m) => m.type === "reply" && m.final === true).at(-1) as { text: string };
+  assert.match(firstReply.text, /^The cream one, it warms you right up\. Quick one, do warm or cool tones usually work for you\?$/);
   await session.onClientText(JSON.stringify({ type: "text", text: "and does this one suit me?", frames: [jpeg] }));
   await client.waitFor((m) => m.type === "reply" && m.final === true && calls.length >= 2);
   const second = calls.at(-1)!.instructions ?? "";
   assert.doesNotMatch(second, /warm or cool tones usually work for you\?/, "never asked twice");
-  assert.match(second, /Already used this call \(data\): "warm"; give a different personal reason now/);
+  assert.match(second, /Already used this call \(data\): [^;]*"warm"[^;]*; give a different personal reason now/);
   await session.onClientText(JSON.stringify({ type: "text", text: "find me some shoes for it" }));
   await client.waitFor((m) => m.type === "reply" && m.final === true && calls.length >= 3);
   assert.match(calls.at(-1)!.instructions ?? "", /keeping the reason you gave[^\n]*Your verdict was \(data\): "The cream one, it warms you right up\."/);
@@ -1557,6 +1563,93 @@ test("prompt-100 style (session): a style ask on camera gets the personal-reason
     assert.doesNotMatch(off.calls.at(-1)!.instructions ?? "", /Style call/);
     off.session.close();
   } finally { delete process.env.GENITA_STYLE_REASON; }
+});
+
+test("style 11/5 (8/72): 'why not this one?' gets the other option's own reason, never the last reason turned around; reasons rotate per call", { skip: !v1 }, async () => {
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString("base64");
+  const { client, session, calls } = setup(["<happy> The cream one, warm tones always look good on you."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999, user: { name: "Summer", profile: "- Personal color: warm (autumn)\n- Taste: Silver jewelry\n- Taste: Dislikes tight, clingy fits" } }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "which one should I wear tonight?", frames: [jpeg] }));
+  await client.waitFor((m) => m.type === "reply" && m.final === true);
+  assert.doesNotMatch(calls.at(-1)!.instructions ?? "", /option you didn't pick/, "a first verdict is not a why-not");
+  await session.onClientText(JSON.stringify({ type: "text", text: "hmm, why not this one?", frames: [jpeg] }));
+  await client.waitFor((m) => m.type === "reply" && m.final === true && calls.length >= 2);
+  const why = calls.at(-1)!.instructions ?? "";
+  assert.match(why, /never your last reason again or turned around/);
+  assert.match(why, /Your last verdict \(data\): "The cream one, warm tones always look good on you\."/);
+  // 11/5 eval 5c: the last reason's kind is banned by name, one other reason is handed over, the pick holds
+  assert.match(why, /Not allowed this turn, it's the reason you just gave: coloring or tones/);
+  assert.match(why, /For the other option use this reason \(data\): "Silver jewelry"/);
+  assert.match(why, /Your pick this call \(data\): "The cream one, warm tones always look good on you\."\. Keep that pick/);
+  session.close();
+});
+
+test("style 11/5 eval 5c: an offer-only verdict is never said alone — the retry gives the pick (with STYLE_RETRY_LINE), then the offer", { skip: !v1 }, async () => {
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString("base64");
+  const reqs: SparkRequest[] = [];
+  const { client, session, logs } = setup([], { async *spark(req): AsyncGenerator<SparkStreamEvent> {
+    reqs.push(req);
+    const text = (req.instructions ?? "").includes(STYLE_RETRY_LINE) ? "<happy> The cream knit, so clean and minimal for you. Want me to find black heels for it?" : "Want me to find black heels for it?";
+    yield { type: "text", delta: text };
+    yield { type: "done", responseId: "r", text, status: "completed" };
+  } });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999, user: { name: "Summer", profile: "- Taste: Minimal style\n- Personal color: warm (autumn)" } }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "I have a dinner date tonight. Which one should I wear?", frames: [jpeg] }));
+  const reply = await client.waitFor((m) => m.type === "reply" && m.final === true) as { text: string };
+  assert.equal(reply.text, "The cream knit, so clean and minimal for you. Want me to find black heels for it?");
+  assert.ok(logs.some(([e]) => e === "style.offer_only"));
+  assert.ok(reqs.at(-1)!.instructions!.includes(STYLE_RETRY_LINE));
+  assert.ok(!client.json.some((m) => m.type === "reply.delta" && String(m.text).trim() === "Want me to find black heels for it?" && client.json.indexOf(m) < client.json.findIndex((x) => x.type === "reply.delta" && /cream knit/.test(String(x.text)))), "the lone offer never went out first");
+  session.close();
+});
+
+test("style 11/5 eval 5c: an offer before the pick is said after it", { skip: !v1 }, async () => {
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString("base64");
+  const { client, session } = setup(["<happy> Want me to find dark brown boots for it? The cream knit, warm tones love you."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999, user: { name: "Summer", profile: "- Personal color: warm (autumn)" } }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "Which one should I wear?", frames: [jpeg] }));
+  const reply = await client.waitFor((m) => m.type === "reply" && m.final === true) as { text: string };
+  assert.equal(reply.text, "The cream knit, warm tones love you. Want me to find dark brown boots for it?");
+  session.close();
+});
+
+test("pet words 11/5 eval 5c: a reaction word is said at most once per call (prompt names it, a repeat is swapped); GENITA_PET_WORDS=0 is off", { skip: !v1 }, async () => {
+  const byTurn = (req: SparkRequest) => (JSON.stringify(req.input).includes("heels") ? "<happy> Ooh, elite choice for the heels." : "<happy> Black midi, elite pick.");
+  const calls: SparkRequest[] = [];
+  const { client, session } = setup([], { async *spark(req): AsyncGenerator<SparkStreamEvent> { calls.push(req); const text = byTurn(req); yield { type: "text", delta: text }; yield { type: "done", responseId: "r", text, status: "completed" }; } });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "I got the black midi" }));
+  await client.waitFor((m) => m.type === "reply" && m.final === true);
+  await session.onClientText(JSON.stringify({ type: "text", text: "and the heels too" }));
+  await client.waitFor((m) => m.type === "reply" && m.final === true && client.json.filter((x) => x.type === "reply" && x.final === true).length >= 2);
+  const replies = client.json.filter((m) => m.type === "reply" && m.final === true).map((m) => String(m.text));
+  assert.equal(replies[0], "Black midi, elite pick.", "the first use stays");
+  assert.equal(replies[1], "Ooh, great choice for the heels.", "the repeat is swapped");
+  assert.match(calls.at(-1)!.instructions ?? "", /Words you already used this call, say each at most once per call \(data\): "elite"/);
+  session.close();
+  const cap = new PetWordCap();
+  assert.equal(cap.apply("Elite. Elite pick, so elite."), "Elite. Great pick, so solid.");
+  assert.deepEqual(petWordsIn("an iconic, KILLER look"), ["iconic", "killer"]);
+  // 5c rerun: "so you" (5/18) is a tic only at a clause end, "so you can…" is not; very/totally you are the same tic
+  assert.deepEqual(petWordsIn("So you can wear it anywhere."), []);
+  const so = new PetWordCap();
+  assert.equal(so.apply("Black midi, that's so you."), "Black midi, that's so you.");
+  assert.equal(so.apply("Totally you, Summer."), "Your style, Summer.");
+  assert.deepEqual(petWordsIn("that's fire, pristine and breezy, sleep game on"), ["fire", "pristine", "breezy", "sleep game"]);
+  assert.equal(petWordLine(["nothing here"]), null);
+  process.env.GENITA_PET_WORDS = "0";
+  try {
+    const off = setup([], { async *spark(req): AsyncGenerator<SparkStreamEvent> { const text = JSON.stringify(req.input).includes("again") ? "<happy> Honestly that's elite too." : "<happy> Elite pick."; yield { type: "text", delta: text }; yield { type: "done", responseId: "r", text, status: "completed" }; } });
+    await off.session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
+    await off.session.onClientText(JSON.stringify({ type: "text", text: "hi there friend" }));
+    await off.client.waitFor((m) => m.type === "reply" && m.final === true);
+    await off.session.onClientText(JSON.stringify({ type: "text", text: "and again" }));
+    await off.client.waitFor((m) => m.type === "reply" && m.final === true && off.client.json.filter((x) => x.type === "reply" && x.final === true).length >= 2);
+    assert.equal(String(off.client.json.filter((m) => m.type === "reply" && m.final === true).at(-1)!.text), "Honestly that's elite too.");
+    off.session.close();
+  } finally { delete process.env.GENITA_PET_WORDS; }
+  // the quirk no longer hands every card one fixed word
+  assert.ok(!backstoryWithTakes({ name: "Peter", kind: "human", traits: ["confident", "stylish", "honest"], speakingStyle: "relaxed, a little teasing" }).includes("elite"));
 });
 
 // ───────────── #345 what landed, read from their face ─────────────

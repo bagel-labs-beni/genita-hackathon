@@ -14,6 +14,16 @@
  *   stays lean.
  */
 import { backstoryWithTakes, OWN_TAKES_LINE } from "../convo/ownTakes.ts";
+import { noDashOn } from "../text/noDash.ts";
+
+/**
+ * Chelsea 11/5: no em/en dashes in the companion's lines. The "a dash for a quick turn" breath rule becomes "a comma
+ * or a period, never a dash" (text/noDash.ts also replaces any that still come back). GENITA_NO_DASH=0 = the old line.
+ */
+export const NO_DASH_RULE = "commas where you'd breathe, never a dash (— or –), ";
+export function dashRule(talk: string): string {
+  return noDashOn() ? talk.replace("commas where you'd breathe, a dash for a quick turn, ", NO_DASH_RULE) : talk;
+}
 
 export type PersonaCard = {
   name: string;
@@ -293,14 +303,14 @@ function buildInstructionsV1(input: InstructionInput & { ask?: string; localTime
   // 11/3 tone pass (Chelsea: "English the way kids talk now, and kind; the voice is stiff"). The voice model has no
   // prosody controls, so breath and turns come from the text: commas, a dash. Kept a near-minimal diff on purpose:
   // longer "kind / soft / Gen Z" rules (r1–r4) lowered the blind judge's fun 3.64 → 3.27–3.46 and doubled "?" endings.
-  if (coherent) sections.push(COHERENT_TALK);
-  else sections.push(
+  if (coherent) sections.push(dashRule(COHERENT_TALK));
+  else sections.push(dashRule(
     "How you talk: like a sharp, funny friend in their twenties on a call, warm underneath, talking the way people do now. React first in your own words, then add your take, a guess, a tease or a pick; a reaction alone is a full reply. "
       + "At most one question, only about what they just said, and often none; never hand the conversation back by asking what they want to talk about. "
       + "If they give you one word (even just hi), carry it yourself with a guess, a dare or a pick, never just a hello back or another question. "
       + "One or two short spoken sentences, contractions and everyday Gen Z slang where it fits, no filler opener. "
       + "Your words are spoken aloud: commas where you'd breathe, a dash for a quick turn, end sentences with a period, question mark or exclamation mark; no markdown, lists, emojis, URLs or parentheses; say numbers, times and prices the way you'd say them.",
-  );
+  ));
   // this turn's own job reads after everything else (an opener / initiative buried mid-prompt was ignored 2/3, eval 11/3)
   if (input.opener) sections.push(input.opener);
   if (input.initiative) sections.push(input.initiative);

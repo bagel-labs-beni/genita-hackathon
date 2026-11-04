@@ -95,6 +95,50 @@ final class FindsSheetUITests: XCTestCase {
         }
     }
 
+    private func waitValue(_ el: XCUIElement, _ value: String, _ seconds: TimeInterval = 6) -> Bool {
+        let end = Date().addingTimeInterval(seconds)
+        while Date() < end { if el.value as? String == value { return true }; Thread.sleep(forTimeInterval: 0.2) }
+        return el.value as? String == value
+    }
+
+    /// b17 Appetize QA A (P1): full, scrolled down (state 7 = "ask", like after Walk me through → Steps), then the grab
+    /// pulls it to half: the half card starts at its header (bookmark and close on screen, under the sheet's top edge).
+    func testFullScrolledThenHalfStartsAtTheHeader() throws {
+        for run in 1...3 {
+            let app = launch(7)
+            let s = sheet(app)
+            XCTAssertTrue(s.waitForExistence(timeout: 15))
+            XCTAssertTrue(waitValue(s, "full", 10), "run \(run): state 7 is full")
+            Thread.sleep(forTimeInterval: 1.2)   // the scroll to "ask"
+            let grab = s.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0)).withOffset(CGVector(dx: 0, dy: 20))
+            grab.press(forDuration: 0.1, thenDragTo: grab.withOffset(CGVector(dx: 0, dy: 280)))
+            XCTAssertTrue(waitValue(s, "half"), "run \(run): the grab pulls full down to half")
+            Thread.sleep(forTimeInterval: 0.8)
+            let top = app.windows.firstMatch.frame.height - 468   // the half sheet's top edge (SheetState.half)
+            for id in ["findCloseCard", "findSave"] {
+                let b = app.buttons[id]
+                XCTAssertTrue(b.exists && b.isHittable, "run \(run): \(id) is on screen at half (the card is at its header)")
+                XCTAssertGreaterThan(b.frame.minY, top, "run \(run): \(id) sits under the sheet's top edge")
+            }
+            let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "call-finds-b17-full-scrolled-to-half-\(run)"; shot.lifetime = .keepAlways; add(shot)
+            app.terminate()
+        }
+    }
+
+    /// b17 Appetize QA C (P2): at full with the card at its top, a downward drag on the card body (not the grab) resizes
+    /// the sheet to half; scrolled down, the same drag scrolls the card instead.
+    func testFullBodyDragDownAtTopGoesToHalf() throws {
+        let app = launch(22)   // PF-1b two products at full, card at its top
+        let s = sheet(app)
+        XCTAssertTrue(s.waitForExistence(timeout: 15))
+        XCTAssertTrue(waitValue(s, "full", 10))
+        Thread.sleep(forTimeInterval: 1.2)
+        let body = s.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0)).withOffset(CGVector(dx: 0, dy: 240))
+        body.press(forDuration: 0.05, thenDragTo: body.withOffset(CGVector(dx: 0, dy: 260)))
+        XCTAssertTrue(waitValue(s, "half"), "a body drag down at the card's top takes full to half")
+        let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "call-finds-b17-full-body-drag-half"; shot.lifetime = .keepAlways; add(shot)
+    }
+
     /// D48 ③: 1–2 reason chips from the user's own taste lines under the card title.
     func testReasonChipsUnderTheTitle() throws {
         let app = launch(41)
@@ -197,8 +241,24 @@ final class FindsSheetUITests: XCTestCase {
         XCTAssertLessThan(lum, 0.2, "\(what): band above the sheet is dark (luminance \(lum))")
     }
 
-    /// PF-1 / r02: Open in browser ↗ goes straight to the shop page in Safari (no in-sheet browser); Save to Finds
-    /// becomes Open Finds.
+    /// b16 (TF 391): tapping an Ask-about-this question does something you can see at once — the card folds to peek
+    /// (face and caption in view) and the call pill says "Asking…".
+    func testAskChipGivesFeedbackAtOnce() throws {
+        let app = launch(7)
+        XCTAssertTrue(sheet(app).waitForExistence(timeout: 15))
+        Thread.sleep(forTimeInterval: 1.5)
+        let chip = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'ask-'")).firstMatch
+        XCTAssertTrue(chip.waitForExistence(timeout: 5), "an Ask about this question")
+        chip.tap()
+        let peek = NSPredicate(format: "value == %@", "peek")
+        expectation(for: peek, evaluatedWith: sheet(app))
+        waitForExpectations(timeout: 3)
+        XCTAssertTrue(app.buttons["findPeek"].waitForExistence(timeout: 3), "the card waits at peek for the answer")
+        let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "call-finds-ask-feedback"; shot.lifetime = .keepAlways; add(shot)
+    }
+
+    /// PF-1 / r02: Open in browser ↗ goes straight to the shop page (b16: the in-app Safari sheet, not the in-sheet
+    /// browser); after it closes, Save to Finds becomes Open Finds.
     func testProductViewAndSave() throws {
         let app = launch(22)
         XCTAssertTrue(sheet(app).waitForExistence(timeout: 15))
@@ -207,11 +267,30 @@ final class FindsSheetUITests: XCTestCase {
         XCTAssertTrue(link.waitForExistence(timeout: 5))
         link.tap()
         XCTAssertFalse(app.descendants(matching: .any)["findBrowser"].waitForExistence(timeout: 2), "r02: not the in-sheet browser")
-        let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
-        if safari.wait(for: .runningForeground, timeout: 8) { app.activate() }
-        XCTAssertTrue(sheet(app).waitForExistence(timeout: 10), "back on the call with the sheet")
+        // b16: the shop opens in the in-app Safari sheet; closing it brings the card back (an external Safari still works).
+        // iOS 26's Safari sheet closes with an ✕ ("Close"), not "Done" (CI 41859808530: no "Done", the sheet stayed up
+        // and the Save tap landed on the web page). The card's own close buttons are left out of the match.
+        let shop = app.descendants(matching: .any)["shopSafari"]
+        let close = app.buttons.matching(NSPredicate(format: "label IN %@ AND NOT (identifier BEGINSWITH 'find')", ["Done", "Close"])).firstMatch
         let save = app.buttons["findCTA"]
+        if shop.waitForExistence(timeout: 8) || close.waitForExistence(timeout: 2) {
+            if close.waitForExistence(timeout: 3) { close.tap() }
+            _ = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: shop)], timeout: 3)
+        } else {
+            let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
+            if safari.wait(for: .runningForeground, timeout: 4) { app.activate() }
+        }
+        XCTAssertTrue(sheet(app).waitForExistence(timeout: 10), "back on the call with the sheet")
         XCTAssertTrue(save.waitForExistence(timeout: 5))
+        if shop.exists || !save.isHittable {
+            // no close button found (or it did not close): drag the Safari sheet down by its top bar
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12))
+                .press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95)))
+        }
+        // the Safari sheet is fully gone (the card is under it while it slides away): only then is Save to Finds tapped
+        let reachable = NSPredicate(format: "hittable == true")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: reachable, object: save)], timeout: 10), .completed,
+                       "the shop sheet closed and Save to Finds is reachable")
         save.tap()
         XCTAssertTrue(app.buttons["openFinds"].waitForExistence(timeout: 5), "saved: the CTA becomes Open Finds")
     }

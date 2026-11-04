@@ -79,8 +79,12 @@ test("a failed first reply does not use up the suggestion: the retry asks again 
   await s.onClientText(JSON.stringify({ type: "text", text: ASK }));
   await waitFor(() => events.some((e) => e.type === "reply" || e.type === "error"));
   await new Promise((r) => setTimeout(r, 50));
-  // every attempt failed: only the in-character "lost you" line was said (Spark outage rule), never the suggestion
-  assert.deepEqual(events.filter((e) => e.type === "reply" && e.text).map((e) => (e as { text: string }).text), ["Sorry, I lost you for a sec. Say that again?"]);
+  // every attempt failed: only the in-character filler about their words was said (Spark outage rule, never "lost you"),
+  // never the suggestion
+  const said = events.filter((e) => e.type === "reply" && e.text).map((e) => (e as { text: string }).text);
+  assert.equal(said.length, 1);
+  assert.match(said[0], /gut say|leaning/, said[0]);
+  assert.doesNotMatch(said[0], /lost you|\bMac\b/);
   fail.on = false;
   const n = requests.length;
   await s.onClientText(JSON.stringify({ type: "text", text: ASK }));

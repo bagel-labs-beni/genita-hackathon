@@ -30,6 +30,31 @@ import XCTest
         XCTAssertEqual(socket.sent.filter { if case .start = $0 { return true }; return false }.count, starts, "no new start, no greeting")
     }
 
+    // b16 (TF 391 P0: no sound after Home, or after interpretation): the call asks the audio to recover when it is
+    // back — once per return — and when interpretation ends.
+    func testBackFromHomeAndFromInterpretationResumesTheAudio() {
+        CallController.backgroundGraceMs = 10_000
+        let (call, sockets, audio) = begin(micOn: true)
+        defer { call.end() }
+        sockets.connections[0].onMessage?(.text(ready("s1")))
+        call.sceneActivityChanged(.background)
+        XCTAssertEqual(audio.resumes, [], "nothing while in the background")
+        call.sceneActivityChanged(.active)
+        XCTAssertEqual(audio.resumes, ["scene active"], "one resume on return")
+        call.setInterpreting(true)
+        call.setInterpreting(false)
+        XCTAssertEqual(audio.resumes.last, "left interpretation")
+    }
+
+    /// b16: the decision behind a "we are back" signal (interruption began → didBecomeActive → recover once).
+    func testResumeRecoversOnceAndOnlyWhenNeeded() {
+        XCTAssertEqual(AudioResume.action(mayStart: false, needsResume: true, running: false, playerReady: false, recovering: false), .later, "in the background: wait")
+        XCTAssertEqual(AudioResume.action(mayStart: true, needsResume: true, running: true, playerReady: true, recovering: false), .recover, "after an interruption: recover")
+        XCTAssertEqual(AudioResume.action(mayStart: true, needsResume: false, running: false, playerReady: false, recovering: false), .recover, "engine down: recover")
+        XCTAssertEqual(AudioResume.action(mayStart: true, needsResume: true, running: false, playerReady: false, recovering: true), .folded, "the second trigger folds into the running recovery")
+        XCTAssertEqual(AudioResume.action(mayStart: true, needsResume: false, running: true, playerReady: true, recovering: false), .none, "healthy: nothing")
+    }
+
     // Codex P2: a greeting or reply that arrives while the call is paused in the background stays silent.
     func testNothingPlaysDuringTheBackgroundGrace() {
         CallController.backgroundGraceMs = 10_000
@@ -199,6 +224,55 @@ import XCTest
         XCTAssertEqual(LiveCaptions.visibleYou(f.you, micOn: false)?.text, "what should I eat?", "shown even if the mic reads off")
     }
 
+    /// b18 (Mac 401: `engine start failed -10875`, then a playback-only engine on every move to the iPhone): a move
+    /// away stops the audio before the mic closes, so closing the mic has no engine to rebuild.
+    func testHandoffAwayStopsTheAudioBeforeTheMicCloses() {
+        let (call, sockets, audio) = begin(micOn: true)
+        defer { call.end() }
+        sockets.connections[0].onMessage?(.text(ready("handoff")))
+        audio.calls.removeAll()
+        call.suspendForHandoff()
+        XCTAssertEqual(audio.calls.first, "stop", "the audio stops first: \(audio.calls)")
+        if let close = audio.calls.firstIndex(of: "closeMic") { XCTAssertGreaterThan(close, 0, "never a mic close on a live engine") }
+        XCTAssertFalse(call.micOn)
+    }
+
+    /// b18 (Mac speaker muted after mic-off): the iPhone keeps its uplink-only VP mute; the Mac never sets it
+    /// (checked on the Mac by mac-app/Tools/login-item HiddenMoveCheck).
+    func testVoiceProcessingInputMuteIsIPhoneOnly() {
+        XCTAssertTrue(CallAudio.mutesVoiceProcessingInput)
+    }
+
+    /// b18 MUST-FIX (Mac output muted 0→1 after a mic-off): only our own change is undone — off before the audio
+    /// change and on after it. A mute already on, or unreadable, is left alone; checks run past coreaudiod's 0.35 s.
+    func testOutputMuteGuardUndoesOnlyOurOwnMute() {
+        XCTAssertEqual(OutputMuteGuard.action(before: false, after: true), .restore)
+        XCTAssertEqual(OutputMuteGuard.action(before: false, after: false), .none)
+        XCTAssertEqual(OutputMuteGuard.action(before: true, after: true), .none, "the user had it muted: leave it")
+        XCTAssertEqual(OutputMuteGuard.action(before: true, after: false), .none)
+        XCTAssertEqual(OutputMuteGuard.action(before: nil, after: true), .none, "no mute control on the device")
+        XCTAssertEqual(OutputMuteGuard.action(before: false, after: nil), .none)
+        XCTAssertTrue(OutputMuteGuard.checkDelays.contains { $0 > 0.35 }, "a check after coreaudiod's 0.35 s")
+        XCTAssertLessThanOrEqual(OutputMuteGuard.checkDelays.max() ?? 99, 2, "and not long after (a user mute later stays)")
+    }
+
+    /// b18 P1 (03:53, owner=mac: the locked iPhone still held its mic): a move away releases the audio until the
+    /// conversation comes back. Coming to the front meanwhile does not restart it; `rejoin` does.
+    func testHandoffAwayKeepsTheAudioReleasedUntilRejoin() {
+        let (call, sockets, audio) = begin(micOn: true)
+        defer { call.end() }
+        sockets.connections[0].onMessage?(.text(ready("away")))
+        call.suspendForHandoff()
+        XCTAssertTrue(call.audioReleased)
+        audio.calls.removeAll(); audio.resumes.removeAll()
+        call.sceneActivityChanged(.active)
+        XCTAssertTrue(audio.resumes.isEmpty, "no foreground recovery for a released call: \(audio.resumes)")
+        XCTAssertFalse(audio.calls.contains("start"), "the engine stays down while the other device has the conversation")
+        call.rejoin()
+        XCTAssertEqual(audio.calls.first, "start", "back here: the audio starts again")
+        XCTAssertFalse(call.audioReleased)
+    }
+
     private func begin(micOn: Bool) -> (CallController, LifecycleSockets, LifecycleAudio) {
         let audio = LifecycleAudio(), sockets = LifecycleSockets()
         let call = CallController(audio: audio, voice: LifecycleVoice(), makeSocket: { sockets.make() })
@@ -230,10 +304,12 @@ import XCTest
     var enqueued: [Int] = []
     private var started: Set<Int> = [], pending: Set<Int> = []
     var isPlaying: Bool { !pending.isEmpty }
-    func start() {}
-    func stop() { flush() }
+    /// stop / closeMic in the order the call asked for them
+    var calls: [String] = []
+    func start() { calls.append("start") }
+    func stop() { calls.append("stop"); flush() }
     func openMic() -> Bool { true }
-    func closeMic() {}
+    func closeMic() { calls.append("closeMic") }
     func enqueue(pcm: Data, utteranceId: Int) {
         enqueued.append(utteranceId)
         pending.insert(utteranceId)
@@ -243,6 +319,8 @@ import XCTest
     func flush() { pending.removeAll() }
     func resetSession() { flush(); started.removeAll() }
     func playbackPositionMs(utteranceId: Int) -> Double? { nil }
+    var resumes: [String] = []
+    func resume(_ why: String) { resumes.append(why) }
 }
 
 @MainActor private final class LifecycleVoice: CallVoiceRendering {

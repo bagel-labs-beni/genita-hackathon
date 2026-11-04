@@ -344,6 +344,10 @@ import AVFoundation
         }
     }
 
+    /// b18: End call on this Mac (MacHandoff.endCallHere): the call ends and does not come back by itself; the turns
+    /// so far are kept for the next call, as after a move away.
+    func endCall() { conversationLeft() }
+
     /// The conversation left this Mac. MacHandoff already suspended it (mic, camera, sound off, barge-in sent);
     /// the session is closed too, so nothing that was still on its way (a greeting, a late reply) can play here
     /// while the iPhone talks. Coming back opens a new session.

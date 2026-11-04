@@ -93,14 +93,14 @@ final class MacCallPlanTests: XCTestCase {
         XCTAssertNil(picks[1].image)
     }
 
-    func testOnlyWebPagesAndAtMostTwo() throws {
+    func testOnlyWebPagesAndAtMostSix() throws {
         var c = try sampleCard()
         let p = c.products![0]
         c.products = ["javascript:alert(1)", "file:///etc/hosts", "genita://auth?code=1", "https://shop.example/c", "http://shop.example/d", "https://shop.example/e"].enumerated().map { i, url in
             FindCard.Product(id: "p\(i)", name: "N\(i)", url: url, domain: "shop.example", store: "", taste: p.taste, situation: p.situation)
         }
         let picks = ProductPicks.picks(from: c)
-        XCTAssertEqual(picks.map(\.name), ["N3", "N4"])
+        XCTAssertEqual(picks.map(\.name), ["N3", "N4", "N5"], "b16: up to 6, web pages only")
         XCTAssertEqual(picks[0].brandLine, "shop.example · Price on site") // no store name → the domain
         XCTAssertNil(ExternalLink.web("genita://auth?code=1"))
         XCTAssertNil(ExternalLink.web("https://"))

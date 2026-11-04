@@ -96,7 +96,8 @@ struct ProductEvidence: Equatable {
 }
 
 enum ProductPicks {
-    static let maxPicks = 2
+    /// b16: the server sends up to 6 verified products (Chelsea: "who recommends only two outfits?")
+    static let maxPicks = 6
 
     /// Web pages only (`ExternalLink.web`), at most two — the server already dropped anything it didn't open.
     static func picks(from card: FindCard) -> [ProductPick] {

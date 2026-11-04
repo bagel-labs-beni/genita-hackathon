@@ -28,7 +28,8 @@ function vendors(o: { items: Item[]; opened: string[]; facts?: (u: string, signa
     async sam() { return []; },
     async image() { throw new Error("never a generated product picture"); },
     pageFacts: o.facts ?? (async (u) => ({ kind: "product", image: `https://cdn.example.com/${encodeURIComponent(u)}.jpg` })),
-    async productImage() { return Buffer.from([0xff, 0xd8, 0xff, 0xe0]); },
+    // a different photo per page (5c: one photo is never shown on two products)
+    async productImage(u: string) { return Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from(u)]); },
   };
 }
 

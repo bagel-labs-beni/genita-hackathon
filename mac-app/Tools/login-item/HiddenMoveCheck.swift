@@ -62,6 +62,29 @@ import Foundation
         check(handoff.reviewCallWindow?.isVisible == true, "proximity move: the call window is on screen")
         check(!MacHomeWindow.isVisible, "proximity move: the home window stays hidden (the call window opens on its own)")
 
+        check(handoff.status == "Conversation on this Mac", "b18: the status line follows the owner (was 'on your iPhone')")
+
+        // 4b. b18 ("징" like the interaction demo): with a picture, a proximity arrival plays the incoming DUO wipe.
+        handoff.profile = NSImage(size: NSSize(width: 8, height: 8), flipped: false) { r in NSColor.gray.setFill(); r.fill(); return true }.tiffRepresentation
+        let played = handoff.playProximityArrival()
+        check(played == !MacPresenceFade.reduceMotion, "b18: a proximity arrival starts the wipe (Reduce Motion: the fade)")
+        if played { check(handoff.motion?.outgoing == false, "b18: the Mac plays the incoming half") }
+        check(!handoff.playProximityArrival(), "b18: one effect at a time")
+        handoff.motion = nil
+
+        // 4c. b18 (Chelsea 04:10): End call on the Mac panel ends the call here, keeps the app and the conversation.
+        handoff.endCallHere()
+        pump(0.2)
+        check(!handoff.companionVisible && handoff.reviewCallWindow?.isVisible != true, "b18: End call puts the call window away")
+        check(handoff.ownership.isOwner && handoff.resumeOffered, "b18: the conversation stays here; the home offers Continue here")
+        check(!MacCall.shared.call.micOn && MacCall.shared.call.link == .idle, "b18: End call: mic off, no session")
+        handoff.resumeHere()
+        pump(0.3)
+        check(handoff.companionVisible, "b18: Continue here opens the call again")
+
+        // 4d. b18 (411 QA: the Mac's speaker went muted after a mic-off): the Mac never sets the VP input mute.
+        check(!CallAudio.mutesVoiceProcessingInput, "b18: no voice-processing input mute on the Mac")
+
         // 5. The user opens Genita (Dock icon / reopen): the home window comes back and is never hidden again.
         MacHomeWindow.show()
         pump(0.2)

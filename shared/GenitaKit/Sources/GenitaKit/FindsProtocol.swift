@@ -175,12 +175,31 @@ public struct FindCard: Codable, Equatable, Identifiable, Sendable {
 
         /// The title without the " — why" tail the server keeps on it for old apps (r01: the reason shows once).
         public var displayTitle: String {
-            let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let t = Self.withoutSiteName(title.trimmingCharacters(in: .whitespacesAndNewlines), domain: domain)
             if let w = why?.trimmingCharacters(in: .whitespacesAndNewlines), !w.isEmpty {
                 for sep in [" — ", " – ", " - "] where t.hasSuffix(sep + w) { return String(t.dropLast(sep.count + w.count)) }
                 if let r = t.range(of: " — ") { return String(t[..<r.lowerBound]) }
             }
             return t
+        }
+
+        /// b17 (Appetize QA D): a page title's " | Site" tail ("Kimchi Fried Rice with Crispy Tofu | Chopped") is the
+        /// site's name, already on the domain line under it; it wrapped as an orphan "| Chopped" line. The tail goes only
+        /// when it names the domain (chopped.com) and a real title (8+ characters) is left; "Best ramen | Vegetarian
+        /// options" keeps its tail (Codex r1).
+        public static func withoutSiteName(_ t: String, domain: String) -> String {
+            guard let r = t.range(of: " | ", options: .backwards) else { return t }
+            let head = t[..<r.lowerBound].trimmingCharacters(in: .whitespaces)
+            let key = t[r.upperBound...].lowercased().filter { $0.isLetter || $0.isNumber }
+            guard head.count >= 8, key.count >= 3 else { return t }
+            var labels = domain.lowercased().split(separator: ".").map(String.init)
+            if labels.first == "www" { labels.removeFirst() }
+            if labels.count > 1 { labels.removeLast() }   // the TLD
+            let names = labels.map { $0.filter { $0.isLetter || $0.isNumber } }.filter { $0.count >= 3 }
+            let site = names.joined()
+            // exact names only: "For meat eaters" contains "eater" but is not eater.com (Codex r1)
+            guard names.contains(key) || key == site else { return t }
+            return head
         }
     }
     /// `from` profile = blue "Your style/taste: …" (import, HISY corrections) · call = grey "You said: …" (this call)

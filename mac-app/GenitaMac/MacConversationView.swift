@@ -106,7 +106,13 @@ struct MacConversationView: View {
                             Button { withAnimation { menuOpen = true } } label: { MacGlassControl(icon: "glass-more-icon", size: 46) }
                                 .buttonStyle(.plain).modifier(MacControlEntrance(shown: call.link != .connecting, index: 2)).accessibilityLabel("More").accessibilityIdentifier("macMore")
                         }
-                    }.position(x: 334, y: 724 - railShift).opacity(sheetCovers ? 0 : 1).allowsHitTesting(!sheetCovers)
+                        // b18 (Chelsea 04:10 OK): End call, last in the rail. The same 46 pt glass circle, tinted red like Stop
+                        // sharing (#E7200C); the conversation stays on this Mac and the home offers Continue here.
+                        Button { handoff.endCallHere() } label: { MacEndCallControl(size: 46) }.buttonStyle(MotionPressStyle())
+                            .modifier(MacControlEntrance(shown: call.link != .connecting, index: 3))
+                            .accessibilityLabel("End call").accessibilityIdentifier("macEndCall")
+                    // the rail grew by one control (46 + 13): it grows upward, so the bottom control keeps its place
+                    }.position(x: 334, y: 724 - railShift - Self.endCallRise).opacity(sheetCovers ? 0 : 1).allowsHitTesting(!sheetCovers)
                 }
                 if waitingCopy == nil && handoff.motion == nil && !sheetFull && linkOpened == nil {
                     // Share screen r01 (Chelsea OK 11/4): one labelled glass pill, right edge at 366, centred on the top row
@@ -264,7 +270,7 @@ struct MacConversationView: View {
         if GenitaAppConfigStore.shared.config.flag("liveCaptions", default: true) {
         CallCaptionLayer(style: CaptionStyle(ink: MacSheetInk.ink, onInk: MacSheetInk.onInk, blue: Color(red: 84 / 255, green: 193 / 255, blue: 1),
                                              font: { size, weight in .custom(weight == .medium ? "PretendardVariable-Medium" : "PretendardVariable-Regular", fixedSize: size) }),
-                         size: CGSize(width: 390, height: 844), bottom: 724 - 82 - 16 - railShift,
+                         size: CGSize(width: 390, height: 844), bottom: 724 - 82 - 16 - railShift - 2 * Self.endCallRise,   // b18: 16 above the taller rail
                          hidden: call.link == .connecting || sheetCovers || menuOpen,
                          micOn: call.micOn || reviewState == "caption", frame: { call.captionFrame() }, level: { call.inputLevel }, still: reviewState == "caption")
         }
@@ -314,6 +320,11 @@ struct MacConversationView: View {
     private var selfBottom: CGFloat { boxesOverSheet ? 844 - call.finds.state.macHeight - 12 : 806 - railShift }
     /// The server found items in the camera picture and they are on screen (fade 4 s after, CameraBoxes).
     private var boxesShown: Bool { call.cameraOn && call.finds.boxes.visible && !call.finds.boxes.boxes.isEmpty }
+    /// b17 (Chelsea 11/5 "remove it", on the iPhone): with the camera off there is no self tile at all; the code stays for
+    /// a quick way back.
+    static let cameraOffTile = false
+    /// b18: the rail's centre moves up by half a control (46 + 13 spacing) for End call, so its bottom stays at 806.
+    static let endCallRise: CGFloat = (46 + 13) / 2
     @ViewBuilder private var selfView: some View {
         if call.cameraOn {
             if MacDesignV2.enabled {
@@ -325,7 +336,7 @@ struct MacConversationView: View {
             } else {
                 SelfCameraPreview(session: call.cameraSession).frame(width: 113, height: 211).clipShape(RoundedRectangle(cornerRadius: 16))
             }
-        } else {
+        } else if Self.cameraOffTile {
             if MacDesignV2.enabled {
                 // the iPhone's camera-off glass tile: dark material + 28 % black, 0.7 pt white 35 % rim, video.slash
                 Image(systemName: "video.slash").font(.system(size: 18, weight: .regular)).foregroundStyle(Color.white.opacity(0.7))
@@ -407,6 +418,15 @@ private struct MacCallVeil: ViewModifier {
     var veiled: Bool
     func body(content: Content) -> some View {
         if MotionDetails.enabled { content.motionCallReveal(veiled: veiled) } else { content }
+    }
+}
+
+/// b18: End call — MacGlassControl's red-tinted glass (the Stop sharing state) with the phone-down glyph at the glyph rule's 55 %.
+struct MacEndCallControl: View {
+    var size: CGFloat = 46
+    var body: some View {
+        MacGlassControl(icon: "", size: size, tint: MacSharePill.red)
+            .overlay { Image(systemName: "phone.down.fill").font(.system(size: size * 0.36, weight: .semibold)).foregroundStyle(.white) }
     }
 }
 

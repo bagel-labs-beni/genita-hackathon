@@ -117,7 +117,19 @@ import os
     private func celebrate() {
         disarm()
         moment += 1; let id = moment
-        glide = Self.snapshot(); glideProgress = 0
+        let shot = Self.snapshot()
+        // b18 ("징" like the interaction demo): the same DUO wipe the touch path plays, its outgoing half here; the
+        // haptics and sounds come with it (HandoffFeedback). Reduce Motion, or no picture: the glide below, as before.
+        if HandoffProximityMotion.plays(reduceMotion: UIAccessibility.isReduceMotionEnabled),
+           let png = shot?.pngData()?.base64EncodedString(), handoff?.playProximityDeparture(image: png) == true {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in withAnimation(.spring(duration: 0.35, bounce: 0.2)) { self?.toast = true } }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                guard self?.moment == id else { return }
+                withAnimation(.easeOut(duration: 0.25)) { self?.toast = false }
+            }
+            return
+        }
+        glide = shot; glideProgress = 0
         // Haptics are muted while an audio session records unless this is set. It changes no category or route.
         try? AVAudioSession.sharedInstance().setAllowHapticsAndSystemSoundsDuringRecording(true)
         let soft = UIImpactFeedbackGenerator(style: .soft), firm = UIImpactFeedbackGenerator(style: .rigid)

@@ -351,7 +351,8 @@ struct SettingsPage<Content: View>: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) { content }
-                .padding(.bottom, 32)
+                // b16 (391 QA c06): the Version row sat under the screen's bottom edge; room for the home indicator too
+                .padding(.bottom, 72)
         }
         .background(SettingsInk.page.ignoresSafeArea())
         .modifier(SettingsSolidBar())

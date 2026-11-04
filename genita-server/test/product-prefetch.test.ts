@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FindsRunner } from "../src/finds/runner.ts";
-import { MemoryFindsStore } from "../src/finds/store.ts";
+import { MemoryFindsStore, ownerKey } from "../src/finds/store.ts";
 import type { FindsVendors, OutputItem } from "../src/finds/vendors.ts";
 import type { ServerEvent } from "../src/protocol.ts";
 
@@ -38,8 +38,9 @@ function vendors(searchMs = 60) {
     async *sparkStream() { yield { type: "done" as const, responseId: null, text: "", status: "completed" }; },
     async sam() { return [{ x1: 10, y1: 10, x2: 100, y2: 200, w: 480, h: 854, nx1: 0.02, ny1: 0.01, nx2: 0.2, ny2: 0.23 }]; },
     async image() { return Buffer.from([0xff, 0xd8]); },
-    async pageFacts() { return { kind: "product" as const, image: "https://cdn.example.com/1.jpg" }; },
-    async productImage() { return Buffer.from([0xff, 0xd8, 0xff]); },
+    // each product page has its own photo (5c: two products never show the same bytes)
+    async pageFacts(url: string) { return { kind: "product" as const, image: `https://cdn.example.com/${encodeURIComponent(url)}.jpg` }; },
+    async productImage(url: string) { return Buffer.concat([Buffer.from([0xff, 0xd8, 0xff]), Buffer.from(url)]); },
   };
   return { v, searches };
 }
@@ -307,4 +308,29 @@ test("demo S5 (lead 11/4 P0): the same ask with the camera on is a fresh search 
   assert.ok(searches.length > pre, "a second search");
   assert.ok(searches.slice(pre).some((p) => p.includes("input_image")), "it looked at the camera");
   assert.ok(events.some((e) => e.type === "find.created" && e.findId === started!.findId));
+});
+
+test("Codex r1 P2 (pill count): a fresh search that beats a slow prefetch saves the card with its count pill, not 'Your picks are up.'", async () => {
+  const { v } = vendors(0);
+  let asked = false;
+  const spark = v.spark.bind(v);
+  v.spark = async (req, ...rest) => {
+    // the prefetch's searches are slow, the ask's own search is quick
+    if (JSON.stringify(req.input).includes("Shop for them")) await sleep(asked ? 30 : 1500);
+    return spark(req, ...rest);
+  };
+  const { r, events, store } = runner(v);
+  r.onTurn({ text: "Which one looks better on me, the white one or the black one?", frames: [FRAME, FRAME], utteranceId: 1, replyText: Promise.resolve(SAID) });
+  await sleep(150); // the outfit card is in, the prefetch is still searching
+  asked = true;
+  const started = r.onTurn({ text: "Can you find me some dark brown shoes that go with this?", frames: [], utteranceId: 2, replyText: Promise.resolve(null) });
+  assert.equal(started?.kind, "product");
+  await r.settle(); await sleep(1700); // the slow prefetch ends too
+  const pills = events.filter((e) => e.type === "find.items" && e.findId === started!.findId && e.pill).map((e) => (e as { pill?: string }).pill);
+  const saved = await store.get(ownerKey("acct"), started!.findId);
+  assert.ok(saved, "the card is saved");
+  assert.equal(pills.at(-1), "Found 2 for you.", "the ask's own search won and sent its count once the pictures were in");
+  assert.equal(saved!.pill, pills.at(-1), "the saved card keeps the last pill the app was sent");
+  assert.notEqual(saved!.pill, "Your picks are up.", "never the picture-wait pill once the pictures are in");
+  r.close();
 });

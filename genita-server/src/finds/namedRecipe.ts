@@ -16,7 +16,7 @@ import { recipeSummary } from "./tiers.ts";
 import { userMessage } from "./vendors.ts";
 
 /** said when the card lands — never the recipe itself */
-export const NAMED_RECIPE_SAY = "Here's how to make it — ingredients and steps are up.";
+export const NAMED_RECIPE_SAY = "Here's how to make it, ingredients and steps are up.";
 export const NAMED_RECIPE_TIMEOUT_MS = 25_000;
 export const NAMED_MAX_INGREDIENTS = 10;
 export const NAMED_MAX_STEPS = 8;

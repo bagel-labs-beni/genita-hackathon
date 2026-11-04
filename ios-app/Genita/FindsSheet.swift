@@ -305,13 +305,47 @@ struct FindsSheet: View {
         }
         .frame(width: size.width, height: 728)
         .clipShape(UnevenRoundedRectangle(topLeadingRadius: 30, topTrailingRadius: 30))
+        // b16 (Appetize): at peek and half the whole sheet resizes with a vertical drag, not only the 96 pt grab.
+        // Simultaneous, so the ingredient / product rows still scroll sideways; a mostly sideways drag is ignored here.
+        // b17 (Appetize QA C): at full a downward drag on the body resizes too while the card is at its top (else it scrolls);
+        // never over the in-sheet browser, whose page scrolls on its own (Codex r1).
+        .simultaneousGesture(bodyDrag, including: Self.bodyDragResizes(finds.state, pageAtTop: finds.pageAtTop && finds.browser == nil) ? .all : .subviews)
         .offset(y: size.height - visible + max(-120, dragY))
         .animation(sheetMotion, value: finds.state)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Finds from this call")
         .accessibilityIdentifier("findsSheet")
+        // b16: a card question is felt at once (a light tap), whatever the sheet does next
+        .sensoryFeedback(.impact(weight: .light), trigger: finds.pendingAsk)
         .accessibilityValue(finds.state.rawValue)
     }
+
+    /// The body (not only the grab) resizes the sheet: peek and half always; full only while the card is at its top.
+    static func bodyDragResizes(_ state: SheetState, pageAtTop: Bool) -> Bool {
+        state == .peek || state == .half || (state == .full && pageAtTop)
+    }
+
+    private var bodyDrag: some Gesture {
+        DragGesture(minimumDistance: 14)
+            .onChanged { v in
+                // the grab has its own drag: one gesture, one state step (both firing went half → peek → closed)
+                guard Self.isVerticalDrag(v.translation), !Self.inGrab(v.startLocation, width: size.width) else { return }
+                // full: only a pull down moves the sheet; a push up scrolls the card
+                if finds.state == .full && v.translation.height < 0 { dragY = 0; return }
+                finds.touching = true; dragY = v.translation.height * 0.6
+            }
+            .onEnded { v in
+                finds.touching = false
+                guard !Self.inGrab(v.startLocation, width: size.width) else { return }
+                guard Self.isVerticalDrag(v.translation), !(finds.state == .full && v.translation.height < 0) else { withAnimation(.drawer) { dragY = 0 }; return }
+                let velocity = (v.predictedEndTranslation.height - v.translation.height) * 4
+                withAnimation(.drawer) { dragY = 0; finds.dragEnded(translation: v.translation.height, velocity: velocity) }
+            }
+    }
+    /// The r03 grab's 96 × 44 target at the sheet's top centre (its own gesture resizes).
+    static func inGrab(_ p: CGPoint, width: CGFloat) -> Bool { p.y < 44 && abs(p.x - width / 2) < 48 }
+    /// A drag that resizes the sheet: clearly more up/down than sideways.
+    static func isVerticalDrag(_ t: CGSize) -> Bool { abs(t.height) > abs(t.width) * 1.5 }
 
     // r03 `.grab`: 96 × 44 target, 47 × 5 handle 12 from the top. One state per gesture.
     private var grab: some View {
@@ -432,9 +466,10 @@ struct FindsSheet: View {
         // r01 foot: pinned to the VISIBLE bottom: button top = visible − (safe bottom 34 + 8) − 50. While rising
         // (298) it is placed for half (468), so it sits under the visible part and comes up with the sheet.
         let visible: CGFloat = full ? 728 : reopenedHalf ? Self.reopenedHeight : 468
-        let buttonTop = visible - (34 + 8) - 50
+        let footFrame = Self.footGeometry(visible: visible)   // not `foot`: that is the CTA view below
+        let buttonTop = footFrame.buttonTop
         // pages end where the foot's 12 pt white bar starts; the 28 pt fade above it lies over the page
-        let pageHeight: CGFloat = buttonTop - 12
+        let pageHeight: CGFloat = footFrame.pageHeight
         return ZStack(alignment: .top) {
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 0) {
@@ -448,6 +483,9 @@ struct FindsSheet: View {
                 }.scrollTargetLayout()
             }
             .scrollTargetBehavior(.paging)
+            // b16 (391 QA: a full recipe card would not scroll): with one card the pager has nothing to page, and its
+            // sideways bounce took drags that were meant for the card's own vertical scroll
+            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
             .scrollIndicators(.hidden)
             .scrollPosition(id: $scrolledPage)
             .onChange(of: scrolledPage) { _, p in if let p, p != finds.page { finds.showPage(p) } }
@@ -498,7 +536,7 @@ struct FindsSheet: View {
                     if reopened { finds.talkAboutThis(); talk?() }
                     else if walking { withAnimation(.fade) { finds.nextStep() } }
                     else if let card, card.kind == .recipe, !card.steps.isEmpty { withAnimation(.drawer) { finds.walkThrough() } }
-                    else if let card { finds.ask(Self.cta(card.kind)) }
+                    else if let card { withAnimation(.drawer) { finds.ask(Self.cta(card.kind)) } }
                 } label: {
                     Text(reopened ? "Talk about this on a call" : walking ? "Next step" : (card.map { Self.cta($0.kind) } ?? "")).font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.onInk)
                         .frame(maxWidth: .infinity).frame(height: 50).background(GlassCTA(color: CallInk.ink))
@@ -507,6 +545,17 @@ struct FindsSheet: View {
             }
         }.frame(width: size.width - 76).padding(.horizontal, 38)
     }
+
+    /// r01 foot for a sheet `visible` tall: the CTA's top, the page height (to the 12 pt white bar) and where the foot
+    /// starts covering the page (its 28 pt fade). Shared with FindCardPage's bottom room and its test (b16).
+    static func footGeometry(visible: CGFloat) -> (buttonTop: CGFloat, pageHeight: CGFloat, coverTop: CGFloat) {
+        let buttonTop = visible - (34 + 8) - 50
+        return (buttonTop, buttonTop - 12, buttonTop - 12 - 28)
+    }
+    /// b16 check (QA 11/4 a17/a19: recipe steps under "Talk about this on a call"): the full page's scroll content
+    /// ends with this much room, so scrolled to the end its last line (the last step, its Done) sits ≥ 16 pt above
+    /// where the foot starts covering the page: 624 − 96 = 528 vs the fade at 596 (68 pt), the CTA at 636 (108 pt).
+    static let fullPageBottomRoom: CGFloat = 96
 
     static func newFindLabel(_ kind: FindKind?) -> String {
         switch kind {
@@ -584,11 +633,15 @@ struct FindCardPage: View {
     @State private var titleRowHeight: CGFloat = 0
     /// The ingredient chip row is scrolled to its end (no right-edge fade then).
     @State private var chipsAtEnd = false
+    /// b17: this card's scroll is at its top (published to `finds.pageAtTop` while it is the shown card)
+    @State private var atTop = true
     /// Motion card 5: one selection haptic per chip tap.
     @State private var chipTaps = 0
     /// Motion card 6: counts saves (not unsaves) — the bookmark pops, a shine crosses the card, one success haptic.
     @State private var saveTick = 0
     @Environment(\.openURL) private var openURL
+    /// b16: the shop page open in the in-app Safari sheet
+    @State private var shopPage: ShopPage?
     private var layout: FindCardLayout { card.cardLayout }
     /// Pictures that failed to load on this page (by url): their slots go away (b16, never an empty picture).
     @State private var brokenPhotos: Set<String> = []
@@ -604,6 +657,9 @@ struct FindCardPage: View {
     var body: some View {
         ScrollViewReader { reader in
         ScrollView(.vertical) {
+          VStack(alignment: .leading, spacing: 0) {
+            // b17: the scroll's very top (above the page's top padding), where full → half brings the card back (Codex r1)
+            Color.clear.frame(height: 0).id(Self.topID)
             // motion card 4: blocks lift in one after another (header, title → info → photo → the rest), 40 ms apart
             VStack(alignment: .leading, spacing: 8) {
                 header.findsRise(0)
@@ -621,18 +677,35 @@ struct FindCardPage: View {
                 // r01: a link / unknown card already lists its results once, as rows (no second "Sources" list)
                 if !card.sources.isEmpty, [.recipe, .outfit].contains(layout) { sourcesSection.findsRise(4).id("sources") }
                 if !card.how.isEmpty { howSection.findsRise(4).id("how") }
-                Color.clear.frame(height: full ? 96 : 24)
+                Color.clear.frame(height: full ? FindsSheet.fullPageBottomRoom : 24)
             }
             // PF-1b (Figma 179:68): the product card starts 14 pt higher so "How I found this" clears the CTA (#214)
             .padding(.horizontal, 38).padding(.top, full ? (card.kind == .product ? 58 : 72) : 40)
+          }
         }
+        // b17 (Appetize QA C): the full sheet's body drag resizes only while this card is at its top
+        .onScrollGeometryChange(for: Bool.self) { $0.contentOffset.y + $0.contentInsets.top <= 1 } action: { _, top in
+            atTop = top
+            if finds.current?.id == entry.id { finds.pageAtTop = top }
+        }
+        .onChange(of: finds.current?.id) { _, id in if id == entry.id { finds.pageAtTop = atTop } }
         .onChange(of: finds.scrollTarget, initial: true) { _, target in
-            guard let target, finds.current?.id == entry.id else { return }
+            guard let target, finds.current?.id == entry.id, full else { return }
             withAnimation(.drawer) { reader.scrollTo(target, anchor: .top) }
+            // b16 (Appetize): a target is used once — `initial: true` re-fired it on every page that appeared later,
+            // so the next and saved cards opened scrolled to Steps with the title, close and camera out of sight
+            Task { @MainActor in if finds.scrollTarget == target { finds.scrollTarget = nil } }
+        }
+        // b17 (Appetize QA A): full → half / peek starts the card at its header again. The half page doesn't scroll, so
+        // the offset left at full (Walk me through → Steps) showed Sources with the title, bookmark and close out of sight.
+        .onChange(of: full) { _, isFull in
+            guard !isFull else { return }
+            reader.scrollTo(Self.topID, anchor: .top)   // pageAtTop follows from the observed scroll geometry
         }
         }
         .scrollDisabled(!full)
         .scrollIndicators(.hidden)
+        .sheet(item: $shopPage) { page in SafariPage(url: page.url).ignoresSafeArea().accessibilityIdentifier("shopSafari") }
         // motion card 6: saving (bookmark or Save to Finds) sends one blue shine across the card + a success haptic
         .onChange(of: finds.savePulse) { _, _ in if finds.current?.id == entry.id { saveTick += 1 } }
         .findsShine(saveTick, color: FindsInk.blue.opacity(0.16))
@@ -645,6 +718,9 @@ struct FindCardPage: View {
             Task { @MainActor in withAnimation(.fade) { _ = brokenPhotos.insert(key) } }
         }
     }
+
+    /// The header's scroll id: full → half brings the card back to it.
+    static let topID = "cardTop"
 
     /// r03 F2: "From your fridge · Today" when reopened from Finds.
     private var eyebrow: String {
@@ -735,7 +811,8 @@ struct FindCardPage: View {
         let reopenedRoom: CGFloat = titleRowHeight > 0 ? 194 - titleRowHeight : 196
         let reopenedHeight: CGFloat = min(reopenedCap, reopenedRoom)
         let reopenedPicture: CGFloat = reopenedHeight >= 72 ? reopenedHeight : 0
-        let camHeight: CGFloat = full ? 196 : (entry.reopened ? reopenedPicture : halfCameraHeight)
+        let halfHeight: CGFloat = card.camera != nil && entry.frames.indices.contains(card.camera?.frame ?? -1) ? halfLiveCameraHeight : halfCameraHeight
+        let camHeight: CGFloat = full ? 196 : (entry.reopened ? reopenedPicture : halfHeight)
         if let cam = card.camera, camHeight > 0, entry.frames.indices.contains(cam.frame) {
             // b16: only with the camera frame itself (no black box when the frame isn't on this phone)
             CameraFrame(frame: entry.frames[cam.frame], camera: cam, items: card.items, selected: finds.selectedItem,
@@ -745,7 +822,7 @@ struct FindCardPage: View {
             // r01 top-pick photo language: radius 12, 164 tall in the full sheet
             FindPicture(image: photo, resolve: call.findsURL, showFailText: false)
                 .frame(height: full ? 164 : camHeight).frame(maxWidth: .infinity).clipShape(RoundedRectangle(cornerRadius: 12))
-                .accessibilityLabel("Photo of \(card.title)").accessibilityIdentifier("findDishPhoto")
+                .accessibilityLabel(photo.isGenerated ? "Illustration of \(card.title)" : "Photo of \(card.title)").accessibilityIdentifier("findDishPhoto")
                 .findsRise(3)
         }
         if full {
@@ -756,7 +833,9 @@ struct FindCardPage: View {
         }
         if let sel = card.items.first(where: { $0.id == finds.selectedItem }), sel.tier == .maybe { confirmRow(sel) }
         // id "steps": "Walk me through it" scrolls here (#767 walkThrough → scrollTarget "steps")
-        if !card.steps.isEmpty { stepCards(doneButtons: true).findsRise(4).id("steps") }
+        // b16 (Appetize c9-FD-half-stepsliver): r02 half = picture + ingredients; the steps start in the full sheet
+        // (a "Steps" label and a sliver of step 1 sat under the CTA)
+        if full, !card.steps.isEmpty { stepCards(doneButtons: true).findsRise(4).id("steps") }
     }
 
     private func sectionLabel(_ text: String) -> some View {
@@ -770,11 +849,18 @@ struct FindCardPage: View {
     /// two-line title. 344 − 40 top − 44 header − 3 × 8 spacing − 94 tile strip = 142 for title row + picture; 132 at
     /// most (r03), 72 at least. With accessibility text sizes the title row alone can take the room (AX-L): then the
     /// half sheet drops the picture (it is in the full sheet) so the ingredient tiles stay whole.
-    static func halfCameraHeight(titleRow: CGFloat) -> CGFloat {
+    static func halfCameraHeight(titleRow: CGFloat, minimum: CGFloat = 72) -> CGFloat {
         let room: CGFloat = 236 - stripHeight - titleRow   // 236 = 344 − 40 − 44 − 3 × 8 (one literal: the iOS type checker timed out on the sum)
-        return room >= 72 ? min(132, room) : 0
+        return room >= minimum ? min(132, room) : 0
     }
+    /// b16 (CI FindsSheetUITests 3/4/5 since visual cards): the live camera frame carries the item boxes, so a two-line
+    /// title (row 87 → 55 pt of room) keeps it as a 55 pt window centred on the boxes instead of dropping it; only big
+    /// text sizes drop it. A dish photo keeps the 72 pt floor.
+    static let halfLiveCameraMinimum: CGFloat = 48
     private var halfCameraHeight: CGFloat { titleRowHeight > 0 ? Self.halfCameraHeight(titleRow: titleRowHeight) : 132 }
+    private var halfLiveCameraHeight: CGFloat {
+        titleRowHeight > 0 ? Self.halfCameraHeight(titleRow: titleRowHeight, minimum: Self.halfLiveCameraMinimum) : 132
+    }
 
     // r02 tiles, r03 order: missing first (blue +), then what you have (✓); maybe = faded "?"
     private var ingredientStrip: some View {
@@ -797,9 +883,18 @@ struct FindCardPage: View {
         .accessibilityElement(children: .contain).accessibilityLabel("Ingredients")
     }
 
-    private var ingredientGrid: some View {
-        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12, alignment: .topLeading), count: 4), alignment: .leading, spacing: 16) {
-            ForEach(orderedItems) { item in tile(item, strip: false) }
+    @ViewBuilder private var ingredientGrid: some View {
+        Group {
+            if orderedItems.allSatisfy({ shows($0.tilePicture) == nil }) {
+                // b17 (Appetize QA D): no photos = chip rows. A 4-column grid gave each name ~44 pt and broke "Soy / sauce",
+                // "Green / onion"; the chips now flow at their own width, one line each, and wrap as rows.
+                HISYFlow(spacing: 14) { ForEach(orderedItems) { item in tile(item, strip: false) } }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12, alignment: .topLeading), count: 4), alignment: .leading, spacing: 16) {
+                    ForEach(orderedItems) { item in tile(item, strip: false) }
+                }
+            }
         }
         .padding(.top, 6)
         .findsHaptic(.selection, trigger: chipTaps)
@@ -917,7 +1012,7 @@ struct FindCardPage: View {
                 if let img = shows(step.image) {
                     FindPicture(image: img, resolve: call.findsURL, showFailText: false)
                         .frame(height: 150).frame(maxWidth: .infinity).clipShape(RoundedRectangle(cornerRadius: 12))
-                        .accessibilityLabel("Photo of step \(i + 1)")
+                        .accessibilityLabel(img.isGenerated ? "Illustration of step \(i + 1)" : "Photo of step \(i + 1)")   // #774: r03 alt text, no visible caption
                         .padding(.bottom, 12)
                 }
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -1287,32 +1382,74 @@ struct FindCardPage: View {
     // MARK: product (PF-1b: two columns; r02: Open in browser goes straight to the shop page in the browser)
 
     @ViewBuilder private var product: some View {
-        // b16: a shop with no picture is left out while another one has one; with none, both show as text
-        let all = Array((card.products ?? []).prefix(2))
+        // b16: a shop with no picture is left out while another one has one; with none, two show as text
+        let all = card.products ?? []
         let pictured = all.filter { shows($0.image) != nil }
-        let items = pictured.isEmpty ? all : pictured
-        HStack(alignment: .top, spacing: 12) {
-            ForEach(Array(items.enumerated()), id: \.element.id) { i, p in productColumn(p, primary: i == 0) }
-            if items.count == 1 { Color.clear.frame(maxWidth: .infinity) }
-        }.padding(.top, 8)
-        .accessibilityElement(children: .contain).accessibilityIdentifier("productView")
+        let items = pictured.isEmpty ? Array(all.prefix(2)) : pictured
+        switch ProductRowLayout(count: items.count) {
+        case .row:
+            // b16 (Chelsea: "who recommends only two outfits?"): up to 6 — a row at the column width, two whole and
+            // the third peeking past the right margin, snapping tile by tile
+            ScrollView(.horizontal) {
+                LazyHStack(alignment: .top, spacing: 12) {
+                    ForEach(Array(items.enumerated()), id: \.element.id) { i, p in
+                        productColumn(p, primary: i == 0)
+                            .containerRelativeFrame(.horizontal) { w, _ in ProductRowLayout.tileWidth(rowWidth: w) }
+                    }
+                }.scrollTargetLayout()
+            }
+            .scrollTargetBehavior(.viewAligned)
+            .scrollIndicators(.hidden)
+            .contentMargins(.horizontal, 38, for: .scrollContent)
+            .padding(.horizontal, -38)
+            .padding(.top, 8)
+            .accessibilityElement(children: .contain).accessibilityIdentifier("productView")
+        default:
+            // b16 (TF 391 "Two For Tonight"): one shop left takes the whole width, not the left half of an empty pair
+            HStack(alignment: .top, spacing: 12) {
+                ForEach(Array(items.enumerated()), id: \.element.id) { i, p in productColumn(p, primary: i == 0, solo: items.count == 1) }
+            }.padding(.top, 8)
+            .accessibilityElement(children: .contain).accessibilityIdentifier("productView")
+        }
+    }
+
+    /// b16: how a product card lays out its shops.
+    enum ProductRowLayout: Equatable {
+        case solo, pair, row
+        init(count: Int) { self = count <= 1 ? .solo : count == 2 ? .pair : .row }
+        /// The row's tile: the pair's column width (content = row − 2 × 38 margins, two columns and a 12 pt gap), so the
+        /// third tile peeks into the right margin.
+        static func tileWidth(rowWidth: CGFloat) -> CGFloat { max(120, (rowWidth - 76 - 12) / 2) }
     }
 
     /// Half sheet (364 pt page, no scrolling): the picture gives way so Open in browser shows above Save to Finds
     /// (Chelsea 11/4: the pill sat under the CTA). 364 − 40 top − 44 header − 8 − title row − 8 − 8 − (8 + 20 + 4 + 20)
     /// name + store − 8 − 44 pill = 152 − title row; 56 at least, the square (151) at most.
+    /// b16 (Appetize c9-PF-half-pill): − the foot's 28 pt fade, which lies over the page's last 28 pt and covered the
+    /// lower third of the pill.
     static func halfProductPicture(titleRow: CGFloat) -> CGFloat {
-        let room: CGFloat = 152 - titleRow
+        let room: CGFloat = 152 - 28 - titleRow
         return max(56, min(151, room))
     }
 
-    private func openProduct(_ p: FindCard.Product) {
-        // r02: straight to the shop's page in the browser (not the in-sheet one)
-        if !offline, let url = ExternalLink.web(p.url) { openURL(url) }
+    /// b16: the one product of a card: picture across the content width, 4:3 but at most 220 pt; at half the same
+    /// room rule as the columns (the pill still clears the CTA).
+    static func soloProductPicture(full: Bool, titleRow: CGFloat, width: CGFloat = 314) -> CGFloat {
+        let fourThree = min(220, width * 3 / 4)
+        return full ? fourThree : min(fourThree, halfProductPicture(titleRow: titleRow))
     }
 
-    private func productColumn(_ p: FindCard.Product, primary: Bool) -> some View {
-        let pictureHeight: CGFloat? = full ? nil : Self.halfProductPicture(titleRow: titleRowHeight > 0 ? titleRowHeight : 54)
+    private func openProduct(_ p: FindCard.Product) {
+        // b16 (391 QA: six taps, no shop opened; 381 opened it in an in-app browser): the shop's page in an in-app Safari
+        // sheet over the card (not the r03 in-sheet browser), the call and the card stay where they are
+        if !offline, let url = ExternalLink.web(p.url) { shopPage = ShopPage(url: url) }
+    }
+    struct ShopPage: Identifiable { let url: URL; var id: String { url.absoluteString } }
+
+    private func productColumn(_ p: FindCard.Product, primary: Bool, solo: Bool = false) -> some View {
+        let titleRow: CGFloat = titleRowHeight > 0 ? titleRowHeight : 54
+        let pictureHeight: CGFloat? = solo ? Self.soloProductPicture(full: full, titleRow: titleRow)
+            : full ? nil : Self.halfProductPicture(titleRow: titleRow)
         return VStack(alignment: .leading, spacing: 8) {
             // b16: the picture, the name and the store open the shop too (tapping them did nothing)
             Button { openProduct(p) } label: {
@@ -1330,7 +1467,7 @@ struct FindCardPage: View {
                         }.clipShape(RoundedRectangle(cornerRadius: 12))
                     }
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(p.name).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.ink).lineLimit(full ? 2 : 1).multilineTextAlignment(.leading)
+                        Text(p.name).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.ink).lineLimit(full || solo ? 2 : 1).multilineTextAlignment(.leading)
                         Text(p.store + " · " + (p.price ?? "Price on site")).font(TypeStyle.body(14)).foregroundStyle(CallInk.mute).lineLimit(1)
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
@@ -1379,10 +1516,11 @@ struct FindCardPage: View {
             Text("Ask about this").font(TypeStyle.body(12, .medium)).foregroundStyle(CallInk.mute)
             FlowRow(spacing: 8) {
                 ForEach(card.ask, id: \.self) { q in
-                    Button { finds.ask(q) } label: {
+                    Button { withAnimation(.drawer) { finds.ask(q) } } label: {
                         HStack(spacing: 6) {
                             Image(systemName: "waveform").font(.system(size: 13, weight: .medium)).foregroundStyle(CallInk.mute)
-                            Text(q).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.ink)
+                            // b16: the tapped question says it is on its way until the answer is heard
+                            Text(finds.isAsking(q) ? "Asking…" : q).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.ink)
                         }.padding(.horizontal, 12).frame(height: 44).background(FindsInk.skip, in: RoundedRectangle(cornerRadius: 12))
                     }.buttonStyle(PressScale()).disabled(offline || !finds.canAsk).accessibilityHint(finds.canAsk ? "Asks out loud" : "Unavailable while interpreting").accessibilityIdentifier("ask-\(q)")
                 }
@@ -1401,7 +1539,7 @@ struct FindCardPage: View {
                     Button { if !offline { withAnimation(.drawer) { finds.state = .full; finds.browser = s } } } label: {
                         HStack(spacing: 12) {
                             VStack(alignment: .leading, spacing: 0) {
-                                Text(s.title).font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.ink).lineLimit(2).multilineTextAlignment(.leading)
+                                Text(s.displayTitle).font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.ink).lineLimit(2).multilineTextAlignment(.leading)
                                 Text(s.domain).font(TypeStyle.body(14)).foregroundStyle(CallInk.mute)
                             }.frame(maxWidth: .infinity, alignment: .leading)
                             Image(systemName: "arrow.up.right").font(.system(size: 13, weight: .medium)).foregroundStyle(CallInk.mute).frame(width: 20)

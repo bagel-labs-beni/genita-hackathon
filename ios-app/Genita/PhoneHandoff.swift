@@ -247,7 +247,8 @@ import ARKit
         moving=false;moveAttempt+=1;sentCallState=nil  // holding it again: the Mac hears the call state anew
         // the conversation left: P01/P02 (opened by itself or from the menu) must not cover R1's Continue here (Codex P2)
         if new == .mac,settings {closePairing()}
-        if new == .mac {media.stopAll();CallController.shared.suspend()}
+        // b18 P1: the audio stops and the session deactivates now, locked or not (the mic + VPIO engine kept the mic in use)
+        if new == .mac {media.stopAll();CallController.shared.suspendForHandoff()}
         // AU-83/AU-84: back from the Mac. The open call gets a new server session seeded with what was said on the Mac,
         // and the mic comes back as the user left it. A call ended meanwhile (background) begins again on .active.
         else if old == .mac {CallController.shared.rejoin()}
@@ -267,7 +268,8 @@ import ARKit
         case let .apply(claim):
             // A touch move's effect is driven by Dyno's local prepare/ready/start. If the server's copy of the
             // same claim arrives first, hold it until the effect has begun so the transition looks unchanged.
-            if pending != nil || motion != nil {
+            // b18: a proximity move's claim applies at once (its wipe starts from this claim, HandoffProximityMotion)
+            if HandoffProximityMotion.holdsServerClaim(effectRunning:pending != nil || motion != nil,trigger:server.lastOwnershipTrigger) {
                 let generation=accountScope.generation
                 DispatchQueue.main.asyncAfter(deadline:.now()+1.2) { [weak self] in
                     guard let self,self.accountScope.accepts(generation) else{return}
@@ -343,19 +345,7 @@ import ARKit
             pending=data;link.send(["type":"ready","id":data["id"] ?? ""])
         case "start":
             guard let id=data["id"] as? String,id==pending?["id"] as? String, let start=data["start"] as? Double else{return}
-            generation+=1;let epoch=generation
-            let outgoing=data["outgoing"] as? Bool ?? true
-            let right=data["right"] as? Bool ?? false
-            let localStart=start+clockOffset
-            renderedMotionID=nil
-            motion=TransitionPayload(id:id,image:snapshot,start:localStart,outgoing:outgoing,reverse:(!outgoing) != right)
-            // The conversation owns its audio session. Handoff must not change
-            // an active call category, microphone route, or speaker selection.
-            try? feedback.schedule(delay:max(0,localStart-Date().timeIntervalSince1970),duration:3.2,outgoing:outgoing)
-            try? feedback.scheduleSounds(delay:max(0,localStart-Date().timeIntervalSince1970),duration:3.2)
-            DispatchQueue.main.asyncAfter(deadline:.now()+max(0,localStart+3.2-Date().timeIntervalSince1970)) {
-                guard epoch==self.generation else{return};self.motion=nil;self.pending=nil
-            }
+            runMotion(id:id,image:snapshot,localStart:start+clockOffset,outgoing:data["outgoing"] as? Bool ?? true,right:data["right"] as? Bool ?? false)
         case "disconnected":
             // The local link is only the effect layer. Losing it never changes who owns the conversation.
             generation+=1;pending=nil;motion=nil;feedback.cancel();registering=false;sentCallState=nil
@@ -365,6 +355,33 @@ import ARKit
         default: break
         }
     }
+    /// The DUO wipe (Dyno's effect), as the touch path plays it after the Mac's `start`.
+    private func runMotion(id:String,image:String,localStart:Double,outgoing:Bool,right:Bool) {
+        generation+=1;let epoch=generation
+        renderedMotionID=nil
+        motion=TransitionPayload(id:id,image:image,start:localStart,outgoing:outgoing,reverse:(!outgoing) != right)
+        // The conversation owns its audio session. Handoff must not change
+        // an active call category, microphone route, or speaker selection.
+        try? feedback.schedule(delay:max(0,localStart-Date().timeIntervalSince1970),duration:3.2,outgoing:outgoing)
+        try? feedback.scheduleSounds(delay:max(0,localStart-Date().timeIntervalSince1970),duration:3.2)
+        DispatchQueue.main.asyncAfter(deadline:.now()+max(0,localStart+3.2-Date().timeIntervalSince1970)) {
+            guard epoch==self.generation else{return};self.motion=nil;self.pending=nil
+        }
+    }
+    /// b18 ("징", Chelsea: like the interaction demo): a proximity move has no touch, so no `prepare`/`start` from the
+    /// Mac. This iPhone plays its outgoing half of the same wipe from its own clock, `lead` after the move (the touch
+    /// path's 0.8 s); the Mac plays the incoming half on the same server event (`MacHandoff.playProximityArrival`).
+    /// - Parameter image: the call screen now, as a base64 PNG (the link's connect-time `snapshot` only when it is empty).
+    /// - Returns: false when an effect is already running or there is no picture (the caller keeps its glide).
+    @discardableResult func playProximityDeparture(image:String,lead:Double=HandoffProximityMotion.lead) -> Bool {
+        let picture=image.isEmpty ? snapshot : image  // the call screen now, not the one from the link's connect (Codex r1)
+        guard motion == nil,pending == nil,!picture.isEmpty else{return false}
+        let id=UUID().uuidString;pending=["id":id]
+        runMotion(id:id,image:picture,localStart:Date().timeIntervalSince1970+lead,outgoing:true,right:HandoffProximityMotion.right)
+        return true
+    }
+    /// Ends a running effect at once (tests; the same reset as the Mac's `cancel`).
+    func cancelMotion() { generation+=1;pending=nil;motion=nil;feedback.cancel() }
     /// Background or lock. The owner stays the same; only the effect layer rests.
     func pause() {
         accountResolver.invalidate()

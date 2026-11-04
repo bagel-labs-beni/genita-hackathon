@@ -30,9 +30,30 @@ import XCTest
         let picture = FindCardPage.halfProductPicture(titleRow: titleRow)
         let fixed: CGFloat = 40 + 44 + 8 + 8 + 8
         let below: CGFloat = 8 + 20 + 4 + 20 + 8 + 44
-        XCTAssertLessThanOrEqual(fixed + titleRow + picture + below, 364, "pill above the CTA")
+        XCTAssertLessThanOrEqual(fixed + titleRow + picture + below, 364 - 28, "pill above the CTA and its 28 pt fade (b16)")
         XCTAssertEqual(FindCardPage.halfProductPicture(titleRow: 300), 56, "never smaller than 56")
-        XCTAssertEqual(FindCardPage.halfProductPicture(titleRow: 0), 151, "never bigger than the square")
+        XCTAssertEqual(FindCardPage.halfProductPicture(titleRow: 0), 124, "the room above the fade, under the square")
+    }
+
+    /// b16 (TF 391 "Two For Tonight"): a lone product spans the width, 4:3 at most 220; at half no taller than a column's.
+    func testSoloProductPictureSpansTheWidth() {
+        XCTAssertEqual(FindCardPage.soloProductPicture(full: true, titleRow: 54), 220, "full: 4:3 of 314 = 235 → 220")
+        XCTAssertEqual(FindCardPage.soloProductPicture(full: false, titleRow: 54), FindCardPage.halfProductPicture(titleRow: 54), "half: the pill still clears the CTA")
+        XCTAssertEqual(FindCardPage.soloProductPicture(full: true, titleRow: 54, width: 240), 180)
+        // b16: 1 full width · 2 columns · 3–6 a row whose tiles are the column width (151 at 390), the 3rd peeking
+        XCTAssertEqual([1, 2, 3, 6].map { FindCardPage.ProductRowLayout(count: $0) }, [.solo, .pair, .row, .row])
+        XCTAssertEqual(FindCardPage.ProductRowLayout.tileWidth(rowWidth: 390), 151)
+        XCTAssertLessThan(38 + 151 + 12 + 151 + 12, 390, "the 3rd tile starts inside the screen")
+    }
+
+    /// b16 (QA 11/4 a17/a19): scrolled to the end, the full card's last step and its Done sit above the foot
+    /// ("Talk about this on a call" / "Walk me through it" / "Next step"), with room to spare.
+    func testFullPageContentEndsAboveTheFoot() {
+        let foot = FindsSheet.footGeometry(visible: SheetState.full.height)
+        let lastLine = foot.pageHeight - FindsSheet.fullPageBottomRoom
+        XCTAssertGreaterThanOrEqual(foot.coverTop - lastLine, 16, "≥ 16 pt above the foot's fade")
+        XCTAssertGreaterThanOrEqual(foot.buttonTop - lastLine, 50 + 16, "≥ CTA height + 16 above the CTA")
+        XCTAssertEqual(foot.buttonTop, 636); XCTAssertEqual(foot.pageHeight, 624); XCTAssertEqual(foot.coverTop, 596)
     }
 
     /// b16 "never show empty picture content": a picture that failed to load is dropped from the card, and the top
@@ -87,6 +108,20 @@ import XCTest
         m.tapPeek(); m.dragEnded(translation: -80, velocity: 0); XCTAssertEqual(m.state, .full)
         m.pipTapped(); XCTAssertEqual(m.state, .half)
         m.close(); XCTAssertEqual(m.state, .dismissed)
+    }
+
+    /// b16 (Appetize): a walkthrough's "steps" target never carries over to the next, a new or a saved card.
+    func testScrollTargetDoesNotOutliveItsCard() {
+        let m = FindsModel()
+        m.apply(started("a")); m.apply(created("a")); m.force(.full)
+        m.scrollTarget = "steps"; m.close()
+        XCTAssertNil(m.scrollTarget, "close")
+        m.scrollTarget = "steps"; m.reset()
+        XCTAssertNil(m.scrollTarget, "reset")
+        m.apply(started("b")); m.apply(created("b")); m.force(.half)
+        m.scrollTarget = "steps"
+        m.apply(started("c")); m.apply(created("c")); m.viewNewFind()
+        XCTAssertNil(m.scrollTarget, "a new card opens at its top")
     }
 
     func testUserTalkingFoldsHalfButNotFullOrTouching() {
@@ -195,6 +230,31 @@ import XCTest
         XCTAssertEqual(m.current?.failed?.reason, .unclear)
     }
 
+    /// b16 (TF 391 server 0015: 11 taps, each cancelling the last answer): one card question at a time, the same tap
+    /// twice is one question, and the sheet folds to peek so the face and the caption show the answer.
+    func testCardQuestionsWaitForTheirAnswer() {
+        let m = FindsModel()
+        var sent: [ClientMessage] = []
+        var captions: [String] = []
+        m.send = { sent.append($0) }
+        m.onAsked = { captions.append($0) }
+        m.apply(started("a")); m.apply(created("a")); m.force(.full)
+        m.ask("Tell me more", now: 100)
+        XCTAssertEqual(sent.count, 1); XCTAssertEqual(captions, ["Tell me more"], "shown as the user's words at once")
+        XCTAssertEqual(m.state, .peek, "the face and the caption come into view")
+        XCTAssertTrue(m.isAsking("Tell me more")); XCTAssertEqual(m.pillText, "Asking…")
+        m.ask("Tell me more", now: 100.4); m.ask("Spicy?", now: 101)
+        XCTAssertEqual(sent.count, 1, "no new question while the answer is on its way")
+        m.replyStarted()
+        XCTAssertFalse(m.isAsking("Tell me more"))
+        m.ask("Tell me more", now: 101.2)
+        XCTAssertEqual(sent.count, 1, "the same tap within 1.5 s is still one question")
+        m.ask("Spicy?", now: 101.3)
+        XCTAssertEqual(sent.count, 2, "after the answer started, the next question goes")
+        m.ask("Other?", now: 109.4)
+        XCTAssertEqual(sent.count, 3, "a reply that never came frees the card after 8 s")
+    }
+
     func testAskIsOffWhileInterpreting() {
         let m = FindsModel()
         var sent: [ClientMessage] = []
@@ -257,6 +317,24 @@ import XCTest
         XCTAssertEqual(products[0].image?.status, .failed, "a failed picture becomes the calm placeholder, not a hole")
     }
 
+    /// #774: `omit` takes the failed path (no slot drawn), `replace` swaps the product in place, `source` rides along.
+    func testOmitReplaceAndGeneratedImages() throws {
+        let m = FindsModel()
+        let id = "4c2d9b10-7e3a-4f61-9a25-0d8e7f6a5b43"
+        m.apply(started(id)); m.apply(try productCreated())
+        m.apply(try ServerEvent.decode(#"{"type":"find.image","findId":"\#(id)","slot":"product-1","status":"failed","omit":true}"#))
+        m.apply(try ServerEvent.decode(#"{"type":"find.image","findId":"\#(id)","slot":"product-2","status":"failed","omit":true,"replace":{"id":"p2","name":"Wool field jacket","url":"https://shop3.example.com/p/777","domain":"shop3.example.com","store":"Shop Three","price":"$120","image":{"slot":"product-2","status":"ready","url":"/v1/finds/\#(id)/images/product-2"},"taste":"Clean lines","situation":"Warm enough"}}"#))
+        let products = try XCTUnwrap(m.current?.card?.products)
+        XCTAssertEqual(products[0].image?.status, .failed, "omit = failed: every surface draws no box")
+        XCTAssertEqual(products[0].image?.isOmitted, true)
+        XCTAssertEqual(products[1].name, "Wool field jacket", "the replacement takes the slot")
+        XCTAssertEqual(products[1].image?.status, .ready)
+        XCTAssertEqual(products.count, 2)
+        let g = try ServerEvent.decode(#"{"type":"find.image","findId":"\#(id)","slot":"hero","status":"ready","url":"/x","source":"generated"}"#)
+        m.apply(g)
+        XCTAssertEqual(m.current?.card?.hero?.isGenerated, true)
+    }
+
     func testProductImageSlotOutOfRangeIsIgnored() throws {
         let m = FindsModel()
         let id = "4c2d9b10-7e3a-4f61-9a25-0d8e7f6a5b43"
@@ -270,7 +348,22 @@ import XCTest
         let m = FindsModel()
         m.apply(started("4c2d9b10-7e3a-4f61-9a25-0d8e7f6a5b43")); m.apply(try productCreated())
         let card = try XCTUnwrap(m.entries.first?.card)
-        XCTAssertEqual(FindsRow(card: card).subtitle, "Products · 2 links")
+        // b18: the sample's second shop has no picture, so the card shows one shop and the row says so
+        XCTAssertEqual(FindsRow(card: card).subtitle, "Products · 1 link")
+    }
+
+    /// b18 (411 QA "3 links" over 1): the list counts the shops the card shows — a shop whose picture never came is
+    /// left out; with no picture at all the card shows two as text.
+    func testProductRowCountsTheShopsTheCardShows() throws {
+        let m = FindsModel()
+        let id = "4c2d9b10-7e3a-4f61-9a25-0d8e7f6a5b43"
+        m.apply(started(id)); m.apply(try productCreated())
+        m.apply(try ServerEvent.decode(#"{"type":"find.image","findId":"\#(id)","slot":"product-2","status":"ready","url":"/v1/finds/\#(id)/images/product-2"}"#))
+        XCTAssertEqual(FindsRow(card: try XCTUnwrap(m.entries.first?.card)).subtitle, "Products · 2 links")
+        m.apply(try ServerEvent.decode(#"{"type":"find.image","findId":"\#(id)","slot":"product-1","status":"failed","omit":true}"#))
+        XCTAssertEqual(FindsRow(card: try XCTUnwrap(m.entries.first?.card)).subtitle, "Products · 1 link")
+        m.apply(try ServerEvent.decode(#"{"type":"find.image","findId":"\#(id)","slot":"product-2","status":"failed","omit":true}"#))
+        XCTAssertEqual(FindsRow(card: try XCTUnwrap(m.entries.first?.card)).subtitle, "Products · 2 links", "no picture at all: two as text")
     }
 
     func testSavingAProductCardFlipsTheCTAStateAndPostsOnce() async throws {
@@ -404,6 +497,24 @@ import XCTest
         for o in opts { XCTAssertTrue(o.replacingOccurrences(of: "…", with: "").split(separator: " ").allSatisfy { "Couldn’t find a good match".split(separator: " ").contains($0) }, "no cut word: \(o)") }
     }
 
+    /// b18 (411 QA m50/m52c): saved, then a card question: "Asking…", and once the answer is audible the pill gives way
+    /// to the call cue (it kept saying "Saved. They’re in Finds." over the answer). Saving again shows it again.
+    func testSavedPillGivesWayToTheAnswer() throws {
+        let id = "4c2d9b10-7e3a-4f61-9a25-0d8e7f6a5b43"
+        let m = FindsModel()
+        m.saveRemote = { _, _ in true }
+        m.send = { _ in }
+        m.apply(productStarted(id)); m.apply(try productCreated()); m.force(.half)
+        m.toggleSave()
+        XCTAssertEqual(m.pillText, "Saved. They’re in Finds.")
+        m.ask("Tell me more", now: 100)
+        XCTAssertEqual(m.pillText, "Asking…")
+        m.replyStarted()
+        XCTAssertNotEqual(m.pillText, "Saved. They’re in Finds.", "the answer plays under the call's own cue")
+        m.toggleSave(); m.toggleSave()
+        XCTAssertEqual(m.pillText, "Saved. They’re in Finds.", "a new save says so again")
+    }
+
     /// #214: the PF-1 status pill follows the sheet — On it… → the card's line → Saved → Nothing I'd pick; not for recipes.
     func testProductPillFollowsTheSheet() async throws {
         let id = "4c2d9b10-7e3a-4f61-9a25-0d8e7f6a5b43"
@@ -451,6 +562,11 @@ import XCTest
         XCTAssertLessThanOrEqual(used, 344, "tiles whole")
         XCTAssertEqual(FindCardPage.halfCameraHeight(titleRow: 70), 72, "72 while it fits")
         XCTAssertEqual(FindCardPage.halfCameraHeight(titleRow: 200), 0, "big text: no picture in the half sheet, tiles whole")
+        // b16: the camera frame (item boxes) stays under a two-line title, tiles still whole
+        let live = FindCardPage.halfCameraHeight(titleRow: twoLines, minimum: FindCardPage.halfLiveCameraMinimum)
+        XCTAssertEqual(live, 55, "two-line title: a 55 pt camera window, not none")
+        XCTAssertLessThanOrEqual(fixed + twoLines + live + FindCardPage.stripHeight, 344, "tiles whole with the camera")
+        XCTAssertEqual(FindCardPage.halfCameraHeight(titleRow: 200, minimum: FindCardPage.halfLiveCameraMinimum), 0)
     }
 
     /// Visual cards contract v1: `ingredient-<item id>` lands on that item whatever its position; a later find.items

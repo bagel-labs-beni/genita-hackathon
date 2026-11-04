@@ -35,8 +35,6 @@
 	<string>Connect to your Mac to move Genita between devices.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Talk in the conversation.</string>
-	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Turn what you say into text when you correct how Genita sees you.</string>
 	<key>UIAppFonts</key>
 	<array>
 		<string>KMU80TTFSungkokSemiSerif.ttf</string>

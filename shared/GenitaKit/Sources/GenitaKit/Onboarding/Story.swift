@@ -201,6 +201,14 @@ extension OnboardingClient {
         return try await auth.send("PATCH", "/v1/profile", json: body, timeout: 45)
     }
 
+    /// C2 hold to say (b17, Meta models only): `POST /v1/transcribe` — one clip (24 kHz mono s16 PCM, ≤ 30 s) →
+    /// Muse Voice Transcribe on the server → the words ("" = nothing heard). 404 when the server's switch is off.
+    public func transcribe(pcm24k: Data, timeout: TimeInterval = 8) async throws -> String {
+        struct Reply: Decodable { var text: String }
+        let r: Reply = try await auth.send("POST", "/v1/transcribe", body: pcm24k, contentType: "audio/L16; rate=24000", timeout: timeout)
+        return r.text
+    }
+
     /// About you → "Forget all of this" (AU-92): `DELETE /v1/profile`. What Genita knows about the user (import,
     /// HISY, corrections, insights) and the call memory go; the companion and the account stay. `429 rate_limited`.
     public func forgetProfile() async throws {

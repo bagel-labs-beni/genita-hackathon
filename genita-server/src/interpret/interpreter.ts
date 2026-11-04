@@ -324,9 +324,17 @@ export class Interpreter {
       const rawAbort = abort;
       abort = new AbortController();
       abort.signal.addEventListener("abort", () => rawAbort.abort(), { once: true });
+      // the correction has its own controller: a late one is dropped the moment the raw translation is ready
+      const fixAbort = new AbortController();
+      abort.signal.addEventListener("abort", () => fixAbort.abort(), { once: true });
       // asked now, not when the job reaches the head of the queue, so queued lines don't add up waits
-      const fix = correctKorean((req, s) => this.host.translate(req, s), clean, context, { timeoutMs: this.asrCorrect.timeoutMs, signal: abort.signal, now: () => this.host.now() });
-      stream = this.corrected(bubble, line, fix, stream, rawAbort, abort.signal, r.from, r.to);
+      const fix = correctKorean((req, s) => this.host.translate(req, s), clean, context, { timeoutMs: this.asrCorrect.timeoutMs, signal: fixAbort.signal, now: () => this.host.now() });
+      // a fixed line is translated the moment the fix lands (not when the job reaches the head of the queue)
+      const fixedAbort = new AbortController();
+      abort.signal.addEventListener("abort", () => fixedAbort.abort(), { once: true });
+      const { from, to } = r;
+      const fixed = fix.then((res) => ({ res, stream: res.text && !fixedAbort.signal.aborted ? new Eager(this.host.translate(this.request(res.text, from, to), fixedAbort.signal)) : null }));
+      stream = this.corrected(bubble, line, fixed, fixAbort, fixedAbort, completeAt, stream, rawAbort, abort.signal, from);
     }
     this.enqueue(bubble, stream, abort, speculative, { speechEndAt, completeAt, startAt: completeAt }, r.to);
   }
@@ -337,29 +345,70 @@ export class Interpreter {
   }
 
   /**
-   * Korean ASR post-correction: waits (bounded) for the fixed line; unchanged → the raw translation,
-   * changed → the bubble shows the fixed line and it is translated instead.
+   * Korean ASR post-correction, never a wait (11/5 sign-off: `asr_correct outcome=timeout ms=800` twice, a 3.3 s
+   * relay): the raw translation runs from the start, and the correction is used only if it lands before the raw
+   * translation's first text. Raw text first (or a speculation hit whose text is already buffered) → the raw
+   * translation goes on at once and the late correction is dropped (`outcome: "late"`). The correction first:
+   * unchanged → the raw translation; changed → the fixed line is translated too and whichever translation has text
+   * first is spoken (the fixed one wins ties and then also replaces the bubble's line; otherwise
+   * `interpret.asr_correct_dropped`). A queued line (both ready when it reaches the head) always gets the fix.
    */
   private async *corrected(
     bubble: Bubble,
     line: ContextLine,
-    fix: Promise<CorrectResult>,
+    fixed: Promise<{ res: CorrectResult; stream: AsyncIterable<SparkStreamEvent> | null }>,
+    fixAbort: AbortController,
+    fixedAbort: AbortController,
+    askedAt: number,
     raw: AsyncIterable<SparkStreamEvent>,
     rawAbort: AbortController,
     signal: AbortSignal,
     from: Lang,
-    to: Lang,
   ): AsyncGenerator<SparkStreamEvent> {
     const original = line.text;
-    const res = await fix;
+    const it = raw[Symbol.asyncIterator]();
+    const first = it.next();
+    first.catch(() => {});
+    const rawReady = first.then(() => null, () => null);
+    // the fix is listed first: when both are already in hand (a queued line), the correction counts
+    const won = await Promise.race([fixed, rawReady]);
     if (signal.aborted) return;
-    this.host.log("interpret.asr_correct", { outcome: res.outcome, ms: res.ms, chars: [...original].length });
-    if (!res.text) return yield* raw;
+    if (!won) {
+      fixAbort.abort();
+      fixedAbort.abort();
+      this.host.log("interpret.asr_correct", { outcome: "late", ms: Math.round(this.host.now() - askedAt), chars: [...original].length });
+      for (let r = await first; !r.done; r = await it.next()) yield r.value;
+      return;
+    }
+    this.host.log("interpret.asr_correct", { outcome: won.res.outcome, ms: won.res.ms, chars: [...original].length });
+    if (!won.stream || !won.res.text) {
+      fixedAbort.abort();
+      for (let r = await first; !r.done; r = await it.next()) yield r.value;
+      return;
+    }
+    // changed: the corrected translation is spoken only if it has text first (ties go to it)
+    const cit = won.stream[Symbol.asyncIterator]();
+    const cfirst = cit.next();
+    let cReady = false;
+    cfirst.then(() => (cReady = true), () => (cReady = true));
+    let fixedFirst = await Promise.race([cfirst.then(() => true, () => true), rawReady.then(() => false)]);
+    // both already buffered (a queued line): the generator's next() settles a few ticks later — that is a tie, not a loss
+    if (!fixedFirst) {
+      await new Promise((r) => setImmediate(r));
+      fixedFirst = cReady;
+    }
+    if (signal.aborted) return;
+    if (!fixedFirst) {
+      fixedAbort.abort();
+      this.host.log("interpret.asr_correct_dropped", { ms: Math.round(this.host.now() - askedAt), chars: [...original].length });
+      for (let r = await first; !r.done; r = await it.next()) yield r.value;
+      return;
+    }
     rawAbort.abort();
-    line.text = res.text;
-    bubble.original = { lang: from, text: res.text };
+    line.text = won.res.text;
+    bubble.original = { lang: from, text: won.res.text };
     this.emit(bubble);
-    yield* new Eager(this.host.translate(this.request(res.text, from, to), signal));
+    for (let r = await cfirst; !r.done; r = await cit.next()) yield r.value;
   }
 
   /** Typed text while interpreting: the user's own words, for the other person. */

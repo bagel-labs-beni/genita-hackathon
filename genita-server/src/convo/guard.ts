@@ -405,7 +405,6 @@ export const NO_ANSWER_LINE = "<curious> Hmm, not sure off the top of my head.";
 /** Spark down (504 / empty) for a whole turn, retry included: stay in the call, in character (11/3 outage) */
 /** prompt-100 11/4: the retry after a reply that only described what it "saw" with no frame attached (Mac stage) */
 export const NO_FRAME_RETRY_LINE = "No camera frame reached you this turn: you can't see them or anything right now. Answer from what they said, in one or two sentences, and never describe how anything looks.";
-export const LOST_LINE = "<warm> Sorry, I lost you for a sec. Say that again?";
 /** pause before the retry when the first try failed upstream (a 504 spike) */
 export const UPSTREAM_RETRY_MS = 400;
 

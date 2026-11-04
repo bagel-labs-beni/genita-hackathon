@@ -19,7 +19,7 @@ async function* text(t: string, delayMs = 0, signal?: AbortSignal): AsyncGenerat
 type Fix = { out?: string; delayMs?: number; fail?: boolean };
 
 /** Mocked ASR → Interpreter: `fix(raw)` is the correction model's answer, translations echo "EN(<input>)". */
-function harness(opts: { asrCorrect?: { timeoutMs: number } | null; fix?: (raw: string, req: SparkRequest) => Fix; userLanguage?: string } = {}) {
+function harness(opts: { asrCorrect?: { timeoutMs: number } | null; fix?: (raw: string, req: SparkRequest) => Fix; userLanguage?: string; translateMs?: number | ((input: string) => number) } = {}) {
   const sent: ServerEvent[] = [];
   const requests: SparkRequest[] = [];
   const logs: { event: string; data: Record<string, unknown> }[] = [];
@@ -40,7 +40,8 @@ function harness(opts: { asrCorrect?: { timeoutMs: number } | null; fix?: (raw: 
         if (f.fail) return (async function* () { throw new Error("spark down"); })();
         return text(f.out ?? raw, f.delayMs ?? 0, signal);
       }
-      return text(`EN(${String(req.input)})`, 5, signal);
+      const ms = typeof opts.translateMs === "function" ? opts.translateMs(String(req.input)) : (opts.translateMs ?? 5);
+      return text(`EN(${String(req.input)})`, ms, signal);
     },
     tts: async function* () {},
     useDeviceVoice: () => true,
@@ -73,7 +74,9 @@ function harness(opts: { asrCorrect?: { timeoutMs: number } | null; fix?: (raw: 
 
 test("asr correct: '대다 안 되나' becomes '대면 안 되나' from context, and that is what gets translated", async () => {
   let seenInput = "";
+  // the raw (misheard) line's translation is slower here than the fixed one's: the fix is ready first
   const h = harness({
+    translateMs: (input) => (input === "대다 안 되나" ? 150 : 5),
     fix: (raw, req) => {
       seenInput = String(req.input);
       return raw === "대다 안 되나" ? { out: "대면 안 되나" } : { out: raw };
@@ -92,7 +95,7 @@ test("asr correct: '대다 안 되나' becomes '대면 안 되나' from context,
 });
 
 test("asr correct: short '남나?' misheard line is fixed by one syllable", async () => {
-  const h = harness({ fix: (raw) => (raw === "남나?" ? { out: "남냐?" } : { out: raw }) });
+  const h = harness({ translateMs: (input) => (input === "남나?" ? 150 : 5), fix: (raw) => (raw === "남나?" ? { out: "남냐?" } : { out: raw }) });
   h.say("남나?");
   await h.done();
   assert.equal(h.lastBubble().original.text, "남냐?");
@@ -120,7 +123,7 @@ test("asr correct: kill switch off → raw passthrough, no correction call", asy
 });
 
 test("asr correct: timeout or Spark error → raw text is translated", async () => {
-  const slow = harness({ asrCorrect: { timeoutMs: 50 }, fix: () => ({ out: "대면 안 되나", delayMs: 400 }) });
+  const slow = harness({ asrCorrect: { timeoutMs: 50 }, translateMs: 200, fix: () => ({ out: "대면 안 되나", delayMs: 400 }) });
   slow.say("대다 안 되나");
   await slow.done();
   assert.equal(slow.lastBubble().original.text, "대다 안 되나");
@@ -212,4 +215,54 @@ test("asr correct: queued Korean lines ask for their corrections at once (waits 
   await h.done();
   assert.equal(asked.length, 2);
   assert.ok(asked[1] < 100, `second correction asked at ${asked[1]} ms, not after the first finished`);
+});
+
+test("asr correct never adds latency (11/5 sign-off: timeout ms=800 twice, a 3.3 s relay): a correction slower than the raw translation is dropped", async () => {
+  // the raw translation's text is ready after 20 ms; the correction would take 600 ms (inside its 800 ms timeout)
+  const h = harness({ asrCorrect: { timeoutMs: 800 }, translateMs: 20, fix: () => ({ out: "대면 안 되나", delayMs: 600 }) });
+  const t0 = Date.now();
+  h.say("대다 안 되나");
+  await h.done();
+  const ms = Date.now() - t0;
+  assert.ok(ms < 300, `relayed in ${ms} ms, not after the correction`);
+  assert.equal(h.lastBubble().original.text, "대다 안 되나", "a late fix never rewrites the bubble");
+  assert.equal(h.lastBubble().translation?.text, "EN(대다 안 되나)");
+  assert.deepEqual(h.translations(), ["대다 안 되나"], "no second translation");
+  const log = h.logs.find((l) => l.event === "interpret.asr_correct");
+  assert.equal(log?.data.outcome, "late");
+  assert.ok(Number(log?.data.ms) < 300);
+  // the dropped correction is cancelled, not left running
+  await new Promise((r) => setTimeout(r, 700));
+  assert.equal(h.lastBubble().original.text, "대다 안 되나");
+});
+
+test("asr correct: a fix that lands before the raw translation's text is used (speak the corrected meaning)", async () => {
+  const h = harness({ asrCorrect: { timeoutMs: 800 }, translateMs: (input) => (input === "대다 안 되나" ? 200 : 40), fix: () => ({ out: "대면 안 되나", delayMs: 30 }) });
+  const t0 = Date.now();
+  h.say("대다 안 되나");
+  await h.done();
+  assert.equal(h.lastBubble().original.text, "대면 안 되나");
+  assert.equal(h.lastBubble().translation?.text, "EN(대면 안 되나)");
+  assert.ok(Date.now() - t0 < 200, "the fixed translation was ready before the raw one: no wait");
+});
+
+test("asr correct: a fix whose own translation would come after the raw one is dropped (the raw line goes out at once)", async () => {
+  const h = harness({ asrCorrect: { timeoutMs: 800 }, translateMs: 60, fix: () => ({ out: "대면 안 되나", delayMs: 30 }) });
+  const t0 = Date.now();
+  h.say("대다 안 되나");
+  await h.done();
+  assert.ok(Date.now() - t0 < 150, `relayed in ${Date.now() - t0} ms`);
+  assert.equal(h.lastBubble().original.text, "대다 안 되나", "the bubble matches what was spoken");
+  assert.equal(h.lastBubble().translation?.text, "EN(대다 안 되나)");
+  assert.ok(h.logs.some((l) => l.event === "interpret.asr_correct_dropped"));
+});
+
+test("asr correct: a queued line (its fix and raw translation both ready when it reaches the head) gets the fix", async () => {
+  const h = harness({ asrCorrect: { timeoutMs: 800 }, translateMs: (input) => (input === "길게 말하는 첫 문장이에요" ? 250 : 20), fix: (raw) => (raw === "대다 안 되나" ? { out: "대면 안 되나", delayMs: 40 } : { out: raw }) });
+  h.say("길게 말하는 첫 문장이에요");
+  h.say("대다 안 되나");
+  await h.done();
+  const done = h.sent.filter((e) => e.type === "interpret.bubble" && e.status === "done") as Extract<ServerEvent, { type: "interpret.bubble" }>[];
+  assert.equal(done.at(-1)?.original.text, "대면 안 되나");
+  assert.equal(done.at(-1)?.translation?.text, "EN(대면 안 되나)");
 });

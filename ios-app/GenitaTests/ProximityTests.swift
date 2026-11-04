@@ -235,4 +235,84 @@ final class ProximityTests: XCTestCase {
         XCTAssertFalse(ProximityPolicy.macShouldScan(enabled: true, macOwner: false, serverConnected: true, phoneActive: true, phoneArmed: false, screenUnlocked: true), "no iPhone call: no scan, no Bluetooth prompt on the Mac")
         XCTAssertFalse(ProximityPolicy.macShouldScan(enabled: true, macOwner: false, serverConnected: true, phoneActive: true, phoneArmed: true, screenUnlocked: false), "a locked Mac never takes the call")
     }
+    // MARK: b18 ping-pong (411 QA 04:06:25/27, 04:07:53: the phone lying next to the Mac at −42…−47)
+
+    /// "Continue here" on the iPhone (or Move to iPhone) with the phone lying next to the Mac: never taken back, not
+    /// 2 s later, not after the cooldown, not after a single −60 reading that follows a gap.
+    func testLyingNextToTheMacAfterAMoveToTheIPhoneNeverGrabs() {
+        var d = ProximityDetector()
+        d.startScan()
+        d.requireLeave(at: 0)
+        var t = 0.0
+        while t < 40 {
+            // −42…−47 with BLE jitter, a 0.8 s advertising gap and one −60 every 7 s
+            let rssi = Int(t * 10) % 70 == 0 ? -60 : [-42, -44, -47, -45, -43][Int(t * 20) % 5]
+            XCTAssertFalse(d.observe("p", rssi: rssi, at: t), "taken back at \(t) s")
+            t += Int(t * 10) % 50 == 0 ? 0.8 : 0.05
+        }
+    }
+
+    /// Taken away (below exit for 3 s), then brought back to the Mac: the move happens.
+    func testLeaveThreeSecondsThenApproachGrabs() {
+        var d = ProximityDetector()
+        d.startScan()
+        d.requireLeave(at: 0)
+        XCTAssertNil(feed(&d, rssi: -43, from: 0, seconds: 5), "lying there")
+        XCTAssertNil(feed(&d, rssi: -70, from: 5.05, seconds: 2), "away, but not 3 s yet")
+        XCTAssertNil(feed(&d, rssi: -43, from: 7.1, seconds: 2), "back too soon: still latched")
+        XCTAssertNil(feed(&d, rssi: -70, from: 9.15, seconds: 3.2), "away for 3 s")
+        XCTAssertNotNil(feed(&d, rssi: -40, from: 12.4, seconds: 1.5), "brought back to the Mac: moves")
+    }
+
+    /// The Mac starts scanning while the phone already lies next to it: no move until it is brought in.
+    func testScanStartWithThePhoneAlreadyCloseNeedsAnApproach() {
+        var d = ProximityDetector()
+        d.startScan()
+        XCTAssertNil(feed(&d, rssi: -42, from: 0, seconds: 15), "lying there since the scan started")
+        XCTAssertNil(feed(&d, rssi: -68, from: 15.05, seconds: 0.5), "picked up and moved away")
+        XCTAssertNotNil(feed(&d, rssi: -41, from: 15.6, seconds: 1.5), "and brought to the Mac")
+    }
+
+    /// Codex r1: a short settled dip, a 3 s silence, then one −60 and the phone lying there again: still latched.
+    func testDipThenSilenceThenOneLowReadingDoesNotClearTheMoveLatch() {
+        var d = ProximityDetector()
+        d.startScan()
+        d.requireLeave(at: 0)
+        XCTAssertNil(feed(&d, rssi: -43, from: 0, seconds: 1), "lying there")
+        XCTAssertNil(feed(&d, rssi: -60, from: 1.05, seconds: 0.2), "a short dip")
+        // 3.5 s with no advertising at all
+        XCTAssertFalse(d.observe("p", rssi: -60, at: 4.8), "one low reading after the silence")
+        XCTAssertNil(feed(&d, rssi: -43, from: 4.85, seconds: 20), "lying there again: never taken back")
+    }
+
+    /// Codex r2: another phone far away for 3 s while mine is silent does not count as mine leaving.
+    func testAnotherPhoneFarAwayDoesNotClearMyMoveLatch() {
+        var d = ProximityDetector()
+        d.startScan()
+        d.requireLeave(at: 0)
+        XCTAssertNil(feed(&d, rssi: -43, from: 0, seconds: 1), "mine, lying there")
+        XCTAssertNil(feed(&d, "other", rssi: -75, from: 1.05, seconds: 3.5), "another phone far away; mine silent")
+        XCTAssertNil(feed(&d, rssi: -60, from: 4.6, seconds: 0.2), "mine, a short dip")
+        XCTAssertNil(feed(&d, rssi: -43, from: 4.85, seconds: 20), "mine, lying there again: never taken back")
+    }
+
+    /// Codex r3: my far run cut short by silence, while another phone's packets keep coming, is not 3 s of leaving.
+    func testMyShortFarRunThenSilenceIsNotLeavingWhileAnotherPhoneIsHeard() {
+        var d = ProximityDetector()
+        d.startScan()
+        d.requireLeave(at: 0)
+        XCTAssertNil(feed(&d, rssi: -43, from: 0, seconds: 1), "mine near")
+        XCTAssertNil(feed(&d, rssi: -60, from: 1.05, seconds: 0.2), "mine far, briefly")
+        XCTAssertNil(feed(&d, "other", rssi: -75, from: 1.3, seconds: 3.2), "only the other phone heard")
+        XCTAssertNil(feed(&d, rssi: -60, from: 4.55, seconds: 0.2), "mine far again, after a gap")
+        XCTAssertNil(feed(&d, rssi: -43, from: 4.8, seconds: 20), "mine near again: never taken back")
+    }
+
+    /// One raw −60 after a gap is not "it left": the fired latch holds.
+    func testOneLowReadingAfterAGapDoesNotClearTheLatch() {
+        var d = ProximityDetector()
+        XCTAssertNotNil(feed(&d, rssi: -40, from: 0, seconds: 1))
+        XCTAssertFalse(d.observe("p", rssi: -60, at: 2.0), "after a 1 s gap")
+        XCTAssertNil(feed(&d, rssi: -42, from: 2.05, seconds: 20), "still lying there: no second move after the cooldown")
+    }
 }

@@ -7,7 +7,7 @@
  */
 import { STYLE_SEARCH_HINT, styleReasonOn } from "../convo/styleReason.ts";
 import { webAnswerCard, type WebSearch } from "./webAnswer.ts";
-import { applySourceImage, assessLine, generalLayout, rowPictures, runGeneral } from "./general.ts";
+import { applySourceImage, assessLine, generalLayout, PLACE_ACK, PLACE_NONE_LINE, PLACE_WAIT_LINE, PLACE_WAIT_MS, rowPictures, runGeneral } from "./general.ts";
 import { JUDGE_TIMEOUT_MS, judgeEnabled, judgeWithin, sparkJudge, type Judge, type JudgeResult } from "./judge.ts";
 import type { Intent } from "./intent.ts";
 import { findUrl } from "./parse.ts";
@@ -15,7 +15,7 @@ import { reasonChips, tasteLines, type TasteLine } from "../personalize/reasons.
 import { randomUUID } from "node:crypto";
 import type { FindCard, FindImage, FindKind, FindProduct, ServerEvent } from "../protocol.ts";
 import { classifyTurn, isBareAccept, isGoesWithFollowUp, isLinksAsk, isProductAsk, refersToScreen } from "./intent.ts";
-import { SEARCH_TITLE, decidePick, guessLabel, runProduct, shortLabel, tasteLines as productTaste } from "./product.ts";
+import { SEARCH_TITLE, decidePick, followUpSubject, guessLabel, itemNoun, runProduct, shortLabel, tasteLines as productTaste } from "./product.ts";
 import { runNamedRecipe } from "./namedRecipe.ts";
 import { walkPlan, type WalkPlan, type WalkState } from "./walkthrough.ts";
 import { choiceForSearch, isColorWord } from "./choice.ts";
@@ -46,6 +46,8 @@ export type FindsDeps = {
   judgeTimeoutMs?: number;
   /** demo S5: a product search with nothing on screen by then gets one "still hunting" line (default 30 s) */
   stillSearchingMs?: number;
+  /** 11/5 5c: a place search with no card by then says one wait line (default PLACE_WAIT_MS) */
+  placeWaitMs?: number;
 };
 
 /** What the session says instead of a full answer while a card is being made (PF-1 "On it…"). */
@@ -362,9 +364,17 @@ export class FindsRunner {
     // demo 11/4: an "A or B" verdict decides what is searched; no clear pick out loud = no sheet
     const choice = followUp ? choiceForSearch(outfit!.question ?? "", outfit!.said) : null;
     if (choice === false) { this.hooks.log("finds.choice_unclear", {}); return null; }
+    // P0 11/5: what is searched comes from the words and the verdict (an item named, offered or picked), never the taste
+    let subject: string | null = null;
     if (followUp) {
       this.lastOutfit = null;
-      t = { ...t, text: `Find what you offered to find for the look they just picked (shoes or accessories that go with it). What you told them: "${outfit!.said.slice(0, 300)}". They answered: "${t.text.slice(0, 100)}".${choice ? ` You picked ${choice} out loud: find ${choice} ones only, never the other option.` : ""}${styleReasonOn() ? ` ${STYLE_SEARCH_HINT}` : ""}` };
+      const card = [...this.cards.values()].reverse().find((c) => c.kind === "outfit");
+      subject = followUpSubject({ text: t.text, said: outfit!.said, question: outfit!.question, picked: card?.options.find((x) => x.picked)?.label });
+      this.hooks.log("finds.follow_subject", { subject: subject ?? "" });
+      const what = subject
+        ? `Find ${subject} for them: ${subject} only. What you told them: "${outfit!.said.slice(0, 300)}". They answered: "${t.text.slice(0, 100)}".`
+        : `Find what you offered to find for the look they just picked (shoes or accessories that go with it). What you told them: "${outfit!.said.slice(0, 300)}". They answered: "${t.text.slice(0, 100)}".`;
+      t = { ...t, text: `${what}${choice ? ` You picked ${choice} out loud: find ${choice} ones only, never the other option.` : ""}${styleReasonOn() ? ` ${STYLE_SEARCH_HINT}` : ""}` };
     }
     // Chelsea 11/4 D: while the Mac shares its screen, a question takes the shared frame (fresher than the camera,
     // ≤1 s old), unless it's about them or what they hold; "on my screen" / "this video" always mean the share
@@ -376,11 +386,11 @@ export class FindsRunner {
       this.startJudge(input);
       return null;
     }
-    return this.start(intent0, t, followUp, false, choice || null);
+    return this.start(intent0, t, followUp, false, choice || null, subject);
   }
 
   /** The keyword intent or the judge's pick, started the same way. `judged`: the turn already answered out loud. */
-  private start(intent: NonNullable<Intent>, t: TurnInput, followUp: boolean, judged: boolean, choice: string | null = null): TurnStarted | null {
+  private start(intent: NonNullable<Intent>, t: TurnInput, followUp: boolean, judged: boolean, choice: string | null = null, subject: string | null = null): TurnStarted | null {
     const silentFail = (e: ServerEvent): ServerEvent => (e.type === "find.failed" && e.reason !== "stopped" ? { ...e, reason: "stopped", message: "" } : e);
     // the share when there is no camera picture, or when the line points at it; otherwise the camera (Codex r1 P2)
     const useScreen = !!t.screen && !followUp && (
@@ -452,7 +462,9 @@ export class FindsRunner {
       if (!cached && !pre && (camera || followUp)) {
         const decided = decidePick(this.deps.vendors, { question: prev ? `${prev.question} — ${t.text}` : t.text, recent: t.recent ?? [], taste: productTaste(undefined, this.profile, this.memories), frames: t.frames, signal: abort.signal });
         // the spoken "A or B" verdict wins over the pick model (it once said white and searched black)
-        pickP = choice ? decided.then((p) => p ? (isColorWord(choice) ? { ...p, color: choice, say: p.color === choice ? p.say : "" } : { ...p, item: choice, say: p.item === choice ? p.say : "" }) : p) : decided;
+        // P0 11/5: the item is the subject named / offered / picked; the pick model only adds the colour (never the kind)
+        const subjectP = subject ? decided.then((p) => (p && !contradictsKind(p.item, subject!) ? p : { item: subject!, color: "", say: "" })) : decided;
+        pickP = choice ? subjectP.then((p) => p ? (isColorWord(choice) ? { ...p, color: choice, say: p.color === choice ? p.say : "" } : { ...p, item: choice, say: p.item === choice ? p.say : "" }) : p) : subjectP;
         pickP.catch(() => {});
       }
       const pick = pickP;
@@ -517,10 +529,22 @@ export class FindsRunner {
       }, this.deps.stillSearchingMs ?? 12_000); // S5 latency (lead 11/4): the visible wait is ~12 s, then one line
       void done.finally(() => clearTimeout(timer));
     }
-    if (ACK[intent.kind]) this.acked.add(findId);
+    // 11/5 eval 5c: a place question names only a place its search found (2/8 names came from model memory and looked
+    // invented): a short line now, the card's line names the top result when it lands
+    const ack = intent.kind === "answer" ? (generalLayout(t.text) === "place" ? PLACE_ACK : undefined) : ACK[intent.kind];
+    if (ack) this.acked.add(findId);
+    if (ack && intent.kind === "answer") {
+      this.ackedPlace.add(findId);
+      // 13–17 s from the ack to the card: one natural line around 7 s, never a place name before a verified result
+      const timer = setTimeout(() => {
+        if (abort.signal.aborted || this.closed || this.landed.has(findId)) return;
+        this.hooks.announce(PLACE_WAIT_LINE);
+      }, this.deps.placeWaitMs ?? PLACE_WAIT_MS);
+      void done.finally(() => clearTimeout(timer));
+    }
     // an outfit pick is answered out loud by the turn itself: its card only shows it (demo S4, one verdict)
     else if (intent.kind === "outfit") this.answered.set(findId, t.replyText);
-    return { findId, kind: intent.kind, ...(intent.named ? { named: true as const } : {}), ...(ACK[intent.kind] ? { ack: ACK[intent.kind] } : {}), ...(pickP ? { reaction: pickP.then((p) => p?.say || null, () => null) } : {}) };
+    return { findId, kind: intent.kind, ...(intent.named ? { named: true as const } : {}), ...(ack ? { ack } : {}), ...(pickP ? { reaction: pickP.then((p) => p?.say || null, () => null) } : {}) };
   }
 
   /**
@@ -871,6 +895,11 @@ export class FindsRunner {
       this.focusId = e.findId;
       void this.persist(e.card);
       if (e.card.say && !this.closed) this.announceCard(e.findId, e.card.say);
+    } else if (e.type === "find.items" && e.pill) {
+      // a later pill (a product card's count once its pictures are in) is the card's pill when it is reopened too
+      const card = this.cards.get(e.findId);
+      // in place: a prefetched card's replay returns this same object and persists it last (Codex r1 P2)
+      if (card && card.pill !== e.pill) { card.pill = e.pill; void this.persist(card); }
     } else if (e.type === "find.image") {
       const card = this.cards.get(e.findId);
       if (card) {
@@ -879,6 +908,8 @@ export class FindsRunner {
       }
     }
     if (e.type === "find.failed" && e.reason !== "stopped" && !this.closed && this.acked.has(e.findId)) this.hooks.announce(e.message);
+    // a place search that found nothing after "Pulling up the spots now.": said, not left hanging (no fail sheet)
+    else if (e.type === "find.failed" && !this.closed && this.ackedPlace.has(e.findId)) this.hooks.announce(PLACE_NONE_LINE);
     if (!this.closed) this.hooks.emit(e);
   }
   /**
@@ -902,6 +933,8 @@ export class FindsRunner {
   private readonly landed = new Set<string>();
   /** finds whose turn got only the short line (ACK): their failure is said out loud */
   private readonly acked = new Set<string>();
+  /** place searches that got PLACE_ACK: a search with no result says PLACE_NONE_LINE */
+  private readonly ackedPlace = new Set<string>();
 
   private async persist(card: FindCard): Promise<void> {
     if (!this.owner || this.purged) return;
@@ -1055,4 +1088,12 @@ export function judgedIntent(r: JudgeResult, t: { text: string; frames: string[]
     case "link": { const url = findUrl(t.text); return url ? { kind: "link", url } : null; }
     default: return null;
   }
+}
+
+/** the pick model's item is another kind than the subject ("cozy printed pajamas" for "tees") */
+function contradictsKind(item: string, subject: string): boolean {
+  // "shoes" (a pair) takes any shoe the pick names ("white sneakers", "ankle boots")
+  if (subject === "shoes" && /\b(?:shoes?|sneakers?|boots?|loafers?|heels?|flats|sandals?|oxfords?|trainers?)\b/i.test(item)) return false;
+  const k = itemNoun(item);
+  return !k || k !== subject;
 }

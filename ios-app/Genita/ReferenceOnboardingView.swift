@@ -345,13 +345,19 @@ import UniformTypeIdentifiers
                 DesignText(node: label).designSlot(label, width: width, top: top).accessibilityHidden(true)
             }
             if stage == .paste {
+                let pasteLabel = texts.first(where: { $0.characters == "Your AI’s response" })
                 // I02 one tap: paste the reply straight from the clipboard (system paste button, no permission prompt)
                 PasteButton(payloadType: String.self) { strings in
                     if let text = strings.first { Task { @MainActor in model.setup.response = text; model.importError = nil; pasteHighlight = false } }
                 }.buttonBorderShape(.capsule).labelStyle(.titleAndIcon).tint(CallInk.ink).controlSize(.small)
                     .overlay { if pasteHighlight { Capsule().strokeBorder(Color(red: 0, green: 0.635, blue: 1), lineWidth: 2).padding(-4).allowsHitTesting(false) } }
                     .accessibilityFocused($pasteFocused)
-                    .position(x: width - 88, y: card.y + top + 22).accessibilityIdentifier("pasteReply")
+                    .fixedSize()
+                    // b17 (scorecard I02 / Appetize QA B): on the Figma I02 label row. Its centre is the "Your AI’s response"
+                    // label's centre (y 285 + 22/2 = 296, the same line as I01's copy icon), not the 44 pt band's (10 pt
+                    // higher); 12 pt in from the card's right edge, as in b16.
+                    .frame(width: card.w + width - 390 - 2 * Self.pasteInset, height: ScrollEdgeFade.header, alignment: .trailing)
+                    .position(x: card.x + (card.w + width - 390) / 2, y: Self.pasteRowY(card: card, label: pasteLabel) + top).accessibilityIdentifier("pasteReply")
                     .onAppear {
                         // back from ChatGPT / Claude: the paste button is the one thing to do (no permission prompt, system paste control)
                         guard model.pasteFocusRequested else { return }
@@ -367,6 +373,13 @@ import UniformTypeIdentifiers
             }
         }
     }
+    /// I02 Paste pill row (Figma I02 `10:35`): the centre line of the card's label; the band's centre if the label is missing.
+    static func pasteRowY(card: DesignNode, label: DesignNode?) -> CGFloat {
+        guard let label else { return card.y + ScrollEdgeFade.header / 2 }
+        return label.y + label.h / 2
+    }
+    /// The pill's right inset inside the card.
+    static let pasteInset: CGFloat = 12
     /// Back from the AI app: I02 with the paste button ready.
     func backFromAI() { openedAI = false; leftApp = false; copiedToast = false; model.pasteFocusRequested = true; model.go(.paste) }
     /// I01: opens the AI app, or its website when the app isn't installed.

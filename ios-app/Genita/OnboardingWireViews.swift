@@ -7,6 +7,13 @@ import UIKit
 // Same frame as the reference screens: 390 × 844 design points, title at y 98, primary button 108 pt from the bottom.
 
 /// The reference screens' scaffold: back chevron, serif title, grey subtitle, black primary button.
+/// The onboarding pages' one CTA column (Figma 313 × 50 at x 38 on 390; 38 left, 39 right on every width). Content
+/// that lines up with the CTA (N1 tiles) uses the same numbers, so it ends where the button ends on 393 / 402 / 430 too.
+enum WireColumn {
+    static let left: CGFloat = 38
+    static func width(_ screen: CGFloat) -> CGFloat { screen - 77 }
+}
+
 struct WirePage<Content: View>: View {
     var title: String
     /// UI-test handle on the title (a page-level identifier would override every child's identifier)
@@ -49,7 +56,7 @@ struct WirePage<Content: View>: View {
                                 else { Text(primary).font(TypeStyle.body(16, .medium)).foregroundStyle(primaryEnabled ? CallInk.onInk : Color(white: 0.65)) }
                             }
                         }.buttonStyle(.plain).disabled(!primaryEnabled || primaryBusy)
-                            .frame(width: full.size.width - 77, height: 50).position(x: (full.size.width - 1) / 2, y: footerY + 25)
+                            .frame(width: WireColumn.width(full.size.width), height: 50).position(x: WireColumn.left + WireColumn.width(full.size.width) / 2, y: footerY + 25)
                             .accessibilityLabel(primary).accessibilityIdentifier(primaryID)
                     }
                 }.frame(width: full.size.width, height: full.size.height)
@@ -496,25 +503,29 @@ struct SkipImportView: View {
             .position(x: x + w / 2, y: y + h / 2 + top).allowsHitTesting(false).accessibilityHidden(true)
     }
 
-    // N1 · 267:4 — 2 × 3 tiles of 150 × 65 at (38, 431), then "Add your own" 313 × 65; picture 0.9 behind
+    // N1 · 267:4 — 2 × 3 tiles of 150 × 65 at (38, 431), then "Add your own" 313 × 65; picture 0.9 behind.
+    // b16 (Appetize 402 pt): the column is the CTA's (WireColumn), not a fixed 313 that ended 10–12 pt short of it.
     private func topicsPage(width: CGFloat, top: CGFloat) -> some View {
         let extras = (model.setup.skipInterests ?? []).filter { !Self.topics.contains($0) }
         let items = Self.topics + extras
+        let column = WireColumn.width(width)
         return ZStack(alignment: .topLeading) {
-            blob("skip-blob-n1", x: -93, y: -70, w: 576, h: 751, top: top)
+            // b16: 18 pt lower than the Figma -70: the particle circle's top crossed "three quick" in the subtitle (its
+            // bottom still meets the first row of tiles, which are opaque, as in the Figma)
+            blob("skip-blob-n1", x: -93 + (width - 390) / 2, y: -52, w: 576, h: 751, top: top)
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 9) {
-                    LazyVGrid(columns: [GridItem(.fixed(150), spacing: 13), GridItem(.fixed(150))], spacing: 9) {
+                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 13), GridItem(.flexible())], spacing: 9) {
                         ForEach(items, id: \.self) { item in topicTile(item) }
                     }
                     Button { customOpen = true } label: {
                         Text("Add your own").font(TypeStyle.body(16, .medium)).foregroundStyle(SkipInk.mute)
-                            .frame(width: 313, height: 65)
+                            .frame(width: column, height: 65)
                             .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(SkipInk.line, style: StrokeStyle(lineWidth: 1, dash: [2, 1])))
                             .background(.white, in: RoundedRectangle(cornerRadius: 12))
                     }.buttonStyle(.plain).accessibilityIdentifier("skipCustom")
-                }.frame(width: 313)
-            }.frame(width: 313, height: 287).position(x: 38 + 313 / 2, y: 431 + 287 / 2 + top)
+                }.frame(width: column)
+            }.frame(width: column, height: 287).position(x: WireColumn.left + column / 2, y: 431 + 287 / 2 + top)
         }
     }
     private func topicTile(_ item: String) -> some View {
@@ -525,7 +536,7 @@ struct SkipImportView: View {
                 .frame(maxWidth: .infinity).frame(height: 65)
                 .background(on ? SkipInk.blue : .white, in: RoundedRectangle(cornerRadius: 12))
                 .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(on ? SkipInk.blue : SkipInk.line, lineWidth: 1))
-                .overlay(alignment: .topLeading) { if on { SkipBadge(size: 16).offset(x: 126, y: 6) } }
+                .overlay(alignment: .topTrailing) { if on { SkipBadge(size: 16).offset(x: -8, y: 6) } }   // 126 of 150, any tile width
         }.buttonStyle(.plain).accessibilityAddTraits(on ? .isSelected : []).accessibilityIdentifier("skipChip-\(item)")
     }
 

@@ -220,7 +220,16 @@ extension FindsModel {
                 }
                 state = .searching
             } else {
-                play([(product, product.events)]); state = .full
+                // b16: the card shows only shops that have a picture (6e14dcd4) and a #774 server swaps one whose
+                // picture never came. This run was recorded before both (product-2 failed), so the board's "two cards"
+                // state gets the ready picture such a server sends. b17: its own picture (the Linen overshirt), not the
+                // jacket's again (two cards with one photo in screenshots and Appetize)
+                let events = product.events.map { e -> ServerEvent in
+                    guard case var .findImage(i) = e, i.slot == "product-2", i.status == .failed else { return e }
+                    i.status = .ready; i.url = "bundle:finds-product-overshirt"
+                    return .findImage(i)
+                }
+                play([(product, events)]); state = .full
                 if n == 23 { toggleSave() }
             }
         default: break
@@ -268,7 +277,8 @@ actor FixtureFindsAPI: FindsAPI {
         card(.recipe, hoursAgo: 3) { $0.saved = true }
         card(.outfit, hoursAgo: 2)
         card(.link, hoursAgo: 1) { $0.page?.opened = false; $0.title = "Carry-on packing guide"; $0.status = nil }
-        card(.link, hoursAgo: 27) { $0.title = "Late ramen near Hapjeong" }
+        // b17 (Appetize QA D): its own picture, not the carry-on guide's suitcase again
+        card(.link, hoursAgo: 27) { $0.title = "Late ramen near Hapjeong"; $0.hero = FindImage(slot: "hero", status: .ready, url: "bundle:finds-link-ramen") }
         return (cards, frames)
     }
 }

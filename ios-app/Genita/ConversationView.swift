@@ -161,6 +161,10 @@ struct ConversationView: View {
                                 .overlay { if waitingForFace { CallWaitStage(size: CGSize(width: 96, height: 128)) } }.clipShape(RoundedRectangle(cornerRadius: 16))
                                 .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(CallInk.onInk, lineWidth: 2)).shadow(color: CallInk.ink.opacity(0.18), radius: 12, y: 8)
                                 .position(x: sheet == .half || sheet == .rising ? 68 : full.size.width - 68, y: 184 + top)
+                                // b16 (Appetize): with the sheet half up the boxes are drawn on the camera; the window steps
+                                // aside instead of sitting on one
+                                .opacity((sheet == .half || sheet == .rising) && call.finds.boxes.visible && !call.finds.boxes.boxes.isEmpty ? 0 : 1)
+                                .animation(.drawer, value: call.finds.boxes.visible)
                                 .onTapGesture { faceTapped() }.accessibilityLabel("\(call.companionName)")
                                 .accessibilityValue(CompanionFaceView.layer(face: call.face != nil, poster: call.facePoster != nil, still: companionImage != nil))
                                 .accessibilityIdentifier("cameraPip")
@@ -179,17 +183,6 @@ struct ConversationView: View {
                         } else {
                         // live captions r01: above the face / camera stage, under the self view, rail and pill
                         captionLayer(grid: grid, size: full.size, sheet: sheet, hidden: connecting || findsTabOpen || unclear)
-                        ZStack(alignment: .topLeading) {
-                            if !call.cameraOn {
-                                let selfScale: CGFloat = sheet == .half || sheet == .rising ? 0.5 : 1
-                                selfView.scaleEffect(selfScale)
-                                    .position(grid.selfCenter(lift: selfLift(sheet), scale: selfScale, sheetUp: CallHUDGrid.sheetUp(sheet)))
-                                    .opacity(sheet == .full ? 0 : 1).animation(.drawer, value: sheet)
-                                    // camera on: the tile gives way to the camera stage (Reduce Motion: fade only)
-                                    .transition(reduceMotion ? .opacity : .scale(scale: 0.6).combined(with: .opacity))
-                            }
-                        }.frame(width: full.size.width, height: full.size.height)
-                            .animation(reduceMotion || CallMotion.reviewStill ? .easeOut(duration: 0.2) : .spring(response: 0.4, dampingFraction: 0.85), value: call.cameraOn)
                         if CallHUDGrid.showsFlip(cameraOn: call.cameraOn, canFlip: call.canFlipCamera, sheet: sheet) {
                             // build 10 (Chelsea mock DHhhUPYs): flip camera one step above the camera button while the camera is on — white like camera / mic on
                             Button { call.flipCamera() } label: { CallRailWhiteSymbol(symbol: "arrow.triangle.2.circlepath.camera") }
@@ -226,7 +219,7 @@ struct ConversationView: View {
                             FindsSheet(call: call, size: full.size, talk: { closeFindsTab() }, openFinds: { openFindsTab() }).frame(width: full.size.width, height: full.size.height, alignment: .top)
                                 .transition(.move(edge: .bottom))
                         }
-                        if sheet == .full {
+                        if sheet == .full && !Self.hideFullSheetPip {
                             // r03 `.pip`: the face as a 96 × 128 window; tap → back to half
                             Button { withAnimation(.drawer) { call.finds.pipTapped() } } label: {
                                 CompanionFaceView(still: companionImage, loop: loopURL, face: call.face, faceStill: call.faceStill, poster: call.facePoster, framedStill: framedScene).frame(width: 96, height: 128)
@@ -280,7 +273,9 @@ struct ConversationView: View {
                                 DesignText(node: label, text: "Connecting to \(model.companionDisplayName)…").frame(width: lineWidth(for: label), height: label.h)
                             }.frame(width: max(175, lineWidth(for: label) + 40), height: 36).shadow(color: .black.opacity(0.15), radius: 4, y: 4).position(x: full.size.width / 2 + 0.5, y: grid.rowY).accessibilityIdentifier("connectingPill")
                         }
-                        if let waitingCopy {
+                        // b18 (411 QA P2): Finds opened from the menu on R1 ("Continue on your Mac") is on top; the waiting
+                        // sheet comes back when Finds closes (it was drawn over the Finds tab, which showed nothing)
+                        if let waitingCopy, !findsTabOpen {
                             VStack(spacing: 0) { Spacer(minLength: 0); HandoffWaitingSheet(copy: waitingCopy) { handoff.continueHere() } }
                                 .frame(width: full.size.width, height: full.size.height).transition(.move(edge: .bottom))
                         }
@@ -297,7 +292,7 @@ struct ConversationView: View {
                             VStack(spacing: 0) {
                                 Spacer(minLength: 0)
                                 // #180: Move to Mac runs the move (unpaired → the P01 pairing sheet)
-                                CallMoreSheet(call: call, findsTotal: findsList.displayCount(thisCall: call.findsCount), textChatEnabled: appConfig.config.flag("textChat", default: false), moveToMacSubtitle: handoff.link.connected ? "Connected to your Mac" : "Pair with your Mac", moveToMac: { handoff.moveToMac() },
+                                CallMoreSheet(call: call, findsSubtitle: findsList.moreSubtitle(thisCall: call.findsCount), textChatEnabled: appConfig.config.flag("textChat", default: false), moveToMacSubtitle: handoff.link.connected ? "Connected to your Mac" : "Pair with your Mac", moveToMac: { handoff.moveToMac() },
                                               openFinds: { openFindsTab() }, report: { reportOpen = true }) {
                                     withAnimation(.easeOut(duration: 0.22)) { moreOpen = false }
                                 }
@@ -435,6 +430,9 @@ struct ConversationView: View {
                 call.installProfileChipFixture()
                 installFindsTabFixture()
                 #endif
+                // b16: the Finds list loads when the call starts, so the More row and the drawer badge have the list's
+                // number before either is opened (they also reload on open)
+                Task { await findsList.load() }
             }
         }
         .onDisappear { if !connecting { call.end(); keepScreenAwake(false) }; model.callFindsListOpen = false }
@@ -511,15 +509,6 @@ struct ConversationView: View {
     private func faceScale(_ s: SheetState) -> CGFloat { s == .half ? 0.814 : s == .rising ? 0.895 : 1 }
     private func faceOffset(_ s: SheetState, top: CGFloat) -> CGSize {
         s == .half ? CGSize(width: 43.1, height: -66) : s == .rising ? CGSize(width: 24.2, height: -37.1) : .zero
-    }
-    /// r03 `.self` from the sheet baseline (806 + H − 844): half → half size with its bottom where the old box's was
-    /// (300.5 + H − 844: 806 − 48 − 481.5 + 24); peek/searching → up 122.
-    private func selfLift(_ s: SheetState) -> CGFloat {
-        switch s {
-        case .half, .rising: -481.5
-        case .peek, .searching: -122
-        default: 0
-        }
     }
     /// HUD r01 A: which line the status pill is on (CallHUDGrid.StatusLine), from what it shows.
     /// Measured, not counted: a pill no wider than the row's room stays on the row; wider ones (a cue with a button,
@@ -628,20 +617,12 @@ struct ConversationView: View {
     }
     /// Self view, camera off: the glass tile. With the camera on the camera is the stage (CameraStage) and this tile is not
     /// drawn, so its flip button never showed (build 11 cleanup); the rail's flip button (#717) and double-tap flip instead.
-    @ViewBuilder var selfView: some View {
-        // HUD r01 A: camera off = a small glass tile (72 × 96), not the old 113 × 211 dark box
-        let shape = RoundedRectangle(cornerRadius: 16)
-        ZStack {
-            shape.fill(.ultraThinMaterial).environment(\.colorScheme, .dark)
-            shape.fill(Color.black.opacity(0.28))
-            Image(systemName: "video.slash").font(.system(size: 18, weight: .regular)).foregroundStyle(Color.white.opacity(0.7))
-        }
-        .overlay(shape.strokeBorder(Color.white.opacity(0.35), lineWidth: 0.7))
-        .frame(width: CallHUDGrid.selfOff.width, height: CallHUDGrid.selfOff.height)
-        .accessibilityElement().accessibilityLabel("Your camera is off").accessibilityIdentifier("selfViewOff")
-        // D22: double-tap the self view → the camera on, facing back
-        .onTapGesture(count: 2) { call.useBackCamera() }.accessibilityAction(named: "Use back camera") { call.useBackCamera() }
-    }
+    /// b16 (Appetize QA): the r03 face window covered the full sheet's top-right (bookmark, close, the camera frame's
+    /// boxes); at full the sheet has the screen to itself. The grab and a drag on the sheet take it back to half.
+    static let hideFullSheetPip = true
+
+    // b17 (Chelsea 11/5 "remove it"): camera off = no self view at all (the grey video.slash tile is gone); the camera's
+    // own stage shows only with live frames, the rail's camera button says off.
     /// What the framed scene is drawn from: the scene bytes, the server's crop and the overscan (reduce motion).
     private var framedSceneID: String {
         let d = model.sceneImageData

@@ -10,7 +10,7 @@ import { Session, type SessionDeps, type ClientSink } from "../src/session/sessi
 import type { SparkRequest, SparkStreamEvent } from "../src/meta/spark.ts";
 import assert from "node:assert/strict";
 import { classifyTurn } from "../src/finds/intent.ts";
-import { GENERAL_IMAGE_MS, GENERAL_REPLY_LINE, GENERAL_SAY, PLACE_SAY, firstSentenceOnly, isGeneralAsk, questionTitle, runGeneral } from "../src/finds/general.ts";
+import { GENERAL_IMAGE_MS, GENERAL_REPLY_LINE, GENERAL_SAY, PLACE_ACK, PLACE_NONE_LINE, PLACE_SAY, PLACE_WAIT_LINE, firstSentenceOnly, placeSay, isGeneralAsk, questionTitle, runGeneral } from "../src/finds/general.ts";
 import { FindsRunner } from "../src/finds/runner.ts";
 import { MemoryFindsStore } from "../src/finds/store.ts";
 import type { PipelineCtx } from "../src/finds/pipeline.ts";
@@ -162,7 +162,7 @@ test("general pipeline: no usable JSON but the search ran → the search's own p
   for (const e of none) assert.deepEqual(checkServerEvent(e), [], JSON.stringify(e));
 });
 
-test("general runner (mix): no fixed ack — the turn answers in one sentence itself; the card lands, then one line", async () => {
+test("general runner (mix): a place question gets a short fixed line (no name from memory, 11/5 eval 5c); the card lands, then one line", async () => {
   const json = JSON.stringify({ title: "Ramen in Seoul", results: [{ title: "Time Out", why: "Roundup.", url: "https://www.timeout.com/seoul/restaurants/best-ramen-in-seoul" }] });
   const events: ServerEvent[] = [];
   const said: string[] = [];
@@ -170,11 +170,68 @@ test("general runner (mix): no fixed ack — the turn answers in one sentence it
   const started = r.onTurn({ text: "What's the best ramen place in Seoul?", frames: [], utteranceId: 1, replyText: Promise.resolve(null) });
   assert.ok(started);
   assert.equal(started.kind, "answer");
-  assert.equal(started.ack, undefined, "no fixed line: the reply answers from what it knows");
+  assert.equal(started.ack, PLACE_ACK, "a place is named only from the search: a short line now");
   await r.settle();
   assert.ok(events.some((e) => e.type === "find.created" && e.card.kind === "answer"));
-  assert.deepEqual(said, [PLACE_SAY]);
+  assert.deepEqual(said, [PLACE_SAY], "a guide's title is not a place name: the plain line");
+  // a non-place question still answers in one sentence itself
+  const fact = r.onTurn({ text: "Who is the CEO of Nintendo?", frames: [], utteranceId: 3, replyText: Promise.resolve(null) });
+  assert.equal(fact?.ack, undefined);
   assert.equal(r.onTurn({ text: "How are you?", frames: [], utteranceId: 2, replyText: Promise.resolve(null) }), null);
+});
+
+test("place (11/5 eval 5c): the card's line names the top result the search found; a search with nothing says so; never a name from memory", async () => {
+  assert.equal(placeSay([{ title: "Menya Sandaime" }, { title: "Mendokoro Ramenba" }]), "Menya Sandaime is the top pick, a few more spots are up with photos and a map.");
+  assert.equal(placeSay([{ title: "Menya Sandaime (Hongdae)" }]), "Menya Sandaime is the top pick, a few more spots are up with photos and a map.");
+  for (const t of ["10 Best Ramen in Seoul", "Time Out: best ramen in Seoul", "Where to eat ramen in Seoul", "Seoul ramen guide | Eater", ""]) assert.equal(placeSay([{ title: t }]), PLACE_SAY, t);
+  const json = JSON.stringify({ title: "Ramen in Seoul", results: [{ title: "Menya Sandaime", why: "Tonkotsu in Hongdae.", url: "https://www.timeout.com/seoul/restaurants/best-ramen-in-seoul" }] });
+  const said: string[] = [];
+  const r = new FindsRunner({ vendors: fakeVendors(json, TRACE), store: new MemoryFindsStore(), images: false, imageBase: "/v1/finds" }, { emit: () => {}, announce: (t) => said.push(t), log: () => {}, now: () => 0 });
+  assert.equal(r.onTurn({ text: "Best ramen places in Seoul", frames: [], utteranceId: 1, replyText: Promise.resolve(null) })?.ack, PLACE_ACK);
+  await r.settle();
+  assert.deepEqual(said, ["Menya Sandaime is the top pick, a few more spots are up with photos and a map."]);
+  const none: string[] = [];
+  const r2 = new FindsRunner({ vendors: fakeVendors("{}", []), store: new MemoryFindsStore(), images: false, imageBase: "/v1/finds" }, { emit: () => {}, announce: (t) => none.push(t), log: () => {}, now: () => 0 });
+  r2.onTurn({ text: "Best ramen places in Seoul", frames: [], utteranceId: 1, replyText: Promise.resolve(null) });
+  await r2.settle();
+  assert.deepEqual(none, [PLACE_NONE_LINE]);
+});
+
+test("place (5c): a slow place card gets one wait line (no place name) between the ack and the named pick, in a real session", async () => {
+  const json = JSON.stringify({ title: "Ramen in Seoul", results: [{ title: "Menya Sandaime", why: "Tonkotsu in Hongdae.", url: "https://www.timeout.com/seoul/restaurants/best-ramen-in-seoul" }] });
+  const slow = fakeVendors(json, TRACE);
+  const spark = slow.spark;
+  slow.spark = async (req, signal) => { await new Promise((r) => setTimeout(r, 700)); return spark(req, signal); };
+  const asr = Object.assign(new EventEmitter(), { isOpen: false, async connect() { this.isOpen = true; }, sendAudio() {}, end() { this.isOpen = false; } });
+  const client = new Client();
+  const deps: SessionDeps = {
+    config: { ...loadConfig({ MODEL_API_KEY: "fake-meta" }), port: 0, speculate: false, sparkHedge: 1 },
+    openAsr: () => asr,
+    userId: "acct",
+    async *spark(): AsyncIterable<SparkStreamEvent> { yield* chunks(["Menya Hanabi is my pick. "]); },
+    async *tts() {},
+    finds: { vendors: slow, store: new MemoryFindsStore(), images: false, imageBase: "/v1/finds", placeWaitMs: 300 },
+  };
+  const s = new Session("place-wait", client, deps);
+  await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Rio" }, mic: false, tts: "device" }));
+  await s.onClientText(JSON.stringify({ type: "text", text: "Best ramen places in Seoul" }));
+  const replies = () => client.events.filter((e) => e.type === "reply").map((e) => String((e as { text?: string }).text ?? ""));
+  // the app reports each line played (device voice), so the next one may start
+  const played = new Set<number>();
+  const ack = setInterval(() => {
+    for (const e of client.events) if (e.type === "reply" && !played.has((e as { utteranceId: number }).utteranceId)) { played.add((e as { utteranceId: number }).utteranceId); void s.onClientText(JSON.stringify({ type: "playback_done", utteranceId: (e as { utteranceId: number }).utteranceId })); }
+  }, 5);
+  try { await waitFor(() => replies().some((t) => t.includes("Menya Sandaime is the top pick")), 5000); } finally { clearInterval(ack); }
+  s.close();
+  assert.deepEqual(replies(), [PLACE_ACK, PLACE_WAIT_LINE, "Menya Sandaime is the top pick, a few more spots are up with photos and a map."]);
+  assert.doesNotMatch(replies().slice(0, 2).join(" "), /Menya|Hanabi/, "no name before the verified result, none from the model");
+  // a card that lands first: no wait line
+  const quick: string[] = [];
+  const r = new FindsRunner({ vendors: fakeVendors(json, TRACE), store: new MemoryFindsStore(), images: false, imageBase: "/v1/finds", placeWaitMs: 200 }, { emit: () => {}, announce: (t) => quick.push(t), log: () => {}, now: () => 0 });
+  r.onTurn({ text: "Best ramen places in Seoul", frames: [], utteranceId: 1, replyText: Promise.resolve(null) });
+  await r.settle();
+  await new Promise((res) => setTimeout(res, 250));
+  assert.deepEqual(quick, ["Menya Sandaime is the top pick, a few more spots are up with photos and a map."]);
 });
 
 const collect = async (src: AsyncIterable<SparkStreamEvent>) => { const out: SparkStreamEvent[] = []; for await (const e of src) out.push(e); return out; };
@@ -292,7 +349,8 @@ async function callWith(reply: () => AsyncIterable<SparkStreamEvent>) {
   };
   const s = new Session("p0", client, deps);
   await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Rio" }, mic: false }));
-  await s.onClientText(JSON.stringify({ type: "text", text: "What is the best KBBQ place in Suwon?" }));
+  // a general (non-place) question: a place question answers with PLACE_ACK and the card's named pick (11/5 eval 5c)
+  await s.onClientText(JSON.stringify({ type: "text", text: "Who is the CEO of Nintendo?" }));
   const spoken = () => client.events.filter((e) => e.type === "say" || e.type === "reply").map((e) => String((e as { text?: string }).text ?? "")).join(" | ");
   await waitFor(() => spoken().length > 0 && client.events.some((e) => e.type === "find.created"), 8000);
   await new Promise((r) => setTimeout(r, 50));

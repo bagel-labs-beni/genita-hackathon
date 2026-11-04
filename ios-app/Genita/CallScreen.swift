@@ -480,8 +480,8 @@ final class SelfCameraSurface: UIView {
 
 struct CallMoreSheet: View {
     let call: CallController
-    /// Same number as the drawer's Finds badge (FindsListModel.displayCount).
-    var findsTotal: Int
+    /// Same number as the drawer's Finds badge and the Finds list (FindsListModel.moreSubtitle / displayCount).
+    var findsSubtitle: String
     var textChatEnabled: Bool
     var moveToMacSubtitle: String
     var moveToMac: () -> Void
@@ -502,8 +502,7 @@ struct CallMoreSheet: View {
                 call.setInterpreting(on)
                 if on { close() }
             }
-            let n = findsTotal
-            row("bookmark", "Finds", n == 0 ? "Nothing looked up yet" : n == 1 ? "1 thing I looked up" : "\(n) things I looked up", id: "moreFinds", enabled: openFinds != nil) { close(); openFinds?() }
+            row("bookmark", "Finds", findsSubtitle, id: "moreFinds", enabled: openFinds != nil) { close(); openFinds?() }
             if pasteHasLink && call.mode != .interpret {
                 // no S08 text field yet: the system paste of a copied link is the way in (link card F10-13 / F10-14)
                 row("link", "Paste link", "Talk about the link you copied", id: "morePasteLink") {

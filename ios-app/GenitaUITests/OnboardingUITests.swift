@@ -361,6 +361,63 @@ final class OnboardingUITests: XCTestCase {
         add(shot)
     }
 
+    /// b17 C2 hold to say on Muse Voice Transcribe: the stub has no `/v1/transcribe` (404, as the server with
+    /// GENITA_TRANSCRIBE_HTTP=0). The hold records 1 s of silence (no mic), the request fails, the hint says
+    /// "Couldn't catch that. Type it instead.", and typing + Save still work.
+    func testHISYMicWithTheServerDownStillTypes() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting", "--stub-signin", "--fixture-image"]
+        app.launchEnvironment = [
+            "GENITA_API_URL": "http://127.0.0.1:8790",
+            "GENITA_SERVER_URL": "ws://127.0.0.1:8788/v1/session",
+            "GENITA_FIXTURE_SCRIPT": "none",
+            "GENITA_REVIEW_STILL": "1",
+            "GENITA_FAKE_DICTATION_AUDIO": "1",
+            "GENITA_HISY_TOAST_MS": "6000",
+        ]
+        app.launch()
+        func element(_ id: String) -> XCUIElement { app.descendants(matching: .any).matching(identifier: id).firstMatch }
+        func capture(_ name: String) {
+            let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "onb-" + name; shot.lifetime = .keepAlways; add(shot)
+        }
+        let primary = app.buttons["primaryCTA"]
+        XCTAssertTrue(app.buttons["copyPrompt"].waitForExistence(timeout: 15), "I01")
+        primary.tap()
+        let input = element("responseInput")
+        XCTAssertTrue(input.waitForExistence(timeout: 5), "I02")
+        input.tap()
+        input.typeText("Communication style: warm and direct. Likes: warm colors.")
+        app.buttons["Dismiss keyboard"].tap()
+        XCTAssertTrue(primary.waitForExistence(timeout: 5))
+        primary.tap()
+        XCTAssertTrue(element("hisyOpener").waitForExistence(timeout: 15), "HISY-0 after the import")
+        app.buttons["hisyShowMe"].tap()
+        Thread.sleep(forTimeInterval: 0.6)
+        app.buttons.matching(identifier: "hisyNotMe").firstMatch.tap()
+        let save = app.buttons["hisyFixSave"]
+        XCTAssertTrue(save.waitForExistence(timeout: 5), "C1")
+
+        element("hisyMic").press(forDuration: 0.6)
+        let hint = element("hisyFixHint")
+        let end = Date().addingTimeInterval(12)
+        while Date() < end, !hint.label.contains("Couldn’t catch that") { Thread.sleep(forTimeInterval: 0.2) }
+        XCTAssertEqual(hint.label, "Couldn’t catch that. Type it instead.", "the neutral line after a failed clip")
+        XCTAssertEqual(element("hisyMic").value as? String ?? "", "", "the mic is idle again")
+        capture("HISY-C2-transcribe-failed")
+
+        let field = element("hisyFixText")
+        field.tap()
+        field.typeText("I like warm colors.")
+        XCTAssertEqual(field.value as? String, "I like warm colors.", "the field still types")
+        XCTAssertTrue(save.isEnabled)
+        capture("HISY-C2-typed-after-fail")
+        // Save under the keyboard can't be tapped by a finger either; when it shows, it saves as usual
+        if save.isHittable {
+            save.tap()
+            XCTAssertTrue(element("hisyToast").waitForExistence(timeout: 15), "Save still works")
+        }
+    }
+
     /// I01 "I don't use an AI assistant" → N1 → N2 → N3 → HISY-S0 → S1~S4 → HISY-7, for the eye check against Figma.
     /// Named to run before testOnboardingAgainstTheServer: it creates no companion on the stub.
     func testImportSkipPath() throws {

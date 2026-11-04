@@ -252,7 +252,9 @@ final class GenitaUITests: XCTestCase {
         app.buttons["Grounded"].tap(); app.buttons["primaryCTA"].tap()
         app.buttons["primaryCTA"].tap()
         XCTAssertTrue(app.buttons["openMenu"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Your camera is off"].exists || app.otherElements["Your camera is off"].exists)
+        // b17: camera off = no self-view tile (Chelsea 11/5); the rail's camera button says it is off
+        XCTAssertFalse(app.otherElements["Your camera is off"].exists, "no grey camera-off tile")
+        XCTAssertEqual(app.buttons["cameraToggle"].label, "Turn camera on")
         XCTAssertFalse(app.buttons["Share screen"].exists)
         let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "iPhone conversation"; shot.lifetime = .keepAlways; add(shot)
         app.buttons["openMenu"].tap(); app.buttons["settings"].tap()

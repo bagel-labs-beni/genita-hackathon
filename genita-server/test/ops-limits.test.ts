@@ -311,6 +311,38 @@ test("ops usage log is nonzero and at most once every ten minutes; pause logs on
 });
 
 
+test("daily turns exemption (11/5): team ids (GENITA_DAILY_TURNS_EXEMPT, else GENITA_TRANSCRIPT_LOG_USERS) and listed emails skip only the user_turns cap; logged once a day", async () => {
+  const { OpsLimits } = await import("../src/ops/limits.ts");
+  assert.deepEqual(config({ GENITA_TRANSCRIPT_LOG_USERS: "u-team, u-two" }).dailyTurnsExempt, ["u-team", "u-two"]);
+  assert.deepEqual(config({ GENITA_TRANSCRIPT_LOG_USERS: "u-team", GENITA_DAILY_TURNS_EXEMPT: "Chelsea@Example.com,u-x" }).dailyTurnsExempt, ["chelsea@example.com", "u-x"]);
+  assert.deepEqual(config().dailyTurnsExempt, []);
+  let now = Date.parse("2026-11-05T01:00:00Z");
+  const seen: Array<{ event: string; data: Record<string, unknown> }> = [];
+  const ops = new OpsLimits(config({ GENITA_USER_DAILY_TURNS: "2", GENITA_TRANSCRIPT_LOG_USERS: "u-team" }), { now: () => now, log: (event, data) => seen.push({ event, data }) });
+  assert.deepEqual([1, 2, 3, 4, 5].map(() => ops.acceptUserTurn("u-team")), [true, true, true, true, true], "the team account never hits the turn cap");
+  assert.deepEqual([1, 2, 3].map(() => ops.acceptUserTurn("u-other")), [true, true, false], "everyone else still does");
+  assert.equal(ops.canSpeculate("u-team"), true);
+  assert.equal(ops.cappedUser("u-team"), false);
+  assert.equal(ops.cappedUser("u-other"), true);
+  assert.equal(seen.filter((l) => l.event === "limit.exempt").length, 1, "once per user per day");
+  // only the turn cap: the global Meta call cap is the same counter for everyone (metaLimit), still in force
+  assert.equal(typeof ops.metaLimit, "function");
+  now += 86_400_000;
+  ops.acceptUserTurn("u-team");
+  assert.equal(seen.filter((l) => l.event === "limit.exempt").length, 2, "logged again the next UTC day");
+  // an email on the list: that account's id is exempt once the call's prime has looked it up
+  const db = await openDb("pglite:memory");
+  try {
+    await migrateUp(db);
+    const c = (await db.query("INSERT INTO users (provider, provider_sub, email, email_verified) VALUES ('email', 'ops-c', 'chelsea@example.com', true) RETURNING id")).rows[0].id as string;
+    const byEmail = new OpsLimits(config({ GENITA_USER_DAILY_TURNS: "1", GENITA_DAILY_TURNS_EXEMPT: "Chelsea@example.com" }), { db, now: () => now });
+    byEmail.prime(c);
+    await byEmail.pending;
+    assert.deepEqual([1, 2, 3].map(() => byEmail.acceptUserTurn(c)), [true, true, true]);
+    await byEmail.pending;
+  } finally { await db.close(); }
+});
+
 test("config: D46 defaults, overrides and invalid numeric fallbacks", () => {
   const c = config();
   assert.equal(c.paused, false);

@@ -20,6 +20,8 @@ import Foundation
     func playbackPositionMs(utteranceId: Int) -> Double?
     /// Convo P1 #345: a soft backchannel cue while the user talks (default: ignored)
     func playCue(pcm: Data)
+    /// b16: the call is back (scene active, interpretation ended): recover the engine if it is not playing (default: nothing)
+    func resume(_ why: String)
     /// Motion details: the user's voice and the reply's loudness 0…1 right now (default: silent)
     var inputLevel: Float { get }
     var outputLevel: Float { get }
@@ -28,6 +30,7 @@ import Foundation
 extension CallAudioPlaying {
     func start(preparingMic: Bool) { start() }
     func playCue(pcm: Data) {}
+    func resume(_ why: String) {}
     var inputLevel: Float { 0 }
     var outputLevel: Float { 0 }
 }

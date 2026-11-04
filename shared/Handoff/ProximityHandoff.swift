@@ -102,7 +102,7 @@ struct ProximityConfig: Equatable {
 /// - A hold only completes while the peripheral's token is known (`canReport`); until then it keeps counting.
 struct ProximityDetector {
     var config: ProximityConfig
-    private struct Track { var recent: [Int] = []; var lastAt: Double; var closeSince: Double?; var samples = 0 }
+    private struct Track { var recent: [Int] = []; var lastAt: Double; var closeSince: Double?; var samples = 0; var lastFarAt: Double?; var farSince: Double? }
     private var tracks: [String: Track] = [:]
     private var cooldownUntil = -Double.infinity
     private var rejectedTokens: [String: Double] = [:]
@@ -110,6 +110,20 @@ struct ProximityDetector {
     private var fired: (key: String, lastAt: Double)?
     static let forgetFiredSeconds = 20.0
     static let rejectedTokenCooldownSeconds = 3.0
+    /// b18 (411 QA 04:06–04:07, ping-pong): after a move to the iPhone the phone must really leave — settled far
+    /// readings (3-reading median at or below `exitRSSI`), with no near one and no gap, for this long — before the Mac
+    /// may take the call again.
+    static let leaveSeconds = 3.0
+    /// b18: a move needs an approach: that phone was seen far (at or below `exitRSSI`) at most this long before its
+    /// close hold began. A phone lying next to the Mac never qualifies.
+    static let approachSeconds = 6.0
+    /// set by a move to the iPhone (`requireLeave`): no trigger until no phone has been near for `leaveSeconds`
+    private var leaveLatch = false
+    /// the phones heard near while the latch is set: each of them must leave (its own 3 s far run with no gap), or go
+    /// silent for `forgetFiredSeconds` (Codex r2: another phone's far readings never clear it)
+    private var leaveNear: [String: Double] = [:]   // key → when it was last heard (kept across scan restarts)
+    /// set by `startScan` / `requireLeave`: a trigger needs an approach (`approachSeconds`)
+    private var approachRequired = false
 
     init(config: ProximityConfig = ProximityConfig()) { self.config = config }
 
@@ -126,15 +140,34 @@ struct ProximityDetector {
             return false
         }
         var t = tracks[key] ?? Track(lastAt: now)
-        if now - t.lastAt > config.maxGapSeconds { t.recent = []; t.closeSince = nil; t.samples = 0 }
+        // a gap also drops the far reading an approach would lean on (Codex r1: no approach across a gap)
+        if now - t.lastAt > config.maxGapSeconds { t.recent = []; t.closeSince = nil; t.samples = 0; t.lastFarAt = nil; t.farSince = nil }
         t.lastAt = now
         t.recent = Array((t.recent + [rssi]).suffix(3))
         let level = Self.median(t.recent)
+        // b18: "far" and "left" are read from 3 readings, never one raw sample after a gap (−60 once cleared the latch)
+        let settled = t.recent.count >= 3
+        if level > config.exitRSSI { t.farSince = nil; if leaveLatch { leaveNear[key] = now } }
+        else if settled { t.lastFarAt = now; t.farSince = t.farSince ?? now }
+        if leaveLatch {
+            if leaveNear[key] != nil { leaveNear[key] = now }
+            tracks[key] = t
+            // left = its own far run spans 3 s of its own readings (silence never counts, Codex r3), or it has been
+            // silent for `forgetFiredSeconds`; a phone whose track is gone (scan restart) counts only by its silence
+            let known = tracks, heard = leaveNear
+            let left = { (k: String) -> Bool in
+                if let tr = known[k] {
+                    return (tr.farSince.map { tr.lastAt - $0 >= Self.leaveSeconds } ?? false) || now - tr.lastAt >= Self.forgetFiredSeconds
+                }
+                return now - (heard[k] ?? now) >= Self.forgetFiredSeconds
+            }
+            if leaveNear.isEmpty ? left(key) : leaveNear.keys.allSatisfy(left) { leaveLatch = false; leaveNear = [:] }
+        }
         var fire = false
         if let f = fired {
             if key == f.key {
                 fired?.lastAt = now
-                if level < config.exitRSSI { fired = nil }
+                if settled, level < config.exitRSSI { fired = nil }
             } else if now - f.lastAt > Self.forgetFiredSeconds, level < config.enterRSSI {
                 fired = nil
             }
@@ -142,7 +175,8 @@ struct ProximityDetector {
         if level >= config.enterRSSI {
             if t.closeSince == nil { t.closeSince = now; t.samples = 0 }
             t.samples += 1
-            if fired == nil, canReport, now >= cooldownUntil, let since = t.closeSince, now - since >= config.holdSeconds, t.samples >= config.minSamples {
+            let approached = !approachRequired || (t.lastFarAt.map { far in t.closeSince.map { $0 - far <= Self.approachSeconds } ?? false } ?? false)
+            if fired == nil, !leaveLatch, approached, canReport, now >= cooldownUntil, let since = t.closeSince, now - since >= config.holdSeconds, t.samples >= config.minSamples {
                 fire = true
                 fired = (key, now)
                 cooldownUntil = now + config.cooldownSeconds
@@ -171,6 +205,20 @@ struct ProximityDetector {
     /// "must leave first" latch (the next move needs the phone taken away and brought back).
     mutating func reset() { tracks = [:] }
 
+    /// b18: the Mac starts scanning (the iPhone holds the call): readings start over and a move needs an approach, so a
+    /// phone already lying next to the Mac when its call starts or comes back is never taken.
+    mutating func startScan() { reset(); approachRequired = true }
+
+    /// b18 (411 QA ping-pong: Continue here on the iPhone, or Move to iPhone, undone 2 s later or right after the
+    /// cooldown): the conversation moved to the iPhone. No trigger until no phone has been near for `leaveSeconds`, and
+    /// then only on an approach. A refusal (`reject`) does not clear this.
+    mutating func requireLeave(at now: Double) {
+        leaveLatch = true
+        leaveNear = [:]
+        for k in tracks.keys { tracks[k]?.farSince = nil }
+        approachRequired = true
+    }
+
     private static func median(_ v: [Int]) -> Int {
         let s = v.sorted()
         return s.isEmpty ? Int.min : s[s.count / 2]
@@ -179,6 +227,30 @@ struct ProximityDetector {
 
 /// When each side should be running its Bluetooth part. Pure, so the "never move a call unexpectedly"
 /// rules are unit tested: only during a live call on the iPhone, only with this account's Mac app open.
+/// b18 ("징", Chelsea: like the interaction demo): a proximity move plays the touch path's DUO wipe (Dyno's effect,
+/// shared/Handoff/EffectSource) on both devices: the iPhone its outgoing half, the Mac its incoming half. There is no
+/// touch reading and no local `prepare`/`start`, so each device starts it from its own clock on the same server event
+/// (`ownership` trigger `proximity`), with the touch path's lead. Reduce Motion keeps the glide (iPhone) and the fade
+/// (Mac). Off with launch env `GENITA_PROXIMITY_WIPE=0`.
+enum HandoffProximityMotion {
+    /// the touch path's lead between the Mac's `start` and the wipe (MacHandoff `ready`: start = now + 0.8)
+    static let lead: Double = 0.8
+    /// as if the iPhone met the Mac's right edge, where the call window rests (MacHandoff.placeAtRest)
+    static let right = true
+    /// the Mac clears its effect this long after it is set (touch path: 4 s)
+    static let macHold: Double = 4
+    static var enabled: Bool { ProcessInfo.processInfo.environment["GENITA_PROXIMITY_WIPE"] != "0" }
+    static func plays(reduceMotion: Bool, enabled: Bool = HandoffProximityMotion.enabled) -> Bool { enabled && !reduceMotion }
+    /// A server claim that lands while an effect runs waits 1.2 s (the touch path's effect is driven by the local link,
+    /// and the server's copy of the same claim must not cut into it). A proximity move's claim is the move itself:
+    /// held, the call would stay on the iPhone (and off the Mac) for 1.2 s under the wipe.
+    static func holdsServerClaim(effectRunning: Bool, trigger: String?) -> Bool { effectRunning && trigger != "proximity" }
+    /// The Mac's incoming half: `reverse` as the touch path computes it, `(!pending.outgoing) != right` → `right`.
+    static func macPayload(id: String, image: String, now: Double) -> TransitionPayload {
+        TransitionPayload(id: id, image: image, start: now + lead, outgoing: false, reverse: false != right)
+    }
+}
+
 enum ProximityPolicy {
     /// iPhone: advertise while it holds the conversation in a live call, in front, with the Mac app online.
     static func phoneShouldAdvertise(enabled: Bool, inFront: Bool, owner: Bool, callLive: Bool, serverConnected: Bool, macOnline: Bool) -> Bool {

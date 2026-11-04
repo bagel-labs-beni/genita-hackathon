@@ -132,7 +132,9 @@ struct MacGlassControl: View {
     var body: some View {
         ZStack {
             if let tint { tinted(tint) } else { clearGlass }
-            if let url = Bundle.main.url(forResource: icon, withExtension: "png"), let data = try? Data(contentsOf: url), let bitmap = NSBitmapImageRep(data: data) {
+            // b18: no icon name = glass only (Bundle.url(forResource: "") returns the first PNG in the bundle: End call
+            // drew a companion picture in its circle)
+            if !icon.isEmpty, let url = Bundle.main.url(forResource: icon, withExtension: "png"), let data = try? Data(contentsOf: url), let bitmap = NSBitmapImageRep(data: data) {
                 // glyph = 55 % of the circle, the same rule as the iPhone (GlassGlyph); ⋮ as three dots
                 let g = GlassGlyph.size(pixels: CGSize(width: bitmap.pixelsWide, height: bitmap.pixelsHigh), diameter: size)
                 if icon == GlassGlyph.moreIcon { GlassDots(diameter: size) }

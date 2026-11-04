@@ -9,7 +9,7 @@ import { EventEmitter } from "node:events";
 import { loadConfig } from "../src/config.ts";
 import { Session, earlierAskLine, type SessionDeps, type ClientSink } from "../src/session/session.ts";
 import type { SparkRequest, SparkStreamEvent } from "../src/meta/spark.ts";
-import { GENERAL_HEDGE, GENERAL_REPLY_LINE, HOWTO_SAY, PLACE_SAY, asrRestart, generalLayout } from "../src/finds/general.ts";
+import { GENERAL_HEDGE, GENERAL_REPLY_LINE, HOWTO_SAY, PLACE_ACK, PLACE_SAY, asrRestart, generalLayout } from "../src/finds/general.ts";
 import { classifyTurn } from "../src/finds/intent.ts";
 import { MemoryFindsStore } from "../src/finds/store.ts";
 import type { FindsVendors, OutputItem } from "../src/finds/vendors.ts";
@@ -73,8 +73,9 @@ test("prod utt 18 → 20: the ramen search's answer never becomes the reply to t
 
   // utt 18 + its card (utt 19)
   await s.onClientText(JSON.stringify({ type: "text", text: Q1 }));
-  await waitFor(() => created().length === 1 && spoken().includes(PLACE_SAY));
-  assert.match(spoken(), /pulling up a few sources/);
+  // 11/5 eval 5c: a place question says a short line, then the card names the top result it found
+  await waitFor(() => created().length === 1 && spoken().includes("Oreno Ramen is the top pick"));
+  assert.ok(spoken().startsWith(PLACE_ACK), spoken());
   const ramen = created()[0].card as FindCard;
   assert.equal(ramen.layout, "place", "a place question is the place card, not a list of links");
   assert.equal(ramen.sources[0].place?.mapUrl?.startsWith("https://maps.apple.com/?q="), true);

@@ -54,7 +54,7 @@ const ITEMS = [
   { name: "Wool field jacket", url: P3, store: "Shop Three", price: "$120", taste: "Clean lines", situation: "Warm enough" },
 ];
 
-function productRun(o: { p2Image?: boolean; p3Image?: boolean; p2Facts?: Record<string, unknown> } = {}) {
+function productRun(o: { p2Image?: boolean; p3Image?: boolean; p2Facts?: Record<string, unknown>; samePhoto?: boolean } = {}) {
   let generated = 0;
   const v: FindsVendors = {
     async spark(req) {
@@ -71,7 +71,7 @@ function productRun(o: { p2Image?: boolean; p3Image?: boolean; p2Facts?: Record<
       if (url === P3) return { kind: "product", ...(o.p3Image === false ? {} : { image: "https://cdn.example.com/3.jpg" }) };
       return null;
     },
-    async productImage(url) { return Buffer.from(`img:${url}`); },
+    async productImage(url) { return Buffer.from(o.samePhoto ? "img:one-photo-for-all" : `img:${url}`); },
   };
   const events: ServerEvent[] = [];
   const stored: string[] = [];
@@ -122,6 +122,24 @@ test("product: no spare with a picture either → the slot is omitted (failed + 
   assert.deepEqual(r.card!.products![1].image, { slot: "product-2", status: "failed", omit: true });
   assert.equal(r.card!.products![1].url, P2, "the product stays; only its picture box goes");
   assert.equal(run.generated(), 0);
+  wireClean(run.events);
+});
+
+test("product (5c): two products never show the same photo — a duplicate tries the next candidate, else the slot is omitted", async () => {
+  process.env.GENITA_FIND_WEB_IMAGES = "0";
+  const logs: string[] = [];
+  const run = productRun({ p2Image: true, samePhoto: true });
+  run.ctx.log = (e) => logs.push(e);
+  const r = await runProduct(run.ctx);
+  const imgs = images(run.events);
+  const ready = imgs.filter((e) => e.status === "ready" || e.replace?.image?.status === "ready");
+  assert.equal(ready.length, 1, `one picture on the card: ${JSON.stringify(imgs)}`);
+  assert.equal(imgs.find((e) => e.slot === "product-1")?.status, "ready");
+  // P2's page photo is P1's; the spare's (P3) is the same picture too: omitted, never reused
+  assert.deepEqual(imgs.find((e) => e.slot === "product-2"), { type: "find.image", findId: "fp", slot: "product-2", status: "failed", omit: true });
+  assert.deepEqual(run.stored, ["product-1"], "the duplicate bytes are never stored for a second slot");
+  assert.deepEqual(r.card!.products!.map((p) => p.image?.status), ["ready", "failed"]);
+  assert.ok(logs.filter((e) => e === "product.image_duplicate").length >= 2, "both duplicates logged");
   wireClean(run.events);
 });
 

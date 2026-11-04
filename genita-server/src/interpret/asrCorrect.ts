@@ -10,9 +10,10 @@
  * One fast Spark pass fixes the obvious slip using the last few lines of the
  * conversation, before the translation is played:
  *   - runs only when the utterance is Korean;
- *   - runs in parallel with the translation of the raw text, so an unchanged
- *     line costs max(0, correction − translation) ms, never more than the
- *     timeout;
+ *   - runs in parallel with the translation of the raw text and never adds a
+ *     wait (11/5): it is used only if it, and then its own translation, are
+ *     ready before the raw translation's first text; otherwise it is dropped
+ *     (`outcome: "late"` / `interpret.asr_correct_dropped`, interpreter.ts);
  *   - any error, timeout, or an answer that is not a small Korean edit of the
  *     raw text keeps the raw text (acceptCorrection);
  *   - kill switch: GENITA_INTERPRET_ASR_CORRECT=0.

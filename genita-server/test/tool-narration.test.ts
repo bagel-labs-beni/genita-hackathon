@@ -430,8 +430,11 @@ for (const voice of ["server", "device"] as const) {
       const { events, logs, followups } = await recallTurn(voice, [["Hmm,"]], [followup]);
       assert.equal(followups, 2);
       assert.equal(logs.filter((log) => log.event === "spark.empty_retry").length, 1);
-      // 11/3 outage rule: no error card — one line in character and the call goes on
-      assert.ok(events.find((e) => e.type === "reply")?.text.endsWith("Say that again?"));
+      // 11/3 outage rule: no error card — one line in character and the call goes on; 11/5: a filler about their
+      // words, never "lost you, say that again"
+      const reply = events.find((e) => e.type === "reply")?.text ?? "";
+      assert.match(reply, /tell me more|go on|keep going|gut say|leaning/i, reply);
+      assert.doesNotMatch(reply, /lost you|say that again/i);
       assert.equal(events.some((e) => e.type === "error"), false);
     });
   }
@@ -463,7 +466,9 @@ for (const voice of ["server", "device"] as const) {
     const { events, logs, followups } = await recallTurn(voice, [["Hmm. I'll search my memory for that. "]], ["", "Hmm."]);
     assert.equal(followups, 2);
     assert.equal(logs.filter((log) => log.event === "spark.empty_retry").length, 1);
-    assert.ok(events.find((e) => e.type === "reply")?.text.endsWith("Say that again?"));
+    const reply = events.find((e) => e.type === "reply")?.text ?? "";
+    assert.match(reply, /tell me more|go on|keep going|gut say|leaning/i, reply);
+    assert.doesNotMatch(reply, /lost you|say that again/i);
     assert.equal(events.some((e) => e.type === "error"), false);
   });
 

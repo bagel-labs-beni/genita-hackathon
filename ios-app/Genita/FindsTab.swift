@@ -150,6 +150,11 @@ struct FindRowView: View {
     let frames: [Data]
     /// b16: the picture failed to load → the row goes text-only (no grey box)
     @State private var broken = false
+    /// b18 (411 QA m33 → m41/m64: three thumbnails gone after Save until the list was reopened): the list reload
+    /// re-creates the rows' AsyncImages and a cancelled load reports a failure. One reload of the picture first; only a
+    /// second failure of the same picture takes the slot away.
+    @State private var retried = false
+    @State private var reload = 0
 
     var body: some View {
         HStack(spacing: 12) {
@@ -162,6 +167,8 @@ struct FindRowView: View {
         .frame(minHeight: 72)
         .overlay(alignment: .top) { FindsInk.line.frame(height: 1) }
         .contentShape(Rectangle())
+        // a new picture for this row (a save, a reload with a ready image) gets its own two tries
+        .onChange(of: row.card.firstReadyPicture?.url) { _, _ in broken = false; retried = false }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(row.title). \(row.subtitle)\(row.saved ? ". Saved" : "")")
         .accessibilityAddTraits(.isButton)
@@ -180,8 +187,18 @@ struct FindRowView: View {
 
     @ViewBuilder private var thumb: some View {
         if let picture {
-            FindPicture(image: picture, resolve: call.findsURL, showFailText: false)
-                .environment(\.findsPhotoBroken) { _ in Task { @MainActor in broken = true } }
+            FindPicture(image: picture, resolve: call.findsURL, showFailText: false).id(reload)
+                .environment(\.findsPhotoBroken) { _ in
+                    Task { @MainActor in
+                        guard retried else {
+                            retried = true
+                            try? await Task.sleep(for: .milliseconds(400))
+                            reload += 1
+                            return
+                        }
+                        broken = true
+                    }
+                }
         } else if let crop = outfitCrop {
             OptionCrop(frame: crop.frame, box: crop.box, height: 44)
         }

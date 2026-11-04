@@ -90,9 +90,10 @@ import os
         guard central.state == .poweredOn else { return stopScan() }
         guard !scanning else { return }
         scanning = true
-        // keep the cooldown and the "must leave first" latch across scans; only the readings start over
+        // keep the cooldown and the "must leave first" latch across scans; only the readings start over, and a move
+        // needs an approach (b18: never a phone already lying next to the Mac)
         detector.config = .current()
-        detector.reset()
+        detector.startScan()
         tokens = [:]
         // Duplicates on: every advertisement is an RSSI reading for the hold.
         central.scanForPeripherals(withServices: [CBUUID(string: ProximityToken.serviceUUID)], options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
@@ -145,6 +146,11 @@ import os
            let epoch = m["epoch"] as? Int, let handoff, epoch >= handoff.ownership.state.epoch {
             report.reset()
         }
+        // b18 (411 QA ping-pong): the conversation went to the iPhone (Continue here there, Move to iPhone here, any
+        // trigger): the phone must leave for 3 s and come back before this Mac takes it by proximity again
+        if m["type"] as? String == "ownership", ConversationDevice(serverName: m["owner"] as? String) == .phone {
+            detector.requireLeave(at: Date().timeIntervalSince1970)
+        }
         guard let message = ProximityMessage(m) else { return }
         switch message {
         case let .result(accepted, reason, token, requestID):
@@ -162,6 +168,7 @@ import os
         case .moved(to: .mac):
             stopScan()
             guard enabled else { return }
+            handoff?.playProximityArrival()  // b18: the touch path's DUO wipe on the call window (Reduce Motion: the fade)
             celebrate()
         default: break
         }

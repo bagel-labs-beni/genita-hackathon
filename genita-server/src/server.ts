@@ -7,6 +7,8 @@ import { join } from "node:path";
  *   *    /v1/finds…        → result cards (finds/http.ts, F10-L6)
  *   WS   /v1/watch?session= → the Mac's screen share for that call (src/watch, F5)
  *   GET  /v1/app-config    → copy, flags, tuning, update nudges for the apps (src/appconfig, public: no user data)
+ *   POST /v1/early-access  → {ok:true} teaser waitlist (src/earlyAccess, public, CORS to the landing origin)
+ *   POST /v1/transcribe    → one ≤30 s clip → Muse Voice Transcribe → {text} (src/transcribe/http.ts, "What's off?" mic)
  *
  *   /auth/*, /me[/*]       → accounts (src/auth/routes.ts), when DATABASE_URL is set
  *   WS   /v1/presence, /v1/handoff[/claim|/release] → F6-L7 conversation owner (src/handoff/routes.ts)
@@ -55,12 +57,15 @@ import { configureOps, rejectGeneration } from "./ops/limits.ts";
 import { ownerKey } from "./finds/store.ts";
 import { attachWatchSocket } from "./watch/socket.ts";
 import { createEventsRoute } from "./events/routes.ts";
+import { createEarlyAccessRoute } from "./earlyAccess/routes.ts";
+import { clientIp } from "./auth/routes.ts";
 import { HandoffHub } from "./handoff/hub.ts";
 import { MemoryOwnershipStore, PgOwnershipStore } from "./handoff/store.ts";
 import { forgetOpenerTopics } from "./convo/openerTopics.ts";
 import { safetyTurn } from "./convo/forgetInCall.ts";
 import { attachPresence, callClaim, deviceFor, gatedCallDevice, gateCall, handleHandoffHttp, handoffHttpPaths } from "./handoff/routes.ts";
 import { createAppConfigSource, handleAppConfig, isAppConfigRoute } from "./appconfig/appConfig.ts";
+import { createTranscribeRoute } from "./transcribe/http.ts";
 
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
 const IDLE_MS = 120_000;
@@ -158,6 +163,19 @@ export async function startServer(
     })
     : null;
   const events = createEventsRoute(log);
+  // teaser page waitlist (11/5): public, CORS to the landing origin only, GENITA_EARLY_ACCESS=0 → 404
+  const earlyAccess = createEarlyAccessRoute({
+    db: accounts?.db ?? null,
+    log,
+    secret: env.GENITA_EARLY_ACCESS_SALT || env.GENITA_JWT_SECRET || "",
+    origins: env.GENITA_EARLY_ACCESS_ORIGINS?.split(",").map((s) => s.trim()).filter(Boolean),
+    enabled: env.GENITA_EARLY_ACCESS !== "0",
+    // per-viewer rate limit: on EC2 (NODE_ENV=production) the only caller is CloudFront (SG prefix list), so the
+    // viewer is the last X-Forwarded-For entry even when GENITA_TRUST_PROXY is unset; "0" turns that off
+    ip: (req) => clientIp(req, env.GENITA_TRUST_PROXY === "1" || (env.GENITA_TRUST_PROXY !== "0" && env.NODE_ENV === "production")),
+  });
+  // "What's off?" hold to say: one clip → Muse Voice Transcribe (GENITA_TRANSCRIBE_HTTP=0 → 404)
+  const transcribe = createTranscribeRoute({ openAsr: () => deps.openAsr(config.asrLanguages), log, env });
   // F7 product search: the reason chip comes from the account's own import (I04 Likes & dislikes)
   if (deps.finds && !deps.finds.likes) deps = { ...deps, finds: { ...deps.finds, likes: async (userId) => likesFromStyle(await prep.deps.store.getStyle(userId)) } };
   const devUsers = new Map<string, string>(); // x-genita-user → users.id (dev fallback)
@@ -250,12 +268,20 @@ export async function startServer(
   async function route(req: IncomingMessage, res: ServerResponse) {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (isAppConfigRoute(url.pathname)) return handleAppConfig(req, res, appConfig); // public, before any auth
+    if (earlyAccess.handles(url.pathname)) return earlyAccess.handle(req, res); // public waitlist, before any auth
     if (rejectGeneration(req, res, ops)) return;
     if (events.handles(url.pathname)) {
       const who = await principal(req, url);
       if (!who) return json(res, 401, { error: "unauthorized" });
       if (!who.consented) return json(res, 403, { error: "consent_required" });
       return events.handle(req, res, who.userId);
+    }
+    if (transcribe.handles(url.pathname)) {
+      const who = await principal(req, url);
+      if (!who) return json(res, 401, { error: "unauthorized" });
+      // the clip goes to Meta: AI-data consent first, as every other model route
+      if (!who.consented) return json(res, 403, { error: "consent_required" });
+      return transcribe.handle(req, res, who.userId);
     }
     if (deps.memory && isMemoryRoute(url.pathname)) {
       // F7/F9 memory REST: same principal as everything else (JWT or dev token), consent first.

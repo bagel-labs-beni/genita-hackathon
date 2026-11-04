@@ -99,6 +99,8 @@ private struct CaptionYouRow: View {
                 .foregroundStyle(style.onInk.opacity(row.dim || row.phase == .sound || row.phase == .missed ? 0.52 : 0.72))
                 .lineLimit(row.dim ? 1 : 2).truncationMode(.tail)
                 .shadow(color: style.ink.opacity(0.35), radius: 1, y: 1)
+                // b16 (Appetize S09): a soft halo keeps white words readable over a light sweater or a bright wall
+                .shadow(color: style.ink.opacity(0.45), radius: 6)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .mask(CaptionRollMask(rolled: row.rolled))
                 .accessibilityIdentifier("liveCaptionYou")
@@ -120,6 +122,8 @@ private struct CaptionReplyRow: View {
                 .foregroundStyle(style.onInk.opacity(row.cut ? 0.52 : 1))
                 .lineLimit(3).truncationMode(.head)
                 .shadow(color: style.ink.opacity(0.35), radius: 1, y: 1)
+                // b16 (Appetize S09): a soft halo keeps white words readable over a light sweater or a bright wall
+                .shadow(color: style.ink.opacity(0.45), radius: 6)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .mask(CaptionRollMask(rolled: row.rolled))
                 .contentTransition(reduceMotion ? .identity : .opacity)

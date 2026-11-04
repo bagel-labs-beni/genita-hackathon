@@ -50,9 +50,9 @@ final class CallScreenUITests: XCTestCase {
         let menu = app.buttons["openMenu"].frame
         XCTAssertEqual(cue.frame.midY, menu.midY, accuracy: 1, "pill on the menu row (\(cue.frame) vs \(menu))")
         XCTAssertFalse(cue.frame.intersects(menu), "pill clear of the menu button")
-        // the rail ends on one baseline with the camera-off tile
-        let moreRect = app.buttons["more"].frame, tile = app.descendants(matching: .any)["selfViewOff"].frame
-        XCTAssertEqual(moreRect.maxY, tile.maxY, accuracy: 1, "rail and self view end on one line (\(moreRect) vs \(tile))")
+        // b17: camera off = no self-view tile at all (Chelsea 11/5)
+        let moreRect = app.buttons["more"].frame
+        XCTAssertFalse(app.descendants(matching: .any)["selfViewOff"].exists, "no grey camera-off tile")
         XCTAssertEqual(menu.minX, app.frame.width - moreRect.maxX, accuracy: 1, "one side margin")
         XCTAssertEqual(app.buttons["micToggle"].label, "Turn microphone off")
         XCTAssertTrue(waitCue("Jin is thinking"), "thinking"); capture("S09-thinking")

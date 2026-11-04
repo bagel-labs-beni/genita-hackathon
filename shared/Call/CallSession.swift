@@ -312,6 +312,7 @@ enum CallStop: Equatable {
             self.audio.markComplete(utteranceId: id)
         }
         finds.send = { [weak self] message in self?.socket?.send(message) }
+        finds.onAsked = { [weak self] text in self?.showAskedQuestion(text) }
         finds.persistFrames = { id, frames in FindFrameStore.save(id: id, frames: frames) }
         finds.saveRemote = { [weak self] id, saved in await self?.saveFind(id, saved) ?? false }
     }
@@ -392,6 +393,7 @@ enum CallStop: Equatable {
         mode = s.mode ?? .chat
         uplink.callFraming = mode == .interpret && s.interpret?.source == .call
         // b16: with the mic coming back on (B12) the first engine already has the mic + voice processing
+        audioReleased = false
         audio.start(preparingMic: Self.micWasOn && mode == .chat && ownsConversation)
         connect()
         #if DEBUG
@@ -410,6 +412,10 @@ enum CallStop: Equatable {
     /// and the mic comes back the way the user left it (B12, the same rule as a new call).
     func rejoin() {
         guard !userEnded, stopped == nil else { return }
+        if audioReleased {
+            audioReleased = false
+            audio.start(preparingMic: Self.micWasOn && mode == .chat && ownsConversation)
+        }
         reconnectTask?.cancel(); pingTask?.cancel()
         let old = socket
         socket = nil
@@ -441,7 +447,7 @@ enum CallStop: Equatable {
         socket?.close()
         socket = nil
         voice.cancel()
-        audio.stop()
+        audio.stop(); audioReleased = false
         camera.stop()
         perception.stop(); perceptionOn = false
         micOn = false; micStopped = false; cameraOn = false; playing = false; link = .idle
@@ -454,6 +460,25 @@ enum CallStop: Equatable {
         fixture?.stop()
         #endif
     }
+
+    /// b18 (Mac 401 03:36:44 / 03:37:22: `engine start failed … -10875`, then `engine built #2 why=mic off, playback
+    /// only … running=false` on every move to the iPhone): the conversation left this device and its call ends right
+    /// after (MacCall.conversationLeft → end). The audio stops and lets the engine go first, so the suspend's mic-off
+    /// finds no open mic and builds no playback-only engine for a call that is ending (the iPhone's rule, d4306d8b).
+    /// Coming back starts a new call with a new engine (start → audio.start).
+    ///
+    /// iPhone (b18 P1, 03:53: owner=mac, the locked iPhone still held its mic — "iPhone microphone in use" for iPhone
+    /// Mirroring): the call stays (rejoin brings it back), but b16 keeps the mic + voice-processing engine for the whole
+    /// call, muted when the mic is off, and in the background nothing rebuilt it, so the input kept running. Stopping the
+    /// audio here ends the engine and deactivates the session at once, in the background too; nothing restarts it
+    /// (scene-active recovery skips a released call) until `rejoin` starts it again.
+    func suspendForHandoff() {
+        audio.stop()
+        audioReleased = true
+        suspend()
+    }
+    /// The audio was stopped by a move away (`suspendForHandoff`); `rejoin` starts it again.
+    @ObservationIgnored private(set) var audioReleased = false
 
     /// Background, screen off, or a phone call: stop the sound and close the mic and camera.
     func suspend() {
@@ -483,6 +508,9 @@ enum CallStop: Equatable {
             }
         }
         for answer in answers { applyCapturePermission(answer) }
+        // b16 (TF 391 P0: no sound after Home): the call itself tells the audio it is back, not only the notifications
+        // b18: not for a call whose audio a move away released (the other device has the conversation)
+        if activity == .active, !userEnded, !audioReleased { audio.resume("scene active") }
         if activity == .active, let grace = graceTask {
             grace.cancel(); graceTask = nil
             // interpretation keeps its mic too (its screen has no mic button)
@@ -696,6 +724,8 @@ enum CallStop: Equatable {
             if interpretBoard.holding { socket?.send(.hold(on: false)) }
             interpretBoard = InterpretBoard(companionName: companionName)
             if micOnForInterpret { micOnForInterpret = false; if micOn { setMic(false) } }
+            // b16 (TF 391 P0: no sound back in chat after interpretation): the reply engine must be playing
+            if !userEnded, !audioReleased { audio.resume("left interpretation") }
         }
     }
 
@@ -1249,7 +1279,15 @@ enum CallStop: Equatable {
         return voice.mouthLevel(utteranceId: id, positionMs: position)
     }
 
+    /// b16: a card question shows as the user's caption at once (the server's own transcript replaces it).
+    private func showAskedQuestion(_ text: String) {
+        guard let data = try? JSONSerialization.data(withJSONObject: ["type": "transcript", "text": text, "final": true, "source": "text"]),
+              let event = try? JSONDecoder().decode(ServerEvent.self, from: data) else { return }
+        captions.apply(event, now: Self.captionClock())
+    }
+
     private func playbackStarted(_ utteranceId: Int) {
+        finds.replyStarted()
         playingUtterance = utteranceId
         finds.boxes.companionStarted(utteranceId)
         playing = true

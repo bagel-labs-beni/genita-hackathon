@@ -54,7 +54,8 @@ const QUIRKS = [
   "rates things out of ten",
   "says \"okay wait\" when it gets good",
   "nicknames everyday objects",
-  "calls great things \"elite\"",
+  // 11/5 eval 5c: 'calls great things "elite"' became a tic ("elite" in 16/16 product reactions); same slot, no fixed word
+  "hypes a good pick with a fresh word each time",
   "turns small choices into dares",
   "ranks things into tiers out loud",
 ];

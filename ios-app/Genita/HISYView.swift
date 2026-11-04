@@ -1,6 +1,5 @@
 import AVFoundation
 import CoreText
-import Speech
 import SwiftUI
 import UIKit
 
@@ -722,6 +721,10 @@ struct HISYFixSheet: View {
     @State private var shown = false
     @State private var dictation = HoldToSay()
     @FocusState private var typing: Bool
+    @Environment(\.scenePhase) private var scenePhase
+    /// b17: true while a finger is on the mic; resets on a cancelled touch too (the mic permission alert cancels it,
+    /// and onEnded never comes), so a hold always ends
+    @GestureState private var pressingMic = false
 
     private var typed: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     /// unknowns = answering one open topic: the answer is required (server: `items[0]` + `text`)
@@ -739,8 +742,11 @@ struct HISYFixSheet: View {
             }
         }
         .onAppear { withAnimation(.easeOut(duration: 0.28)) { shown = true } }
-        .onDisappear { dictation.stop() }
-        .onChange(of: dictation.text) { _, t in if !t.isEmpty { text = OnboardingClient.correctionText(t, trim: false) } }
+        .onDisappear { dictation.cancel() }
+        // b17: the app went to the background mid-hold: the clip is dropped, the mic is off (not on .inactive: the
+        // mic permission prompt makes the scene inactive)
+        .onChange(of: scenePhase) { _, phase in if phase == .background { dictation.cancel() } }
+        .onChange(of: dictation.heard) { _, h in if let h { text = OnboardingClient.correctionText(HoldToSay.append(h.words, to: text), trim: false) } }
     }
 
     private var sheet: some View {
@@ -775,6 +781,8 @@ struct HISYFixSheet: View {
                     Text(error).hisyBody(12, .medium, line: 16, color: HISYInk.error).accessibilityIdentifier("hisyFixError")
                 } else if dictation.listening {
                     Text("Listening… let go when you’re done.").hisyBody(12, .medium, line: 16, color: HISYInk.blueText)
+                } else if dictation.transcribing {
+                    Text("Transcribing…").hisyBody(12, .medium, line: 16, color: HISYInk.blueText)
                 } else if let note = dictation.note {
                     Text(note).hisyBody(12, line: 16, color: HISYInk.mute)
                 } else {
@@ -812,7 +820,7 @@ struct HISYFixSheet: View {
         }.buttonStyle(.plain).accessibilityLabel(c).accessibilityAddTraits(on ? .isSelected : []).accessibilityIdentifier("hisyFixChip")
     }
 
-    /// C2: hold to say (on-device speech → the field), let go to stop.
+    /// C2: hold to say, let go to send (Muse Voice Transcribe via genita-server → the field). HoldToSay.swift
     private var mic: some View {
         let on = dictation.listening
         return ZStack {
@@ -823,16 +831,24 @@ struct HISYFixSheet: View {
         .frame(width: 52, height: 88)
         .contentShape(Rectangle())
         .gesture(DragGesture(minimumDistance: 0)
-            .onChanged { _ in if !dictation.listening && !dictation.starting { typing = false; error = nil; dictation.start(prefix: text) } }
+            .updating($pressingMic) { _, down, _ in down = true }
+            .onChanged { _ in if dictation.phase == .idle { typing = false; error = nil; dictation.start(transcribe: transcriber) } }
             .onEnded { _ in dictation.stop() })
+        .onChange(of: pressingMic) { _, down in if !down { dictation.stop() } }
         .accessibilityElement().accessibilityLabel("Hold to say").accessibilityAddTraits(.isButton)
-        .accessibilityValue(on ? "listening" : "")
+        .accessibilityValue(on ? "listening" : dictation.transcribing ? "transcribing" : "")
         .accessibilityIdentifier("hisyMic")
+    }
+
+    /// the clip → the server's Muse Voice Transcribe (8 s at most; HoldToSay turns any failure into its one line)
+    private var transcriber: @Sendable (Data) async throws -> String {
+        let client = model.onboarding
+        return { pcm in try await client.transcribe(pcm24k: pcm) }
     }
 
     private func cancel() {
         guard !saving else { return }   // the answer decides: the sheet closes on success, stays with the error line
-        dictation.stop()
+        dictation.cancel()
         typing = false
         withAnimation(.easeIn(duration: 0.22)) { shown = false }
         onCancel()
@@ -840,7 +856,7 @@ struct HISYFixSheet: View {
 
     private func save() {
         typing = false
-        dictation.stop()
+        dictation.cancel()   // Save takes what is in the field now; a clip still on its way is dropped
         saving = true; error = nil
         Task {
             let line = await model.correctStory(cardId: card.id, items: picked, text: text)
@@ -848,125 +864,4 @@ struct HISYFixSheet: View {
             if let line { error = line } else { onSaved() }
         }
     }
-}
-
-// MARK: - hold to say
-
-/// C2: on-device speech recognition while the mic is held (SFSpeechRecognizer, Speech permission asked on the first
-/// hold). Debug UI tests set GENITA_FAKE_DICTATION to a line: the hold "hears" it without the mic or a permission
-/// prompt and stays in C2 for 2.5 s after the finger lifts (time for the screenshot).
-@MainActor @Observable final class HoldToSay {
-    private(set) var listening = false
-    private(set) var starting = false
-    /// what was heard so far, after the text that was in the field
-    private(set) var text = ""
-    /// a one-line reason the mic can't be used (permission, no recognizer)
-    private(set) var note: String?
-    @ObservationIgnored private var prefix = ""
-    @ObservationIgnored private var engine: AVAudioEngine?
-    @ObservationIgnored private var request: SFSpeechAudioBufferRecognitionRequest?
-    @ObservationIgnored private var task: SFSpeechRecognitionTask?
-    @ObservationIgnored private var fakeStop: Task<Void, Never>?
-    /// the finger is still on the mic: the permission callbacks only start recording while this is true
-    @ObservationIgnored private var held = false
-
-    private var fake: String? {
-        #if DEBUG
-        return ProcessInfo.processInfo.environment["GENITA_FAKE_DICTATION"]
-        #else
-        return nil
-        #endif
-    }
-
-    func start(prefix: String) {
-        self.prefix = prefix.trimmingCharacters(in: .whitespacesAndNewlines)
-        note = nil
-        held = true
-        if let fake {
-            fakeStop?.cancel()
-            listening = true
-            text = join(fake)
-            return
-        }
-        starting = true
-        SFSpeechRecognizer.requestAuthorization { status in
-            Task { @MainActor in
-                guard status == .authorized else { self.starting = false; self.note = "Turn on Speech Recognition for Genita in Settings to say it."; return }
-                AVAudioApplication.requestRecordPermission { ok in
-                    Task { @MainActor in
-                        guard ok else { self.starting = false; self.note = "Turn on the microphone for Genita in Settings to say it."; return }
-                        guard self.held else { self.starting = false; return }   // let go while the prompt was up
-                        self.begin()
-                    }
-                }
-            }
-        }
-    }
-
-    private func begin() {
-        defer { starting = false }
-        // on this phone only (AU audit P2): Genita's AI is Meta's; Apple's server speech recognition is never used
-        // (it's not in the privacy notice). No en-US recognizer, or no on-device model → type it instead.
-        guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US")), recognizer.isAvailable,
-              recognizer.supportsOnDeviceRecognition else {
-            note = "Speech isn’t available on this iPhone. Type it instead."; return
-        }
-        do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.record, mode: .measurement, options: .duckOthers)
-            try session.setActive(true, options: .notifyOthersOnDeactivation)
-            let engine = AVAudioEngine()
-            let request = SFSpeechAudioBufferRecognitionRequest()
-            request.shouldReportPartialResults = true
-            request.requiresOnDeviceRecognition = true
-            let input = engine.inputNode
-            input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { buffer, _ in request.append(buffer) }
-            engine.prepare()
-            try engine.start()
-            self.engine = engine; self.request = request
-            listening = true
-            task = recognizer.recognitionTask(with: request) { [weak self] result, error in
-                let heard = result?.bestTranscription.formattedString
-                let final = result?.isFinal ?? false
-                Task { @MainActor in
-                    guard let self else { return }
-                    if let heard { self.text = self.join(heard) }
-                    if final || error != nil { self.teardown() }
-                }
-            }
-        } catch {
-            teardown()
-            note = "Speech isn’t available right now. Type it instead."
-        }
-    }
-
-    func stop() {
-        held = false
-        if fake != nil {
-            guard listening else { return }
-            fakeStop?.cancel()
-            fakeStop = Task { [weak self] in
-                try? await Task.sleep(for: .milliseconds(2500))
-                guard !Task.isCancelled else { return }
-                self?.listening = false
-            }
-            return
-        }
-        guard listening else { return }
-        request?.endAudio()
-        engine?.stop()
-        engine?.inputNode.removeTap(onBus: 0)
-        listening = false
-    }
-
-    private func teardown() {
-        engine?.stop()
-        engine?.inputNode.removeTap(onBus: 0)
-        task?.cancel()
-        engine = nil; request = nil; task = nil
-        listening = false
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-    }
-
-    private func join(_ heard: String) -> String { prefix.isEmpty ? heard : prefix + " " + heard }
 }

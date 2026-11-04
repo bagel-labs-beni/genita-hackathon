@@ -64,6 +64,11 @@ import os
     }
     private var activeCapture: CaptureSession?
     private var startingCapture: CaptureSession?
+    /// b16: macOS stopped the live stream by itself (-3821) and a restart is starting this capture again.
+    private var restartingCapture: CaptureSession?
+    /// When the restarts of this share happened (CACurrentMediaTime): 3 per minute, then the person is told.
+    private var restartTimes: [Double] = []
+    private var restartTask: Task<Void, Never>?
     private var captureRequest = ScreenSharingRequest()
     private var uplink: WatchUplink?
     private var uplinkGeneration = UUID()
@@ -150,6 +155,7 @@ import os
         staleWait?.cancel(); staleWait = nil
         captureRequest.invalidate()
         stopStartingCapture()
+        stopRestart(); restartTimes = []
         let old = activeCapture; activeCapture = nil; isSharing = false; choosing = false
         SCContentSharingPicker.shared.isActive = false
         stopCapture(old)
@@ -157,6 +163,7 @@ import os
         titleTask?.cancel(); titleTask = nil; pickedFilter = nil; lastTitle = nil
         reactingTask?.cancel(); reactingTask = nil
         blank = false; captureBlank = false; serverBlank = false; reacting = false; speakerName = nil; sourceName = nil
+        WatchBleedGate.shared.sharedStopped()
     }
     private func stopCapture(_ session: CaptureSession?) {
         guard let session else { return }
@@ -165,6 +172,11 @@ import os
     }
     private func stopStartingCapture() {
         let old = startingCapture; startingCapture = nil
+        stopCapture(old)
+    }
+    private func stopRestart() {
+        restartTask?.cancel(); restartTask = nil
+        let old = restartingCapture; restartingCapture = nil
         stopCapture(old)
     }
     private func cancelPicker() {
@@ -218,6 +230,8 @@ import os
                     return
                 }
                 startingCapture = nil
+                // a new pick while a restart waits or runs: the pick wins, with a fresh restart budget
+                stopRestart(); restartTimes = []
                 let old = activeCapture
                 activeCapture = session
                 stopCapture(old)
@@ -254,6 +268,10 @@ import os
         config.excludesCurrentProcessAudio = true
         config.sampleRate = 24_000
         config.channelCount = 1
+        // b16: a shared window dragged across displays, or partly off screen, keeps its whole picture (the system
+        // clips a single-window capture to the display by default). An occluded window is captured as is by a
+        // window filter; a minimized one has no pixels, ScreenCaptureKit has no setting for that.
+        if picked.style == .window { config.ignoreGlobalClipSingleWindow = true }
         return config
     }
     private func wireCapture(_ output: WatchStreamOutput) {
@@ -266,6 +284,8 @@ import os
             }
         }
         capture.onAudio = { [weak self] pcm in
+            // b16: how loud the shared video is, for the mic's bleed gate (on this audio queue, no hop)
+            WatchBleedGate.shared.noteShared(rms: WatchBleedGate.rms(int16: pcm))
             Task { @MainActor in
                 guard let self, self.captureRequest.acceptsSamples(request), self.isSharing, self.callIsValid else { return }
                 self.uplink?.sendAudio(pcm)
@@ -436,14 +456,153 @@ extension ScreenSharingController: SCContentSharingPickerObserver {
 }
 extension ScreenSharingController: SCStreamDelegate {
     nonisolated func stream(_ stream: SCStream, didStopWithError error: Error) {
+        let ns = error as NSError
+        let isStreamError = ns.domain == SCStreamErrorDomain
+        let code = ns.code, domain = ns.domain, reason = ns.localizedDescription
         Task { @MainActor in
+            // every stop is in the log with its code (QA 11/4: the share ended with no line at all at the stop)
+            let which = self.activeCapture?.stream === stream ? "live" : self.startingCapture?.stream === stream ? "starting"
+                : self.restartingCapture?.stream === stream ? "restarting" : "old"
+            self.log.error("share: stream stopped (\(which, privacy: .public)) \(domain, privacy: .public) \(code, privacy: .public): \(reason, privacy: .public)")
+            // a restart's own stream: its startCapture() throws and the restart handles it
+            if self.restartingCapture?.stream === stream { return }
             if self.startingCapture?.stream === stream {
                 if let request = self.startingCapture?.output.request { self.captureRequest.cancelCapture(request) }
-                self.stopStartingCapture(); self.errorTitle = "Screen sharing could not start"; self.error = error.localizedDescription
+                self.stopStartingCapture(); self.errorTitle = "Screen sharing could not start"; self.error = reason
                 return
             }
-            guard self.activeCapture?.stream === stream else { return }
-            self.stop(); self.errorTitle = "Screen sharing stopped"; self.error = "\(error.localizedDescription) Share again when you’re ready."
+            guard let live = self.activeCapture, live.stream === stream else { return }
+            self.liveStreamStopped(live, isStreamError: isStreamError, code: code, reason: reason)
+        }
+    }
+    nonisolated func streamDidBecomeInactive(_ stream: SCStream) {
+        Task { @MainActor in self.log.info("share: stream inactive (every shared window closed)") }
+    }
+    nonisolated func streamDidBecomeActive(_ stream: SCStream) {
+        Task { @MainActor in self.log.info("share: stream active again") }
+    }
+}
+
+// MARK: - b16 restart after a system stop
+
+extension ScreenSharingController {
+    /// The live stream ended without the person pressing Stop in Genita: restart it quietly (the pill keeps saying
+    /// "Sharing Safari", the /v1/watch uplink stays open and just gets no frames for a moment), up to 3 times a minute.
+    private func liveStreamStopped(_ live: CaptureSession, isStreamError: Bool, code: Int, reason: String) {
+        let now = CACurrentMediaTime()
+        restartTimes = ScreenShareRestartPolicy.recentRestarts(restartTimes, now: now)
+        switch ScreenShareRestartPolicy.action(isStreamError: isStreamError, code: code, restarts: restartTimes, now: now) {
+        case .userStopped:
+            log.info("share: stopped from the system controls")
+            stop(); showStoppedCue()
+        case .giveUp:
+            log.error("share: not restarting (code \(code, privacy: .public), \(self.restartTimes.count, privacy: .public) restarts this minute)")
+            stop(); errorTitle = "Screen sharing stopped"; error = "\(reason) Share again when you’re ready."
+        case .restart(let delay):
+            activeCapture = nil
+            stopCapture(live)
+            captureBlank = false; blank = serverBlank
+            scheduleRestart(after: delay, request: live.output.request, now: now)
+        }
+    }
+
+    private func scheduleRestart(after delay: Double, request: UInt64, now: Double) {
+        restartTimes.append(now)
+        let attempt = restartTimes.count
+        log.info("share: restart \(attempt, privacy: .public) of \(ScreenShareRestartPolicy.delays.count, privacy: .public) this minute in \(delay, privacy: .public) s")
+        restartTask?.cancel()
+        restartTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(Int(delay * 1000)))
+            guard let self, !Task.isCancelled, self.isSharing, self.captureRequest.acceptsSamples(request) else { return }
+            await self.restart(request: request, attempt: attempt)
+        }
+    }
+
+    private func restart(request: UInt64, attempt: Int) async {
+        guard let picked = pickedFilter else { stop(); return }
+        let sources = await Self.restartSources(for: picked)
+        for source in sources {
+            guard !Task.isCancelled, isSharing, captureRequest.acceptsSamples(request) else { return }
+            let stream = SCStream(filter: source.filter, configuration: Self.configuration(for: source.filter), delegate: self)
+            let output = WatchStreamOutput(stream: stream, request: request)
+            wireCapture(output)
+            do {
+                try stream.addStreamOutput(output, type: .screen, sampleHandlerQueue: queue)
+                try stream.addStreamOutput(output, type: .audio, sampleHandlerQueue: audioQueue)
+                let session = CaptureSession(stream: stream, output: output)
+                restartingCapture = session
+                try await stream.startCapture()
+                // stopped, logged out or picked again while it started: this stream is not the share any more
+                guard restartingCapture?.stream === stream, !Task.isCancelled, isSharing, captureRequest.acceptsSamples(request) else {
+                    output.invalidate(); try? await stream.stopCapture()
+                    return
+                }
+                restartingCapture = nil
+                activeCapture = session
+                pickedFilter = source.filter
+                if source.kind != .same { sourceName = source.name; lastTitle = nil }
+                log.info("share: restart \(attempt, privacy: .public) ok (\(String(describing: source.kind), privacy: .public) \(source.name ?? "a display", privacy: .public))")
+                // the server's watch session needs a frame now, not when the screen next changes
+                queue.async { output.forceNextFrame() }
+                return
+            } catch {
+                if restartingCapture?.stream === stream { restartingCapture = nil }
+                output.invalidate()
+                log.error("share: restart \(attempt, privacy: .public) \(String(describing: source.kind), privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+        guard !Task.isCancelled, isSharing, captureRequest.acceptsSamples(request) else { return }
+        // nothing could start: try again inside the budget, then tell the person
+        let now = CACurrentMediaTime()
+        restartTimes = ScreenShareRestartPolicy.recentRestarts(restartTimes, now: now)
+        if let delay = ScreenShareRestartPolicy.nextDelay(restarts: restartTimes, now: now) {
+            scheduleRestart(after: delay, request: request, now: now)
+        } else {
+            log.error("share: restart gave up after \(self.restartTimes.count, privacy: .public) tries this minute")
+            stop(); errorTitle = "Screen sharing stopped"; error = "macOS stopped screen sharing and it could not restart. Share again when you’re ready."
+        }
+    }
+
+    private struct RestartSource {
+        let kind: ScreenShareRestartPolicy.Source
+        let filter: SCContentFilter
+        let name: String?
+    }
+
+    /// The picked filter while its window (app, display) is still there; else its app on the display it was on, else
+    /// that display (or one that is there), Genita's own windows left out like a picked display.
+    private static func restartSources(for picked: SCContentFilter) async -> [RestartSource] {
+        let same = RestartSource(kind: .same, filter: await excludingGenita(picked), name: sourceName(of: picked))
+        guard #available(macOS 15.2, *),
+              let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false) else { return [same] }
+        let window = picked.includedWindows.first
+        let oldApp = window?.owningApplication ?? picked.includedApplications.first
+        let liveWindow = window.flatMap { w in content.windows.first { $0.windowID == w.windowID } }
+        let liveApp = oldApp.flatMap { a in content.applications.first { $0.processID == a.processID } }
+        let oldDisplay = picked.includedDisplays.first
+        let liveDisplay = oldDisplay.flatMap { d in content.displays.first { $0.displayID == d.displayID } }
+        let style: ScreenShareRestartPolicy.Style
+        let stillThere: Bool
+        switch picked.style {
+        case .window: style = .window; stillThere = liveWindow != nil
+        case .application: style = .application; stillThere = liveApp != nil
+        default: style = .display; stillThere = liveDisplay != nil
+        }
+        // the display the source was on: the window's (now or last seen), the filter's, else the first one there
+        let frame = liveWindow?.frame ?? window?.frame
+        let display = frame.flatMap { f in content.displays.first { $0.frame.intersects(f) } } ?? liveDisplay ?? content.displays.first
+        let mine = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier }
+        return ScreenShareRestartPolicy.candidates(style: style, sourceStillThere: stillThere).compactMap { kind in
+            switch kind {
+            case .same: return same
+            case .application:
+                guard let liveApp, let display else { return nil }
+                return RestartSource(kind: .application, filter: SCContentFilter(display: display, including: [liveApp], exceptingWindows: []),
+                                     name: liveApp.applicationName.isEmpty ? nil : liveApp.applicationName)
+            case .display:
+                guard let display else { return nil }
+                return RestartSource(kind: .display, filter: SCContentFilter(display: display, excludingApplications: mine, exceptingWindows: []), name: nil)
+            }
         }
     }
 }

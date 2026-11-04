@@ -140,7 +140,8 @@ for (const [text, expected] of [
   ["<curious> 기억을 찾아볼게요. 두부가 좋아요.", "두부가 좋아요."],
   // conversation engine v1 (prod smoke 11/3): an announcement is never spoken; announcement-only retries, then says it doesn't know
   ["<curious> I'll look that up.", process.env.GENITA_CONVO_V1 === "0" ? "I'll look that up." : "Hmm, not sure off the top of my head."],
-  ["<warm> Let me think — tofu works.", "Let me think — tofu works."],
+  // Chelsea 11/5: no em/en dashes in what the companion says (text/noDash.ts; GENITA_NO_DASH=0 keeps them)
+  ["<warm> Let me think — tofu works.", process.env.GENITA_NO_DASH === "0" ? "Let me think — tofu works." : "Let me think, tofu works."],
   // an announcement after real content is kept (v1 drops only a leading one, Codex #356 r6)
   ["<warm> Tofu works. I'll look that up.", "Tofu works. I'll look that up."],
 ] as const) test(`first narration only, with more content required: ${text}`, async (t) => {
@@ -354,13 +355,20 @@ test("camera frames attach as input_image to the next turn only", async () => {
   session.close();
 });
 
-test("messages before start are rejected; unknown lip modes degrade to none", async () => {
-  const { client, session } = setup();
+test("messages before start are held and handled after it (no not_started; Mac handoff 11/5 03:33); unknown lip modes degrade to none", async () => {
+  const { client, session, sparkCalls } = setup();
+  // CallSession.begin/rejoin: the mic goes on while the socket opens, `start` only goes out on open
+  await session.onClientText(JSON.stringify({ type: "audio_stop" }));
   await session.onClientText(JSON.stringify({ type: "text", text: "hi" }));
-  assert.equal(client.json[0].code, "not_started");
-  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Companion", kind: "human" }, lip: { mode: "retired", fallback: "none" } }));
+  assert.equal(client.json.length, 0, "nothing sent back before start, no error card");
+  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Companion", kind: "human" }, mic: false, lip: { mode: "retired", fallback: "none" } }));
   const ready = client.json.find((m) => m.type === "ready")!;
   assert.deepEqual(ready.lip, { requested: "none", active: "none", reason: null });
+  const end = Date.now() + 2000;
+  while (!client.json.some((m) => m.type === "reply") && Date.now() < end) await new Promise((r) => setTimeout(r, 5));
+  assert.ok(client.json.some((m) => m.type === "reply"), "the held text is answered after start");
+  assert.ok(sparkCalls.some((r) => JSON.stringify(r.input).includes("hi")));
+  assert.ok(!client.json.some((m) => m.type === "error" && m.code === "not_started"));
   session.close();
 });
 
@@ -578,8 +586,10 @@ test("finds: a product ask by voice → a quick in-character reaction (no tools,
   assert.ok(client.json.indexOf(ackDelta) < client.json.indexOf(created), "the short line comes before the card");
   const card = created.card as { products: { url: string }[] };
   assert.deepEqual(card.products.map((p) => p.url), P);
-  await client.waitFor((m) => m.type === "reply" && m.text === "Two, both simple cuts.", 3000);
-  assert.equal(ttsCalls.at(-1), "Two, both simple cuts.");
+  // P0 11/5: the card's line is said once its pictures are in, counts what shows and names a real returned product
+  const LINE = "Found two. The Jacket 1 from Shop fits your style best.";
+  await client.waitFor((m) => m.type === "reply" && m.text === LINE, 3000);
+  assert.equal(ttsCalls.slice(-2).join(" "), LINE);
   assert.ok(ttsCalls.some((t) => /light jacket for the weekend/.test(t)), "the reaction was spoken");
   await sleep(10);
   assert.deepEqual(likesAsked, ["acct-7"]);

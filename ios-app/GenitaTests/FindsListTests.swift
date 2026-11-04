@@ -228,4 +228,24 @@ import XCTest
         await m.load()
         XCTAssertEqual(m.displayCount(thisCall: 5), 2, "once loaded, drawer and More show the list's count")
     }
+
+    /// b16 (QA 11/4 22:14): the More row said "Nothing looked up yet" while the list held 13. It says 0 only for a
+    /// loaded, empty list; loading or a failed load never reads as "nothing".
+    func testMoreRowNeverSaysNothingBeforeTheListIsKnown() async {
+        let api = FakeAPI()
+        api.cards = (0..<13).map { card("c\($0)", title: "C\($0)", at: "2026-11-04T13:00:00Z") }
+        let m = FindsListModel(api: api)
+        XCTAssertEqual(m.moreSubtitle(), "What I looked up on our calls", "still loading: no claim of 0")
+        api.failList = true
+        await m.load()
+        XCTAssertEqual(m.moreSubtitle(), "What I looked up on our calls", "a failed load is not an empty list")
+        api.failList = false
+        await m.load()
+        XCTAssertEqual(m.moreSubtitle(), "13 things I looked up")
+        XCTAssertEqual(m.moreSubtitle(), FindsListModel.moreSubtitle(count: m.displayCount(), known: true), "same number as the drawer badge")
+        api.cards = []
+        await m.load()
+        XCTAssertEqual(m.moreSubtitle(), "Nothing looked up yet")
+        XCTAssertEqual(FindsListModel.moreSubtitle(count: 1, known: false), "1 thing I looked up")
+    }
 }

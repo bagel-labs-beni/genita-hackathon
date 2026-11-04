@@ -186,12 +186,19 @@ struct MacResultSheet: View {
                             // chip flow → the rest: 12 pt (춘식이 11/4), else the usual 16 under the subtitle
                             generic(card).padding(.top, card.occasionChip != nil ? 12 : 16)
                         } else {
-                            HStack(alignment: .top, spacing: 12) {
-                                ForEach(Array(picks.enumerated()), id: \.element.id) { i, pick in
-                                    MacProductCard(pick: pick, primary: i == 0, compact: finds.state != .full, imageURL: pick.image.flatMap { $0.status == .ready ? $0.url : nil }.flatMap { CallController.shared.findsURL($0) }) { open(pick) }
-                                }
-                                if picks.count == 1 { Spacer(minLength: 0) }
-                            }.padding(.top, 16)
+                            let compact = finds.state != .full
+                            let url = { (pick: ProductPick) in pick.image.flatMap { $0.status == .ready ? $0.url : nil }.flatMap { CallController.shared.findsURL($0) } }
+                            if picks.count >= 3 {
+                                // b16 (up to 6 from the server): a row of 151 pt tiles, the 3rd peeking into the margin
+                                MacProductRow(picks: picks, compact: compact, imageURL: url, open: open).padding(.top, 16)
+                            } else {
+                                HStack(alignment: .top, spacing: 12) {
+                                    ForEach(Array(picks.enumerated()), id: \.element.id) { i, pick in
+                                        // b16: one shop left spans both columns (TF 391: a lone tile beside an empty half)
+                                        MacProductCard(pick: pick, primary: i == 0, compact: compact, width: picks.count == 1 ? MacProductCard.soloWidth : 151, imageURL: url(pick)) { open(pick) }
+                                    }
+                                }.padding(.top, 16)
+                            }
                         }
                         // r01: "Why these" is one quiet line under the results, never hidden behind the button
                         if !evidence.lines.isEmpty {
@@ -287,12 +294,56 @@ struct MacResultSheet: View {
     }
 }
 
+/// b16: 3–6 products. A horizontal row of 151 pt tiles bleeding into the 38 pt margins (two whole, the third peeking),
+/// snapping tile by tile; trackpad swipes scroll it natively, and a mouse wheel over it (no horizontal wheel) turns
+/// into a sideways scroll.
+struct MacProductRow: View {
+    let picks: [ProductPick]
+    let compact: Bool
+    let imageURL: (ProductPick) -> URL?
+    let open: (ProductPick) -> Void
+    @State private var position = ScrollPosition(edge: .leading)
+    @State private var offsetX: CGFloat = 0
+    @State private var hovering = false
+    @State private var wheel: Any?
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            LazyHStack(alignment: .top, spacing: 12) {
+                ForEach(Array(picks.enumerated()), id: \.element.id) { i, pick in
+                    MacProductCard(pick: pick, primary: i == 0, compact: compact, imageURL: imageURL(pick)) { open(pick) }
+                }
+            }.scrollTargetLayout()
+        }
+        .scrollTargetBehavior(.viewAligned)
+        .scrollPosition($position)
+        .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.x } action: { _, x in offsetX = x }
+        .contentMargins(.horizontal, 38, for: .scrollContent)
+        .padding(.horizontal, -38)
+        .onHover { hovering = $0 }
+        .onAppear {
+            guard wheel == nil else { return }
+            wheel = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [self] event in
+                // a mouse wheel (no precise deltas) turning vertically over the row; trackpads scroll it themselves
+                guard hovering, !event.hasPreciseScrollingDeltas, event.scrollingDeltaX == 0, event.scrollingDeltaY != 0 else { return event }
+                position.scrollTo(x: max(0, offsetX - event.scrollingDeltaY * 16))
+                return nil
+            }
+        }
+        .onDisappear { if let wheel { NSEvent.removeMonitor(wheel) }; wheel = nil }
+        .accessibilityElement(children: .contain).accessibilityIdentifier("macProductRow")
+    }
+}
+
 /// One product of MAC-RS-b: 151 wide, square picture, name, brand · price, reason chips, Open in browser.
 struct MacProductCard: View {
     let pick: ProductPick
     let primary: Bool
     /// b16: half sheet — a 72 pt picture and no chips, so Open in browser clears Save to Finds
     var compact = false
+    /// 151 in the pair; `soloWidth` (both columns + the gap) when it is the only one
+    var width: CGFloat = 151
+    static let soloWidth: CGFloat = 151 * 2 + 12
     var imageURL: URL?
     let open: () -> Void
     @State private var hover = false
@@ -303,29 +354,33 @@ struct MacProductCard: View {
     private static let outlineBlue = Color(red: 156.0 / 255, green: 211.0 / 255, blue: 245.0 / 255)
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            // b16 (391 QA): the tile is two plain buttons that both open the shop (the picture → chips, then the pill),
+            // not a tap gesture over a button
+            Button(action: open) { VStack(alignment: .leading, spacing: 0) {
             // b16: no picture → no picture box (the hanger tile is gone)
-            if imageURL != nil { picture.frame(width: 151, height: compact ? 72 : 151).clipShape(RoundedRectangle(cornerRadius: 12)) }
-            Text(pick.name).font(MacSheetInk.sans(15, .medium)).foregroundStyle(MacSheetInk.ink).lineLimit(1).padding(.top, 14)
+            // solo: across the width, 4:3 up to 220 pt (half sheet: the same 72 pt so the pill clears Save to Finds)
+            if imageURL != nil { picture.frame(width: width, height: compact ? 72 : width > 151 ? min(220, width * 3 / 4) : 151).clipShape(RoundedRectangle(cornerRadius: 12)) }
+            Text(pick.name).font(MacSheetInk.sans(15, .medium)).foregroundStyle(MacSheetInk.ink).lineLimit(width > 151 ? 2 : 1).padding(.top, 14)
             Text(pick.brandLine).font(MacSheetInk.sans(13)).foregroundStyle(MacSheetInk.mute).lineLimit(1).minimumScaleFactor(0.8).padding(.top, 6)
             if !compact { VStack(alignment: .leading, spacing: 6) {
                 // D4: ✦ = your style (the import), “ = what they said — PF-1's chips, no colour legend
                 if !pick.taste.isEmpty { chip(pick.taste, mark: ProductPicks.styleMark, fg: MacSheetInk.chipBlueText, bg: MacSheetInk.chipBlue).overlay(Capsule().strokeBorder(Self.outlineBlue, lineWidth: 1)).accessibilityIdentifier("macProductTaste") }
                 if !pick.situation.isEmpty { chip(pick.situation, mark: ProductPicks.saidMark, fg: MacSheetInk.ink, bg: MacSheetInk.chip).accessibilityIdentifier("macProductSituation") }
             }.padding(.top, 10).frame(minHeight: 58, alignment: .top) }
+            }.frame(width: width, alignment: .leading).contentShape(Rectangle()) }.buttonStyle(.plain)
+                .accessibilityLabel("\(pick.name), \(pick.brandLine)").accessibilityIdentifier("macProductTile")
             Button(action: open) {
                 // r01: a 36 pt pill, the first card ink, the others outlined
                 Text("Open in browser ↗").font(MacSheetInk.sans(13, .medium))
                     .foregroundStyle(filled ? MacSheetInk.onInk : MacSheetInk.ink)
-                    .frame(width: 151, height: 36)
+                    .frame(width: width, height: 36)
                     .background(filled ? MacSheetInk.ink : MacSheetInk.sheet, in: Capsule())
                     .overlay { if !filled { Capsule().strokeBorder(MacFindsInk.line, lineWidth: 1) } }
                     .contentShape(Capsule())
             }.buttonStyle(.plain).padding(.top, 10)
                 .accessibilityLabel("Open \(pick.name) in your browser").accessibilityIdentifier("macOpenInBrowser")
-        }.frame(width: 151, alignment: .leading)
-        // b16: a click anywhere on the tile opens the shop (the picture and name did nothing); hovering the tile fills the pill
-        .contentShape(Rectangle())
-        .onTapGesture(perform: open)
+        }.frame(width: width, alignment: .leading)
+        // hovering the tile fills the pill
         .onHover { hover = $0 }
     }
 

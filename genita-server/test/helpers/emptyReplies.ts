@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 export const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 /** Real Session pipeline, fake vendors only; no sockets, credentials or playback wait. */
-export async function turn(deps: Partial<SessionDeps>, opts: { history?: string; speculative?: boolean; beforeFinal?: (session: Session) => void } = {}) {
+export async function turn(deps: Partial<SessionDeps>, opts: { history?: string | { role: "user" | "assistant"; text: string }[]; speculative?: boolean; beforeFinal?: (session: Session) => void; text?: string } = {}) {
   const events: ServerEvent[] = [];
   const logs: { event: string; data: Record<string, unknown> }[] = [];
   const asr = Object.assign(new EventEmitter(), { isOpen: true, async connect() {}, sendAudio() {}, end() {} });
@@ -32,13 +32,13 @@ export async function turn(deps: Partial<SessionDeps>, opts: { history?: string;
   });
   try {
     await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Mina" }, mic: !!opts.speculative,
-      history: opts.history ? [{ role: "assistant", text: opts.history }] : undefined }));
+      history: typeof opts.history === "string" ? [{ role: "assistant", text: opts.history }] : opts.history }));
     if (opts.speculative) {
       asr.emit("event", { type: "partial", text: "Tell me." } satisfies AsrEvent);
       for (let i = 0; i < 12; i++) await tick();
       opts.beforeFinal?.(session);
       asr.emit("event", { type: "speechComplete", turnId: 0, text: "Tell me." } satisfies AsrEvent);
-    } else await session.onClientText(JSON.stringify({ type: "text", text: "Tell me." }));
+    } else await session.onClientText(JSON.stringify({ type: "text", text: opts.text ?? "Tell me." }));
     const timer = setTimeout(resolve, 1500);
     await terminal;
     clearTimeout(timer);

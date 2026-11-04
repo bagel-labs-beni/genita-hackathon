@@ -13,6 +13,11 @@ export type Config = {
   metaDailyImages?: number;
   userDailyTurns?: number;
   /**
+   * 11/5: accounts that skip the per-user daily turn cap only (Meta call/image caps and pause still apply). User ids
+   * and/or emails, GENITA_DAILY_TURNS_EXEMPT (comma list); unset → the team's ids in GENITA_TRANSCRIPT_LOG_USERS.
+   */
+  dailyTurnsExempt?: string[];
+  /**
    * Server voice on our GPU (D3, Meta open model SeamlessM4T v2 on Modal): set by GENITA_VOICE_URL +
    * GENITA_VOICE_TOKEN. Optional: without it the server runs device mode (the app speaks), so a
    * judge can run the public repo with only a Meta key.
@@ -153,6 +158,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     metaDailyCalls: num(env.GENITA_META_DAILY_CALLS, 20_000),
     metaDailyImages: num(env.GENITA_META_DAILY_IMAGES, 600),
     userDailyTurns: num(env.GENITA_USER_DAILY_TURNS, 300),
+    dailyTurnsExempt: (env.GENITA_DAILY_TURNS_EXEMPT ?? env.GENITA_TRANSCRIPT_LOG_USERS ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),
     serverTts,
     voice,
     voiceMaxCalls: Number.isSafeInteger(voiceMaxCalls) && voiceMaxCalls >= 0 ? voiceMaxCalls : 8,

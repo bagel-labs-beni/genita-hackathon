@@ -20,7 +20,7 @@ import { UpstreamError } from "../meta/http.ts";
 type Log = (event: string, data: Record<string, unknown>) => void;
 type Options = { now?: () => number; log?: Log; db?: Queryable };
 type Limit = "calls" | "images" | "user_turns" | "user_uploads";
-type OpsConfig = Pick<Config, "paused" | "metaDailyCalls" | "metaDailyImages" | "userDailyTurns"> & { pauseFile?: string | null };
+type OpsConfig = Pick<Config, "paused" | "metaDailyCalls" | "metaDailyImages" | "userDailyTurns" | "dailyTurnsExempt"> & { pauseFile?: string | null };
 const USER_DAILY_UPLOADS = 5;
 
 export class OpsLimits {
@@ -39,12 +39,41 @@ export class OpsLimits {
   private reached = new Set<Limit>();
   private pausedLogs = new Map<string, number>();
   private usageLoggedAt = -Infinity;
+  /** 11/5: ids exempt from the user_turns cap (config ids + ids whose email is on the list); logged once per day */
+  private exemptIds = new Set<string>();
+  private exemptEmails = new Set<string>();
+  private exemptLogged = new Set<string>();
+  private emailChecked = new Set<string>();
 
   constructor(config: OpsConfig = {}, opts: Options = {}) {
     this.config = config;
     this.now = opts.now ?? Date.now;
     this.log = opts.log ?? (() => {});
     this.db = opts.db;
+    for (const v of config.dailyTurnsExempt ?? []) (v.includes("@") ? this.exemptEmails : this.exemptIds).add(v.toLowerCase());
+  }
+
+  /** this user skips the user_turns cap (only that cap); `limit.exempt` once per user per UTC day */
+  private exempt(userId: string): boolean {
+    if (!this.exemptIds.has(userId.toLowerCase())) return false;
+    if (!this.exemptLogged.has(userId)) {
+      this.exemptLogged.add(userId);
+      this.log("limit.exempt", { limit: "user_turns", day: this.day });
+    }
+    return true;
+  }
+
+  /** an email on the exempt list: the account's id joins the exempt ids (DB lookup, once per user per process) */
+  private async checkEmail(userId: string): Promise<void> {
+    if (!this.db || !this.exemptEmails.size || this.emailChecked.has(userId)) return;
+    this.emailChecked.add(userId);
+    try {
+      const r = await this.db.query("SELECT lower(email) AS email FROM users WHERE id = $1", [userId]);
+      const email = String(r.rows[0]?.email ?? "");
+      if (email && this.exemptEmails.has(email)) this.exemptIds.add(userId.toLowerCase());
+    } catch {
+      this.emailChecked.delete(userId); // try again on the next call
+    }
   }
 
   private today(): string {
@@ -58,6 +87,7 @@ export class OpsLimits {
       this.priming.clear();
       this.turnErrors.clear();
       this.reached.clear();
+      this.exemptLogged.clear();
     }
     return day;
   }
@@ -165,13 +195,14 @@ export class OpsLimits {
   /** Used before speculative Spark, without spending a turn on a partial. Memory only: never waits. */
   canSpeculate(userId?: string | null): boolean {
     const day = this.today();
-    if (!userId || this.cap("user_turns") <= 0) return true;
+    if (!userId || this.cap("user_turns") <= 0 || this.exempt(userId)) return true;
     return !this.unconfirmed(userId) && !this.exhausted("user_turns", this.turns.get(userId) ?? 0, day);
   }
 
   /** Warm today's stored count when a call starts, without delaying the call or its first turn. */
   prime(userId?: string | null): void {
     const day = this.today();
+    if (userId) this.track(this.checkEmail(userId));
     if (!userId || !this.db || this.synced.has(userId) || this.priming.has(userId)) return;
     this.priming.add(userId);
     this.track(this.loadTurns(userId, day));
@@ -201,7 +232,8 @@ export class OpsLimits {
     const day = this.today();
     if (!userId) return true; // shared dev sessions without an authenticated user
     const count = this.turns.get(userId) ?? 0;
-    if (this.cap("user_turns") > 0 && (this.unconfirmed(userId) || this.exhausted("user_turns", count, day))) return false;
+    // exempt accounts are still counted (usage_daily), never stopped by this cap
+    if (this.cap("user_turns") > 0 && !this.exempt(userId) && (this.unconfirmed(userId) || this.exhausted("user_turns", count, day))) return false;
     this.turns.set(userId, count + 1);
     this.track(this.persistTurn(userId, day));
     return true;
@@ -251,7 +283,7 @@ export class OpsLimits {
   }
 
   /** Interpreter guesses cannot be charged as accepted final user turns. */
-  cappedUser(userId?: string | null): boolean { return !!userId && this.cap("user_turns") > 0; }
+  cappedUser(userId?: string | null): boolean { return !!userId && this.cap("user_turns") > 0 && !this.exemptIds.has(userId.toLowerCase()); }
 }
 
 let active = new OpsLimits();
@@ -273,7 +305,7 @@ function generation(req: IncomingMessage, path: string): { image: boolean } | nu
   if (req.method === "GET" && /^\/v1\/companion\/voices\/[^/]+\/preview$/.test(path)) return { image: false };
   if (req.method !== "POST") return null;
   if (["/v1/companion", "/v1/companion/prep/retry", "/v1/us-photos", "/v1/companion/image/polish"].includes(path)) return { image: true };
-  if (["/v1/import", "/v1/companion/image", "/v1/companion/prefs", "/v1/companion/name/suggest"].includes(path)) return { image: false };
+  if (["/v1/import", "/v1/companion/image", "/v1/companion/prefs", "/v1/companion/name/suggest", "/v1/transcribe"].includes(path)) return { image: false };
   return null;
 }
 

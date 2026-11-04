@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { loadConfig } from "../src/config.ts";
 import type { SparkRequest, SparkStreamEvent } from "../src/meta/spark.ts";
 import { turn, tick } from "./helpers/emptyReplies.ts";
+import { emptyFiller, retryContext } from "../src/convo/emptyFiller.ts";
+const FILLER = /^(?:Mm, tell me more\.|Oh\? Go on\.|I'm listening, keep going\.|Hmm, good question\. What's your gut say\?|Ooh, tough one\. What are you leaning toward\?)$/;
 import { MemoryService } from "../src/memory/service.ts";
 import { InMemoryMemoryRepository } from "../src/memory/repository.ts";
 
@@ -64,7 +66,7 @@ test("twice empty (Spark outage 11/3): the call goes on with one line in charact
   let calls = 0;
   const { events, logs } = await turn({ async *spark() { calls++; yield done(); } });
   assert.equal(calls, 4);
-  assert.equal(answer(events), "Sorry, I lost you for a sec. Say that again?");
+  assert.match(String(answer(events)), FILLER, "a filler, never 'lost you'");
   assert.ok(!events.some((e) => e.type === "error"), "no spark_unavailable card");
   assert.ok(logs.some((l) => l.event === "spark.lost_line" && l.data.cause === "completed_without_text"));
   assert.ok(events.some((e) => e.type === "turn.metrics"), "a normal turn: spoken, measured, the call goes on");
@@ -245,7 +247,52 @@ test("Spark 504 on both tries: a short pause before the retry, then the in-chara
   const { events, logs } = await turn({ async *spark() { calls++; at.push(performance.now()); throw new Error("meta 504: request timed out"); } });
   assert.ok(calls >= 2);
   assert.ok(at.at(-1)! - at[0] >= 350, `paused ${Math.round(at.at(-1)! - at[0])} ms before the retry (hedged lanes start together)`);
-  assert.equal(answer(events), "Sorry, I lost you for a sec. Say that again?");
+  assert.match(String(answer(events)), FILLER);
   assert.ok(!events.some((e) => e.type === "error"));
   assert.ok(logs.some((l) => l.event === "spark.lost_line"));
+});
+
+// ───────── 11/5 sign-off: an empty Spark reply (2/96 evals) said "Sorry, I lost you" ─────────
+
+test("empty reply (11/5): one retry with a shorter context, then a filler tied to their words, never 'lost you'", async () => {
+  const history = Array.from({ length: 12 }, (_, i) => ({ role: (i % 2 ? "assistant" : "user") as "user" | "assistant", text: `line ${i}` }));
+  const requests: SparkRequest[] = [];
+  const { events, logs } = await turn({ async *spark(req) { requests.push(req); yield done(); } }, { history, text: "I got the job today!" });
+  const first = requests[0].input as unknown[];
+  const retry = requests.at(-1)!.input as { role?: string }[];
+  assert.ok(first.length > 5, `first try has the call (${first.length} messages)`);
+  assert.ok(retry.length <= 5 && retry.length < first.length, `retry is shorter: ${retry.length} < ${first.length}`);
+  assert.equal(retry[0].role, "user", "the shorter context starts on a user line");
+  assert.deepEqual(retry.at(-1), first.at(-1), "the turn itself is kept");
+  const said = String(answer(events));
+  assert.doesNotMatch(said, /lost you|say that again/i);
+  assert.match(said, FILLER, `a short natural line: ${said}`);
+  assert.doesNotMatch(said, /job/i, "never parrots their words (11/5 eval 5c)");
+  assert.ok(!events.some((e) => e.type === "error"), "no error card");
+  assert.ok(logs.some((l) => l.event === "spark.empty_retry"));
+});
+
+test("empty reply (11/5): the retry that answers is spoken (shorter context is enough)", async () => {
+  const history = Array.from({ length: 10 }, (_, i) => ({ role: (i % 2 ? "assistant" : "user") as "user" | "assistant", text: `line ${i}` }));
+  let calls = 0;
+  const { events } = await turn({ config: { ...config, sparkHedge: 1 }, async *spark(req) {
+    calls++;
+    if ((req.input as unknown[]).length > 5) { yield done(); return; }
+    yield { type: "text", delta: "Congrats, that's huge!" }; yield done();
+  } }, { history, text: "I got the job today!" });
+  assert.equal(calls, 2);
+  assert.equal(answer(events), "Congrats, that's huge!");
+});
+
+test("empty filler (11/5 eval 5c): short and natural, never their own words back; a question gets a question back", () => {
+  for (const t of ["I got the job today", "Do you think I should take the job?", "Tell me.", "hmm", "ok which one suits me?", "", "Best ramen places in Seoul"]) {
+    for (const pick of [0, 1, 7]) {
+      const line = emptyFiller(t, pick);
+      assert.doesNotMatch(line, /lost you|say that again|sorry/i, `${t} → ${line}`);
+      assert.match(line.replace(/<[^>]*>\s*/g, ""), FILLER, `${t} → ${line}`);
+      for (const w of t === "Tell me." ? [] : t.toLowerCase().match(/[a-z]{4,}/g) ?? []) assert.ok(!line.toLowerCase().includes(w), `parrots "${w}": ${line}`);
+    }
+  }
+  assert.match(emptyFiller("ok which one suits me?", 0), /\?$/);
+  assert.equal(retryContext({ input: "hi" }).input, "hi", "a plain-text request is unchanged");
 });

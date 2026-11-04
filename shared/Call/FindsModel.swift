@@ -93,6 +93,9 @@ struct FindEntry: Identifiable, Equatable {
     var touching = false
     /// Section to bring into view on the card ("ask", "how"): VoiceOver focus and fixture screenshots.
     var scrollTarget: String?
+    /// b17 (Appetize QA C): the shown card is scrolled to its top, so a downward drag on the full sheet's body resizes it
+    /// (full → half) instead of only rubber-banding the card. Set by the iPhone card page.
+    var pageAtTop = true
     /// Undo target after a close (r03 #17).
     private(set) var undoState: SheetState?
     /// Boxes on the live camera preview (F5-U-CAM, CAM-H).
@@ -181,6 +184,7 @@ struct FindEntry: Identifiable, Equatable {
                 state = .peek
                 heldAtPeek = c.findId
             } else if state == .searching && page == index {
+                scrollTarget = nil   // b16: the new card rises at its top, not on the last card's Steps
                 state = .rising
                 autoRaised = (c.findId, ContinuousClock.now)
                 risingTask?.cancel()
@@ -193,11 +197,11 @@ struct FindEntry: Identifiable, Equatable {
                 newFind = c.findId
             } else if state == .peek {
                 // folded: nobody is reading the old card, and the banner only shows at half/full — the new card takes the peek
-                page = index
+                page = index; scrollTarget = nil   // b16: a new card opens at its top
                 if newFind == c.findId { newFind = nil }
                 selectedItem = nil
             } else if state == .idle || state == .dismissed {
-                page = index
+                page = index; scrollTarget = nil   // b16: a new card opens at its top
                 state = .peek
             }
         case let .observeBoxes(b):
@@ -207,10 +211,20 @@ struct FindEntry: Identifiable, Equatable {
         case let .findImage(i):
             update(i.findId) { e in
                 guard var card = e.card else { return }
-                let image = FindImage(slot: i.slot, status: i.status == .ready ? .ready : .failed, url: i.url)
+                // #774: `omit` (always with failed) = no picture will come: a failed image, which every surface
+                // already draws as no slot at all (b16, iOS FindCardPage.shows / Mac `picture`)
+                let image = FindImage(slot: i.slot, status: i.status == .ready && i.omit != true ? .ready : .failed, url: i.url,
+                                      source: i.source, omit: i.omit)
                 if i.slot == "hero" { card.hero = image }
                 if i.slot.hasPrefix("step-"), let n = Int(i.slot.dropFirst(5)), card.steps.indices.contains(n - 1) { card.steps[n - 1].image = image }
-                if i.slot.hasPrefix("product-"), let n = Int(i.slot.dropFirst(8)), card.products?.indices.contains(n - 1) == true { card.products?[n - 1].image = image }
+                if i.slot.hasPrefix("product-"), let n = Int(i.slot.dropFirst(8)), card.products?.indices.contains(n - 1) == true {
+                    // #774: a product whose picture never came is swapped for one that has it (ready, same slot)
+                    if let swap = i.replace {
+                        card.products?[n - 1] = swap
+                    } else {
+                        card.products?[n - 1].image = image
+                    }
+                }
                 // Finds r01: each web result's og:image; `source-N` is 0-based (unlike step-/product-, which are 1-based)
                 if i.slot.hasPrefix("source-"), let n = Int(i.slot.dropFirst(7)), card.sources.indices.contains(n) { card.sources[n].image = image }
                 // visual cards: `ingredient-<item id>` (by id, not position: items re-sort by tier)
@@ -307,6 +321,7 @@ struct FindEntry: Identifiable, Equatable {
 
     func close() {
         guard state != .idle, state != .dismissed else { return }
+        scrollTarget = nil   // b16: "steps" from a walkthrough must not open the next card scrolled down
         if let i = entries.indices.contains(page) ? page : nil, entries[i].reopened {
             // Reopened from the Finds tab: back to the list, nothing to undo (it never left Finds).
             entries[i].reopened = false
@@ -367,7 +382,10 @@ struct FindEntry: Identifiable, Equatable {
         }
         if f.failed != nil { return f.kind == .product ? "Nothing I’d pick for you." : f.failureLines?.title }
         if state == .searching || f.card == nil { return f.kind == .product ? "On it…" : "Let me take a look…" }
-        if f.saved { return "Saved. They’re in Finds." }
+        if pendingAsk?.findId == f.id { return "Asking…" }   // b16: the card question is on its way
+        // b18 (411 QA m50/m52c): once a card question's answer is audible, the pill gives way to the call's own cue
+        // (speaking / listening) instead of repeating the save confirmation over the answer
+        if f.saved, !answeredAsk.contains(f.id) { return "Saved. They’re in Finds." }
         if let pill = f.card?.pill, !pill.isEmpty { return pill }
         if let say = f.card?.say, say.count <= 28 { return say }
         return nil
@@ -386,6 +404,7 @@ struct FindEntry: Identifiable, Equatable {
         page = i
         newFind = nil
         selectedItem = nil
+        scrollTarget = nil
         boxes.highlight(nil)
         if state == .peek { state = .half }
     }
@@ -393,6 +412,7 @@ struct FindEntry: Identifiable, Equatable {
     func showPage(_ i: Int) {
         userActed()
         guard entries.indices.contains(i), entries[i].card != nil else { return }
+        if page != i { scrollTarget = nil }
         page = i
         selectedItem = nil
         boxes.highlight(nil)
@@ -412,7 +432,7 @@ struct FindEntry: Identifiable, Equatable {
         let id = f.id
         let want = !f.saved
         update(id) { $0.saved = want }
-        if want { savePulse += 1 }
+        if want { savePulse += 1; answeredAsk.remove(id) }
         Task { @MainActor in
             // server first-class: if the save didn't land, the bookmark goes back
             if !(await saveRemote(id, want)) { update(id) { $0.saved = !want } }
@@ -438,7 +458,7 @@ struct FindEntry: Identifiable, Equatable {
                                      frames: frames, checking: false, saved: card.saved ?? false, reopened: true))
             page = entries.count - 1
         }
-        selectedItem = nil; browser = nil; newFind = nil; undoState = nil
+        selectedItem = nil; browser = nil; newFind = nil; undoState = nil; scrollTarget = nil
         boxes.clear(stale: false)
         state = .half
     }
@@ -544,10 +564,47 @@ struct FindEntry: Identifiable, Equatable {
     }
 
     /// "Ask about this": the question goes out as the user's words, about this card.
-    func ask(_ text: String) {
+    /// b16 (TF 391, server 0015: 11 taps on "Tell me more" / Ask chips, each cancelling the answer before it was heard):
+    /// a card question waits for its reply's first audio (at most `askPendingS`); further card taps meanwhile are
+    /// ignored, and the same tap again within `askRepeatS` always is.
+    struct PendingAsk: Equatable, Sendable { let text: String; let findId: String; let at: TimeInterval }
+    private(set) var pendingAsk: PendingAsk?
+    @ObservationIgnored private var lastAsk: PendingAsk?
+    /// b18: cards whose question has been answered out loud (their pill no longer repeats "Saved").
+    private(set) var answeredAsk: Set<String> = []
+    @ObservationIgnored private var pendingAskTask: Task<Void, Never>?
+    static let askPendingS: TimeInterval = 8
+    static let askRepeatS: TimeInterval = 1.5
+    /// Wired by CallController: show the question as the user's caption at once.
+    @ObservationIgnored var onAsked: (String) -> Void = { _ in }
+    /// This card's question is the one waiting for its answer ("Asking…" on its chip).
+    func isAsking(_ text: String) -> Bool { pendingAsk?.text == text && pendingAsk?.findId == current?.id }
+
+    func ask(_ text: String, now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         userActed()
         guard canAsk, let f = current else { return }
+        if let p = pendingAsk, now - p.at < Self.askPendingS { return }
+        if let l = lastAsk, l.text == text, l.findId == f.id, now - l.at < Self.askRepeatS { return }
+        let p = PendingAsk(text: text, findId: f.id, at: now)
+        pendingAsk = p; lastAsk = p
         send(.text(.init(text: text, frames: nil, findId: f.id)))
+        onAsked(text)
+        // the face and the caption come into view for the answer (the card waits at peek)
+        if state == .full || state == .half { state = .peek }
+        pendingAskTask?.cancel()
+        pendingAskTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.askPendingS))
+            guard let self, !Task.isCancelled, self.pendingAsk == p else { return }
+            self.pendingAsk = nil
+        }
+    }
+
+    /// The companion's answer is audible: the next card question may go.
+    func replyStarted() {
+        guard let p = pendingAsk else { return }
+        answeredAsk.insert(p.findId)
+        pendingAsk = nil
+        pendingAskTask?.cancel(); pendingAskTask = nil
     }
 
     /// The call's socket was replaced (reconnect) or the call ended: the server session that ran these searches is gone
@@ -601,6 +658,7 @@ struct FindEntry: Identifiable, Equatable {
         callEnded()
         entries = []
         page = 0
+        scrollTarget = nil
         selectedItem = nil
         doneSteps = [:]
         walking = nil

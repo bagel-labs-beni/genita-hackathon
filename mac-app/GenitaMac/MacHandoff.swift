@@ -235,6 +235,50 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
             }
         } else {companion?.alphaValue=1;companion?.orderFrontRegardless()}
     }
+    /// b18 ("징", Chelsea: like the interaction demo): a proximity move plays the touch path's incoming DUO wipe on the
+    /// call window, from this Mac's clock (HandoffProximityMotion). Called by MacProximity as the move lands, before
+    /// the ownership is applied, so showCompanion sees the effect and skips the slide. An open window gets the wipe on
+    /// its content. Reduce Motion, the flag off, an effect already running or no picture → false (the slide / fade).
+    @discardableResult func playProximityArrival(now:Double=Date().timeIntervalSince1970) -> Bool {
+        guard HandoffProximityMotion.plays(reduceMotion:MacPresenceFade.reduceMotion),motion == nil,pending == nil else{return false}
+        let picture=image.isEmpty ? Self.stillPNG(MacCall.shared.face ?? profile.flatMap { NSImage(data:$0) }) : image
+        guard !picture.isEmpty else{return false}
+        dock=nil;returnOrigin=nil  // no touch reading: the window stays where it rests; only its content wipes
+        renderedMotionID=nil
+        motion=HandoffProximityMotion.macPayload(id:UUID().uuidString,image:picture,now:now)
+        if companionVisible {companion?.alphaValue=1;companion?.orderFrontRegardless()}
+        epoch+=1;let e=epoch
+        DispatchQueue.main.asyncAfter(deadline:.now()+HandoffProximityMotion.macHold) { [weak self] in
+            guard let self,self.epoch==e else{return}
+            self.motion=nil
+        }
+        return true
+    }
+    /// The companion still as the effect's picture (base64 PNG, the call window's 390 × 844 at 2×, aspect-filled), for
+    /// a proximity move that had no local link to bring the iPhone's call snapshot.
+    static func stillPNG(_ still:NSImage?)->String {
+        guard let still,still.size.width>0,still.size.height>0,
+              let rep=NSBitmapImageRep(bitmapDataPlanes:nil,pixelsWide:780,pixelsHigh:1688,bitsPerSample:8,samplesPerPixel:4,hasAlpha:true,isPlanar:false,colorSpaceName:.deviceRGB,bytesPerRow:0,bitsPerPixel:0)
+        else{return ""}
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current=NSGraphicsContext(bitmapImageRep:rep)
+        let target=NSSize(width:780,height:1688),scale=max(target.width/still.size.width,target.height/still.size.height)
+        let size=NSSize(width:still.size.width*scale,height:still.size.height*scale)
+        NSColor(white:17.0/255,alpha:1).setFill();NSRect(origin:.zero,size:target).fill()
+        still.draw(in:NSRect(x:(target.width-size.width)/2,y:(target.height-size.height)/2,width:size.width,height:size.height))
+        NSGraphicsContext.restoreGraphicsState()
+        return rep.representation(using:.png,properties:[:])?.base64EncodedString() ?? ""
+    }
+    /// b18 (Chelsea 04:10 OK): End call on the Mac call panel. The call ends as the iPhone's does when it leaves the
+    /// call: the server session closes, the audio engine stops (mic off), camera and screen sharing stop. The window
+    /// goes; the app stays. The conversation is still this Mac's, so the home offers Continue here (MC-01).
+    func endCallHere() {
+        sharing.stop();sharing.permissionRequired=false;media.stopAll()
+        MacCall.shared.endCall()
+        companion?.orderOut(nil);companionVisible=false;sharingStopped=false
+        if ownership.isOwner {offerResume()}
+        refreshSurface()
+    }
     /// Continue here on R2 or R2-E. The tap wins immediately; the effect is only an extra.
     func continueHere() {
         guard accountScope.accountID != nil,!ownership.isOwner else{return}
@@ -257,7 +301,8 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
         case let .apply(claim):
             let trigger=server.lastOwnershipTrigger
             // Same as the iPhone: never let the server's copy of a claim land in the middle of the effect.
-            if pending != nil || motion != nil {
+            // b18: a proximity move's claim applies at once (its wipe starts from this claim, HandoffProximityMotion)
+            if HandoffProximityMotion.holdsServerClaim(effectRunning:pending != nil || motion != nil,trigger:trigger) {
                 let generation=accountScope.generation
                 DispatchQueue.main.asyncAfter(deadline:.now()+1.2) { [weak self] in
                     guard let self,self.accountScope.accepts(generation) else{return}
@@ -282,6 +327,9 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     private func ownerChanged(from old:ConversationDevice,to new:ConversationDevice) {
         phoneCallSeen.applied(owner:new,epoch:ownership.state.epoch,trigger:applyingTrigger)
         showMoveLine(nil)
+        // b18 (401 state.json: owner=mac, "Conversation on your iPhone"): the label follows the owner on every move,
+        // not only the ones this Mac made itself (a proximity or server move set nothing)
+        status = new == .mac ? "Conversation on this Mac" : "Conversation on your iPhone"
         if new == .mac {
             // S4: read before the iPhone's call socket closes (its peer update comes after this move)
             // b14: or the paired iPhone's own word over the local link (a move right after the pairing code)
@@ -297,7 +345,8 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
             resumeOffered=false;phoneCall=nil  // the iPhone sends its state again now that it holds the conversation
             if old == .mac {sharingStopped=sharing.isSharing}
             // The conversation left: sharing stops now and does not come back by itself.
-            sharing.stop();sharing.permissionRequired=false;media.stopAll();CallController.shared.suspend()
+            // b18: the audio stops before the mic closes (no playback-only rebuild for the ending call, -10875)
+            sharing.stop();sharing.permissionRequired=false;media.stopAll();CallController.shared.suspendForHandoff()
             MacCall.shared.conversationLeft()
             candidate=nil;armed=false
             status="Conversation on your iPhone"

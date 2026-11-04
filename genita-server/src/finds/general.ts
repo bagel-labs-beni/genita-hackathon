@@ -29,6 +29,23 @@ import { endSlot, genPrompt, imageGateOn, type Picture } from "./imageGen.ts";
 export const GENERAL_SAY = "It's up on your screen now.";
 /** Chelsea 11/4: every search is a visual card — the line says what is on it, never "links" */
 export const PLACE_SAY = "Here are a few spots, with photos and a map.";
+/** 11/5 eval 5c: a place question's spoken first line — no name from memory (2/8 looked invented); the card names one */
+export const PLACE_ACK = "Ooh, good one, give me a sec.";
+/** the place card isn't in yet this long after PLACE_ACK: one wait line (no place names) */
+export const PLACE_WAIT_MS = 7000;
+export const PLACE_WAIT_LINE = "Checking which ones locals actually go to.";
+/** the place search found nothing after PLACE_ACK */
+export const PLACE_NONE_LINE = "Hmm, nothing solid came up for that one. Want me to try a different area?";
+/** a result title that is a list or a guide, not one place ("10 Best Ramen in Seoul", "Where to eat …") */
+const NOT_A_PLACE = /\b(?:best|top|guide|list|ranking|ranked|where to|things to|places|spots|restaurants|review of|reviews|tripadvisor|yelp|reddit|blog|map)\b|\d+\s|[|:]/i;
+/** guides and outlets, not places ("Time Out", "Eater"): their names are never said as the pick */
+const OUTLET = /\b(?:time ?out|eater|michelin|infatuation|tripadvisor|yelp|reddit|google|naver|kakao|wikipedia|lonely planet|cond[eé] nast|cnn|forbes|visit ?seoul|visitkorea|korea tourism|the guardian|nytimes|new york times|bon app[eé]tit|tasting table|culture trip|hellokpop|trazy|klook)\b/i;
+/** The card's line for a place search: the top result by name when it is one place, else the plain line. */
+export function placeSay(results: Array<{ title: string }>): string {
+  const name = (results[0]?.title ?? "").replace(/\s*[-–—(].*$/, "").replace(/[.!?,\s]+$/, "").trim();
+  if (!name || name.split(/\s+/).length > 6 || NOT_A_PLACE.test(name) || OUTLET.test(name)) return PLACE_SAY;
+  return `${name} is the top pick, a few more spots are up with photos and a map.`;
+}
 export const HOWTO_SAY = "The steps are up, with pictures.";
 export function generalSay(layout: FindLayout): string {
   return layout === "place" ? PLACE_SAY : layout === "how-to" ? HOWTO_SAY : GENERAL_SAY;
@@ -258,7 +275,7 @@ type Result = { title: string; why: string; url: string; domain: string; raw?: R
 // ───────── visual everything: per-info layout ─────────
 
 const HOWTO_ASK = /^(?:how (?:do|can|should|would|to)\b|how\s+(?:i|we|you)\b)|\bhow to\b|\bsteps? (?:to|for)\b|\btutorial\b|어떻게|방법/i;
-const PLACE_ASK = /\b(?:near(?:by| me)?|around (?:here|me)|restaurants?|caf[eé]s?|coffee shops?|bars?|pubs?|hotels?|bakery|bakeries|brunch|ramen|sushi|pizza|bbq|museums?|galleries|parks?|beaches|places? to (?:eat|go|stay|visit)|where (?:to|can i|should i) (?:eat|go|stay|get)|things to do in)\b|맛집|카페|근처/i;
+const PLACE_ASK = /\b(?:near(?:by| me)?|around (?:here|me)|restaurants?|caf[eé]s?|coffee shops?|bars?|pubs?|hotels?|bakery|bakeries|brunch|ramen|sushi|pizza|bbq|kbbq|galbi|noodles?|steakhouses?|dim sum|(?:places?|spots?) (?:in|near|around)|museums?|galleries|parks?|beaches|places? to (?:eat|go|stay|visit)|where (?:to|can i|should i) (?:eat|go|stay|get)|things to do in)\b|맛집|카페|근처/i;
 /** which layout a web answer gets: places (map, rating), a how-to (numbered steps), else the general rows */
 export function generalLayout(question: string): FindLayout {
   const q = asrRestart(question);
@@ -542,7 +559,7 @@ export async function runGeneral(ctx: PipelineCtx): Promise<PipelineResult> {
     title,
     subtitle: `Web search · ${n} result${n > 1 ? "s" : ""}`,
     status: `${n} result${n > 1 ? "s" : ""}`,
-    say: generalSay(layout),
+    say: layout === "place" ? placeSay(results) : generalSay(layout),
     items: [],
     // each result once: in Sources, as "title — why" with its link (P0 11/4: the Mac listed them twice); one summary line
     // above them because the iPhone link layout always shows its Takeaways label
