@@ -214,7 +214,7 @@ extension AppState {
         importTask?.cancel()
         importError = nil
         let text = setup.response
-        story = nil; storyChanged = [:]; storyFailed = false; hisyPage = 0
+        story = nil; storyChanged = [:]; storyFailed = false; hisyPage = 0; insightReport = nil; insightUnavailable = false; insightAnswersSent = nil
         guard serverWired else { importing = false; return }
         let request = onboardingSnapshot()
         importing = true
@@ -570,6 +570,97 @@ extension AppState {
                 nameError = "Try a different name."
             } catch { nameError = Self.errorLine(error); route(error) }
         }
+    }
+
+    // MARK: SUM insight report (Chelsea 11/4, 춘식이 r02 R1)
+
+    /// Server flag (app-config `insightReport`, default on): off = SUM keeps the old four lines.
+    var insightsEnabled: Bool { GenitaAppConfigStore.shared.config.flag("insightReport", default: true) }
+
+    /// SUM draws the report (or its loading state) unless it is off or couldn't be had.
+    var useInsightReport: Bool { insightsEnabled && !insightUnavailable && (serverWired || insightReport != nil) }
+
+    /// P-last (and SUM) opens: the answers so far go to the server, which rewrites the report in the background.
+    /// Recorded as sent only after the server took them (a failed POST is sent again next time).
+    func sendInsightAnswers() {
+        guard serverWired, insightsEnabled else { return }
+        let answers = prefsAnswers
+        let key = (try? JSONSerialization.data(withJSONObject: answers, options: [.sortedKeys])).map { String(decoding: $0, as: UTF8.self) }
+        guard key != insightAnswersSent else { return }
+        insightUnavailable = false
+        let request = onboardingSnapshot()
+        let previous = insightAnswersTask
+        insightAnswersTask = Task {
+            await previous?.value
+            // the account may have changed while it waited: never send A's answers with B's session (settings lane Codex P1)
+            guard !Task.isCancelled, ownsOnboardingResponse(request) else { return }
+            do {
+                try await onboarding.insightAnswers(answers)
+                if ownsOnboardingResponse(request) { insightAnswersSent = key }
+            } catch {}
+        }
+    }
+
+    /// SUM: the report; the server holds each ask up to 6 s while it writes (`pending` may carry the earlier one,
+    /// shown meanwhile). Waits for the answers POST first. Three tries; nothing → the old SUM.
+    func loadInsights() async {
+        guard serverWired, insightsEnabled, !insightLoading else { return }
+        insightLoading = true
+        defer { insightLoading = false }
+        await insightAnswersTask?.value
+        let request = onboardingSnapshot()
+        for _ in 0..<3 {
+            do {
+                let r = try await onboarding.insights(wait: 6)
+                guard ownsOnboardingResponse(request), !Task.isCancelled else { return }
+                if let report = r.report, insightVerdictTask == nil { insightReport = report }
+                if r.status == .ready { return }
+                if r.status == .none || r.status == .failed { break }
+            } catch {
+                if ownsOnboardingResponse(request) { route(error) }
+                break
+            }
+        }
+        if insightReport == nil, ownsOnboardingResponse(request) { insightUnavailable = true }
+    }
+
+    /// "That's me" (right) / "Not quite" Save or Remove (not_me), one after another. right is shown at once and
+    /// undone if the server didn't take it; not_me takes the server's report (the trait and what was built on it go).
+    /// Returns an error line (nil = done).
+    @discardableResult
+    func insightVerdict(id: String, verdict: String, correction: String? = nil) async -> String? {
+        let before = insightReport?.observations.first { $0.id == id }
+        if verdict == "right", var r = insightReport, let i = r.observations.firstIndex(where: { $0.id == id }) {
+            r.observations[i].verdict = "right"; r.observations[i].confidence = "high"; insightReport = r
+        }
+        guard serverWired else {
+            if verdict == "not_me", var r = insightReport { r.observations.removeAll { $0.id == id }; insightReport = r }
+            return nil
+        }
+        let request = onboardingSnapshot()
+        let previous = insightVerdictTask
+        let task = Task<String?, Never> {
+            _ = await previous?.value
+            // queued behind an earlier verdict: the account may have changed meanwhile (settings lane Codex P1)
+            guard !Task.isCancelled, ownsOnboardingResponse(request) else { return nil }
+            do {
+                let r = try await onboarding.insightVerdict(id: id, verdict: verdict, correction: correction)
+                if ownsOnboardingResponse(request) { insightReport = r }
+                return nil
+            } catch {
+                guard ownsOnboardingResponse(request) else { return nil }
+                route(error)
+                // undo the optimistic "That's me"
+                if verdict == "right", let before, var r = insightReport, let i = r.observations.firstIndex(where: { $0.id == id }) {
+                    r.observations[i] = before; insightReport = r
+                }
+                return Self.errorLine(error)
+            }
+        }
+        insightVerdictTask = task
+        let out = await task.value
+        if insightVerdictTask == task { insightVerdictTask = nil }
+        return out
     }
 
     // MARK: SUM → PREP-1 (F4, D38)
