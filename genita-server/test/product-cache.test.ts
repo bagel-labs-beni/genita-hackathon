@@ -268,3 +268,14 @@ test("P1-9 (b9 S5): a refresh that comes back with one link never replaces the t
   assert.equal(cacheGet("k|account:a|", Date.now())?.card.products?.length, 2, "the smaller refresh never wins");
   clearProductCache();
 });
+
+test("P1-9 (Codex P2): a one-link warm-up that the cache turns down does not block the next call's warm-up", async () => {
+  const { cachePut, claimWarm, clearProductCache } = await import("../src/finds/productCache.ts");
+  clearProductCache();
+  const card = (n: number) => ({ id: "c", kind: "product", createdAt: "", eyebrow: "", title: "", subtitle: "", items: [], steps: [], options: [], why: [], ask: [], sources: [], how: [], products: Array.from({ length: n }, (_, i) => ({ id: `p${i}`, name: `Dark Brown Boot ${i}`, url: `https://x.example.com/p/${i}`, domain: "x.example.com", store: "X", taste: "", situation: "" })) }) as FindCard;
+  const now = Date.now();
+  assert.equal(claimWarm("w|account:a|", now), true);
+  cachePut("w|account:a|", { at: now, card: card(1) });
+  assert.equal(claimWarm("w|account:a|", now + 1000), true, "the next warm-up may run");
+  clearProductCache();
+});

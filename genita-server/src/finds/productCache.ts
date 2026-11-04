@@ -143,8 +143,10 @@ export const CACHE_MIN_PRODUCTS = 2;
  */
 export function cachePut(key: string, entry: CachedProducts): void {
   const n = entry.card.products?.length ?? 0;
-  if (n < CACHE_MIN_PRODUCTS) return;
   const have = cacheGet(key, Date.now());
+  // a rejected one-link warm-up leaves the key free for the next call's warm-up (else it stays blocked for the TTL
+  // with an empty cache; Codex P2)
+  if (n < CACHE_MIN_PRODUCTS) { if (!have) warming.delete(key); return; }
   if (have && (have.card.products?.length ?? 0) > n) return;
   const o = ownerOf(key);
   if (o !== null && forgotten.has(o)) return;
