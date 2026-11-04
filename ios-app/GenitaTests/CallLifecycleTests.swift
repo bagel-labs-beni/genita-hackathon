@@ -183,6 +183,22 @@ import XCTest
 
     // MARK: helpers
 
+    // TF 341 / 351: the user's own words, from the socket, reach the caption frame on iOS (CallController → LiveCaptions)
+    func testUserWordsFromTheSocketReachTheCaptions() {
+        let (call, sockets, _) = begin(micOn: true)
+        defer { call.end() }
+        let socket = sockets.connections[0]
+        socket.onMessage?(.text(ready("cap")))
+        socket.onMessage?(.text(#"{"type":"speech.start","turnId":1}"#))
+        XCTAssertEqual(call.captionFrame().you?.phase, .sound)
+        socket.onMessage?(.text(#"{"type":"transcript","final":false,"text":"what should I"}"#))
+        XCTAssertEqual(call.captionFrame().you?.text, "what should I")
+        socket.onMessage?(.text(#"{"type":"transcript","final":true,"text":"what should I eat?","turnId":1,"source":"voice"}"#))
+        let f = call.captionFrame()
+        XCTAssertEqual(f.you?.phase, .heard)
+        XCTAssertEqual(LiveCaptions.visibleYou(f.you, micOn: false)?.text, "what should I eat?", "shown even if the mic reads off")
+    }
+
     private func begin(micOn: Bool) -> (CallController, LifecycleSockets, LifecycleAudio) {
         let audio = LifecycleAudio(), sockets = LifecycleSockets()
         let call = CallController(audio: audio, voice: LifecycleVoice(), makeSocket: { sockets.make() })
