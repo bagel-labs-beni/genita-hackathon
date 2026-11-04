@@ -19,7 +19,9 @@
  * so the prompt alone keeps the edit local. It also refused "mouth wide open …
  * jaw dropped … tongue" as a content-policy hit, so the viseme lines describe
  * speech ("in the middle of saying …"), and a refused edit is retried once with
- * a softer "caught mid-word saying …" prompt instead of the stricter one.
+ * a softer "caught mid-word saying …" prompt instead of the stricter one. Its
+ * refusals are random per call, so two refusals in a row earn one more roll of
+ * the shape prompt (P1-3: AH2 lost on ~1 in 4 human faces).
  */
 import type { SamBox } from "../meta/sam.ts";
 import type { CompanionKind } from "./prompts.ts";
@@ -262,6 +264,18 @@ const SOUND: Record<Viseme | (typeof MOUTH_KEYS)[number], string> = {
 };
 
 /**
+ * Human mouth keys whose content-policy retry keeps the edit scaffold with a milder line (P1-3, 11/4). Muse refused
+ * the AH2 shape line on 10 of 14 tries on one face and 4 of 8 on another; the generic soft line was refused too
+ * (2/2), and so were "wider", "jaw lowered", "'father'" and "twice as much" variants (7/8 each). This line passed
+ * 18 of 24 (10/16 and 8/8). It opens less than the shape line but still shows both teeth rows: better than no AH2.
+ */
+export const MOUTH_SOFT_HUMAN: Partial<Record<(typeof MOUTH_KEYS)[number], string>> = {
+  AH2: "the person is talking on a video call, caught mid-sentence saying 'ah', the mouth open a bit more than for a quick 'ah', upper and lower teeth visible, lips relaxed, natural friendly speech",
+};
+export const hasOwnSoft = (key: FaceKey, kind: CompanionKind, ctx: PromptCtx = {}): boolean =>
+  kind === "human" && (!ctx.profile || ctx.profile === "human") && key in MOUTH_SOFT_HUMAN;   // prep runs humans with profile "human"
+
+/**
  * Retry prompt after a content-policy refusal (11/2: the same shape line can
  * pass on one scene and be refused on the next). It describes a moment of
  * speech instead of a mouth shape: "caught mid-word saying 'ah'".
@@ -277,6 +291,8 @@ export function faceSoftPrompt(key: FaceKey, kind: CompanionKind, ctx: PromptCtx
   }
   const s = NOUN[kind];
   const { part, keep } = region(key, kind);
+  const own = hasOwnSoft(key, kind, ctx) ? MOUTH_SOFT_HUMAN[key as (typeof MOUTH_KEYS)[number]] : undefined;
+  if (own) return `Edit only the ${s}'s ${part}: ${own}. Keep the ${s}'s identity, face, ${keep}, lighting, background, framing and camera exactly the same. Neutral relaxed expression, not smiling. ${HOLD}`;
   const style = kind === "character" ? " Keep the original art style." : kind === "animal" ? " Keep it a real animal." : "";
   const moment = key in SOUND ? `the ${s} is talking on a video call, caught mid-word saying ${SOUND[key as Viseme]}` : `the ${s} on a video call with ${EXPRESSION[key as FaceExpression][kind === "human" ? 0 : 1]}`;
   return `Photo edit of the same video call frame: ${moment}. Change only the ${part}. Keep the ${s}'s identity, face, ${keep}, lighting, background, framing and camera exactly the same.${style}`;
@@ -449,10 +465,20 @@ export async function makeFaceSet(o: FaceSetInput): Promise<FaceState> {
   const one = async (key: FaceKey) => {
     const t = performance.now();
     let last: FaceReject | null = null;
-    for (const retry of [false, true]) {
-      // first try: the shape prompt; retry: stricter after drift, speech framing after a content-policy refusal
+    let refusals = 0;
+    for (let n = 0; n < 3; n++) {
+      // first try: the shape prompt; retry: stricter after drift, speech framing after a content-policy refusal.
+      // A third try only after two refusals in a row: Muse refuses the same prompt on the same scene at random
+      // (P1-3, 11/4: AH2 on one human scene came back ok, refused, refused, ok), so it gets one more roll: the key's
+      // own milder line again when it has one (MOUTH_SOFT_HUMAN), else the shape prompt.
+      if (n === 2 && refusals < 2) break;
+      const retry = n > 0;
       const ctx = { profile: o.profile, species: o.species };
-      const prompt = !retry ? faceEditPrompt(key, o.kind, false, ctx) : last === "content_policy" ? faceSoftPrompt(key, o.kind, ctx) : faceEditPrompt(key, o.kind, true, ctx);
+      const prompt =
+        !retry ? faceEditPrompt(key, o.kind, false, ctx)
+        : n === 2 ? (hasOwnSoft(key, o.kind, ctx) ? faceSoftPrompt(key, o.kind, ctx) : faceEditPrompt(key, o.kind, false, ctx))
+        : last === "content_policy" ? faceSoftPrompt(key, o.kind, ctx)
+        : faceEditPrompt(key, o.kind, true, ctx);
       try {
         const r = await attempt(key, prompt);
         if (typeof r !== "string") {
@@ -466,6 +492,7 @@ export async function makeFaceSet(o: FaceSetInput): Promise<FaceState> {
         if (!(err instanceof EditError)) throw err;
         last = err.reason;
       }
+      if (last === "content_policy") refusals++;
       o.log?.("face.edit_rejected", { key, reason: last, retry });
     }
     const item: FaceItem = { status: "rejected", reason: last ?? "edit_failed", retried: true };
