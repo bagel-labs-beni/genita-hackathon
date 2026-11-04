@@ -6,6 +6,7 @@
  * on screen so "Ask about this" follow-ups make sense.
  */
 import { webAnswerCard, type WebSearch } from "./webAnswer.ts";
+import { GENERAL_ACK, runGeneral } from "./general.ts";
 import { reasonChips, tasteLines, type TasteLine } from "../personalize/reasons.ts";
 import { randomUUID } from "node:crypto";
 import type { FindCard, FindKind, ServerEvent } from "../protocol.ts";
@@ -40,7 +41,8 @@ export type FindsDeps = {
 // recipe: a reaction to what's shown, not a lookup announcement ("Let me take a look." read as narration, 11/3)
 // AU-59: said before anything is looked at, so it never sounds like it saw something ("nice haul" on a dark shelf,
 // then "I can't make out the shelves"); a reaction, not narration
-export const ACK: Partial<Record<FindKind, string>> = { product: "On it.", recipe: "Ooh, let me see." };
+// answer (general.ts): a reaction now, "Here's what I found." when the sheet lands; the results are never read aloud
+export const ACK: Partial<Record<FindKind, string>> = { product: "On it.", recipe: "Ooh, let me see.", answer: GENERAL_ACK };
 
 /** Demo S5: an outfit card's background search for what goes with it is reused this long. */
 export const PREFETCH_WINDOW_MS = 5 * 60_000;
@@ -400,7 +402,7 @@ export class FindsRunner {
         if (r.card && !prefetching && !c.signal.aborted && !forgotSince()) this.startPrefetch(r.card, r.card.say ?? null, turn);
         return r;
       };
-    } else run = intent.kind === "recipe" ? runRecipe : runLink;
+    } else run = intent.kind === "recipe" ? runRecipe : intent.kind === "answer" ? runGeneral : runLink;
     const release = this.deps.store.work.track(this.owner, () => this.close({ purge: true }));
     const tasteAtStart = this.tasteText(); // a profile change while it searched: not cached (Codex #522 r5 P1)
     const done = run(ctx).catch((err) => {
