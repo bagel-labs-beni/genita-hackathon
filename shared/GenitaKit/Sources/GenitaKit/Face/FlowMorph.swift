@@ -1508,8 +1508,10 @@ final class FlowMorph: @unchecked Sendable {
                         if al > 0.002 {
                             var c = Self.bilinear3(tl.key, w, h, px + dk.0, tY + dk.1)
                             if tl.lit < 1 {
+                                // the teeth layer gives way to what lies under it (the blended keys' own narrow gap): darkening it
+                                // drew a grey, doubled band over the keys' own teeth (critic 11/4)
                                 let k = 1 - (1 - tl.lit) * (tl.inside.map { Self.bilinear1($0, w, h, px + dk.0, tY + dk.1) } ?? 1)
-                                c = (c.0 * k, c.1 * k, c.2 * k)
+                                c = (c.0 * k + r * (1 - k), c.1 * k + g * (1 - k), c.2 * k + b * (1 - k))
                             }
                             // v60b: the key's thin upper-teeth band reads a little brighter (bright pixels only, above the gap)
                             if let ow = openW, tY < ow.yc {
