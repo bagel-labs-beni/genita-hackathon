@@ -320,3 +320,14 @@ test("Codex r2: a screen-made card is saved without the camera picture too", asy
   assert.equal(out.eyebrow, "From your screen");
   assert.ok(!/camera/i.test(out.how.join(" ")));
 });
+
+test("QA: 'shoes that would go with this' with a share open still looks at the camera (demo S5)", async () => {
+  const cap = cap0();
+  const r = newRunner(cap);
+  r.onTurn({ text: "Can you find me shoes that would go with this?", frames: [FRAME], screen: "data:image/jpeg;base64,SCREEN", utteranceId: 1, replyText: Promise.resolve(null) });
+  await settle();
+  const search = cap.prompts.find((p) => p.text.includes("Shop for them"))!;
+  assert.ok(search.text.includes(CAMERA_LINE));
+  assert.ok(!JSON.stringify(cap.prompts).includes("SCREEN"));
+  r.close();
+});

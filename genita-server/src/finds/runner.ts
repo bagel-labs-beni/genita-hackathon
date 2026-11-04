@@ -147,7 +147,8 @@ export const IDENTIFY_ACK = "Ooh, let me look.";
 /** the line says it's about the share ("on my screen", "this video") */
 const SCREEN_WORDS = /\b(?:on (?:my|the) screen|(?:this|the|in the) (?:video|clip|show|movie|scene)|on the share|screen share)\b/i;
 /** the line says it's about them / the camera, not the share */
-const CAMERA_WORDS = /\b(?:camera|on me|i'?m wearing|i am wearing|i have on|my outfit|i'?m holding|in my hand|my hand)\b|입고|들고/i;
+// "shoes that would go with this" (demo S5) is about what she has on, even with a share open (QA 11/4)
+const CAMERA_WORDS = /\b(?:camera|on me|i'?m wearing|i am wearing|i have on|my outfit|this outfit|i'?m holding|in my hand|my hand|go(?:es)? with (?:this|it)|match(?:es)? this)\b|입고|들고/i;
 /** Codex r1 P2: recipe / outfit made from a shared-screen frame — its boxes are not for the camera preview (null = dropped). */
 export function screenEvent(e: ServerEvent): ServerEvent | null {
   if (e.type === "observe.boxes") return null;
