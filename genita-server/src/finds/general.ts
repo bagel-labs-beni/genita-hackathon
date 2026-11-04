@@ -326,7 +326,7 @@ export function applySourceImage(card: FindCard, img: FindImage): void {
   if (s) s.image = img;
 }
 
-function cutOff<T>(run: (signal: AbortSignal) => Promise<T>, ms: number, outer: AbortSignal): Promise<T | null> {
+export function cutOff<T>(run: (signal: AbortSignal) => Promise<T>, ms: number, outer: AbortSignal): Promise<T | null> {
   const a = new AbortController();
   const signal = AbortSignal.any([outer, a.signal]);
   return new Promise<T | null>((resolve) => {
