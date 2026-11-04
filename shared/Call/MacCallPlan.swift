@@ -24,7 +24,9 @@ struct CompanionCallPlan: Equatable {
         var session: Session?
     }
 
-    init?(companionJSON data: Data) {
+    /// `userName`: the account's name (`/me` displayName). The Mac never asks for it itself — it is what the user
+    /// gave the iPhone — so a saved session name wins and the account name fills in when there is none (D42).
+    init?(companionJSON data: Data, userName: String? = nil) {
         guard let w = try? JSONDecoder().decode(Wire.self, from: data) else { return nil }
         let name = (w.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return nil }
@@ -34,10 +36,25 @@ struct CompanionCallPlan: Equatable {
         if persona.kind == nil { persona.kind = w.type }
         var user = w.session?.user ?? ClientMessage.User()
         user.timeZone = user.timeZone ?? TimeZone.current.identifier
+        if (user.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let account = (userName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            user.name = account.isEmpty ? nil : String(account.prefix(40))
+        }
         self.name = name
         self.start = ClientMessage.Start(persona: persona, user: user, voiceId: w.session?.voiceId ?? w.voiceId)
         let scene = w.prep?.sceneUrl?.trimmingCharacters(in: .whitespaces)
         self.faceURL = (scene?.isEmpty ?? true) ? nil : scene
+    }
+
+    /// The server renamed the companion in a call (`companion.named`): the plan follows, so the next start
+    /// carries the stored name, not the one this Mac fetched earlier (D53).
+    func renamed(_ newName: String) -> CompanionCallPlan {
+        let clean = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return self }
+        var copy = self
+        copy.name = clean
+        copy.start.persona.name = clean
+        return copy
     }
 
     /// `sceneUrl` on the server's host when it's a path.

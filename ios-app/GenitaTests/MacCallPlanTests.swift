@@ -31,6 +31,23 @@ final class MacCallPlanTests: XCTestCase {
         XCTAssertEqual(plan.start.persona.name, "Max")
     }
 
+    func testStartCarriesTheAccountNameWhenTheSessionHasNone() throws {
+        // D42: the Mac gets the name from /me, never guesses; a name already on the session wins
+        let plan = try XCTUnwrap(CompanionCallPlan(companionJSON: Data(full.utf8), userName: "  Summer "))
+        XCTAssertEqual(plan.start.user?.name, "Summer")
+        let named = full.replacingOccurrences(of: "\"user\":{", with: "\"user\":{\"name\":\"Sum\",")
+        XCTAssertEqual(try XCTUnwrap(CompanionCallPlan(companionJSON: Data(named.utf8), userName: "Summer")).start.user?.name, "Sum")
+        XCTAssertNil(try XCTUnwrap(companion(full)).start.user?.name)
+    }
+
+    func testRenamedPlanCarriesTheNewNameInNameAndPersona() throws {
+        // D53: companion.named updates the cached plan, so the next start doesn't bring the old name back
+        let plan = try XCTUnwrap(companion(full)).renamed(" Max ")
+        XCTAssertEqual(plan.name, "Max")
+        XCTAssertEqual(plan.start.persona.name, "Max")
+        XCTAssertEqual(try XCTUnwrap(companion(full)).renamed("  ").name, "Mina")
+    }
+
     func testCompanionWithoutPersonaStillCallsByItsName() throws {
         let plan = try XCTUnwrap(companion(#"{"id":"c1","type":"animal","name":"Bori","voiceId":"v2","prep":{"status":"running","sceneUrl":null},"persona":null,"session":null}"#))
         XCTAssertEqual(plan.start.persona.name, "Bori")
