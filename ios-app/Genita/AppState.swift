@@ -77,8 +77,11 @@ struct SavedSetup: Codable {
     var accountId: String?
     /// The judge account's ready-made companion (server `demo: true`), labelled "Demo companion"
     var companionDemo: Bool?
+    /// AU-92 fail closed: "Forget all of this" was asked but the server hasn't confirmed it yet — the local copy is
+    /// already gone and the request is sent again (on launch, and on the next try)
+    var forgetPending: Bool?
     enum CodingKeys: String, CodingKey { case stage, name, response, depth, voice, answers, boundaries, presence, presenceCardIDs, hasOnboarded,
-        companionName, imageId, imageType, styleRows, styleProfile, stylePartial, companionCreated, voiceId, voiceName, deviceVoice, skipInterests, skipReplies, skipAvoid, skipLikes, skipSent, skipOwner, firstCallPending, serverPersona, accountId, companionDemo, importAI }
+        companionName, imageId, imageType, styleRows, styleProfile, stylePartial, companionCreated, voiceId, voiceName, deviceVoice, skipInterests, skipReplies, skipAvoid, skipLikes, skipSent, skipOwner, firstCallPending, serverPersona, accountId, companionDemo, importAI, forgetPending }
 
 }
 /// A launch response belongs to the token and authentication lifetime that requested it.
@@ -186,6 +189,8 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     var storyChanged: [String: [String]] = [:]
     /// HISY page: 0 = opener (HISY-0 / S0), 1…n = the cards, n + 1 = HISY-7 "Now give me a face."
     var hisyPage = 0
+    /// "Forget all of this" count (AU-92): a story / correction answer asked before it is never applied
+    var profileForgets = 0
     /// SUM insight report (Chelsea 11/4, 춘식이 r02 R1): what Genita noticed. Transient, read again with GET /v1/profile/insights.
     var insightReport: InsightReport?
     var insightLoading = false

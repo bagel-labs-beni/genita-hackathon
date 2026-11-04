@@ -126,9 +126,10 @@ const ownerOf = (key: string) => key.match(/\|account:([^|]*)\|/)?.[1] ?? null;
  * DELETE /me (Codex #522 r6 P1): this account's cached cards (its taste text is in the key, its chips in the card)
  * and warm-ups go now, and none is stored again.
  */
-export function forgetProductCache(owner: string): void {
+export function forgetProductCache(owner: string, opts: { block?: boolean } = {}): void {
   const o = owner.toLowerCase();
-  forgotten.add(o);
+  // "Forget all of this" (AU-92) drops the cards made from the old taste, but the account goes on: no block
+  if (opts.block !== false) forgotten.add(o);
   if (forgotten.size > 10_000) forgotten.delete(forgotten.values().next().value as string);
   for (const k of [...cache.keys()]) if (ownerOf(k) === o) cache.delete(k);
   for (const k of [...warming.keys()]) if (ownerOf(k) === o) warming.delete(k);

@@ -246,6 +246,23 @@ test("Codex P1s #522: one kind per ask (a bag never answers shoes, boots never a
   a.r.close(); b.r.close();
 });
 
+test("AU-92: after 'Forget all of this' the card on screen no longer quotes the old taste to the call", async () => {
+  const { v } = vendors(10);
+  const { r } = runner(v, "acct-forget", "");
+  const card = { id: "f1", kind: "product", title: "Two picks", subtitle: "You prefer minimal clothes.", createdAt: new Date(Date.now() - 1000).toISOString(), items: [], options: [], steps: [], why: [], sources: [],
+    products: [{ name: "Black Chelsea Boot", store: "Shop", price: "$90", taste: "Clean, minimal", situation: "Your weekend wedding" }, { name: "Penny Loafer", store: "Store", price: "", taste: "Leather", situation: "" }],
+    evidence: { style: "Black, camel, dark brown.", situation: "" } } as unknown as FindCard;
+  (r as unknown as { cards: Map<string, FindCard> }).cards.set("f1", card);
+  r.focus("f1");
+  assert.match(r.onScreen() ?? "", /Clean, minimal/);
+  assert.match(r.onScreen() ?? "", /style line/);
+  r.forgetTaste();
+  const after = r.onScreen() ?? "";
+  assert.doesNotMatch(after, /Clean, minimal|Leather|style line|prefer minimal|weekend wedding/);
+  assert.match(after, /Black Chelsea Boot/, "the products themselves stay");
+  r.close();
+});
+
 test("handover b9-6: one color rule — the cache takes what the search ranks as the asked color", async () => {
   const { cardFitsColors, colorAsks } = await import("../src/finds/productCache.ts");
   const card = (names: string[]) => ({ id: "c", kind: "product", createdAt: "", eyebrow: "", title: "", subtitle: "", items: [], steps: [], options: [], why: [], ask: [], sources: [], how: [], products: names.map((name, i) => ({ id: `p${i}`, name, url: "https://x.example.com/p/1", domain: "x.example.com", store: "X", taste: "", situation: "" })) }) as never;

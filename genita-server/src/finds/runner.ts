@@ -308,12 +308,15 @@ export class FindsRunner {
       // the "goes with" search starts as soon as the spoken pick is out (~4 s), not after the card (~8 s):
       // Spark search takes 15–30 s, every second of head start shows on camera
       let prefetching = false;
+      // made from the taste of this moment: after a "Forget all of this" it never starts a search (Codex #583 r10)
+      const turnAt = new Date().toISOString();
+      const forgotSince = () => this.tasteForgottenAt !== null && turnAt <= this.tasteForgottenAt;
       void t.replyText.then((said) => {
-        if (said && !abort.signal.aborted) { prefetching = true; this.startPrefetch(null, said, t); }
+        if (said && !abort.signal.aborted && !forgotSince()) { prefetching = true; this.startPrefetch(null, said, t); }
       }).catch(() => {});
       run = async (c) => {
         const r = await runOutfit(c);
-        if (r.card && !prefetching && !c.signal.aborted) this.startPrefetch(r.card, r.card.say ?? null, t);
+        if (r.card && !prefetching && !c.signal.aborted && !forgotSince()) this.startPrefetch(r.card, r.card.say ?? null, t);
         return r;
       };
     } else run = intent.kind === "recipe" ? runRecipe : runLink;
@@ -655,11 +658,34 @@ export class FindsRunner {
   }
   private focusGen = 0;
 
+  /** "Forget all of this" (AU-92): cards made before it keep their products, but their taste chips and style line
+   * (made from the old profile) never go to the prompt again */
+  private tasteForgottenAt: string | null = null;
+  /** searches already running then: their cards were made from the old taste too */
+  private tasteForgottenIds = new Set<string>();
+  forgetTaste(): void {
+    this.tasteForgottenAt = new Date().toISOString();
+    for (const id of this.running.keys()) this.tasteForgottenIds.add(id);
+    // a prefetch searched with the old taste: stopped and never reused (Codex #583 r9)
+    this.prefetched?.abort.abort();
+    this.prefetched = null;
+    // searches already running were asked with the old taste: their card would say it ("Both leather, your style.")
+    for (const r of this.running.values()) r.abort.abort();
+    // and the background ones (cache warm-up / refresh) asked with it too, running or waiting for a slot (Codex #583 r15)
+    for (const stop of [...this.backgroundStops]) stop();
+    // the last product search's question / label (a "find a couple more" refine) was made from it too (Codex #583 r16)
+    this.lastProduct = null;
+  }
+
   /** One line for the system prompt about the card on screen, or undefined. Data only. */
   onScreen(): string | undefined {
     const c = this.focusId ? this.cards.get(this.focusId) : undefined;
     if (!c) return undefined;
-    const parts = [`${c.title}${c.subtitle ? ` (${c.subtitle})` : ""}`];
+    const old = this.tasteForgottenAt !== null && ((c.createdAt ?? "") <= this.tasteForgottenAt || this.tasteForgottenIds.has(c.id));
+    // an outfit card's subtitle is written from their taste ("You prefer minimal clothes."): not after a forget (Codex #583 r8)
+    // a card made before the forget: its title and subtitle were written from the old taste ("Minimal, just like you"):
+    // only its kind goes to the prompt (Codex #583 r17)
+    const parts = [old ? (c.kind === "product" ? "Product picks" : c.kind === "outfit" ? "Outfit pick" : c.title) : `${c.title}${c.subtitle ? ` (${c.subtitle})` : ""}`];
     if (c.kind === "recipe") {
       const by = (t: string) => c.items.filter((i) => i.tier === t).map((i) => i.name).join(", ");
       if (by("have")) parts.push(`they have: ${by("have")}`);
@@ -667,13 +693,14 @@ export class FindsRunner {
       if (by("buy")) parts.push(`not seen: ${by("buy")}`);
     }
     if (c.products?.length) {
-      parts.push(`products: ${c.products.map((p, i) => `${i + 1}. ${p.name} (${p.store}, ${p.price ?? "price on the site"}; ${[p.taste, p.situation].filter(Boolean).join(", ")})`).join(" ")}`);
-      if (c.evidence?.style) parts.push(`their style line: ${c.evidence.style}`);
+      parts.push(`products: ${c.products.map((p, i) => `${i + 1}. ${p.name} (${p.store}, ${p.price ?? "price on the site"}; ${(old ? [] : [p.taste, p.situation]).filter(Boolean).join(", ")})`).join(" ")}`);
+      if (c.evidence?.style && !old) parts.push(`their style line: ${c.evidence.style}`);
       if (c.products.length < PRODUCT_COUNT) parts.push("only one product page opened");
     }
     if (c.options.length) parts.push(`options: ${c.options.map((o) => `${o.label}${o.picked ? " (your pick)" : ""}`).join(", ")}`);
     if (c.steps.length) parts.push(`${c.kind === "link" ? "takeaways" : "steps"}: ${c.steps.map((s, i) => `${i + 1}. ${s.text}`).join(" ")}`);
-    if (c.why.length) parts.push(`why: ${c.why.join(" ")}`);
+    // an old card's "why" lines were written with the old taste too ("Clean camel, totally you.")
+    if (c.why.length && !old) parts.push(`why: ${c.why.join(" ")}`);
     if (c.page && !c.page.opened) parts.push("you could not open the page itself");
     if (c.sources[0]) parts.push(`source: ${c.sources[0].domain}`);
     return parts.join("; ").slice(0, 900);
