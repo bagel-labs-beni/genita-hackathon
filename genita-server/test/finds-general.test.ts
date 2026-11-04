@@ -265,6 +265,9 @@ test("firstSentenceOnly: one sentence, words streamed as they come, no links, ab
   const f = await collect(firstSentenceOnly(chunks(['See "https://example.com" or the [official site](https://example.dev) for details. More.'])));
   assert.doesNotMatch(textOf(f), /https?:|example\./, textOf(f));
   assert.match(textOf(f), /official site/);
+  // Codex mix r2: tags don't hide a narration line, voice tags are kept
+  const h = await collect(firstSentenceOnly(chunks(["<warm> I'll look that up. ", "<warm> [smile] Paris is the capital of France. ", "More."])));
+  assert.match(textOf(h), /\[smile\] Paris is the capital of France\.$/, textOf(h));
   // a tool call after the sentence still reaches the session
   async function* withTool(): AsyncIterable<SparkStreamEvent> {
     yield { type: "text", delta: "Got it, more words here. " };

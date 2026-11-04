@@ -15,6 +15,7 @@
 import type { FindCard } from "../protocol.ts";
 import type { SparkStreamEvent } from "../meta/spark.ts";
 import { SentenceSplitter } from "../text/sentences.ts";
+import { parseTaggedSentence } from "../text/tags.ts";
 import { isInterjectionOnly, isProcessLine, isToolNarration } from "../text/toolNarration.ts";
 import { realCrisisSignal } from "../convo/guard.ts";
 import { domainOf, lastJsonObject, str, strList } from "./parse.ts";
@@ -263,13 +264,18 @@ export async function runGeneral(ctx: PipelineCtx): Promise<PipelineResult> {
 const LINKISH = /^(?:https?:\/\/|www\.)|^\S+\.(?:com|org|net|io|ai|co|gov|edu|kr|jp|uk|dev|app)(?:\/\S*)?[)"'”’.,!?]*$/i;
 function scrubWord(w: string): string {
   // markdown "[official](https://…)" keeps its words, drops the link
-  const md = w.replace(/\]\([^)\s]*\)?/g, "").replace(/\[/g, "");
+  // only a markdown link's brackets go: "[smile]" / "[whispers]" voice tags stay (Codex mix r2)
+  const md = /\]\(/.test(w) ? w.replace(/\]\([^)\s]*\)?/g, "").replace(/^\[/, "") : w;
   const core = md.replace(/^["'“‘(<]+/, "");
   return LINKISH.test(core) ? "" : md;
 }
 const scrub = (t: string) => t.split(/(\s+)/).map((w) => (/^\s+$/.test(w) ? w : scrubWord(w))).join("").replace(/ {2,}/g, " ");
 /** a line the voice drops anyway ("I'll look that up.", "Hmm."): not the one sentence */
-const unsaid = (s: string) => isToolNarration(s) || isProcessLine(s) || isInterjectionOnly(s);
+const unsaid = (raw: string) => {
+  // judged on what is said, without "<warm>" / "[smile]" tags (Codex mix r2)
+  const s = parseTaggedSentence(raw).displayText.trim();
+  return !s || isToolNarration(s) || isProcessLine(s) || isInterjectionOnly(s);
+};
 
 /**
  * The reply as one sentence: whole words go out as they arrive (first audio is not held back), link-looking words
