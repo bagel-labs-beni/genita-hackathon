@@ -12,8 +12,11 @@ import { avoidKeys, isForgetRequest, mentionsAvoided, type Removed } from "../pe
 import { realCrisisSignal } from "./guard.ts";
 
 // Codex #547 r7: an emergency the detector may miss ("I swallowed bleach"), or a turn Genita answered with emergency help
-const EMERGENCY_USER = /\b(?:swallowed|ingested|drank|took|overdosed|choking|can'?t breathe|bleeding|unconscious|passed out|poisoned)\b[^.!?]{0,40}\b(?:bleach|poison|pills?|tablets?|medicine|meds|detergent|antifreeze|cleaner|chemicals?|blood|breathe|all)\b|\b(?:overdos(?:e|ed|ing)|poison control)\b/i;
-const HELP_REPLY = /\b(?:911|988|112|999|poison control|emergency|ambulance|crisis (?:text )?line|hotline|call for help)\b/i;
+const EMERGENCY_USER = /\b(?:swallowed|ingested|drank|took|overdosed|choking|can'?t breathe|bleeding|unconscious|passed out|poisoned)\b[^.!?]{0,40}\b(?:bleach|poison|pills?|tablets?|medicine|meds|detergent|antifreeze|cleaner|chemicals?|blood|breathe|all)\b|\b(?:overdos(?:e|ed|ing)|poison control)\b|\b(?:punched|hit|beat|beats|choked|chokes|hurt|kicked|slapped|threatened|threatening|attacked|raped|assaulted|grabbed|stalking|following)\s+me\b|\b(?:knife|gun|weapon)\b/i;
+// Codex #547 r8: police / a safe place too (guard.ts EMERGENCY_HELP's words)
+const HELP_REPLY = /\b(?:911|988|112|999|poison control|emergency|ambulance|crisis (?:text )?line|hotline|call for help|police|cops|somewhere safe|(?:a )?safe place|get to safety|domestic violence)\b/i;
+/** Codex #547 r8: "Don't forget that I need a vegetarian option." asks to KEEP it */
+export function isRememberRequest(text: string): boolean { return /\b(?:don'?t|do not|never|please don'?t|dont)\s+(?:ever\s+)?forget\b/i.test(text.replace(/[’‘]/g, "'")); }
 /** a user line that is never forgotten mid-call (with the reply after it): safety first */
 export function safetyTurn(user: string, reply?: string): boolean {
   return realCrisisSignal(user) || EMERGENCY_USER.test(user.replace(/[’‘]/g, "'")) || (!!reply && HELP_REPLY.test(reply));
@@ -72,7 +75,7 @@ export function forgetInCall<T extends Item>(history: T[], removed: Removed[] = 
   for (let i = 0; i < history.length; i++) {
     const h = history[i];
     // Codex #547 r2: "she said forget it", "I can't forget what I said" are not requests (either detector)
-    if (h.role !== "user" || !(isForgetRequest(h.text) || isAnaphoricForget(h.text)) || NEGATED_OR_QUOTED.test(h.text) || isCorrection(h.text)) continue;
+    if (h.role !== "user" || !(isForgetRequest(h.text) || isAnaphoricForget(h.text)) || NEGATED_OR_QUOTED.test(h.text) || isCorrection(h.text) || isRememberRequest(h.text)) continue;
     drop.add(i);
     if (history[i + 1]?.role === "assistant") drop.add(i + 1);
     if (isAnaphoricForget(h.text)) {

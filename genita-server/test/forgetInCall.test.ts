@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { forgetInCall, isAnaphoricForget, isCorrection, pointedLine } from "../src/convo/forgetInCall.ts";
+import { forgetInCall, isAnaphoricForget, isCorrection, isRememberRequest, pointedLine } from "../src/convo/forgetInCall.ts";
 
 const u = (text: string) => ({ role: "user" as const, text });
 const a = (text: string) => ({ role: "assistant" as const, text });
@@ -96,4 +96,24 @@ test("Codex #547 r7: 'I swallowed bleach' (a detector miss) and a turn answered 
   const out = forgetInCall(h).map((x) => x.text);
   assert.ok(out.includes("I swallowed bleach"));
   assert.ok(out.includes("Call poison control right now."));
+});
+
+test("Codex #547 r8: violence + police advice survive a forget; 'Don't forget that…' is a keep request", () => {
+  const h = [
+    { role: "user" as const, text: "My boyfriend punched me." },
+    { role: "assistant" as const, text: "Get somewhere safe and call the police." },
+    { role: "user" as const, text: "Forget I said that." },
+    { role: "assistant" as const, text: "Okay." },
+    { role: "user" as const, text: "Is it okay to go back inside now?" },
+  ];
+  const out = forgetInCall(h).map((x) => x.text);
+  assert.ok(out.includes("My boyfriend punched me."));
+  assert.ok(out.includes("Get somewhere safe and call the police."));
+  assert.ok(isRememberRequest("Don't forget that I need a vegetarian option."));
+  const v = [
+    { role: "user" as const, text: "Don't forget that I need a vegetarian option." },
+    { role: "assistant" as const, text: "Got it, the mushroom risotto then." },
+    { role: "user" as const, text: "What should I order?" },
+  ];
+  assert.equal(forgetInCall(v).length, 3);
 });

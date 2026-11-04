@@ -53,7 +53,7 @@ import type { CallStart, VoiceUpdate } from "../personalize/service.ts";
 import type { CallTurn } from "../personalize/extract.ts";
 import { ASK_TURNS, replyAsks } from "../personalize/unknowns.ts";
 import { mightBeCorrection } from "../personalize/corrections.ts";
-import { forgetInCall, forgetKeyText, isAnaphoricForget, isCorrection, pointedLine } from "../convo/forgetInCall.ts";
+import { forgetInCall, forgetKeyText, isAnaphoricForget, isCorrection, isRememberRequest, pointedLine } from "../convo/forgetInCall.ts";
 import { avoidKeys, forgetTarget, isForgetRequest, scrubHistory, type Removed } from "../personalize/forgotten.ts";
 import { isForgetRequest as isMemoryForgetRequest } from "../memory/extract.ts";
 import { localTimeLine } from "../personalize/knows.ts";
@@ -1454,7 +1454,7 @@ export class Session {
     // "forget I said that" points back: the line to forget is their previous one (strict match, not loose words of
     // "i don't wanna get into it" — intel eval 11/4)
     const pointsBack = isAnaphoricForget(text);
-    if ((isForgetRequest(text) || pointsBack) && !isCorrection(text) && this.mode === "chat") {
+    if ((isForgetRequest(text) || pointsBack) && !isCorrection(text) && !isRememberRequest(text) && this.mode === "chat") {
       const prev = pointsBack ? pointedLine(this.history) : null;
       // anaphoric: the pointed-at line's distinctive words, loosely (Codex #547 P1: "Likes jasmine tea." must go too)
       const removed: Removed | null = pointsBack ? (prev && forgetKeyText(prev) ? { text: forgetKeyText(prev), forget: true } : null) : forgetTarget(text) ? { text: forgetTarget(text), forget: true } : null;
