@@ -144,7 +144,7 @@ private struct CaptionBars: View {
     let color: Color
     var body: some View {
         HStack(spacing: 2) {
-            ForEach([0.6, 1.0, 0.75], id: \.self) { m in
+            ForEach([CGFloat(0.6), 1.0, 0.75], id: \.self) { m in
                 RoundedRectangle(cornerRadius: 1.5).fill(color).frame(width: 3, height: 4 + 10 * min(1, max(0, level * m)))
             }
         }.frame(width: 16, height: 16)
