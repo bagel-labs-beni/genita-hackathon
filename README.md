@@ -215,7 +215,7 @@ We also wired Muse Spark Open on Baseten for background jobs; it was not availab
 
 **About the move effect.** The iPhone → Mac transition uses EffectSource, an open-source blur shader and sampler (MIT, © 2026 Akash T, license kept next to the source in `shared/Handoff/EffectSource/`; the upstream code is `wipe-source.txt`). That shader is a dependency, not our work; the other files in that folder, the compositor around it and everything else in the handoff are new code.
 
-Some early commits have voice and image adapters for non-Meta providers. We replaced them during the hackathon to follow the Meta-only rule; every AI model the latest commit calls is a Meta model. One iOS system feature is not: the "What's off?" correction field can use Apple's on-device dictation (`SFSpeechRecognizer`).
+Some early commits have voice and image adapters for non-Meta providers. We replaced them during the hackathon to follow the Meta-only rule; every AI model the latest commit calls is a Meta model, including speech: Muse Voice Transcribe also powers hold-to-talk in the "What's off?" profile correction (the app sends the clip to `POST /v1/transcribe`; no Apple speech recognition is used).
 
 **Verify it yourself** (once the source is pushed, see below):
 
