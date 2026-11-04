@@ -65,7 +65,7 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     ///   proximity report is always followed by that ownership event.
     func liveMoveConfirmed(epoch:Int) {
         guard ownership.isOwner,resumeOffered,epoch==resumeEpoch else{return}
-        resumeHere()
+        resumeHere(fromPhone:true)
     }
     private var resumeEpoch:Int?
     private func offerResume() { resumeOffered=true;resumeEpoch=ownership.state.epoch }
@@ -154,11 +154,13 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
         }
     }
     /// MAC-4 "Continue here" after a cold launch: now the call window opens and the call starts.
-    func resumeHere() {
+    /// - Parameter fromPhone: the confirmed proximity move from the iPhone (S4: the camera may follow it); the
+    ///   Continue here button after a cold launch is a call opened on this Mac (camera off).
+    func resumeHere(fromPhone:Bool=false) {
         resumeOffered=false
         guard ownership.isOwner else { continueHere(); return }  // the iPhone took it meanwhile: claim it back
         sharingStopped=false;showCompanion()
-        MacCall.shared.conversationArrived()
+        MacCall.shared.conversationArrived(fromPhone:fromPhone)
     }
     func showRegistration() {
         screen = screen ?? NSScreen.main
@@ -278,7 +280,7 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
             // #118: the live call follows the conversation here — only on a live move (MC-01, ResumePolicy)
             if ResumePolicy.opensCall(ResumePolicy.arrival(localClaim:claimingLive,serverTrigger:applyingTrigger)) {
                 resumeOffered=false;sharingStopped=false;showCompanion()
-                MacCall.shared.conversationArrived()
+                MacCall.shared.conversationArrived(fromPhone:true)
             } else {offerResume()}
         } else {
             resumeOffered=false

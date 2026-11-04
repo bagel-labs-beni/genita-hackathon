@@ -19,4 +19,20 @@ final class ResumePolicyTests: XCTestCase {
         // the server moved it here by itself (proximity)
         XCTAssertTrue(ResumePolicy.opensCall(ResumePolicy.arrival(localClaim: false, serverTrigger: "proximity")))
     }
+
+    // Demo S4: a call that moves here from the iPhone with the camera on keeps showing the outfit on the Mac.
+    func testCameraFollowsAHandoffWhenTheUserLeftItOn() {
+        XCTAssertTrue(HandoffCameraPolicy.startsCamera(fromPhone: true, cameraRemembered: true, cameraAuthorized: true))
+    }
+    func testFreshCallNeverStartsTheCamera() {
+        // privacy: a call opened on the Mac itself (cold launch Continue here, a new call) starts with the camera off
+        XCTAssertFalse(HandoffCameraPolicy.startsCamera(fromPhone: false, cameraRemembered: true, cameraAuthorized: true))
+    }
+    func testHandoffKeepsTheCameraOffWhenTheUserTurnedItOff() {
+        XCTAssertFalse(HandoffCameraPolicy.startsCamera(fromPhone: true, cameraRemembered: false, cameraAuthorized: true))
+    }
+    func testHandoffWithoutCameraPermissionDoesNothingNew() {
+        // not granted (denied, restricted or never asked): no auto start, so no system dialog and no new sheet
+        XCTAssertFalse(HandoffCameraPolicy.startsCamera(fromPhone: true, cameraRemembered: true, cameraAuthorized: false))
+    }
 }
