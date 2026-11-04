@@ -47,7 +47,7 @@ struct ConversationView: View {
         #if DEBUG
         if debugWaitHold { return true }
         #endif
-        guard !hasFacePicture, model.prep?.isFailed != true else { return false }
+        guard !hasFacePicture, !waitGaveUp, model.prep?.isFailed != true else { return false }
         let prepRunning = model.prep.map { !$0.isReady } ?? false
         // a face set request on the wire (17–48 s seen on CI), or a loaded set whose first picture is being drawn (Codex P2);
         // the pauses between failed retries are idle (the 20 s cap applies)
@@ -62,6 +62,8 @@ struct ConversationView: View {
     @State private var liveFrameDrawn = false
     /// the wait stage gives up after this long when nothing is being made (a scene or face set that never loads)
     @State private var waitCapOver = false
+    /// the wait ended with no picture: it stays ended (the 5 s face retries don't bring the orb back each time; Codex P2)
+    @State private var waitGaveUp = false
     @State private var connectedTaps = 0
     @State private var appConfig = GenitaAppConfigStore.shared
     @Environment(\.scenePhase) private var scenePhase
@@ -326,7 +328,13 @@ struct ConversationView: View {
             if !hasFacePicture { if connectedTaps == 0, call.link == .live { connectedTaps = 1 } }
             // before the link is live the arrival taps on its own and card 10's live tap stays for the link (Codex P3)
             else if connectedTaps == 0, call.link == .live { connectedTaps = 1 } else { faceArrivedTaps += 1 }
-            Task { try? await Task.sleep(for: .milliseconds(320)); if !waitingForFace { waitStageUp = false } }
+            // still over after the step back (not a blink while prep turns ready and the idle cap restarts): it gave up
+            Task {
+                try? await Task.sleep(for: .milliseconds(320))
+                guard !waitingForFace else { return }
+                waitStageUp = false
+                if !hasFacePicture { waitGaveUp = true }
+            }
         }
         // face plan item 1: draw the scene in the poster's crop (off the main thread) as soon as scene + framing are here
         .task(id: framedSceneID) {
@@ -353,8 +361,10 @@ struct ConversationView: View {
             for await frame in face.$frame.values where frame != nil { liveFrameDrawn = true; break }
         }
         .sensoryFeedback(trigger: faceArrivedTaps) { _, _ in MotionDetails.live(reduceMotion: reduceMotion) ? .impact(weight: .medium) : nil }
-        .task(id: connecting) {
-            guard !connecting, !waitCapOver else { return }
+        // the idle cap starts again when prep moves on (running → ready brings a scene and a face set request; Codex P2)
+        .task(id: "\(connecting) \(model.prep?.status ?? "")") {
+            guard !connecting else { return }
+            waitCapOver = false
             try? await Task.sleep(for: .seconds(20))
             if !Task.isCancelled { waitCapOver = true }
         }
@@ -364,7 +374,9 @@ struct ConversationView: View {
             if !Task.isCancelled { faceWaitOver = true }
         }
         // the prep call scene is the still under the face (also after a relaunch, when PREP-1 didn't load it)
-        .task(id: model.prep?.sceneURL) { await model.loadScene() }
+        // keyed on ready too: followPrep no longer waits on the scene in the call, so a scene that failed while prep
+        // ran is tried again when it turns ready; a view task, so it ends with the screen (Start over; Codex P2 x2)
+        .task(id: "\(model.prep?.sceneURL?.absoluteString ?? "") \(model.prep?.isReady == true)") { await model.loadScene() }
         // S09-P (D28): the face is still being made while the call runs; keep `model.prep` fresh so the in-call
         // indicator (`model.callPrepIndicator`, S09-PREP 228:543) follows scene → expressions → mouth.
         // keyed on the status too: a PREP-1e Try again answered after the call started (failed → running) polls again

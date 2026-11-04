@@ -13,6 +13,8 @@ struct CallWaitStage: View {
     /// true once the generated face is here: the orb steps back
     var leaving = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// the handoff snapshot (ImageRenderer can't draw the UIKit/Metal orb): the PNG orb at rest
+    @Environment(\.genitaStillRender) private var stillRender
     @State private var breathe = false
 
     static let ground = RadialGradient(stops: [
@@ -26,7 +28,7 @@ struct CallWaitStage: View {
 
     var body: some View {
         let d = Self.orbSize(size)
-        let calm = reduceMotion || CallMotion.reviewStill
+        let calm = reduceMotion || CallMotion.reviewStill || stillRender
         ZStack {
             Self.ground
             orb(d, calm: calm)
