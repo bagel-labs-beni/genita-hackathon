@@ -310,8 +310,13 @@ const NOTES_CALLBACK_MS = 10 * 60_000;
 /** hold cap: the longest the first sound waits on a held line (a pre-tool preamble) before a short beat */
 const HOLD_BEAT_MS = 1500;
 /** speech end → first sound cap (GENITA_HOLD_CAP_MS, 0 = off). Chelsea 11/4 picked B of the hold-cap A/B: 1.4 s, a short
- * "mm" beat (was 2.2 s of silence) */
-export const HOLD_CAP_DEFAULT_MS = 1400;
+ * "mm" beat (was 2.2 s of silence). 11/4 18:5x (Chelsea, TF 341: beats at odd times): off by default — a "Mm." right
+ * before the reply is never natural; GENITA_HOLD_CAP_MS=1400 brings hold cap B (and the 1.5 s pre-tool beat) back.
+ * A search that keeps the answer waiting gets one wait line instead (SEARCH_WAIT_LINE). */
+export const HOLD_CAP_DEFAULT_MS = 0;
+/** 11/4 18:5x: said once, in the companion's own voice, when a search keeps the answer waiting past SEARCH_WAIT_MS */
+export const SEARCH_WAIT_LINE = "<warm> Give me a sec, pulling that up.";
+export const SEARCH_WAIT_MS = 1800;
 /** the least time a reply gets after its turn commits before the first-sound beat */
 const CAP_FLOOR_MS = 700;
 /** Codex #664 r2: medical or danger lines that get no hold beat ahead of the help */
@@ -538,6 +543,9 @@ export class Session {
         // CA-14: a turn the end-of-turn hold keeps open is still the user's turn
         stillListening: () => this.mode === "chat" && !this.interp && !this.watch && !this.reply && this.turn.phase === "listening" && this.userTurnOpen(),
         send: (kind) => void this.sendBackchannel(kind),
+        // 11/4 18:5x: never while a find is being made, never right after the companion spoke
+        blocked: () => !!this.finds?.busy(),
+        companionDoneAt: () => this.lastReplyDoneAt,
       })
     : null;
   /** perception lane (camera face reading, GENITA_PERCEPTION): read-only, assigned by its message hook */
@@ -550,6 +558,8 @@ export class Session {
    */
   /** bumped on every speech start / partial / end: a cue whose lookup outlived its pause is dropped (Codex #475 P2) */
   private bcGen = 0;
+  /** when the companion's last voiced reply finished playing (finishReply), for the backchannel's quiet window */
+  private lastReplyDoneAt = -Infinity;
   /** a cue played during this user turn: a stray "mm-hm" in its transcript is the cue's echo, not the user */
   private cuedTurn = false;
   /**
@@ -2799,6 +2809,24 @@ export class Session {
     // said 1.5 s after Spark's first text, one short human beat goes out — never narration, never "let me…"
     let beatTimer: NodeJS.Timeout | null = null;
     let capTimer: NodeJS.Timeout | null = null;
+    const capMs = holdCapMs();
+    // 11/4 18:5x: a search keeping the answer waiting → one wait line SEARCH_WAIT_MS in (audio only, like a beat)
+    let waitTimer: NodeJS.Timeout | null = null;
+    let waitSaid = false;
+    const armWaitLine = () => {
+      if (waitTimer || waitSaid || !this.v1 || interpret || self || greeting) return;
+      waitTimer = setTimeout(() => {
+        if (signal.aborted || this.reply !== reply || waitSaid || this.userTurnOpen()) return;
+        if (sentences.some((x) => !x.beat && !x.drop)) return; // the answer already started
+        waitSaid = true;
+        const before = sentences.length;
+        beating = true;
+        try { enqueueSentences([SEARCH_WAIT_LINE], true); } finally { beating = false; }
+        for (let i = before; i < sentences.length; i++) sentences[i].beat = true;
+        this.log("convo.search_wait_line", { utteranceId });
+      }, SEARCH_WAIT_MS);
+      waitTimer.unref?.();
+    };
     const beat = () => {
         // hold cap B (11/4): never a beat while they're talking again (a pause the ASR took for the end of the turn)
         if (signal.aborted || this.reply !== reply || sentences.length || this.userTurnOpen()) return;
@@ -2822,14 +2850,14 @@ export class Session {
     };
     const armBeat = () => {
       // P0-3 (11/4): never on a greeting — nobody is waiting yet, and a "Mm." would be the first thing they hear
-      if (beatTimer || !this.v1 || interpret || self || greeting) return;
+      // 11/4 18:5x: only with the hold cap on (GENITA_HOLD_CAP_MS); off by default
+      if (beatTimer || !this.v1 || interpret || self || greeting || capMs <= 0) return;
       beatTimer = setTimeout(beat, HOLD_BEAT_MS);
       beatTimer.unref?.();
     };
     // first-sound cap (sweep 11/3 [P1]: speech end → first sound p50 3.34 s, max 5.3 s; Spark's first token alone
     // is 1.3–3.4 s): nothing said HOLD_CAP_MS after the user stopped → the same one short beat. Not on a greeting or
     // an initiative turn (nobody is waiting), not on a fixed ack (it is instant).
-    const capMs = holdCapMs();
     if (capMs > 0 && this.v1 && !interpret && !self && !greeting && !cue && !ackTurn) {
       const since = m.speechEndAt !== undefined ? this.now() - m.speechEndAt : 0;
       // hold cap B (11/4): a turn the end-of-turn hold kept open past the cap still gives Spark CAP_FLOOR_MS before a
@@ -2875,6 +2903,7 @@ export class Session {
                 pushSentences(splitter.push(ev.delta));
               } else if (ev.type === "tool") {
                 guarded.tool = true;
+                if (ev.name === "web_search" && ev.status !== "completed") armWaitLine();
                 if (!interpret) {
                   // A tool may follow a sentence with no trailing space, or an unfinished clause.
                   pushSentences(splitter.flush());
@@ -2960,6 +2989,7 @@ export class Session {
         sparkDone = true;
         if (beatTimer) clearTimeout(beatTimer);
         if (capTimer) clearTimeout(capTimer);
+        if (waitTimer) clearTimeout(waitTimer);
         waiter.wake?.();
       }
     })();
@@ -3397,7 +3427,10 @@ export class Session {
     reply.webAnswer = null;
     if (card && !reply.abort.signal.aborted && !this.closed && this.mode !== "interpret") card();
     this.initiative?.activity(this.now());
-    if (reply.firstAudioAt !== null) this.client.sendJson({ type: "speaking", on: false, utteranceId: reply.utteranceId });
+    if (reply.firstAudioAt !== null) {
+      this.lastReplyDoneAt = this.now();
+      this.client.sendJson({ type: "speaking", on: false, utteranceId: reply.utteranceId });
+    }
     this.dispatch({ type: "reply_done", utteranceId: reply.utteranceId });
   }
 

@@ -790,7 +790,11 @@ test("hard fail (demo lane 11/3): a line about being interrupted is never said",
   session.close();
 });
 
-test("hold cap (prod 11/3): a held pre-tool line never keeps the turn silent past ~1.5 s — one short beat, then the answer", { skip: !v1 }, async () => {
+test("hold cap (prod 11/3, GENITA_HOLD_CAP_MS on): a held pre-tool line never keeps the turn silent past ~1.5 s — one short beat, then the answer", { skip: !v1 }, async (t) => {
+  // 11/4 18:5x: hold beats are opt-in (off by default)
+  const prev = process.env.GENITA_HOLD_CAP_MS;
+  process.env.GENITA_HOLD_CAP_MS = "1400";
+  t.after(() => { if (prev === undefined) delete process.env.GENITA_HOLD_CAP_MS; else process.env.GENITA_HOLD_CAP_MS = prev; });
   const client = new Client();
   const session = new Session("hb", client, {
     config, openAsr: () => { throw new Error("no asr"); },
@@ -1915,19 +1919,20 @@ test("intel eval 11/4 task hints: a plan ask gets the work-it-out line, an unkno
   session.close();
 });
 
-test("hold cap B (Chelsea 11/4): 1400 ms by default with the short 'Mm. / Yeah. / Ooh.' set", async () => {
+// 11/4 18:5x (Chelsea, TF 341: beats at odd times): no pre-reply "Mm." by default; GENITA_HOLD_CAP_MS=1400 brings hold cap B back
+test("hold beats: off by default (no 'Mm.' right before a reply); GENITA_HOLD_CAP_MS=1400 turns hold cap B back on with the short set", async () => {
   const { holdCapMs, HOLD_CAP_DEFAULT_MS, HOLD_BEATS } = await import("../src/session/session.ts");
-  assert.equal(HOLD_CAP_DEFAULT_MS, 1400);
-  assert.equal(holdCapMs({}), 1400);
-  assert.equal(holdCapMs({ GENITA_HOLD_CAP_MS: "0" }), 0, "0 still turns it off");
-  assert.equal(holdCapMs({ GENITA_HOLD_CAP_MS: "junk" }), 1400);
+  assert.equal(HOLD_CAP_DEFAULT_MS, 0);
+  assert.equal(holdCapMs({}), 0);
+  assert.equal(holdCapMs({ GENITA_HOLD_CAP_MS: "1400" }), 1400);
+  assert.equal(holdCapMs({ GENITA_HOLD_CAP_MS: "junk" }), 0);
   assert.deepEqual(HOLD_BEATS.map((b) => b.replace(/<[^>]*>\s*/g, "")), ["Mm.", "Ooh.", "Yeah."]);
   assert.ok(!HOLD_BEATS.some((b) => /\bAw\b/i.test(b)));
 });
 
-test("hold cap B turn-taking (default 1400 ms): a quick answer gets no beat, a slow one exactly one, a new line from the user cancels the beat", { skip: !v1 }, async (t) => {
+test("hold cap B turn-taking (GENITA_HOLD_CAP_MS=1400): a quick answer gets no beat, a slow one exactly one, a new line from the user cancels the beat", { skip: !v1 }, async (t) => {
   const prev = process.env.GENITA_HOLD_CAP_MS;
-  delete process.env.GENITA_HOLD_CAP_MS;
+  process.env.GENITA_HOLD_CAP_MS = "1400";
   t.after(() => { if (prev !== undefined) process.env.GENITA_HOLD_CAP_MS = prev; });
   let wait = 900;
   const client = new Client();
@@ -2084,4 +2089,72 @@ test("Codex #675 r4 P2: 'skin tone needs evening out' is a verdict; a website co
   assert.equal(guardSentence("Your skin tone's awful, so wear the black dress.", { camera: true, userText: "Which outfit should I wear?" }), "appearance");
   assert.equal(guardSentence("Your warm skin tone works well with black.", { camera: true, userText: "Which color works better for my website, black or white?" }), "appearance");
   assert.equal(guardSentence("With your warm skin tone, the black one with dark brown shoes works.", { camera: true, userText: "Which color looks better on me, black or white?" }), null);
+});
+
+// 11/4 18:5x (Chelsea, TF 341): beats came at odd times. Default: a slow answer gets no pre-reply beat, and a search
+// that keeps the answer waiting gets ONE natural wait line in the companion's voice ~1.8 s in, never a beat.
+test("no pre-reply beat by default: a slow answer (2.6 s) with no search gets no 'Mm.' and no wait line", { skip: !v1 }, async (t) => {
+  const prev = process.env.GENITA_HOLD_CAP_MS;
+  delete process.env.GENITA_HOLD_CAP_MS;
+  t.after(() => { if (prev !== undefined) process.env.GENITA_HOLD_CAP_MS = prev; });
+  const client = new Client();
+  const session = new Session("noBeat", client, {
+    config, openAsr: () => { throw new Error("no asr"); },
+    async *spark(_req, { signal }): AsyncGenerator<SparkStreamEvent> {
+      yield { type: "text", delta: "<warm> " };
+      await new Promise((r) => setTimeout(r, 2600));
+      if (signal?.aborted) return;
+      yield { type: "text", delta: "Chocolate mousse, easy and rich." };
+      yield { type: "done", responseId: "r", text: "", status: "completed" };
+    },
+    async *tts() {},
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "and what about dessert, something chocolate maybe" }));
+  await client.waitFor((m) => m.type === "reply" && m.final === true, 8000);
+  const says = client.json.filter((m) => m.type === "say").map((m) => String(m.text));
+  assert.equal(says.filter((x) => BEAT.test(x)).length, 0, `no beat: ${JSON.stringify(says)}`);
+  assert.ok(!says.some((x) => /pulling that up/i.test(x)), "no wait line without a search");
+  session.close();
+});
+
+test("search wait line: a search that keeps the answer waiting gets one 'Give me a sec, pulling that up.' ~1.8 s in (not in captions or history); a quick search gets none", { skip: !v1 }, async (t) => {
+  const prev = process.env.GENITA_HOLD_CAP_MS;
+  delete process.env.GENITA_HOLD_CAP_MS;
+  t.after(() => { if (prev !== undefined) process.env.GENITA_HOLD_CAP_MS = prev; });
+  const { SEARCH_WAIT_LINE, SEARCH_WAIT_MS } = await import("../src/session/session.ts");
+  assert.ok(SEARCH_WAIT_MS >= 1500 && SEARCH_WAIT_MS <= 2000, String(SEARCH_WAIT_MS));
+  let searchMs = 3000;
+  const client = new Client();
+  const session = new Session("waitLine", client, {
+    config, openAsr: () => { throw new Error("no asr"); },
+    async *spark(_req, { signal }): AsyncGenerator<SparkStreamEvent> {
+      yield { type: "tool", name: "web_search", status: "in_progress" };
+      yield { type: "tool", name: "web_search", status: "searching" };
+      await new Promise((r) => setTimeout(r, searchMs));
+      if (signal?.aborted) return;
+      yield { type: "tool", name: "web_search", status: "completed" };
+      yield { type: "text", delta: "<happy> It opens at nine tomorrow." };
+      yield { type: "done", responseId: "r", text: "", status: "completed" };
+    },
+    async *tts() {},
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  const t0 = Date.now();
+  await session.onClientText(JSON.stringify({ type: "text", text: "when does the library open tomorrow" }));
+  await client.waitFor((m) => m.type === "reply" && m.final === true, 8000);
+  const wait = client.json.filter((m) => m.type === "say" && /pulling that up/i.test(String(m.text)));
+  assert.equal(wait.length, 1, "exactly one wait line");
+  assert.equal(String(wait[0].text), SEARCH_WAIT_LINE.replace(/<[^>]*>\s*/g, ""));
+  assert.equal(client.json.filter((m) => m.type === "say" && BEAT.test(String(m.text))).length, 0, "no beat instead");
+  const reply = client.json.find((m) => m.type === "reply" && m.final === true)!;
+  assert.ok(!/pulling that up/i.test(String(reply.text)), "not in the reply text / history");
+  assert.ok(Date.now() - t0 >= SEARCH_WAIT_MS);
+  // a quick search (answer in 600 ms): no wait line
+  client.json.length = 0;
+  searchMs = 600;
+  await session.onClientText(JSON.stringify({ type: "text", text: "and on sunday" }));
+  await client.waitFor((m) => m.type === "reply" && m.final === true, 8000);
+  assert.equal(client.json.filter((m) => m.type === "say" && /pulling that up/i.test(String(m.text))).length, 0, "quick search: none");
+  session.close();
 });
