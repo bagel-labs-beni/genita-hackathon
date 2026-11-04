@@ -647,6 +647,8 @@ export class FindsRunner {
     this.prefetched = null;
     // searches already running were asked with the old taste: their card would say it ("Both leather, your style.")
     for (const r of this.running.values()) r.abort.abort();
+    // and the background ones (cache warm-up / refresh) asked with it too, running or waiting for a slot (Codex #583 r15)
+    for (const stop of [...this.backgroundStops]) stop();
   }
 
   /** One line for the system prompt about the card on screen, or undefined. Data only. */
