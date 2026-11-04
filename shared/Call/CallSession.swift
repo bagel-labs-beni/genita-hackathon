@@ -1519,13 +1519,15 @@ enum CallStop: Equatable {
         apply(face)
     }
 
-    /// b14: remembers one face event of a reply (the last `faceReplayUtterances` replies, at most `faceReplayMaxEvents`).
+    /// b14: remembers one face event of a reply (the last `faceReplayUtterances` replies plus any the player still has,
+    /// at most `faceReplayMaxEvents`).
     private func recordFace(_ utterance: Int, _ apply: @escaping (FaceDriver) -> Void) {
         faceReplay.append((utterance, apply))
         var seen: [Int] = []
         for e in faceReplay.reversed() where !seen.contains(e.utterance) { seen.append(e.utterance) }
         if seen.count > Self.faceReplayUtterances {
-            let keep = Set(seen.prefix(Self.faceReplayUtterances))
+            // a reply the player still has (playing, or queued behind queued interpretations) is never pruned (Codex r2 P2)
+            let keep = Set(seen.prefix(Self.faceReplayUtterances)).union(seen.filter { audio.playbackPositionMs(utteranceId: $0) != nil })
             faceReplay.removeAll { !keep.contains($0.utterance) }
         }
         if faceReplay.count > Self.faceReplayMaxEvents { faceReplay.removeFirst(faceReplay.count - Self.faceReplayMaxEvents) }
