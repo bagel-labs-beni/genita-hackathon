@@ -131,7 +131,8 @@ struct ConversationView: View {
                         if call.cameraOn && sheet != .full {
                             // r01 CAM-H `.pip`: right 20, top 120, 96 × 128, 2 px light border; moves left while the sheet is half up (the rail rises into its place)
                             // the camera's small window is the live, talking face too (Chelsea P1, build 7: a frozen upload photo)
-                            CompanionFaceView(still: companionImage, loop: loopURL, face: call.face, faceStill: call.faceStill, poster: call.facePoster).frame(width: 96, height: 128).clipShape(RoundedRectangle(cornerRadius: 16))
+                            CompanionFaceView(still: companionImage, loop: loopURL, face: call.face, faceStill: call.faceStill, poster: call.facePoster).frame(width: 96, height: 128)
+                                .overlay { if waitingForFace { CallWaitStage(size: CGSize(width: 96, height: 128)) } }.clipShape(RoundedRectangle(cornerRadius: 16))
                                 .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(CallInk.onInk, lineWidth: 2)).shadow(color: CallInk.ink.opacity(0.18), radius: 12, y: 8)
                                 .position(x: sheet == .half || sheet == .rising ? 68 : full.size.width - 68, y: 184 + top)
                                 .onTapGesture { faceTapped() }.accessibilityLabel("\(call.companionName)")
@@ -191,7 +192,8 @@ struct ConversationView: View {
                         if sheet == .full {
                             // r03 `.pip`: the face as a 96 × 128 window; tap → back to half
                             Button { withAnimation(.drawer) { call.finds.pipTapped() } } label: {
-                                CompanionFaceView(still: companionImage, loop: loopURL, face: call.face, faceStill: call.faceStill, poster: call.facePoster).frame(width: 96, height: 128).clipShape(RoundedRectangle(cornerRadius: 16))
+                                CompanionFaceView(still: companionImage, loop: loopURL, face: call.face, faceStill: call.faceStill, poster: call.facePoster).frame(width: 96, height: 128)
+                                .overlay { if waitingForFace { CallWaitStage(size: CGSize(width: 96, height: 128)) } }.clipShape(RoundedRectangle(cornerRadius: 16))
                                     .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(CallInk.onInk, lineWidth: 2)).shadow(color: CallInk.ink.opacity(0.18), radius: 12, y: 8)
                             }.buttonStyle(PressScale()).position(x: full.size.width - 64, y: 112 + top)
                                 .accessibilityLabel("Back to half height").accessibilityIdentifier("findsPip").transition(.opacity)
