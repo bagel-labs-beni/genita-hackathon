@@ -18,9 +18,13 @@ export function userIsLeaving(userText: string): boolean {
 // each phrase must end its clause (Codex r1: "You made it through a tough interview" is praise, not a hello)
 const END = String.raw`(?=\s*(?:[,.!?…—]|$))`;
 const GREET_AGAIN = new RegExp(String.raw`\b(?:look (?:who(?:'s| is)?|at you)\b[^,.!?]*\b(?:show(?:ed|s)? up|here|back|made it|decided to [a-z]+|finally|crawl(?:ed|ing)? back|alive)${END}|(?:you\s+|she\s+)?(?:finally|actually)\s+(?:decided\s+to\s+)?(?:show(?:ed)?\s+up|made\s+it|call(?:ed)?|here|back|join(?:ed)?|pick(?:ed)?\s+up)${END}|(?:decided|bothered)\s+to\s+(?:show\s+up|call|join)${END}|there\s+you\s+are${END}|you(?:'re|\s+are)\s+back${END}|welcome\s+back${END}|you\s+made\s+it${END}|(?:oh\s+)?hey\s+stranger|long\s+time\s+no\s+(?:see|talk)|(?:i was )?starting to think you (?:ditched|forgot|ghosted))`, "i");
+/** "Look who actually stayed up late with me" (bake-off-100 run3): a piece that opens with "look who" is a hello tease */
+const LOOK_WHO = /^\s*(?:(?:oh|well|hey)\s+)?look who\b(?!'?s talking| is talking)/i;
 const HELLO_ONLY = /^\s*(?:oh\s+|well\s+)?(?:hey|hi|hello|heya|hiya|yo|sup)(?:\s+(?:you|there|girl|dude|babe|friend))?\s*$/i;
 const USER_HELLO = /^\s*(?:hey|hi|hello|heya|hiya|yo|sup|what'?s up|wassup)\b[\s\w'!.?,]{0,20}$/i;
 
+/** a sentence carrying real help ("call 911", "988") is never cut by these guards (Codex r1/r2 P1) */
+const HELP = /\b(?:911|988|999|112|000|police|emergency|ambulance|crisis|hotline|lifeline|call (?:someone|a friend|for help|them now))\b/i;
 const TAGS = /^(\s*(?:(?:<[^>]*>|\[[^\]]*\])\s*)*)/;
 
 /**
@@ -30,13 +34,18 @@ const TAGS = /^(\s*(?:(?:<[^>]*>|\[[^\]]*\])\s*)*)/;
 export function noRepeatGreeting(sentence: string, userText: string): string {
   const lead = TAGS.exec(sentence)?.[1] ?? "";
   const body = sentence.slice(lead.length);
-  if (!GREET_AGAIN.test(body)) return sentence;
+  // real help is never cut (Codex r2 P1: "Call 911 now that you're back.")
+  if (!(GREET_AGAIN.test(body) || LOOK_WHO.test(body)) || HELP.test(body)) return sentence;
   const end = /[.!?…]+["')\]]*\s*$/.exec(body)?.[0]?.trim() ?? ".";
   const pieces = body.replace(/[.!?…]+["')\]]*\s*$/, "").split(/\s*(?:,|—| - )\s*/);
-  const kept = pieces.filter((p) => p.trim() && !GREET_AGAIN.test(p));
+  // a piece goes only when the hello is what it says: at most two words left once the phrase is out
+  const isGreet = (p: string) => LOOK_WHO.test(p) || (GREET_AGAIN.test(p) && p.replace(GREET_AGAIN, " ").trim().split(/\s+/).filter(Boolean).length <= 2);
+  const kept = pieces.filter((p) => p.trim() && !isGreet(p));
   // a hello left alone is said only back to a hello ("hey" → "Hey you."); to anything else it's a second greeting
-  const real = kept.filter((p) => !HELLO_ONLY.test(p));
-  if (!real.length) return kept.length && USER_HELLO.test(userText) ? `${lead}${cap(kept.join(", "))}${end.replace(/\?/, ".")}` : "";
+  // a lone word left (the name: "…, Summer.") is not a reply either
+  const real = kept.filter((p) => !HELLO_ONLY.test(p) && p.trim().split(/\s+/).length > 1);
+  const hello = kept.filter((p) => HELLO_ONLY.test(p));
+  if (!real.length) return USER_HELLO.test(userText) ? `${lead}${cap(hello.join(", ") || "hey")}${end.replace(/\?/, ".")}` : "";
   // the hello itself goes too: the opener already said it
   return `${lead}${cap(real.join(", "))}${end}`;
 }
@@ -45,8 +54,6 @@ const SEND_OFF = /\b(?:bye|goodbye|good ?night|night night|ttyl|talk (?:to you )
 /** their line asks something ("can I throw in the leftover rice too?"): it needs an answer, never a send-off */
 const ASKS = /\?\s*$|^\s*(?:can|could|should|would|will|do|does|is|are|what|how|which|why|when|where|who)\b/i;
 
-/** a sentence carrying real help ("call 911", "988") is never cut for its send-off clause (Codex r1 P1) */
-const HELP = /\b(?:911|988|999|112|000|police|emergency|ambulance|crisis|hotline|lifeline|call (?:someone|a friend|for help|them now))\b/i;
 
 /**
  * A send-off ("Go, have fun! I want the full story after.") to a question that isn't them leaving: its clause goes

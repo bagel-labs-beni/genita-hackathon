@@ -22,6 +22,13 @@ test("a second hello after the opener goes; the rest of the sentence stays", () 
   assert.equal(noRepeatGreeting("Oh hey, you're back!", "can I throw in the rice?"), "");
   assert.equal(noRepeatGreeting("Well hey, Tuesday night troublemaker, you made it.", "hey"), "Tuesday night troublemaker.");
   // not a greeting: untouched
+  // Codex r2 P1: help is never cut; a hello phrase inside a longer clause isn't a hello
+  assert.equal(noRepeatGreeting("Call 911 now that you're back.", "I'm back at home but he is following me, what should I do?"), "Call 911 now that you're back.");
+  assert.equal(noRepeatGreeting("Lock the door now that you're back.", "I'm home, what now?"), "Lock the door now that you're back.");
+  // bake-off-100 run3: "look who …" opening a piece is a hello tease
+  assert.equal(noRepeatGreeting("Look who actually stayed up late with me, Summer.", "hi"), "Hey.");
+  assert.equal(noRepeatGreeting("Look who actually stayed up late with me, Summer.", "so bored"), "");
+  assert.equal(noRepeatGreeting("Look who's talking, you burned toast.", "x"), "Look who's talking, you burned toast.");
   // Codex r1 P2: praise that happens to say "you made it"
   assert.equal(noRepeatGreeting("You made it through a tough interview without freezing.", "Did I do okay in the interview?"), "You made it through a tough interview without freezing.");
   for (const s of ["That's brutal, making you pitch his version like that.", "Black one, no contest.", "Finally, a dish that needs no oven.", "You're back to square one with the deck, huh."]) assert.equal(noRepeatGreeting(s, "x"), s);
