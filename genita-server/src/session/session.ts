@@ -563,6 +563,12 @@ export class Session {
   private bargeCfg: { bargeInMinMs: number; bargeInMinWords: number };
   private readonly client: ClientSink;
   private finds: FindsRunner | null = null;
+  /** FD-01: the in-flight read of a card named by find.focus; a typed turn waits for it */
+  private readonly focusLoads = new Set<Promise<void>>();
+  /** barge_in count: a typed turn that waited for a card and was interrupted meanwhile is dropped (Codex r4) */
+  private bargeSeq = 0;
+  /** typed questions so far: one that waited for a card is dropped when a newer one came meanwhile (Codex r6) */
+  private textSeq = 0;
   /** lane 개인화: this call's one still-to-confirm question (first ASK_TURNS user turns) */
   private ask: { line: string; item: string; topic: UnknownItem | null; asked: boolean } | null = null;
   /** the companion just asked this call's question: the next user line is checked for the answer */
@@ -718,12 +724,25 @@ export class Session {
           this.log("finds.ask_ignored_interpreting", { findId: msg.findId.slice(0, 64) });
           return;
         }
-        if (typeof msg.findId === "string") this.finds?.focus(msg.findId);
+        // a card "Talk about this" just named may still be loading from Finds: this turn is about it (Codex P2);
+        // interrupted, closed or switched to interpreting meanwhile → this question is over (Codex r4/r5)
+        const barge = this.bargeSeq;
+        // a newer typed question while this one waited for its card wins (Codex r6)
+        const mine = ++this.textSeq;
+        const waited = this.focusLoads.size > 0 || typeof msg.findId === "string";
+        if (this.focusLoads.size) await this.focusSettled();
+        if (typeof msg.findId === "string") await this.finds?.focus(msg.findId.slice(0, 64));
+        if (waited && (this.closed || barge !== this.bargeSeq || mine !== this.textSeq)) return;
+        if (waited && this.interp && typeof msg.findId === "string") {
+          this.log("finds.ask_ignored_interpreting", { findId: msg.findId.slice(0, 64) });
+          return;
+        }
         this.client.sendJson({ type: "transcript", final: true, text, source: "text" });
         if (this.interp) return this.interp.typed(text);
         return this.dispatch({ type: "text", text });
       }
       case "barge_in":
+        this.bargeSeq++;
         if (this.interp) return this.interp.bargeIn();
         return this.dispatch({ type: "client_barge_in" });
       case "hold":
@@ -757,6 +776,18 @@ export class Session {
         return;
       case "find.stop":
         if (typeof msg.findId === "string") this.finds?.stop(msg.findId);
+        return;
+      case "find.focus":
+        // FD-01 "Talk about this on a call": later turns are about this card (one from an earlier call too)
+        if (typeof msg.findId === "string") {
+          const load: Promise<void> = (this.finds?.focus(msg.findId.slice(0, 64)) ?? Promise.resolve()).catch(() => {}).then(() => {
+            this.focusLoads.delete(load);
+          });
+          this.focusLoads.add(load);
+          // a guess built before the card was there has no card in it
+          this.dropSpeculation();
+          await load;
+        }
         return;
       default:
         return this.error("unknown_type", `Unknown message type ${String(type).slice(0, 40)}`, false);
@@ -2014,6 +2045,7 @@ export class Session {
     if (this.deps.turnGate && !this.deps.turnGate.peek()) return; // over the judge daily cap: no Spark guess
     const norm = normTranscript(text);
     if (!norm || this.closed || this.spec?.norm === norm) return;
+    if (this.focusLoads.size) return; // the card "Talk about this" named is still loading (Codex r2)
     this.dropSpeculation();
     const built = this.buildRequest(text);
     const abort = new AbortController();
@@ -2031,6 +2063,11 @@ export class Session {
       if (ev.type === "text" && ev.delta.trim()) onText(this.now());
       yield ev;
     }
+  }
+
+  /** Every find.focus read started so far is done, a later one included (overlapping picks, Codex r3). */
+  private async focusSettled(): Promise<void> {
+    while (this.focusLoads.size) await Promise.all([...this.focusLoads]);
   }
 
   private dropSpeculation(): void {
@@ -2150,6 +2187,11 @@ export class Session {
       memoryRetry = preGreet.memoryRetry;
       this.log("call.greet_prestarted", { utteranceId });
     } else preGreet?.abort.abort();
+    if (!built && this.focusLoads.size) {
+      await this.focusSettled();
+      // barged in or replaced while the card loaded: this turn is over (Codex r3)
+      if (signal.aborted || this.reply !== reply || this.closed) return;
+    }
     built ??= this.buildRequest(text, renamedFrom, { greeting, cue });
     if (greeting) this.nod = null;
     const greetLine = greeting && !self && this.deps.greetOpener === true ? this.greetOpener : null;

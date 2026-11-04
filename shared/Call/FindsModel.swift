@@ -114,7 +114,10 @@ struct FindEntry: Identifiable, Equatable {
             boxEpoch[s.findId] = boxes.epoch
             let frames = latestFrames.compactMap { Data(base64Encoded: $0) }
             entries.append(FindEntry(id: s.findId, kind: s.kind, utteranceId: s.utteranceId, searchTitle: s.title, searchDetail: s.detail, frames: frames, question: latestQuestion))
-            if state == .idle || state == .dismissed || state == .searching {
+            // these frames belong to this find now: a later find (camera off by then) must not pick them up (AU-75)
+            latestFrames = []
+            // folded to peek (the user started talking) is not reading: the new search shows (FD-02 refine, AU-69)
+            if state == .idle || state == .dismissed || state == .searching || state == .peek {
                 page = entries.count - 1
                 state = .searching
                 undoState = nil
@@ -136,7 +139,8 @@ struct FindEntry: Identifiable, Equatable {
             var card = c.card
             if let items = pendingItems.removeValue(forKey: c.findId), card.items.allSatisfy({ $0.tier == .checking }) { card.items = items }
             update(c.findId) { $0.card = card; $0.saved = card.saved ?? false }
-            if let e = entries.first(where: { $0.id == c.findId }) { persistFrames(e.id, e.frames) }
+            // only frames the card shows (fridge camera, outfit crops) stay on the phone; a product or link card shows none (AU-75)
+            if let e = entries.first(where: { $0.id == c.findId }), card.camera != nil || !card.options.isEmpty { persistFrames(e.id, e.frames) }
             guard let index = entries.firstIndex(where: { $0.id == c.findId }) else { return }
             if state == .searching && page == index {
                 state = .rising
@@ -146,8 +150,13 @@ struct FindEntry: Identifiable, Equatable {
                     guard let self, !Task.isCancelled, self.state == .rising else { return }
                     self.state = .half
                 }
-            } else if state == .half || state == .full || state == .peek {
+            } else if state == .half || state == .full {
                 newFind = c.findId
+            } else if state == .peek {
+                // folded: nobody is reading the old card, and the banner only shows at half/full — the new card takes the peek
+                page = index
+                if newFind == c.findId { newFind = nil }
+                selectedItem = nil
             } else if state == .idle || state == .dismissed {
                 page = index
                 state = .peek
@@ -267,6 +276,10 @@ struct FindEntry: Identifiable, Equatable {
     /// Fridge (recipe) cards use the server's short `pill` ("Egg, tofu +2"); the full sentence is only spoken.
     var pillText: String? {
         guard let f = current, f.kind == .product || f.kind == .recipe, state != .idle, state != .dismissed else { return nil }
+        // a newer search is running while an older card is up: the pill says so, not the old card's line (AU-69)
+        if let running = entries.last(where: { $0.card == nil && $0.failed == nil }), running.id != f.id, running.kind == .product || running.kind == .recipe {
+            return running.kind == .product ? "On it…" : "Let me take a look…"
+        }
         if f.failed != nil { return f.kind == .product ? "Nothing I’d pick for you." : f.failureLines?.title }
         if state == .searching || f.card == nil { return f.kind == .product ? "On it…" : "Let me take a look…" }
         if f.saved { return "Saved. They’re in Finds." }
@@ -324,6 +337,11 @@ struct FindEntry: Identifiable, Equatable {
         risingTask?.cancel(); toastTask?.cancel()
         if let i = entries.firstIndex(where: { $0.id == card.id }) {
             entries[i].reopened = true
+            // Finds has the server's copy: pictures that finished after a reconnect or the call's end are in it (AU-72);
+            // a picture this call already got stays, the list may be older than that (Codex r3)
+            entries[i].card = Self.merged(card, keeping: entries[i].card)
+            entries[i].failed = nil
+            entries[i].checking = false
             if let saved = card.saved { entries[i].saved = saved; entries[i].card?.saved = saved }
             if entries[i].frames.isEmpty { entries[i].frames = frames }
             page = i
@@ -337,10 +355,31 @@ struct FindEntry: Identifiable, Equatable {
         state = .half
     }
 
+    /// Reopening a card this call made: the live card (its confirmed ingredients and status are newer than any list),
+    /// with a picture the list has ready where the live one is still pending or was cut off by a reconnect (Codex r3/r4).
+    static func merged(_ listed: FindCard, keeping live: FindCard?) -> FindCard {
+        guard var c = live else { return listed }
+        // ingredients still being checked when the call lost the server: the server finished them, the list has that (Codex r5)
+        if live?.items.contains(where: { $0.tier == .checking }) == true {
+            c.items = listed.items; c.subtitle = listed.subtitle; c.status = listed.status
+        }
+        let pick = { (mine: FindImage?, theirs: FindImage?) -> FindImage? in mine?.status != .ready && theirs?.status == .ready ? theirs : mine }
+        c.hero = pick(c.hero, listed.hero)
+        for s in c.steps.indices where listed.steps.indices.contains(s) { c.steps[s].image = pick(c.steps[s].image, listed.steps[s].image) }
+        if var products = c.products, let lp = listed.products {
+            for p in products.indices where lp.indices.contains(p) { products[p].image = pick(products[p].image, lp[p].image) }
+            c.products = products
+        }
+        c.saved = listed.saved ?? c.saved
+        return c
+    }
+
     /// "Talk about this on a call": the card stays up over the call, questions are about it from here on.
     func talkAboutThis() {
         guard entries.indices.contains(page) else { return }
         entries[page].reopened = false
+        // the server learns which card: questions in the call are about it, even one from an earlier call (AU-70)
+        send(.findFocus(findId: entries[page].id))
     }
 
     func tapItem(_ item: FindItem) {
@@ -369,7 +408,27 @@ struct FindEntry: Identifiable, Equatable {
         send(.text(.init(text: text, frames: nil, findId: f.id)))
     }
 
+    /// The call's socket was replaced (reconnect) or the call ended: the server session that ran these searches is gone
+    /// and never sends their result. A search still running fails with Retry, and a picture still loading stops
+    /// shimmering (AU-62, AU-72). Cards that landed keep their text; Finds has them with their pictures.
+    func interrupted() {
+        for i in entries.indices {
+            if entries[i].card == nil, entries[i].failed == nil {
+                entries[i].failed = .init(findId: entries[i].id, reason: .error, message: "Search interrupted. Ask me again?")
+                entries[i].checking = false
+            }
+            guard var card = entries[i].card else { continue }
+            let stop = { (img: FindImage?) -> FindImage? in img?.status == .pending ? FindImage(slot: img!.slot, status: .failed, url: img!.url) : img }
+            card.hero = stop(card.hero)
+            for s in card.steps.indices { card.steps[s].image = stop(card.steps[s].image) }
+            if let products = card.products { card.products = products.map { var p = $0; p.image = stop(p.image); return p } }
+            if card != entries[i].card { entries[i].card = card }
+            entries[i].checking = false
+        }
+    }
+
     func callEnded() {
+        interrupted()
         boxes.clear()
         risingTask?.cancel(); toastTask?.cancel()
         state = .idle

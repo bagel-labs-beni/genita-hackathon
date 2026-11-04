@@ -240,6 +240,7 @@ extension ServerEvent {
         public var findId: String
         public var reason: Reason
         public var message: String
+        public init(findId: String, reason: Reason, message: String) { self.findId = findId; self.reason = reason; self.message = message }
     }
 }
 
