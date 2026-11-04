@@ -11,7 +11,7 @@ import { randomUUID } from "node:crypto";
 import type { FindCard, FindKind, ServerEvent } from "../protocol.ts";
 import { classifyTurn, isLinksAsk, isProductAsk } from "./intent.ts";
 import { PRODUCT_COUNT, SEARCH_TITLE, guessLabel, runProduct, shortLabel } from "./product.ts";
-import { confirmItem, runLink, runOutfit, runRecipe, type PipelineCtx, type PipelineResult } from "./pipeline.ts";
+import { confirmItem, FRIDGE_UNCLEAR, runLink, runOutfit, runRecipe, type PipelineCtx, type PipelineResult } from "./pipeline.ts";
 import { cacheGet, cacheKey, cachePut, cardFitsColors, cardIsKind, categoryOf, claimWarm, colorAsks, colorPhrases, colorsOf, plainAsk, releaseWarm, type CachedProducts } from "./productCache.ts";
 import { ownerKey, type FindsStore } from "./store.ts";
 import type { FindsVendors } from "./vendors.ts";
@@ -134,6 +134,8 @@ export type TurnInput = {
   replyText: Promise<string | null>;
   /** last few lines of the conversation, oldest first (product refine on the Mac) */
   recent?: string[];
+  /** D59: the app judged these frames too dark or too blurry to see anything */
+  unclear?: boolean;
 };
 
 export type TurnStarted = { findId: string; kind: FindKind; ack?: string };
@@ -253,6 +255,14 @@ export class FindsRunner {
     const intent = classifyTurn(t.text, t.frames.length > 0, afterProduct) ?? (prefetchLive && isLinksAsk(t.text) ? { kind: "product" as const } : null);
     if (!intent) return null;
     const findId = randomUUID();
+    if (intent.kind === "recipe" && t.unclear) {
+      // D59 · CW-01 DARK: the app saw nothing but dark / blur — no "let me see" that IC-4 then takes back: the honest
+      // line is the turn's whole answer, the IC-4 card shows at once, and nothing is guessed from the picture
+      this.onEvent({ type: "find.started", findId, utteranceId: t.utteranceId, kind: "recipe", title: "Looking at your ingredients", detail: "Checking what's there · recipes" });
+      this.onEvent({ type: "find.failed", findId, reason: "unclear", message: FRIDGE_UNCLEAR });
+      this.hooks.log("finds.unclear_frames", { findId });
+      return { findId, kind: "recipe", ack: FRIDGE_UNCLEAR };
+    }
     const abort = new AbortController();
     const ctx: PipelineCtx = {
       findId,

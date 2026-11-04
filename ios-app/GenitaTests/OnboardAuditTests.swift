@@ -273,4 +273,28 @@ import UIKit
         XCTAssertNil(model.setup.companionName)
         XCTAssertEqual(model.setup.name, "Summer", "the user's own name stays")
     }
+
+    /// TF 331 · NM01: the field opens empty (placeholder) with the suggestion offered as "Use {name}"; a name the
+    /// user already chose stays.
+    func testNM01NeverPrefillsTheSuggestedName() async throws {
+        let (model, _) = makeModel { req in
+            (req.url?.path ?? "").hasSuffix("/v1/companion/name/suggest") ? (200, Data(#"{"name":"Jae","suggested":true}"#.utf8)) : (404, Data())
+        }
+        model.setup.imageId = "img1"
+        model.suggestName()
+        for _ in 0..<200 where model.suggestedCompanionName == nil { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(model.suggestedCompanionName, "Jae")
+        XCTAssertNil(model.setup.companionName, "empty until the user types or taps Use Jae")
+    }
+
+    /// TF 331 · NM01: the circle shows the generated face. A confirmed polished picture is the call scene itself, so
+    /// it shows at once; the raw upload never does.
+    func testNM01CircleShowsThePolishedPictureNeverTheUpload() throws {
+        let (model, _) = makeModel { _ in (404, Data()) }
+        model.setup.imageData = Data([9, 9, 9])   // the upload
+        XCTAssertNil(model.companionFaceData, "no upload on NM01")
+        let p = try JSONDecoder().decode(PolishedImage.self, from: Data(#"{"imageId":"p1","sourceImageId":"src","passed":true,"type":"human","reasons":[],"attempt":1,"retriesLeft":2}"#.utf8))
+        model.polished = p; model.polishedImage = Data([1, 2, 3]); model.setup.imageId = "p1"
+        XCTAssertEqual(model.companionFaceData, Data([1, 2, 3]))
+    }
 }

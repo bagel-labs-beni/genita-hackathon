@@ -162,7 +162,34 @@ extension AppState {
     /// after V02 (Chelsea 11/4). Unwired builds (UI tests, Appetize preview) keep their bundled fixture.
     var companionFaceData: Data? {
         if let scene = sceneImageData { return scene }
+        // a confirmed polished picture is the call scene itself (D91: the server makes no second edit), so it shows
+        // before the scene comes back; the raw upload never does (TF 331: NM01's circle was empty)
+        if let p = polished, p.passed, setup.imageId == p.imageId, let bytes = polishedImage { return bytes }
         return serverWired ? nil : setup.imageData
+    }
+
+    /// NM01: the scene isn't polled before PREP-1, so ask for it until it exists (≤ 90 s). Reads `GET /v1/companion`
+    /// (its `prep` carries `sceneUrl`), not `/prep`, so PREP-1's own polling and the server's face top-up are untouched.
+    /// Each answer must still belong to this sign-in and this onboarding (Codex P2).
+    func followSceneUntilShown() async {
+        guard serverWired else { return }
+        await companionTask?.value
+        let launchRequest = launchAuthSnapshot, request = onboardingSnapshot()
+        let until = Date().addingTimeInterval(90)
+        while sceneImageData == nil, setup.companionCreated == true, Date() < until, !Task.isCancelled {
+            do {
+                let c = try await onboarding.companion()
+                guard launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled, ownsOnboardingResponse(request) else { return }
+                if c.prep?.sceneURL != nil { await loadScene(for: c.prep) }
+                if sceneImageData != nil { return }
+            } catch GenitaAuthError.server(404, _, _) {
+                return   // no companion (yet / any more): nothing to show
+            } catch let error as GenitaAuthError where error == .unauthorized || error == .consentRequired {
+                if launchRequest.generation == authGeneration, !Task.isCancelled { route(error) }
+                return
+            } catch {}
+            try? await Task.sleep(for: .seconds(2))
+        }
     }
 
     /// `upcoming` = a prep answer not shown yet: its scene is fetched first so the screen never says ready over the
@@ -671,8 +698,9 @@ extension AppState {
         Task {
             defer { suggestingName = false }
             guard let s = try? await onboarding.suggestName(imageId: imageId) else { return }
+            // NM01 opens empty with its placeholder; the suggestion is offered as "Use {name}", never typed in for the
+            // user (TF 331 device run: the field said "Jae" before anyone chose it)
             if CompanionName.isValid(s.name) { suggestedCompanionName = CompanionName.clean(s.name) }
-            if (setup.companionName ?? "").isEmpty { setup.companionName = s.name }
         }
     }
 

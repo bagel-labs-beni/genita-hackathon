@@ -12,6 +12,7 @@ import { cameraOffHint } from "./cameraAsk.ts";
 import { unbackedPast } from "./pastGuard.ts";
 import { crisisFollowUpFor } from "../session/session.ts";
 import { forgetInCall } from "./forgetInCall.ts";
+import { taskHint } from "./taskHints.ts";
 import type { Memory } from "../memory/repository.ts";
 import type { InputMessage, SparkRequest } from "../meta/spark.ts";
 import { SentenceSplitter } from "../text/sentences.ts";
@@ -104,7 +105,7 @@ export const adapter = {
     const minor = minorLine(userLines);
     const turnWithMinor = minor ? (turn ? turn.replace(/^This turn: /, `This turn: ${minor} `) : `This turn: ${minor}`) : turn;
     // scripted calls send no camera frames: the session's camera-off hint for a "do I look ok?" line
-    const instructions = buildInstructions({ ...base, turn: turnWithMinor, perceptionHint: userLines.some(realCrisisSignal) ? undefined : cameraOffHint(t.text, false) ?? undefined }) + lastCallBlock(s, t.text) + memoryPrompt((s.memories ?? []).map(mem), false) + (hasPast(s) ? "" : NO_PAST_LINE);
+    const instructions = buildInstructions({ ...base, turn: turnWithMinor, task: taskHint(t.text, ctx.history, ctx.history.some((h) => h.role === "user" && realCrisisSignal(h.text)) || realCrisisSignal(t.text), s.persona.kind) ?? undefined, perceptionHint: userLines.some(realCrisisSignal) ? undefined : cameraOffHint(t.text, false) ?? undefined }) + lastCallBlock(s, t.text) + memoryPrompt((s.memories ?? []).map(mem), false) + (hasPast(s) ? "" : NO_PAST_LINE);
     return { instructions, input: [...msgs(ctx.history), { role: "user", content: t.text }], maxOutputTokens: 800, effort: "minimal" };
   },
 

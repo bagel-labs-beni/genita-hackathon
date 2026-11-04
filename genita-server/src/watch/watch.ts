@@ -258,6 +258,11 @@ export class WatchController {
   /** the share's first frame: the nonverbal needs ~2.5 s of history to know what "out-moves" means (Codex #613 P2) */
   private firstFrameAt: number | null = null;
   private protectedPending = false;
+  /** MS-3 in a browser (AU-64): the last look saw a DRM-black video in a page that otherwise captures; the Mac shows
+   *  the black-screen card from `state.blank` until a clear picture comes back */
+  private protectedShown = false;
+  /** start time of the look whose DRM verdict the card follows: an older look finishing late never overrides it */
+  private protectedAt = -Infinity;
   private protectedSince = 0;
   /** a funny moment waiting for the video's line (or the conversation) to pause */
   private held: { v: MemoVerdict; at: number } | null = null;
@@ -367,6 +372,9 @@ export class WatchController {
     for (const q of this.quickInFlight) q.abort();
     this.quickInFlight.clear();
     this.quickSpikeAt = null;
+    // the DRM card was about the old video; a cancelled look must not leave it up (Codex AU-64 r1 P2)
+    this.protectedAt = -Infinity;
+    this.setProtectedShown(false);
     if (why === "title" || why === "source") {
       // the old video's frames and lines are not the new one's (Codex #445 P2); the newest frame stays: the title
       // arrives after the page changed, so it is already the new picture (and a paused screen sends no more)
@@ -394,7 +402,7 @@ export class WatchController {
     }
     if (this.sharing) {
       // another window or display: an older "protected" verdict was about the old one
-      if (source !== null && source !== this.source) this.protectedPending = false;
+      if (source !== null && source !== this.source) { this.protectedPending = false; this.protectedShown = false; }
       if (source !== null && source !== this.source) this.resetClip("source");
       this.source = source ?? this.source;
       return this.emitState();
@@ -411,6 +419,7 @@ export class WatchController {
     this.blankSpoken = false;
     this.protectedSpoken = false;
     this.protectedPending = false;
+    this.protectedShown = false;
     this.salientAt = null;
     this.lineSinceMemo = false;
     this.openAsr();
@@ -464,6 +473,7 @@ export class WatchController {
     this.flushWaiters();
     this.setSpeaker(null);
     this.blank = false;
+    this.protectedShown = false;
     this.emitState();
     this.log("watch.stop", { reason, ...this.summary() });
   }
@@ -699,11 +709,15 @@ export class WatchController {
     if (v.page) this.lastMemoPage = true;
     else if (v.moment !== "none") this.lastMemoPage = false;
     this.log("watch.memo", { ms, memo: v.memo.slice(0, 160), moment: v.moment, reaction: v.reaction, frames: frames.length, lines: lines.length, salient, protectedVideo: v.protectedVideo === true, page: v.page === true });
+    const newest = at >= this.protectedAt;
+    if (newest) this.protectedAt = at;
     if (v.protectedVideo) {
       this.speakProtected();
+      if (newest) this.setProtectedShown(true);
       return v;
     }
     this.protectedPending = false; // a clear picture now: an older "protected" no longer applies
+    if (newest) this.setProtectedShown(false);
     if (v.moment !== "none" && !early) {
       if (!v.page) this.noteMoment(v.moment, v.reaction, contentAt, frames.at(-1) ?? null);
       this.tryReact({ ...v, talkOverSeq: memoSeq, pageGen: memoPageGen }, v.page ? now : contentAt);
@@ -1008,8 +1022,16 @@ export class WatchController {
     };
   }
 
+  private setProtectedShown(on: boolean): void {
+    if (on === this.protectedShown) return;
+    this.protectedShown = on;
+    this.emitState();
+    this.log("watch.protected.card", { on });
+  }
+
   private emitState(): void {
-    this.sink?.send({ type: "state", sharing: this.sharing, blank: this.blank, source: this.source });
+    // blank = the window captures black, or the video in it does (DRM in a browser): the Mac's MS-3 card either way
+    this.sink?.send({ type: "state", sharing: this.sharing, blank: this.blank || (this.sharing && this.protectedShown), source: this.source });
   }
 
   private log(event: string, data: Record<string, unknown>): void {

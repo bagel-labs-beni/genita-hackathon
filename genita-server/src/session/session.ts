@@ -54,6 +54,7 @@ import type { CallStart, VoiceUpdate } from "../personalize/service.ts";
 import type { CallTurn } from "../personalize/extract.ts";
 import { ASK_TURNS, replyAsks } from "../personalize/unknowns.ts";
 import { mightBeCorrection } from "../personalize/corrections.ts";
+import { taskHint } from "../convo/taskHints.ts";
 import { ageSays, foldAge, isMinor, MINOR_LINE, NO_AGE, type AgeSay } from "../convo/minorBoundary.ts";
 import { cameraOffHint } from "../convo/cameraAsk.ts";
 import { unbackedPast } from "../convo/pastGuard.ts";
@@ -161,6 +162,8 @@ export type SessionDeps = {
    * start.persona.name, so a device with a cached older name still calls the companion by its current one.
    */
   companionName?: () => Promise<string | null | undefined>;
+  /** D42: the account's own name (users.display_name), used only when neither the start nor the account's earlier calls gave one */
+  accountName?: () => Promise<string | null | undefined>;
 };
 
 /** Demo S5 (agreed with the convo lane 11/3): the product-ask turn's reply while the search runs in the background. */
@@ -205,7 +208,8 @@ const schedule = (fn: () => void, ms: number) => {
 
 type Mode = "chat" | "interpret";
 export type HistoryItem = { role: "user" | "assistant"; text: string };
-type Frames = { images: string[]; at: number };
+/** `unclear`: the app judged every frame too dark or too blurry to see anything (D59, `frames.unclear`) */
+type Frames = { images: string[]; at: number; unclear?: boolean };
 
 type Reply = {
   utteranceId: number;
@@ -574,6 +578,7 @@ export class Session {
   private readonly ownedVoice: Promise<string | null>;
   /** AU-53: the stored companion name, looked up as the socket opens (bounded) */
   private readonly ownedName: Promise<string | null>;
+  private readonly accountName: Promise<string | null>;
   private history: HistoryItem[] = [];
   private historyRevision: number | null = null;
   private recentReplies: string[] = [];
@@ -658,6 +663,7 @@ export class Session {
     // looked up from the socket's open, so `start` rarely waits for it (Codex P2: no input window)
     this.ownedVoice = this.companionVoice();
     this.ownedName = this.boundedLookup(deps.companionName, 80);
+    this.accountName = this.boundedLookup(deps.accountName, 80);
     this.bargeCfg = { bargeInMinMs: deps.config.bargeInMinMs, bargeInMinWords: deps.config.bargeInMinWords };
     if (deps.config.perception) {
       this.perceptionCtl = new PerceptionController({
@@ -841,7 +847,7 @@ export class Session {
         if (msg.mode === "chat" || msg.mode === "interpret") this.switchMode(msg.mode, "client", parseInterpretOptions(msg.interpret));
         return;
       case "frames":
-        this.setFrames(msg.images);
+        this.setFrames(msg.images, msg.unclear === true);
         return;
       case "perception.frame":
         // PERC-1: background face read (the controller skips it in interpretation / watch together)
@@ -1051,8 +1057,11 @@ export class Session {
     // One voice per reply: if something already started speaking (input raced the lookup), this call keeps it.
     if (owned && this.turn.utteranceId === 0 && !this.reply) this.pickVoice(owned, persona.kind);
     else if (owned) this.log("voice.owned_late", {});
-    const ownedName = await this.ownedName;
+    const [ownedName, accountName] = await Promise.all([this.ownedName, this.accountName]);
     if (this.closed) return;
+    // D42: a Mac-only account (no iPhone start ever saved a name) is greeted by the account's own name; a name the app
+    // sent, or one an earlier call saved, always wins
+    if (!this.user?.name?.trim() && accountName) this.user = { ...(this.user ?? {}), name: accountName };
     // AU-53: the stored companion name is the current one (a voice rename saved it); a device's cached start may be older.
     // Unlike the voice, a name can switch even if a first input raced the lookup: like a voice rename, a reply already
     // under way keeps its prompt and the next one uses the stored name (Codex AU-53 P2).
@@ -1817,7 +1826,7 @@ export class Session {
 
   // ───────────────────────── reply pipeline ─────────────────────────
 
-  private setFrames(images: unknown): void {
+  private setFrames(images: unknown, unclear = false): void {
     if (!Array.isArray(images)) return;
     const urls: string[] = [];
     for (const img of images.slice(0, MAX_FRAMES)) {
@@ -1826,16 +1835,20 @@ export class Session {
       if (url.length > MAX_FRAME_BYTES * 1.4) return this.error("frame_too_large", "Each frame must be under 1.5 MB", false);
       urls.push(url);
     }
-    this.frames = urls.length ? { images: urls, at: this.now() } : null;
+    this.frames = urls.length ? { images: urls, at: this.now(), ...(unclear ? { unclear: true } : {}) } : null;
     if (urls.length) this.initiative?.framesSent(this.now());
   }
 
   private takeFrames(): string[] {
     const f = this.frames;
     this.frames = null;
+    this.framesUnclear = false;
     if (!f || this.now() - f.at > FRAMES_TTL_MS) return [];
+    this.framesUnclear = f.unclear === true;
     return f.images;
   }
+  /** the frames the last request took were all too dark / blurry (D59) */
+  private framesUnclear = false;
 
   /** Knows-Me S1: the second long reply cut off → "Updated: shorter replies" + one "I'll keep it short" line. */
   private noteLongCut(): void {
@@ -1998,7 +2011,9 @@ export class Session {
       // first in the line: the This-turn block is cut at 400 chars, the safety part must never be the cut part
       if (minor) turnLine = turnLine ? turnLine.replace(/^This turn: /, `This turn: ${minor} `) : `This turn: ${minor}`;
     }
-    return { style: "v1", opener, initiative: turn.cue?.block, perception, perceptionHint, turn: turnLine };
+    // intel eval 11/4: plan / math / how-to asks get the real work, an unknown "him" gets a question, a reused word is named
+    const task = !turn.greeting && !turn.cue && userText ? taskHint(userText, this.history, this.crisisInCall, this.persona?.kind) ?? undefined : undefined;
+    return { style: "v1", opener, initiative: turn.cue?.block, perception, perceptionHint, turn: turnLine, task };
   }
 
   private stopInitiative(): void {
@@ -2424,7 +2439,7 @@ export class Session {
       const said = new Promise<string | null>((r) => (resolveSaid = r));
       // history already holds this turn (remember above): the lines before it
       const recent = this.history.slice(-7, -1).map((h) => `${h.role === "user" ? "User" : "You"}: ${h.text}`);
-      const started = this.finds.onTurn({ text, frames: built.images, utteranceId, replyText: said, recent });
+      const started = this.finds.onTurn({ text, frames: built.images, utteranceId, replyText: said, recent, unclear: built.images.length > 0 && this.framesUnclear });
       cardTurn = !!started;
       signal.addEventListener("abort", () => resolveSaid(null), { once: true });
       if (started?.ack) {

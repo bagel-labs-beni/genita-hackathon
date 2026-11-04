@@ -1513,6 +1513,61 @@ test("Codex #542 P2: two looks failing in a row both hand their frames back; a n
   assert.deepEqual(reacted, ["<warm> [smile] ooh, red runners", "<warm> [smile] ooh, that blue jacket"]);
 });
 
+test("AU-64 CW-03 step 4: Netflix in a browser — the DRM verdict shows the Mac's black-screen card until a clear picture", async () => {
+  const prot = '{"memo":"Video area is black.","moment":"none","reaction":"","speakers":[],"protectedVideo":true}';
+  const clear = '{"memo":"A kitchen.","moment":"none","reaction":"","speakers":[],"protectedVideo":false}';
+  const { c, at, sink } = controller([prot, clear]);
+  c.onMessage({ type: "start", source: "Safari" });
+  at(3_500);
+  c.onMessage({ type: "frame", image: frame });
+  await c.runMemo();
+  const states = () => sink.events.filter((e) => e.type === "state") as Extract<WatchServerEvent, { type: "state" }>[];
+  assert.equal(states().at(-1)?.blank, true, "MS-3 card on the Mac");
+  at(7_000);
+  c.onMessage({ type: "frame", image: frame + "y" });
+  await c.runMemo();
+  assert.equal(states().at(-1)?.blank, false, "a clear picture takes it down");
+  // a new share starts clean
+  c.onMessage({ type: "start", source: "Safari" });
+  c.onMessage({ type: "frame", image: frame });
+  assert.notEqual(states().at(-1)?.blank, true);
+});
+
+test("AU-64 (Codex r1): an older look finishing late never puts the card back; a new clip takes it down", async () => {
+  const prot = '{"memo":"Video area is black.","moment":"none","reaction":"","speakers":[],"protectedVideo":true}';
+  const clear = '{"memo":"A kitchen.","moment":"none","reaction":"","speakers":[],"protectedVideo":false}';
+  let n = 0;
+  const { c, at, sink } = controller([], {}, {
+    async *spark(): AsyncGenerator<SparkStreamEvent> {
+      const first = n++ === 0;
+      await new Promise((r) => setTimeout(r, first ? 40 : 1));
+      const text = first ? prot : clear;
+      yield { type: "text", delta: text };
+      yield { type: "done", responseId: null, text, status: "completed" };
+    },
+  });
+  const states = () => sink.events.filter((e) => e.type === "state") as Extract<WatchServerEvent, { type: "state" }>[];
+  c.onMessage({ type: "start", source: "Safari" });
+  at(3_500);
+  c.onMessage({ type: "frame", image: frame });
+  const older = c.runMemo();
+  at(4_000);
+  c.onMessage({ type: "frame", image: frame + "z" });
+  await Promise.all([older, c.runMemo()]);
+  assert.notEqual(states().at(-1)?.blank, true, "the newer clear look wins");
+  // card up, then the page's title changes (another tab): the card goes with the old clip
+  const p2 = controller([prot]);
+  p2.c.onMessage({ type: "start", source: "Safari" });
+  p2.c.onMessage({ type: "context", title: "Netflix - Safari" });
+  p2.at(3_500);
+  p2.c.onMessage({ type: "frame", image: frame });
+  await p2.c.runMemo();
+  const s2 = () => p2.sink.events.filter((e) => e.type === "state") as Extract<WatchServerEvent, { type: "state" }>[];
+  assert.equal(s2().at(-1)?.blank, true);
+  p2.c.onMessage({ type: "context", title: "Recipes - Safari" });
+  assert.equal(s2().at(-1)?.blank, false);
+});
+
 // ───────────────────────── instant nonverbal (lead's call 11/4) ─────────────────────────
 
 function nvController(verdicts: string[] = [], extra: Partial<WatchDeps> = {}) {
