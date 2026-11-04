@@ -299,6 +299,8 @@ const HOLD_BEAT_MS = 1500;
 export const HOLD_CAP_DEFAULT_MS = 1400;
 /** the least time a reply gets after its turn commits before the first-sound beat */
 const CAP_FLOOR_MS = 700;
+/** Codex #664 r2: medical or danger lines that get no hold beat ahead of the help */
+export const NO_BEAT_EMERGENCY = /\b(?:can'?t breathe|cannot breathe|can barely breathe|not breathing|chest (?:pain|hurts|feels tight|is tight)|heart attack|stroke|seizure|choking|unconscious|passed out|overdos\w*|poison\w*|swallowed|bleeding|allergic reaction|anaphyla\w*|throat (?:is )?closing|fainted|someone is (?:following|attacking|hurting)|break(?:ing)? in|intruder|fire\b|gas leak|knife|gun|911|emergency)\b/i;
 export function holdCapMs(env: NodeJS.ProcessEnv = process.env): number {
   const n = Number(env.GENITA_HOLD_CAP_MS ?? HOLD_CAP_DEFAULT_MS);
   return Number.isFinite(n) && n >= 0 && n <= 10_000 ? n : HOLD_CAP_DEFAULT_MS;
@@ -2659,7 +2661,8 @@ export class Session {
         // hold cap B (11/4): never a beat while they're talking again (a pause the ASR took for the end of the turn)
         if (signal.aborted || this.reply !== reply || sentences.length || this.userTurnOpen()) return;
         // Codex #664 r1: a real crisis line never gets a beat ahead of the help (no "Mm." before 988)
-        if (realCrisisSignal(text) || mayBeSelfHarm(text)) return;
+        // Codex #664 r2: a medical / danger emergency too ("I can't breathe. My chest feels tight.")
+        if (realCrisisSignal(text) || mayBeSelfHarm(text) || NO_BEAT_EMERGENCY.test(text.replace(/[‘’]/g, "'"))) return;
         const before = sentences.length;
         beating = true;
         // rotate (never the same twice in a row), and never the opening word of the last replies (QA P3, #423)

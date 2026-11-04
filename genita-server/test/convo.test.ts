@@ -1976,3 +1976,9 @@ test("Codex #664 r1: a slow reply to a real crisis line gets no hold beat ahead 
   assert.ok(!client.json.some((m) => m.type === "say" && BEAT.test(String(m.text))), "no beat before the help");
   session.close();
 });
+
+test("Codex #664 r2: medical / danger emergencies get no hold beat", async () => {
+  const { NO_BEAT_EMERGENCY } = await import("../src/session/session.ts");
+  for (const t of ["I can't breathe. My chest feels tight.", "someone is following me", "I think I'm having a heart attack", "my throat is closing"]) assert.ok(NO_BEAT_EMERGENCY.test(t), t);
+  for (const t of ["what's for dinner?", "tell me about octopuses", "I had a long day"]) assert.ok(!NO_BEAT_EMERGENCY.test(t), t);
+});
