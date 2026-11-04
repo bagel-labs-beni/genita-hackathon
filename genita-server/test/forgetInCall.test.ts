@@ -126,3 +126,20 @@ test("Codex #547 r9: 'I can't breathe' alone is never forgotten, even before any
   ];
   assert.ok(forgetInCall(h).map((x) => x.text).includes("I can't breathe"));
 });
+
+test("Codex #547 r10: fumes + 'leave the room' survive a forget; one shared word ('need') does not drop an unrelated turn", () => {
+  const h = [
+    { role: "user" as const, text: "I mixed bleach and ammonia" },
+    { role: "assistant" as const, text: "Leave the room immediately and get fresh air." },
+    { role: "user" as const, text: "forget I said that" },
+    { role: "assistant" as const, text: "Okay." },
+    { role: "user" as const, text: "Can I go back in now?" },
+  ];
+  assert.ok(forgetInCall(h).map((x) => x.text).includes("I mixed bleach and ammonia"));
+  const w = [
+    { role: "user" as const, text: "I need a laptop for college, what should I get?" },
+    { role: "assistant" as const, text: "For college you need the Air." },
+    { role: "user" as const, text: "How much memory should I get for it?" },
+  ];
+  assert.equal(forgetInCall(w, [{ text: "need talk boss work", forget: true }]).length, 3);
+});
