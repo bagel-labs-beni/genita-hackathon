@@ -44,3 +44,9 @@ test("Codex #547 r2: a negated or quoted forget keeps its turn (either detector)
     assert.equal(forgetInCall(h).length, 4, t);
   }
 });
+
+test("Codex #547 r3: 'Actually, scratch that, the red one.' is a correction, not a forget", () => {
+  assert.ok(!isAnaphoricForget("I want the black jacket. Actually, scratch that, the red one."));
+  assert.ok(isAnaphoricForget("actually forget I said that, i don't wanna get into it"));
+  assert.ok(isAnaphoricForget("scratch that lol"));
+});

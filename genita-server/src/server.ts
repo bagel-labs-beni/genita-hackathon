@@ -358,11 +358,14 @@ export async function startServer(
     let hungUpHere = !!(best && cached?.hungUp && cached.device === device);
     let forgetAsked = !!cached?.forgetAsked;
     let crisisInCall = !!cached?.crisisInCall;
+    let crisisAny = false;
     let bestGen = cached?.gen ?? 0;
     for (const [sid, u] of sessionUsers) {
       if (u !== userId || sid === self) continue;
       const session = sessions.get(sid);
       if (!session) continue;
+      // Codex #547 r3: a crisis in the other device's call goes with the move even when its forgets left no turns
+      if (session.crisisInCall) crisisAny = true;
       const t = session.historyForgetRevision === revision ? session.historySnapshot() : null;
       const p = progress.get(sid) ?? zero;
       const g = sessionGens.get(sid) ?? 0;
@@ -377,7 +380,7 @@ export async function startServer(
       }
     }
     // a crisis earlier in the conversation goes with it (next device or a quick call-back): no take nudge (Codex #502 P1 r3)
-    if (best && crisisInCall) { const me = sessions.get(self); if (me) me.crisisInCall = true; }
+    if ((best && crisisInCall) || crisisAny) { const me = sessions.get(self); if (me) me.crisisInCall = true; }
     // Hung up on this same device and called again: a return visit (greeting + the last call's notes). A call
     // on the OTHER device still continues it, whatever order its stop and the claim arrived in (Codex 11/3).
     if (best && hungUpHere) {

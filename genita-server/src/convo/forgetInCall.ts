@@ -13,8 +13,13 @@ import { avoidKeys, isForgetRequest, mentionsAvoided, type Removed } from "../pe
 type Item = { role: "user" | "assistant"; text: string };
 
 const POINT_BACK = /\b(?:forget|ignore|scratch|disregard|unhear) (?:all )?(?:about )?(?:that|this|it|what i (?:just )?(?:said|told you|mentioned)|i (?:just )?(?:said|told you|mentioned)(?: (?:that|this|it|anything))?)\b|\bpretend i (?:didn'?t|never) (?:say|said|mention(?:ed)?) (?:that|it|anything)\b|\b(?:don'?t|do not) remember (?:that|this|it)\b/i;
-// what may follow a point-back request without making it explicit ("forget that, i don't wanna get into it")
-const TAIL_OK = /^(?:\s*(?:[,.!?…—-]|$)|\s+(?:lol|lmao|please|pls|ok(?:ay)?|actually|for real|fr|thanks|nvm|never ?mind|i (?:don'?t|do not) (?:wanna|want to)|it'?s (?:nothing|whatever|fine)|whatever|anyway)\b)/i;
+// what may follow a point-back request without making it explicit ("forget that, i don't wanna get into it"); anything
+// else after it is a correction in the same breath ("scratch that, the red one" — Codex #547 r3), not a forget
+const REST_OK = /^(?:lol|lmao|please|pls|ok(?:ay)?|actually|for real|fr|thanks|thank you|nvm|never ?mind|whatever|it'?s (?:nothing|whatever|fine)|i (?:don'?t|do not) (?:wanna|want to)\b[^.!?]*|(?:it'?s )?not important|forget it)[\s.!?…]*$/i;
+function tailOk(tail: string): boolean {
+  const rest = tail.replace(/^[\s,.!?…—-]+/, "").trim();
+  return !rest || REST_OK.test(rest);
+}
 
 /** "forget I said that", "actually forget that, i don't wanna get into it", "scratch that", "don't remember that" */
 // Codex #547 P2: "I can't ignore that", "I can't forget what I just said", "she said forget it" are not requests
@@ -23,7 +28,7 @@ const NEGATED_OR_QUOTED = /\b(?:can'?t|cannot|couldn'?t|won'?t|never|hard to|wis
 export function isAnaphoricForget(text: string): boolean {
   const t = text.replace(/[’‘]/g, "'");
   const m = POINT_BACK.exec(t);
-  return !!m && TAIL_OK.test(t.slice(m.index + m[0].length)) && !NOT_A_REQUEST.test(t.slice(0, m.index));
+  return !!m && tailOk(t.slice(m.index + m[0].length)) && !NOT_A_REQUEST.test(t.slice(0, m.index));
 }
 
 const COMMON = new Set("i i'm im me my we you your the a an and or but so to of in on at for with about that this it is was be been am are like love prefer want wanted think really just kinda pretty very always never before after today tonight yesterday tomorrow".split(" "));
