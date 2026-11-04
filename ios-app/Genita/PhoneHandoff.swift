@@ -203,7 +203,7 @@ import ARKit
     /// Closes P01/P02. A half-entered code is dropped.
     func closePairing() { pairingAttempt+=1;pairingFailed=false;if !link.connected {code=""};settings=false }
     /// P02 Set up touch to move → P03 here and MAC-REG on the Mac at the same time.
-    func registerScreen() { registering=true;registeringVisible=true;tracker.resetScreen();link.send(["type":"register"]);updateTracking();settings=false;model?.settingsOpen=false }
+    func registerScreen() { guard offersTouchSetup else{settings=false;return}; registering=true;registeringVisible=true;tracker.resetScreen();link.send(["type":"register"]);updateTracking();settings=false;model?.settingsOpen=false }
     func cancelRegistration() { registeringVisible=false;registering=false;link.send(["type":"registerCancel"]);updateTracking() }
     private func showRegisteredToast() {
         withAnimation(.easeOut(duration:0.2)) {registeredToast=true}
@@ -245,6 +245,8 @@ import ARKit
     }
     private func ownerChanged(from old:ConversationDevice,to new:ConversationDevice) {
         moving=false;moveAttempt+=1
+        // the conversation left: P01/P02 (opened by itself or from the menu) must not cover R1's Continue here (Codex P2)
+        if new == .mac,settings {closePairing()}
         if new == .mac {media.stopAll();CallController.shared.suspend()}
         // AU-83/AU-84: back from the Mac. The open call gets a new server session seeded with what was said on the Mac,
         // and the mic comes back as the user left it. A call ended meanwhile (background) begins again on .active.
@@ -283,13 +285,16 @@ import ARKit
         let next=ownership.surface(peerReachable:reachable)
         if next != surface {withAnimation(.easeOut(duration:0.24)) {surface=next}}
         if HandoffPairingInput.autoPrompt(signedIn:accountScope.accountID != nil,foreground:sceneActive,inCall:CallController.shared.link == .live,
-                                          macOnline:server.peerOnline,paired:isPaired,linkConnected:link.connected,sheetOpen:settings,prompted:autoPrompted) {
+                                          macOnline:server.peerOnline,paired:isPaired,linkConnected:link.connected,sheetOpen:settings,prompted:autoPrompted)
+            && ownership.isOwner {  // never over R1's Continue here (Codex P2)
             autoPrompted=true;settings=true
         }
     }
     /// P02 offers "Set up touch to move" (P03, the rear-camera scan) only outside a live call. P01/P02 open from the call,
     /// whose capture session holds the camera, so P03 stayed dark with a spinner (TF 331, Chelsea 11/4).
-    var offersTouchSetup: Bool { proximitySupported && CallController.shared.link != .live }
+    /// Any call state but idle counts (a reconnect drops `.live` but keeps the camera — Codex P2), and so does a camera on.
+    /// The P02 review render (debugPaired) keeps the button whatever its offline call shows.
+    var offersTouchSetup: Bool { debugPaired || (proximitySupported && CallController.shared.link == .idle && !CallController.shared.cameraOn) }
     func receive(_ data:[String:Any]) {
         guard accountScope.accountID != nil else{return}
         switch data["type"] as? String {
