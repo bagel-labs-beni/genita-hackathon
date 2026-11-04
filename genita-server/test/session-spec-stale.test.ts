@@ -73,6 +73,16 @@ test("speculation red→green: a line added to the call while they talked (a car
   assert.match(JSON.stringify(h.calls[1].input), /dark brown boots/, "the real request carries the line");
 });
 
+test("speculation red→green (Codex review): camera frames that arrive while they talk → the guess is dropped, the turn sees them", async (t) => {
+  const h = setup();
+  t.after(() => h.session.close());
+  await h.session.onClientText(JSON.stringify({ type: "start", persona: { name: "Mina" } }));
+  await speak(h, () => void h.session.onClientText(JSON.stringify({ type: "frames", images: ["aGVsbG8="] })));
+  assert.notEqual(h.answered[0]?.speculative, "hit");
+  assert.equal(h.calls.length, 2);
+  assert.match(JSON.stringify(h.calls[1].input), /input_image/, "the real request carries the frame");
+});
+
 test("speculation red→green: the profile changed while they talked (late server profile) → miss, asked again with it", async (t) => {
   const h = setup();
   t.after(() => h.session.close());

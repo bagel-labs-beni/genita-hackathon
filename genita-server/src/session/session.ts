@@ -1873,6 +1873,8 @@ export class Session {
       urls.push(url);
     }
     this.frames = urls.length ? { images: urls, at: this.now(), ...(unclear ? { unclear: true } : {}) } : null;
+    // Codex review (coherence 11/4): a guess built before these frames has no images; the turn must see them (S4/S5)
+    if (urls.length && this.spec) this.dropSpeculation();
     if (urls.length) this.initiative?.framesSent(this.now());
   }
 
