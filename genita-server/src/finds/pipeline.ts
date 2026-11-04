@@ -46,7 +46,9 @@ export type PipelineCtx = {
 export type PipelineResult = { card: FindCard | null; timings: Record<string, number> };
 
 const SEEN_PROMPT =
-  "List every food item you can clearly see in this photo, one per line as: name | count or - | where it is and what it looks like (a few words). Short lowercase common names. Nothing else. If you cannot see any food clearly, reply NONE.";
+  // demo S3 (b9 check P1): a small item at the edge or half behind another was left off 1/6 — list those too; each
+  // name is still checked (Spark YES + a SAM box) before it is said, so a wrong one ends as "not sure", never "have"
+  "List every food item you can see in this photo, including small ones and ones partly behind others, one per line as: name | count or - | where it is and what it looks like (a few words). Short lowercase common names. Nothing else. If you cannot see any food clearly, reply NONE.";
 
 const CHECK_TIMEOUT_MS = 7000;
 export const FRIDGE_PILL_MAX = 28;
