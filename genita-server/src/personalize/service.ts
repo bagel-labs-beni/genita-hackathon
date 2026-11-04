@@ -26,6 +26,7 @@ import { firstCallNod } from "./knows.ts";
 import { avoidKeys, forgetTarget, isForgetRequest, type Removed } from "./forgotten.ts";
 import { isSensitiveDetail } from "./sensitive.ts";
 import { scrubRemoved } from "../insights/report.ts";
+import { storedStyle } from "../insights/profile.ts";
 
 export type JsonFn = <T>(req: Omit<SparkRequest, "text"> & { schemaName: string; schema: Record<string, unknown> }, signal?: AbortSignal) => Promise<T>;
 export type PersonalizeStore = Pick<PrepStore, "getStyle" | "putStyle" | "getCompanion">;
@@ -170,6 +171,8 @@ export class Personalize {
   private readonly lastSave = new Map<string, string>();
   /** user+asOf of saves with a job in this process (so a read doesn't replay one that is running) */
   private readonly queued = new Set<string>();
+  /** In-process consumers (SUM receipts) clear volatile state before any forget write starts. */
+  private readonly forgetListeners = new Set<(userId: string) => void>();
   private newerSave(userId: string, cardId: string, asOf: string): boolean {
     const last = this.lastSave.get(`${userId}\u0000${cardId}`);
     return !!last && last > asOf;
@@ -225,7 +228,7 @@ export class Personalize {
       const r = await fn(card);
       if (!r) return null;
       const learned = card.forgotten && Object.values(r.card.sections ?? {}).some((v) => Array.isArray(v) && v.length > 0);
-      await this.store.putStyle(userId, learned ? { ...r.card, forgotten: undefined } : r.card);
+      await this.store.putStyle(userId, storedStyle(learned ? { ...r.card, forgotten: undefined } : r.card));
       return r.out;
     });
   }
@@ -245,8 +248,20 @@ export class Personalize {
   async patchStyle(userId: string, fn: (card: StyleCard) => StyleCard | null): Promise<StyleCard | null> {
     return this.update(userId, (card) => {
       const next = fn(card);
-      return next ? { card: next, out: next } : null;
+      const stored = next && storedStyle(next);
+      return stored ? { card: stored, out: stored } : null;
     });
+  }
+
+  /** Register volatile per-user data that must go before every forget request. */
+  onForget(listener: (userId: string) => void): () => void {
+    this.forgetListeners.add(listener);
+    return () => this.forgetListeners.delete(listener);
+  }
+
+  /** Session calls this before its correction/budget gates; direct callers use voiceCorrection below. */
+  notifyForget(userId: string): void {
+    for (const listener of this.forgetListeners) listener(userId);
   }
 
   /** Companion reset (AU-90): call 1 with the new companion (first-call nod and question); what they know stays. In the per-user lock, so a save under way can't write the old count back. */
@@ -277,7 +292,7 @@ export class Personalize {
       if (signal?.aborted) throw new PersonalizeError(499, "import_cancelled");
       // an import that started before "Forget all of this" never brings the old profile back (AU-92)
       if (since !== undefined && since !== this.generation(userId)) throw new PersonalizeError(409, "profile_forgotten", "The profile was cleared while this was reading.");
-      await this.store.putStyle(userId, { ...card, importedAt: at });
+      await this.store.putStyle(userId, storedStyle({ ...card, importedAt: at }));
       this.forgotten.delete(userId);
     });
     return at;
@@ -453,6 +468,7 @@ export class Personalize {
     // "forget that …" on the sheet: like the voice path, only the profile's own words are kept; the request text
     // itself is never stored, shown or replayed (Codex r7) — the marked lines still go
     if (text && isForgetRequest(text)) {
+      this.notifyForget(userId);
       await this.rememberForget(userId, before, forgetTarget(text), gen);
       if (!items.length) {
         const latest = (await this.store.getStyle(userId)) ?? before;
@@ -740,6 +756,10 @@ export class Personalize {
    * checked for an answer ("Noted: …"); otherwise only lines that look like a correction reach Spark ("Updated: …").
    */
   async voiceCorrection(userId: string, line: string, lastAssistant?: string, signal?: AbortSignal, asked?: UnknownItem | null, since?: number): Promise<VoiceUpdate | null> {
+    const forgetting = isForgetRequest(line);
+    // A short request ("Forget it.") normally has no correction work, but it
+    // still must clear volatile insights before this early return.
+    if (forgetting) this.notifyForget(userId);
     if (!asked && !mightBeCorrection(line)) return null;
     // when it was said and under which profile: captured before any await (Codex #583 r12)
     const asOf = this.now().toISOString();
@@ -751,7 +771,7 @@ export class Personalize {
     let forgot: { applied: AppliedUpdate[]; kept: string } | null = null;
     // "forget that …": its target is kept out of everything from now on, whatever Spark makes of the line
     // checked on the whole line too: stripping punctuation can hide an email ("alice@example com", Codex P1)
-    if (isForgetRequest(line) && !isSensitiveDetail(line) && redactSensitive(line) === line && !looksLikeInjection(line)) {
+    if (forgetting && !isSensitiveDetail(line) && redactSensitive(line) === line && !looksLikeInjection(line)) {
       const target = forgetTarget(line);
       // a sensitive target (health, money, …) is never stored or sent on: the memory filters drop it anyway (Codex P1)
       // a target with a number in it (an address, a phone, an account) is never kept, whatever its shape

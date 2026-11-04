@@ -180,6 +180,8 @@ export type SessionPersonalize = {
   /** bumped by "Forget all of this": a profile read from before it is never applied */
   generation?(userId: string): number;
   voiceCorrection(userId: string, line: string, lastAssistant?: string, signal?: AbortSignal, asked?: UnknownItem | null, since?: number): Promise<VoiceUpdate | null>;
+  /** Clears volatile import material even when this line does not enter voiceCorrection. */
+  notifyForget?(userId: string): void;
   endCall(userId: string, turns: CallTurn[], asked: string | null, startedAt?: string): Promise<number>;
   /** Knows-Me S1: the user cut two long replies short → observed "short replies" line; null = not saved */
   noteShorter?(userId: string): Promise<{ text: string; fields: string[]; profile: string } | null>;
@@ -1912,6 +1914,9 @@ export class Session {
   private checkCorrection(text: string, since?: number): void {
     const p = this.deps.personalize;
     const userId = this.deps.userId;
+    // This is before every Session-side correction/budget gate. `voiceCorrection`
+    // repeats it for direct callers; invalidating the same generation twice is safe.
+    if (p && userId && isForgetRequest(text)) p.notifyForget?.(userId);
     // the profile it was said under: a line queued behind another runs with it, so a forget in between drops it (Codex #583 r14)
     const gen = since ?? (userId ? p?.generation?.(userId) : undefined);
     // "forget that …": from this line on, memory, notes and the turns handed on leave its target out (no Spark wait)

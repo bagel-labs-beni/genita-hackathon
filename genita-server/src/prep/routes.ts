@@ -58,6 +58,7 @@ function demoSwap<T>(userId: string, fn: () => Promise<T>): Promise<T> {
 import { PersonalizeError } from "../personalize/service.ts";
 import { InsightsError } from "../insights/service.ts";
 import { picksFromSkip } from "../insights/report.ts";
+import { storedStyle } from "../insights/profile.ts";
 import { getOps } from "../ops/limits.ts";
 
 const JSON_LIMIT = 256 * 1024;
@@ -217,7 +218,7 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
           throw err;
         }
       }
-      else await d.store.putStyle(user, r.card);
+      else await d.store.putStyle(user, storedStyle(r.card));
       d.insights?.fromSkip(user);
       d.log("import.skipped", { item_count: r.card.itemCount, partial: r.card.partial });
       return send(res, 200, { status: "ready", style: await shown(user, r.card), profile: styleProfileText(r.card) });
