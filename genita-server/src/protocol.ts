@@ -151,7 +151,9 @@ export type FindCard = {
   options: { label: string; frame: number; picked: boolean; box?: NormBox }[];
   why: string[];
   ask: string[];
-  sources: { title: string; url: string; domain: string }[];
+  /** r01 (11/4): `why` = the reason line on its own (≤ 18 words; `title` still reads "Title — why" for apps that predate
+   * it); `image` = the page's og:image (find.image slot "source-N", N 0-based); `favicon` = site icon URL (not sent yet) */
+  sources: { title: string; url: string; domain: string; why?: string; image?: FindImage; favicon?: string }[];
   /** lane 개인화 E: 1–2 chips from the user's own taste lines, e.g. "Your style: clean, minimal clothes", "You said: no cilantro" (source = that line) */
   reasons?: { text: string; source: string; from: "profile" | "call" }[];
   how: string[];

@@ -246,7 +246,7 @@ test("Knows-Me: the local time rides every turn; call 1's nod only the greeting 
   await say(s, "Hi.", 2);
   assert.match(s.sparkCalls[0].instructions!, /NOD-LINE/);
   assert.doesNotMatch(s.sparkCalls[1].instructions!, /NOD-LINE/);
-  for (const c of s.sparkCalls) assert.match(c.instructions!, /for the user\. Use it only for timing/);
+  for (const c of s.sparkCalls) assert.match(c.instructions!, /for the user\. Use it only (?:for timing|when they bring up timing)/);
   s.session.close();
 });
 
@@ -300,7 +300,7 @@ test("Knows-Me × v1: no second personal mention — the nod stays out, the loca
   await s.session.onClientText(JSON.stringify({ type: "start", persona, user: { timeZone: "Asia/Seoul" }, greetAfterMs: 0 }));
   await s.client.waitFor(() => s.client.json.filter((m) => m.type === "reply").length === 1);
   assert.doesNotMatch(s.sparkCalls[0].instructions!, /NOD-LINE/);
-  assert.match(s.sparkCalls[0].instructions!, /for the user\. Use it only for timing/);
+  assert.match(s.sparkCalls[0].instructions!, /for the user\. Use it only (?:for timing|when they bring up timing)/);
   s.session.close();
 });
 

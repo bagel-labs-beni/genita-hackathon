@@ -248,7 +248,8 @@ type TurnMetrics = { speechEndAt?: number; completeAt?: number; lastPartialAt?: 
 /** lang = the language the reply is written in (interpretation: the target) */
 type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null; images: string[]; lang: string; suggestMac?: boolean; /** the shared screen right now (watch together), for Finds (Chelsea 11/4 D) */ screen?: string; /** any camera or shared-screen frame went with this request */ seen?: boolean };
 /** firstTextAt: when the speculative stream's first text arrived (it is buffered until the final transcript) */
-type Speculation = { norm: string; abort: AbortController; built: Built; stream: Eager<SparkStreamEvent>; memoryRetry: MemoryRetryState; confirm: () => void; at: number; firstTextAt?: number };
+/** ctx: what the request was built from besides the words (speculationContext); a hit needs both to match */
+type Speculation = { norm: string; ctx: string; abort: AbortController; built: Built; stream: Eager<SparkStreamEvent>; memoryRetry: MemoryRetryState; confirm: () => void; at: number; firstTextAt?: number };
 
 /** Transcript comparison for speculation: case and punctuation do not matter. */
 export function normTranscript(s: string): string {
@@ -1876,6 +1877,8 @@ export class Session {
       urls.push(url);
     }
     this.frames = urls.length ? { images: urls, at: this.now(), ...(unclear ? { unclear: true } : {}) } : null;
+    // Codex review (coherence 11/4): a guess built before these frames has no images; the turn must see them (S4/S5)
+    if (urls.length && this.spec) this.dropSpeculation();
     if (urls.length) this.initiative?.framesSent(this.now());
   }
 
@@ -2326,8 +2329,22 @@ export class Session {
     abort.signal.addEventListener("abort", confirm, { once: true });
     const memoryRetry: MemoryRetryState = {};
     const source = this.sparkSource(built.req, abort.signal, undefined, !built.interpret, confirmed, undefined, memoryRetry);
-    const spec: Speculation = { norm, abort, built, memoryRetry, confirm, at: this.now(), stream: new Eager(this.stampFirstText(source, (t) => (spec.firstTextAt ??= t))) };
+    const spec: Speculation = { norm, ctx: this.speculationContext(), abort, built, memoryRetry, confirm, at: this.now(), stream: new Eager(this.stampFirstText(source, (t) => (spec.firstTextAt ??= t))) };
     this.spec = spec;
+  }
+
+  /**
+   * Coherence 11/4: everything buildRequest reads besides the words — the call's turns, the profile, the memories, the
+   * persona, the card on screen. A guess built before any of it changed (a card's line landed, the server profile
+   * arrived late, a Forget scrubbed a line) would answer from a stale call, so it is a miss.
+   */
+  private speculationContext(): string {
+    const last = this.history.at(-1);
+    return JSON.stringify([
+      this.history.length, last?.role, last?.text, this.historyRevision, this.removedLines.length,
+      this.user?.name, this.user?.profile, this.memories.length, this.memories.at(-1),
+      this.persona?.name, this.language, this.mode, this.finds?.onScreen() ?? null,
+    ]);
   }
 
   private async *stampFirstText(source: AsyncIterable<SparkStreamEvent>, onText: (t: number) => void): AsyncGenerator<SparkStreamEvent> {
@@ -2433,7 +2450,10 @@ export class Session {
     if (!self) this.specTimer = null;
     if (spec) {
       // a guess built before a rename still carries the old name: ask again
-      if (spec.norm === normTranscript(text) && !renamedFrom && !spec.abort.signal.aborted) {
+      // …and one built from an older call context (a line, the profile or memories changed since): ask again too
+      const stale = spec.ctx !== this.speculationContext();
+      if (stale && spec.norm === normTranscript(text)) this.log("turn.spec_stale", { utteranceId });
+      if (spec.norm === normTranscript(text) && !stale && !renamedFrom && !spec.abort.signal.aborted) {
         speculative = "hit";
         m.specStartAt = spec.at;
         spec.confirm();
