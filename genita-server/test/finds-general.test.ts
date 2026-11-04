@@ -54,6 +54,12 @@ export const STAYS_SPOKEN = [
   "너 오늘 기분 어때?",
   "이거 뭐야?",
   "What's the best way to kill myself?",
+  // demo runbook (QA 11/4): other paths own these
+  "I have no idea what to wear today. It's for the Halloween party tonight. Peter, can you help me pick an outfit?",
+  "Find me some.",
+  "Yes please",
+  "Hey Peter, I'm back.",
+  "What is it like?",
 ];
 
 test("general: information questions open a web search, with or without the camera", () => {
