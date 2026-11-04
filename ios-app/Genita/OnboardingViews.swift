@@ -8,6 +8,12 @@ struct RootView: View {
     var body: some View {
         NavigationStack {
             Group {
+                if model.launchRouting {
+                    // LG-03: signed in, routing not decided yet → the dark ground the splash hands to, never A01/A02
+                    CallInk.ink.ignoresSafeArea().accessibilityElement().accessibilityLabel("Opening").accessibilityIdentifier("launchRouting")
+                        // never stuck on it: /me can hang offline; after 6 s the saved screen shows as before
+                        .task { try? await Task.sleep(for: .seconds(6)); model.launchRouting = false }
+                } else {
                 switch model.stage {
                 // PRD A01 → A02: after the launch splash (A01) the static welcome doesn't wait for a tap; it hands
                 // straight to A02 under the splash (QA Appetize build 7: stuck 90 s+, no cue to tap). UI tests
@@ -27,6 +33,7 @@ struct RootView: View {
                 case .skipTopics, .skipReplies, .skipAvoid: SkipImportView(model: model)
                 case .connecting: ConnectingView(model: model)
                 case .conversation: ConversationView(model: model)
+                }
                 }
             }.toolbar(.hidden, for: .navigationBar)
                 // F1-L7 / F12: /me picks the first screen (consent, name, onboarding step, or straight to the call)

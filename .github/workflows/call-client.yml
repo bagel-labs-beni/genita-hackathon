@@ -70,6 +70,7 @@ jobs:
             -only-testing:GenitaUITests/InsightReportUITests \
             -only-testing:GenitaUITests/QASamplePhotoUITests \
             -only-testing:GenitaUITests/CompanionKindsUITests \
+            -only-testing:GenitaUITests/LaunchRoutingUITests \
             -skip-testing:GenitaUITests/OnboardingUITests/testV03MotionHuman \
             -skip-testing:GenitaUITests/OnboardingUITests/testV03MotionAnimal \
             -skip-testing:GenitaUITests/OnboardingUITests/testV03MotionCharacter \
