@@ -17,14 +17,14 @@ export function userIsLeaving(userText: string): boolean {
 // "look who finally showed up", "you finally made it", "there you are", "you're back", "welcome back", "finally decided to show up"
 // each phrase must end its clause (Codex r1: "You made it through a tough interview" is praise, not a hello)
 const END = String.raw`(?=\s*(?:[,.!?…—]|$))`;
-const GREET_AGAIN = new RegExp(String.raw`\b(?:look (?:who(?:'s| is)?|at you)\b[^,.!?]*\b(?:show(?:ed|s)? up|here|back|made it|decided to [a-z]+|finally|crawl(?:ed|ing)? back|alive)${END}|(?:you\s+|she\s+)?(?:finally|actually)\s+(?:decided\s+to\s+)?(?:show(?:ed)?\s+up|made\s+it|call(?:ed)?|here|back|join(?:ed)?|pick(?:ed)?\s+up)${END}|(?:decided|bothered)\s+to\s+(?:show\s+up|call|join)${END}|there\s+you\s+are${END}|you(?:'re|\s+are)\s+back${END}|welcome\s+back${END}|you\s+made\s+it${END}|(?:good|nice|glad|great|so good)\s+to\s+(?:finally\s+)?(?:hear|see|meet|talk\s+to|catch|put\s+a\s+face\s+to)\b[^,.!?]*|finally\s+(?:putting|put|get\s+to\s+put)\s+a\s+face\b[^,.!?]*|finally\s+(?:live|talking\s+for\s+real|hear(?:ing)?\s+you)\b[^,.!?]*|(?:oh\s+)?hey\s+stranger|long\s+time\s+no\s+(?:see|talk)|(?:i was )?starting to think you (?:ditched|forgot|ghosted))`, "i");
+const GREET_AGAIN = new RegExp(String.raw`\b(?:look (?:who(?:'s| is)?|at you)\b[^,.!?]*\b(?:show(?:ed|s)? up|here|back|made it|decided to [a-z]+|finally|crawl(?:ed|ing)? back|alive)${END}|(?:you\s+|she\s+)?(?:finally|actually)\s+(?:decided\s+to\s+)?(?:show(?:ed)?\s+up|made\s+it|call(?:ed)?|here|back|join(?:ed)?|pick(?:ed)?\s+up)${END}|(?:decided|bothered)\s+to\s+(?:show\s+up|call|join)${END}|there\s+you\s+are${END}|you(?:'re|\s+are)\s+back${END}|welcome\s+back${END}|you\s+made\s+it(?:\s+just\s+in\s+time)?${END}|(?:good|nice|glad|great|so good)\s+to\s+(?:finally\s+)?(?:hear|see|meet|talk\s+to|catch)\s+you(?:\s+(?:live|again|for\s+real))?${END}|(?:finally\s+)?(?:putting|put|get\s+to\s+put)\s+a\s+face\s+to\s+the\s+(?:name|voice|banter|mischief)${END}|finally\s+(?:live|talking\s+for\s+real|hear(?:ing)?\s+you)(?:\s+and\s+not\s+just\s+texting)?${END}|(?:oh\s+)?hey\s+stranger|long\s+time\s+no\s+(?:see|talk)|(?:i was )?starting to think you (?:ditched|forgot|ghosted))`, "i");
 /** "Look who actually stayed up late with me" (bake-off-100 run3): a piece that opens with "look who" is a hello tease */
 const LOOK_WHO = /^\s*(?:(?:oh|well|hey)\s+)?(?:look who\b(?!'?s talking| is talking)|look at you\s*$)/i;
 const HELLO_ONLY = /^\s*(?:oh\s+|well\s+)?(?:hey|hi|hello|heya|hiya|yo|sup)(?:\s+(?:you|there|girl|dude|babe|friend))?\s*$/i;
 const USER_HELLO = /^\s*(?:hey|hi|hello|heya|hiya|yo|sup|what'?s up|wassup)\b[\s\w'!.?,]{0,20}$/i;
 
 /** a sentence carrying real help ("call 911", "988") is never cut by these guards (Codex r1/r2 P1) */
-const HELP = /\b(?:911|988|999|112|000|police|ambulance|crisis (?:line|text)|hotline|lifeline|emergency (?:services|room|number|line)|call (?:someone|a friend|for help|them now))\b/i;
+const HELP = /\b(?:911|988|999|112|000|police|doctor|hospital|urgent care|poison control|ambulance|crisis (?:line|text)|hotline|lifeline|emergency (?:services|room|number|line)|call (?:someone|a friend|for help|them now))\b/i;
 const TAGS = /^(\s*(?:(?:<[^>]*>|\[[^\]]*\])\s*)*)/;
 
 /**

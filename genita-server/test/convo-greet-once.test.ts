@@ -31,6 +31,10 @@ test("a second hello after the opener goes; the rest of the sentence stays", () 
   assert.equal(noRepeatGreeting("Look who's talking, you burned toast.", "x"), "Look who's talking, you burned toast.");
   assert.equal(noRepeatGreeting("Well look at you, Summer.", "hey"), "Hey.");
   assert.equal(noRepeatGreeting("Look at you go, that's a clean dice.", "done chopping"), "Look at you go, that's a clean dice.");
+  // Codex r4 P1: advice that starts "good to see …" is not a hello
+  assert.equal(noRepeatGreeting("It's good to see a doctor immediately if you're coughing up blood.", "I'm coughing up blood, what should I do?"), "It's good to see a doctor immediately if you're coughing up blood.");
+  assert.equal(noRepeatGreeting("It's good to talk to your manager first.", "should I quit?"), "It's good to talk to your manager first.");
+  assert.equal(noRepeatGreeting("Hey, you made it just in time.", "hey"), "Hey.");
   // bake-off-100 run6: "good to finally hear you" on turn 2 is a second hello
   assert.equal(noRepeatGreeting("Hey. Good to finally hear you.", "hey"), "Hey.");
   assert.equal(noRepeatGreeting("Hey you, good to finally put a face to the voice.", "hey"), "Hey you.");
