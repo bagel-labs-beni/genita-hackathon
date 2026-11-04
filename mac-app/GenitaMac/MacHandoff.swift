@@ -642,6 +642,8 @@ struct MacHomeView:View {
 
 #if DEBUG
 extension MacHandoff {
+    /// Checks only (mac-app/Tools/login-item): the call window this Mac shows when the conversation arrives.
+    var reviewCallWindow: NSWindow? { companion }
     /// CI review only: GENITA_MAC_REVIEW_OUT=<dir> writes the waiting screens as PNGs, then quits.
     func renderReviewScreens() async {
         guard let out=ProcessInfo.processInfo.environment["GENITA_MAC_REVIEW_OUT"] else{return}
