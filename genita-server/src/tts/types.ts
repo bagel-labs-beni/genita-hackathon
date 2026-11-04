@@ -15,5 +15,7 @@ export type TtsRequest = {
   force?: boolean;
   /** answer only from the client's cache (the recovery line); never asks the service */
   cachedOnly?: boolean;
+  /** first-byte budget for this request (ms); default VoiceConfig.timeoutMs. A reply's last retry on a cold GPU waits longer */
+  waitMs?: number;
 };
 export const pcmDurationMs = (bytes: number) => (bytes / 2 / PCM_SAMPLE_RATE) * 1000;

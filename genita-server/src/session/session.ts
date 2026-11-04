@@ -17,7 +17,7 @@ import { SentenceSplitter } from "../text/sentences.ts";
 import { clauseExpression, parseTaggedSentence, type Expression } from "../text/tags.ts";
 import { NarrationJudge, type NarrationDecision } from "../text/toolNarration.ts";
 import { isMostlyHangul, speechLang } from "../text/language.ts";
-import { RECOVER_LINE, resolveSpeaker, seamlessLang, SEAMLESS_MODEL } from "../tts/seamless.ts";
+import { HOLD_LINE, RECOVER_LINE, resolveSpeaker, seamlessLang, SEAMLESS_MODEL } from "../tts/seamless.ts";
 import type { VoiceSeats } from "../tts/capacity.ts";
 import { spokenText } from "../voice/normalize.ts";
 import { chunkTiming, type LipMode, type LipPlan } from "../lips/source.ts";
@@ -105,6 +105,8 @@ export type SessionDeps = {
   greetScheduler?: (fn: () => void, ms: number) => () => void;
   /** Server voice (Seamless): cache a speaker's filler clauses when a call starts with it */
   voicePrefetch?: (speaker: number) => void;
+  /** boot only (main.ts): prefetch the curated speakers so their cold-GPU lines are on disk */
+  voiceWarm?: () => void;
   /** Shared by all calls to the process's voice GPU (not one gate per session). */
   voiceSeats?: VoiceSeats;
   /** Identity is assigned by the authenticated upgrade, never by start.user. */
@@ -177,6 +179,8 @@ const MAX_CORRECTION_CHECKS = 12;
 const COMPANION_VOICE_WAIT_MS = 800;
 /** waits before each retry of a clause the voice service failed (a busy GPU frees a slot in ~0.5 s; a cold one takes longer) */
 const TTS_RETRY_MS = [400, 1500];
+/** first-byte budget of a reply's last retry while nothing of it was heard: a cold voice GPU starts in 25-40 s */
+const COLD_WAIT_MS = 40_000;
 
 /** Demo S4: said once per call, on the first outfit ask while the Mac app is open. */
 export const SUGGEST_MAC_LINE =
@@ -2685,7 +2689,7 @@ export class Session {
 
     // Consumer: sentences → TTS (one sentence prefetched ahead) → client
     const jobs: Eager<TtsChunk>[] = [];
-    const ttsJob = (s: (typeof sentences)[number], force?: true) =>
+    const ttsJob = (s: (typeof sentences)[number], force?: true, waitMs?: number) =>
       new Eager(
         this.deps.tts({
           voiceId: this.voiceId,
@@ -2696,6 +2700,7 @@ export class Session {
           signal,
           lang: speechLang(s.display || s.tts, lang),
           ...(force ? { force } : {}),
+          ...(waitMs ? { waitMs } : {}),
         }),
       );
     const startJob = (i: number) => {
@@ -2707,6 +2712,43 @@ export class Session {
     // out, then once the cached recovery line
     let retries = 0;
     let recovered = false;
+    let held = false; // the hold line was tried for this reply
+    let holdVoiced = false;
+    let heard = false; // a clause of the reply itself was voiced (the hold line does not count)
+    // a cold-GPU line from the cache or disk (never the service) into the reply's audio; true if any of it went out
+    const playCached = async (text: string, sentence: number): Promise<boolean> => {
+      let voiced = false;
+      const offset = reply.audioMs; // the clip's alignment is from its own start (Codex re-review P2)
+      try {
+        for await (const chunk of this.deps.tts({ voiceId: this.voiceId, text, emotion: null, model: SEAMLESS_MODEL, signal, lang: "en-US", cachedOnly: true })) {
+          if (signal.aborted || !chunk.audio.length) continue;
+          if (reply.firstAudioAt === null) {
+            await this.untilUserQuiet(signal);
+            if (signal.aborted) break;
+            reply.firstAudioAt = this.now();
+            m.firstAudioAt = reply.firstAudioAt;
+            this.dispatch({ type: "first_audio", utteranceId });
+            noteFirstAudio();
+            this.client.sendJson({ type: "speaking", on: true, utteranceId, emotion: "neutral" });
+          } else if (!voiced) {
+            // a later clip (the recovery line after the hold line and a wait): the user may be talking now (Codex P2)
+            await this.untilUserQuiet(signal);
+            if (signal.aborted) break;
+          }
+          // the player sat idle during the wait: this clip's playback starts now (done timer, Codex P1)
+          const idle = this.now() - (reply.firstAudioAt + reply.audioMs);
+          if (idle > 0) reply.firstAudioAt += idle;
+          const seq = ++this.seq;
+          const durationMs = pcmDurationMs(chunk.audio.length);
+          this.client.sendJson({ type: "audio", utteranceId, seq, sentence, offsetMs: Math.round(reply.audioMs), durationMs: Math.round(durationMs), sampleRate: PCM_SAMPLE_RATE, model: chunk.model, ...chunkTiming(this.lip.active, chunk.alignment, offset) });
+          this.client.sendBinary(Buffer.concat([encodeFrameHeader(FRAME_KIND_TTS_PCM, seq), chunk.audio]));
+          reply.audioMs += durationMs;
+          ttsModelUsed = chunk.model;
+          voiced = true;
+        }
+      } catch { /* not cached for this speaker: nothing to play */ }
+      return voiced;
+    };
     let ttsModelUsed: string | null = null;
     let sentEmotion: string | null | undefined;
     // The app speaks it: plain text (tags already stripped), no vendor call, no audio frames.
@@ -2794,7 +2836,16 @@ export class Session {
             m.firstAudioAt = reply.firstAudioAt;
             this.dispatch({ type: "first_audio", utteranceId });
             noteFirstAudio();
+          } else if (held && !heard) {
+            // the reply itself after the hold line and a wait: the user may have started talking meanwhile (Codex P2)
+            await this.untilUserQuiet(signal);
+            if (signal.aborted) break;
+            if (stillAsked()) { skipped = true; break; }
           }
+          // the app's player went idle in a gap (a wait for the GPU after the hold line): the reply's playback clock
+          // restarts now, so the done timer covers the audio still to play (Codex P1)
+          const idle = this.now() - (reply.firstAudioAt + reply.audioMs);
+          if (idle > 0) reply.firstAudioAt += idle;
           if (s.emotion !== sentEmotion) {
             sentEmotion = s.emotion;
             this.client.sendJson({ type: "speaking", on: true, utteranceId, emotion: s.emotion ?? "neutral" });
@@ -2814,6 +2865,7 @@ export class Session {
             ...chunkTiming(this.lip.active, chunk.alignment, sentenceOffset),
           });
           sentAudio = true;
+          heard = true;
           if (chunk.alignment) sentChars += chunk.alignment.chars.join("");
           if (chunk.audio.length) {
             this.client.sendBinary(Buffer.concat([encodeFrameHeader(FRAME_KIND_TTS_PCM, seq), chunk.audio]));
@@ -2841,53 +2893,41 @@ export class Session {
         const ttsOff = err instanceof Error && err.message === "tts_off";
         const ownVoiceOnly = !ttsOff && !!this.deps.config.voice && !this.deps.config.voice.deviceFallback;
         const reason = err instanceof Error ? err.message.slice(0, 120) : "unknown";
+        if (ownVoiceOnly && !sentAudio && !heard && !held) {
+          // handover b9-6: the reply's first clause missed (usually a cold GPU, 25-40 s): "One sec." in the companion's
+          // own voice from the cache or disk right away, while the clause is retried below
+          held = true;
+          holdVoiced = await playCached(HOLD_LINE, i);
+          if (signal.aborted) break;
+          this.log("tts.hold_line", { sessionId: this.id, utteranceId, voiced: holdVoiced, reason });
+        }
         if (ownVoiceOnly && !sentAudio && retries < TTS_RETRY_MS.length) {
           // the companion's own voice, never the phone's (11/4): wait for the voice service and ask again for this
-          // clause, even while it is parked as down (a cold or busy GPU usually answers within a few seconds)
+          // clause, even while it is parked as down. While nothing of the reply was heard, the last retry waits for a
+          // cold container (COLD_WAIT_MS) instead of the 4 s live budget.
           const waitMs = TTS_RETRY_MS[retries++];
+          const last = retries === TTS_RETRY_MS.length;
           this.log("tts.retry", { sessionId: this.id, utteranceId, sentence: i, attempt: retries, reason });
           await new Promise<void>((r) => { const t = setTimeout(r, waitMs); signal.addEventListener("abort", () => { clearTimeout(t); r(); }, { once: true }); });
           if (signal.aborted) break;
           // watch together may have taken the question back (or swapped it for the short reaction) meanwhile:
           // the loop head judges it again (Codex review P2)
-          jobs[i] = sentences[i] === s && !sentences[i]?.drop ? ttsJob(s, true) : (undefined as never);
+          jobs[i] = sentences[i] === s && !sentences[i]?.drop ? ttsJob(s, true, last && !heard ? COLD_WAIT_MS : undefined) : (undefined as never);
           i--;
           continue;
         }
-        if (ownVoiceOnly && !sentAudio && reply.firstAudioAt === null && !recovered) {
+        if (ownVoiceOnly && !sentAudio && !heard && !recovered) {
           // nothing of this reply was heard and the voice service stayed down: say the short recovery line in the
-          // companion's own voice from the cache (prefetched with the fillers), so the call is never just silent
-          // (the call screen shows no captions, Codex review P1). The reply's words still go to the history.
+          // companion's own voice (cache, or the copy kept on disk), so the call is never just silent (the call screen
+          // shows no captions, Codex review P1). The reply's words still go to the history.
           recovered = true;
           ttsFailed = true;
           const taken = askedAt(i) || !!sentences[i]?.drop;
           if (!taken && !sentences[i]?.beat) reply.spoken.push(sentences[i].display);
-          let voiced = false;
-          const recoverOffset = reply.audioMs; // the line's alignment is from its own start (Codex re-review P2)
-          try {
-            for await (const chunk of this.deps.tts({ voiceId: this.voiceId, text: RECOVER_LINE, emotion: null, model: SEAMLESS_MODEL, signal, lang: "en-US", cachedOnly: true })) {
-              if (signal.aborted || !chunk.audio.length) continue;
-              if (reply.firstAudioAt === null) {
-                await this.untilUserQuiet(signal);
-                if (signal.aborted) break;
-                reply.firstAudioAt = this.now();
-                m.firstAudioAt = reply.firstAudioAt;
-                this.dispatch({ type: "first_audio", utteranceId });
-                noteFirstAudio();
-                this.client.sendJson({ type: "speaking", on: true, utteranceId, emotion: "neutral" });
-              }
-              const seq = ++this.seq;
-              const durationMs = pcmDurationMs(chunk.audio.length);
-              this.client.sendJson({ type: "audio", utteranceId, seq, sentence: i, offsetMs: Math.round(reply.audioMs), durationMs: Math.round(durationMs), sampleRate: PCM_SAMPLE_RATE, model: chunk.model, ...chunkTiming(this.lip.active, chunk.alignment, recoverOffset) });
-              this.client.sendBinary(Buffer.concat([encodeFrameHeader(FRAME_KIND_TTS_PCM, seq), chunk.audio]));
-              reply.audioMs += durationMs;
-              ttsModelUsed = chunk.model;
-              voiced = true;
-            }
-          } catch { /* not cached for this speaker: nothing to play */ }
+          const voiced = await playCached(RECOVER_LINE, i);
           if (signal.aborted) break;
           this.log("tts.recover_line", { sessionId: this.id, userId: this.deps.userId, utteranceId, voiced, reason });
-          if (!voiced) this.error("tts_unavailable", "Voice failed for this reply; showing text only", true);
+          if (!voiced && !holdVoiced) this.error("tts_unavailable", "Voice failed for this reply; showing text only", true);
           continue;
         }
         ttsFailed = true;
