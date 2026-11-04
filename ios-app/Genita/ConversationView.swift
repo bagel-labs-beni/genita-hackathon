@@ -520,7 +520,7 @@ struct ConversationView: View {
     /// Drawer rows sit on a 47 pt pitch (y 118 / 165 / 212 / 259) and are 44 pt tall: each row's hit area takes half
     /// the 3 pt gap on both sides, so the rows tile the column with no dead strip and no overlap (MOVE-2).
     static let menuRowPitch: CGFloat = 47
-    static let menuRowHitShape = Rectangle().inset(by: -(menuRowPitch - 44) / 2)
+    static var menuRowHitShape: some Shape { Rectangle().inset(by: -(menuRowPitch - 44) / 2) }
     func menuRow(_ title: String, text: String? = nil, icon: String = "", symbol: String? = nil, badge: String? = nil, y: CGFloat, width: CGFloat, top: CGFloat, action: @escaping () -> Void) -> some View {
         let label = DesignLibrary.nodes("menu").first { $0.characters == title }!
         return Button(action: action) {
