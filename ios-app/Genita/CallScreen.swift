@@ -443,6 +443,18 @@ struct CallToggleGlass: View {
     }
 }
 
+/// The rail's flip button (build 10): the on look of `CallToggleGlass` (white circle, dark glyph) with an SF Symbol glyph
+/// at the same 55 % as the bitmaps.
+struct CallRailWhiteSymbol: View {
+    let symbol: String
+    var body: some View {
+        ZStack {
+            Circle().fill(CallInk.onInk)
+            GlassOffSymbol(name: symbol, diameter: CallHUDGrid.button, color: CallInk.ink)
+        }.frame(width: CallHUDGrid.button, height: CallHUDGrid.button).contentShape(Circle())
+    }
+}
+
 struct SelfCameraView: UIViewRepresentable {
     let session: AVCaptureSession
     func makeUIView(context: Context) -> SelfCameraSurface {
