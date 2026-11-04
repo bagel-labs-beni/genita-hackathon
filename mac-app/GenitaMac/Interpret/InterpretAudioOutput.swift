@@ -90,12 +90,14 @@ final class PCMPlayer {
             for i in 0..<frames { dst[i] = Float(Int16(littleEndian: src[i])) / 32768 }
         }
         ensureStarted()
+        // not started (the output device is changing): drop the chunk, so a later cancel can't leave it queued
+        guard started else { return }
         node.scheduleBuffer(buf)
     }
 
     func flush() {
+        node.stop()   // drops whatever is queued, started or not (Codex #684 r2)
         guard started else { return }
-        node.stop()
         if !playSafely() { started = false }   // the next play(_:) restarts the engine
     }
 
