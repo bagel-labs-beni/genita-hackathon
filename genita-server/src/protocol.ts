@@ -158,7 +158,8 @@ export type FindCard = {
   saved?: boolean;
   /** kind "product" (F7 PF-1 / MAC-RS): up to 2 product detail pages the search really opened */
   products?: FindProduct[];
-  /** kind "product": what this answer is based on (MAC-RS evidence line) */
+  /** kind "product": what this answer is based on (MAC-RS evidence line); kind "outfit": the taste line and the
+   * occasion they named ("this weekend") — CW-02 */
   evidence?: FindEvidence;
 };
 /**

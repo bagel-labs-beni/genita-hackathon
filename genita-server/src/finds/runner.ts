@@ -698,6 +698,9 @@ export class FindsRunner {
       if (c.products.length < PRODUCT_COUNT) parts.push("only one product page opened");
     }
     if (c.options.length) parts.push(`options: ${c.options.map((o) => `${o.label}${o.picked ? " (your pick)" : ""}`).join(", ")}`);
+    // the occasion the outfit is for: the call can say why it fits it (CW-02). The line is the model's, written with
+    // the taste of then ("Your favorite muted colors for this weekend."): never after a forget, like "why" (Codex #625)
+    if (c.kind === "outfit" && c.evidence?.situation && !old) parts.push(`occasion: ${c.evidence.situation}`);
     if (c.steps.length) parts.push(`${c.kind === "link" ? "takeaways" : "steps"}: ${c.steps.map((s, i) => `${i + 1}. ${s.text}`).join(" ")}`);
     // an old card's "why" lines were written with the old taste too ("Clean camel, totally you.")
     if (c.why.length && !old) parts.push(`why: ${c.why.join(" ")}`);

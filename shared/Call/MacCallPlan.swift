@@ -143,7 +143,8 @@ enum ProductPicks {
     }
 
     private static func basis(_ card: FindCard) -> String? {
-        guard let e = card.evidence else { return nil }
+        // product cards only: an outfit card's evidence (taste + occasion, CW-02) never replaces its why / how lines
+        guard card.kind == .product, let e = card.evidence else { return nil }
         let style = e.style.trimmingCharacters(in: .whitespaces)
         let parts = [style.isEmpty ? "" : "“\(style)”", e.situation.trimmingCharacters(in: .whitespaces)].filter { !$0.isEmpty }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
