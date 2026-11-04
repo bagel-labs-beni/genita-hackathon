@@ -590,6 +590,10 @@ export class Session {
    * nod go now — the next reply and the next search know nothing about them.
    */
   profileForgotten(): void {
+    // the call's own turns go too, like a memory Forget — not left to the memory subscription, which a failed memory
+    // start may not have (Codex #583 r22)
+    this.dropSpeculation(); this.dispatch({ type: "client_barge_in" });
+    this.history = []; this.recentReplies = []; this.memories = []; this.greeting = null;
     this.user = { ...this.user, profile: undefined };
     this.taste = [];
     this.ask = null;
