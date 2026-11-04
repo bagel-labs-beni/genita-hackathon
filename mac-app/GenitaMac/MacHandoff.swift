@@ -32,6 +32,21 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     let server = ServerOwnershipLink(device:.mac)
     private var fanout: OwnershipFanout?
     @Published var status = "Waiting for your iPhone"
+    /// AU-88 · MV-1 / MV-E on the Mac (same copy pattern as the iPhone): the call's status line while Move to iPhone
+    /// waits (≤ 5 s), then "iPhone not responding. Still here." for 3 s. Cleared when the conversation moves.
+    @Published private(set) var moveLine: String?
+    private var moveLineToken = 0
+    private func showMoveLine(_ text: String?, for seconds: Double? = nil) {
+        moveLineToken += 1; let token = moveLineToken
+        moveLine = text
+        guard let seconds else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in
+            guard let self, self.moveLineToken == token else { return }
+            if text == Self.movingLine { self.showMoveLine(Self.failedLine, for: 3) } else { self.moveLine = nil }
+        }
+    }
+    static let movingLine = "Moving to your iPhone…"
+    static let failedLine = "iPhone not responding. Still here."
     /// Older-server fallback for "Talking on your iPhone": the iPhone take this Mac watched happen (PhoneCallLatch).
     @Published private(set) var phoneCallSeen = PhoneCallLatch()
     @Published fileprivate(set) var surface = HandoffSurface.active
@@ -225,6 +240,7 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
         // One channel per request, so a late duplicate can't undo a later Continue here.
         if server.peerActive {server.moveRequest(to:.phone)} else {link.send(["type":"moveRequest"])}
         status="Moving to your iPhone"
+        showMoveLine(Self.movingLine, for: 5)
     }
     private func serverEffect(_ effect:PresenceEffect) {
         guard accountScope.accountID != nil else{return}
@@ -243,6 +259,7 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
             if !ownership.isOwner {server.nextTrigger="move";claimLive();status="Conversation on this Mac"}
         case .moveFailed:
             status="Your iPhone isn’t available. Still on this Mac."
+            if moveLine != nil {showMoveLine(Self.failedLine, for: 3)}
         case .peerChanged: phoneCallSeen.peer(active:server.peerActive);refreshSurface()
         }
     }
@@ -255,6 +272,7 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     }
     private func ownerChanged(from old:ConversationDevice,to new:ConversationDevice) {
         phoneCallSeen.applied(owner:new,epoch:ownership.state.epoch,trigger:applyingTrigger)
+        showMoveLine(nil)
         if new == .mac {
             // #118: the live call follows the conversation here — only on a live move (MC-01, ResumePolicy)
             if ResumePolicy.opensCall(ResumePolicy.arrival(localClaim:claimingLive,serverTrigger:applyingTrigger)) {
@@ -337,8 +355,10 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
         case "disconnected":
             // Losing the local link never ends the conversation on this Mac.
             pending=nil;last=nil;candidate=nil;status="iPhone not connected";refreshSurface()
+            closeRegistration()  // AU-89: the iPhone that was reading MAC-REG is gone; never leave the screen covered
         case "inactive":
             last=nil;candidate=nil
+            closeRegistration()  // AU-89: the iPhone locked or left the app during P03
         default:break
         }
     }
@@ -350,6 +370,11 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     private var nowFresh:Bool { Date().timeIntervalSince1970-lastAt<1 && phoneReachable }
     private func tick() {
         let now=Date().timeIntervalSince1970
+        // MA-04: no face frames for a call window nobody can see (hidden, covered, other Space, screen off)
+        if let face=CallController.shared.face {
+            let seen=companionVisible && (companion?.occlusionState.contains(.visible) ?? false)
+            if face.visible != seen {face.visible=seen}
+        }
         if now-diagnosticAt>0.5 {
             diagnosticAt=now
             let root=FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("Genita/Handoff")
@@ -432,8 +457,6 @@ struct MacHandoffControls:View {
     }
     var body:some View {
         MacHomeView(kind:kind,name:call.companionName ?? "Your companion",handoff:handoff)
-            // 4401 → MAC-1, 4403 → CS01 (this window is always there, so it sees every stop of the call)
-            .onChange(of:CallController.shared.stopped) { _,stop in if let stop {call.callStopped(stop)} }
             // MAC-2 / offline: the window coming to the front, and every 10 s while it waits, asks /me again
             .onReceive(NotificationCenter.default.publisher(for:NSApplication.didBecomeActiveNotification)) { _ in recheck() }
             .onReceive(tick) { _ in recheck() }

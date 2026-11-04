@@ -28,11 +28,12 @@ const gate = (o: Partial<ReactGate> = {}): ReactGate => ({
   ...o,
 });
 
-test("reaction gate: only while sharing, ≥25 s apart, never over dialogue or talk", () => {
+test("reaction gate: only while sharing, ≥30 s apart (D67), never over dialogue or talk", () => {
   assert.deepEqual(reactionAllowed(gate()), { ok: true });
   assert.equal(reactionAllowed(gate({ sharing: false })).ok, false);
   assert.deepEqual(reactionAllowed(gate({ lastReactionAt: 80_000 })), { ok: false, why: "gap" });
-  assert.deepEqual(reactionAllowed(gate({ lastReactionAt: 75_000 })), { ok: true });
+  assert.deepEqual(reactionAllowed(gate({ lastReactionAt: 75_000 })), { ok: false, why: "gap" }, "25 s is no longer enough (D67)");
+  assert.deepEqual(reactionAllowed(gate({ lastReactionAt: 70_000 })), { ok: true });
   assert.deepEqual(reactionAllowed(gate({ conversationQuiet: false })), { ok: false, why: "conversation" });
   assert.deepEqual(reactionAllowed(gate({ dialogueActive: true })), { ok: false, why: "dialogue" });
   assert.deepEqual(reactionAllowed(gate({ lastDialogueEndAt: 99_600 })), { ok: false, why: "dialogue" });
@@ -246,7 +247,7 @@ test("watch: start opens a DIARIZATION transcriber; audio only flows while shari
   assert.deepEqual(sink.events.at(-1), { type: "state", sharing: true, blank: false, source: "Safari" });
 });
 
-test("watch: memo after a line → funny moment → one reaction, then the 25 s gap holds", async () => {
+test("watch: memo after a line → funny moment → one reaction, then the 30 s gap holds", async () => {
   const funny = '{"memo":"Pancake stuck to the ceiling.","moment":"funny","reaction":"He fed the ceiling!","speakers":[{"label":"A","name":"the woman"}]}';
   const { c, asr, sink, reacted, sparkCalls, at } = controller([funny, funny]);
   c.onMessage({ type: "start", source: "YouTube" });
@@ -268,7 +269,7 @@ test("watch: memo after a line → funny moment → one reaction, then the 25 s 
   assert.match(q.instructions, /Pancake stuck to the ceiling/);
   assert.match(q.instructions, /the woman \(voice A\): "Did you just feed the ceiling again\?"/);
   assert.deepEqual(q.images, [frame]);
-  // 12 s later another funny verdict: blocked by the 25 s gap
+  // 12 s later another funny verdict: blocked by the 30 s gap
   at(21_000);
   c.onMessage({ type: "frame", image: frame + "B" });
   c.tick();
@@ -1038,7 +1039,7 @@ test("reactions off: the quick look still remembers the dunk for 'did you see th
   assert.match(q.c.questionContext()!.instructions, /What a dunk!/);
 });
 
-test("remember-only quick looks (reactions off / talking / 25 s gap) run at half the cadence", async () => {
+test("remember-only quick looks (reactions off / talking / 30 s gap) run at half the cadence", async () => {
   const count = async (extra: Partial<WatchDeps>) => {
     const q = quickController((r) => ((r.text?.format as { name?: string }).name === "watch_quick" ? JSON.stringify({ react: false, moment: "none", line: "", talkOver: true }) : memoNone), {}, { quickEveryMs: 1_000, ...extra });
     q.c.onMessage({ type: "start", source: "YouTube" });
@@ -1337,7 +1338,7 @@ test("moment recall (Codex P2): two different moments 3 s apart are both kept; a
   q.at(7_330);
   q.c.onMessage({ type: "frame", image: `${frame}b`, motion: 0.05 });
   await wait(5);
-  // the 25 s gap stops more quick looks; a memo verdict reports the second moment
+  // the 30 s gap stops more quick looks; a memo verdict reports the second moment
   (q.c as unknown as { noteMoment: (m: string, l: string, at: number, f: string | null) => void }).noteMoment("surprising", "Oof, he fell hard", 10_000, `${frame}fall`);
   q.at(14_000);
   q.c.onMessage({ type: "frame", image: `${frame}now`, motion: 0.01 });
@@ -1392,7 +1393,7 @@ test("page comment (lead's call 11/4): a new page gets one grounded comment once
   c.tick();
   assert.deepEqual(reacted, ["<warm> [smile] ooh, those red runners are cute"]);
   assert.deepEqual(sink.events.find((e) => e.type === "reaction"), { type: "reaction", utteranceId: 1, moment: "sweet" });
-  // scrolled the same page, past the 25 s gap: no second comment
+  // scrolled the same page, past the 30 s gap: no second comment
   at(40_000);
   c.onMessage({ type: "frame", image: frame + "B", motion: 0.05 });
   at(42_500);
@@ -1528,7 +1529,7 @@ test("nonverbal: two frames that out-move the last 2 s → brows + inhale once; 
   q.c.onMessage({ type: "start", source: "YouTube" });
   feed(q, 5_400, [0.03, 0.04, 0.03, 0.04, 0.03, 0.03, 0.04, 0.03, 0.04, 0.03, 0.17, 0.19]); // a quiet court, then the dunk
   assert.equal(q.nv.length, 1);
-  feed(q, 9_400, [0.03, 0.04, 0.2, 0.22]); // another big move 0.7 s later: inside the 25 s gap
+  feed(q, 9_400, [0.03, 0.04, 0.2, 0.22]); // another big move 0.7 s later: inside the 30 s gap
   assert.equal(q.nv.length, 1);
   const pan = nvController();
   pan.c.onMessage({ type: "start", source: "YouTube" });
@@ -1634,4 +1635,16 @@ test("Codex #542 r2 P2: a page comment from a memo that started on the old page 
   release();
   await new Promise((r) => setTimeout(r, 5));
   assert.deepEqual(reacted, [], "A's comment is not said over B");
+});
+
+test("D67: the nonverbal keeps the 30 s gap both ways — 26 s after the last one is too soon, 31 s is fine", () => {
+  const q = nvController();
+  q.c.onMessage({ type: "start", source: "YouTube" });
+  const quiet = [0.03, 0.04, 0.03, 0.04, 0.03, 0.03, 0.04, 0.03, 0.04, 0.03];
+  feed(q, 5_400, [...quiet, 0.17, 0.19]); // fires at ~9.1 s
+  assert.equal(q.nv.length, 1);
+  feed(q, 31_400, [...quiet, 0.17, 0.19]); // ~35.1 s: 26 s later
+  assert.equal(q.nv.length, 1, "26 s: inside the gap");
+  feed(q, 36_400, [...quiet, 0.17, 0.19]); // ~40.1 s: 31 s later
+  assert.equal(q.nv.length, 2, "31 s: fires");
 });

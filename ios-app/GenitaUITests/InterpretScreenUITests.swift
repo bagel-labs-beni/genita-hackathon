@@ -2,7 +2,8 @@ import XCTest
 
 /// F8-U-INT · iPhone interpretation states INT-1/2/3/5/6 on the real call screen, driven by a
 /// recorded real interpret session (ios-app/Tools/call-replay/session-int.json, replayed on
-/// 127.0.0.1:8789 by the Interpretation workflow, 4× slower so the short states can be caught). INT-4 (hold pressed) is a local press state;
+/// 127.0.0.1:8789 by the Interpretation workflow, 4× slower so the short states can be caught, with `--tail none`: no scripted
+/// error or drop after INT-6, so the ✕ tap never lands on a server-driven change — #291). INT-4 (hold pressed) is a local press state;
 /// its rendering is covered by the GenitaKit screen render.
 final class InterpretScreenUITests: XCTestCase {
     func testInterpretStatesFromRecordedSession() throws {

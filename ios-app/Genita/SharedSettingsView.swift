@@ -1,7 +1,12 @@
 import SwiftUI
 import AVFoundation
+#if canImport(UIKit)
+import UIKit
+#else
+import AppKit
+#endif
 
-/// M02 Settings (iPhone + Mac). Hackathon build: no "What I keep" row (ST-1's toggles were only for the
+/// M02 Settings (r01 C, 춘식이 prefs: short iOS list, About you on its own page). Hackathon build: no "What I keep" row (ST-1's toggles were only for the
 /// cut Us photo / seen memory; general memory stays on), Privacy · Terms (D16), Sign out, Delete account.
 struct SettingsView: View {
     @Bindable var model: AppState
@@ -38,10 +43,8 @@ struct SettingsView: View {
             return (line, !line.hasPrefix("•") && next.hasPrefix("•"))
         }
     }
-    private var styleText: String {
-        guard let rows = model.setup.styleRows, !rows.isEmpty else { return model.setup.response }
-        return ImportedStyle(rows: rows, partial: false, toConfirm: [], profile: "", source: "").displayText
-    }
+    private var companionName: String { model.companionDisplayName }
+    /// M02 r01 C first screen: companion card → About you → Account → Start over → legal links. Five groups, one screen.
     /// The account's voice: the V04 pick on this phone, else the companion's saved voice from the server (another
     /// phone, a reinstall: build 7 Appetize showed "Default" after picking Leah, 11/4).
     private var voiceName: String {
@@ -49,53 +52,68 @@ struct SettingsView: View {
     }
     var body: some View {
         NavigationStack {
-            Form {
-                Section("Profile") { TextField("Name", text: $model.setup.name) }
-                Section("Your companion") {
-                    LabeledContent("Name", value: model.companionDisplayName)
-                    if model.setup.companionDemo == true {
-                        // judge accounts start with a ready-made companion (PR #178)
-                        Text("Demo companion").font(.footnote).foregroundStyle(.secondary).accessibilityIdentifier("demoCompanionLabel")
-                    }
-                    LabeledContent("Voice", value: voiceName)
-                    if signedIn {
-                        Button(resetting ? "Starting over…" : "Make a new companion") { confirmReset = true }
-                            .disabled(resetting || working).accessibilityIdentifier("makeNewCompanion")
-                    }
+            SettingsPage {
+                SettingsGroup {
+                    NavigationLink { SettingsCompanionPage(model: model) } label: { companionCard }
+                        .buttonStyle(SettingsRowStyle()).accessibilityIdentifier("settingsCompanion")
                 }
-                Section("Your preferences") {
-                    if !styleText.isEmpty {
-                        VStack(alignment: .leading, spacing: 2) {
-                            ForEach(Array(Self.styleLines(styleText).enumerated()), id: \.offset) { i, line in
-                                Text(line.text)
-                                    .font(.custom(line.heading ? "PretendardVariable-Medium" : "PretendardVariable-Regular", size: line.heading ? 13 : 15, relativeTo: line.heading ? .footnote : .subheadline))
-                                    .foregroundStyle(line.heading ? .secondary : .primary)
-                                    .padding(.top, line.heading && i > 0 ? 10 : 0)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                        }.padding(.vertical, 4).textSelection(.enabled).accessibilityElement(children: .combine)
+                SettingsGroup(header: "About you") {
+                    NavigationLink { aboutYouPage } label: { aboutYouRow }
+                        .buttonStyle(SettingsRowStyle()).accessibilityIdentifier("settingsAboutYou")
+                    SettingsSeparator()
+                    NavigationLink { SettingsShowsUpPage(model: model) } label: {
+                        SettingsRowLabel(title: "How \(companionName) shows up", value: showsUpValue, chevron: true)
+                    }.buttonStyle(SettingsRowStyle()).accessibilityIdentifier("settingsShowsUp")
+                }
+                SettingsGroup(header: "Account") {
+                    HStack(spacing: 12) {
+                        Text("Your name").font(SettingsType.font(17)).foregroundStyle(SettingsInk.ink)
+                        TextField("Name", text: $model.setup.name).font(SettingsType.font(17)).foregroundStyle(SettingsInk.value)
+                            .multilineTextAlignment(.trailing).submitLabel(.done).accessibilityIdentifier("settingsName")
+                    }.padding(.horizontal, 16).frame(minHeight: 52)
+                    if signedIn {
+                        SettingsSeparator()
+                        Button { reportOpen = true } label: { SettingsRowLabel(title: "Report a problem") }
+                            .buttonStyle(SettingsRowStyle()).accessibilityIdentifier("settingsReport")
+                        SettingsSeparator()
+                        Button { signOut() } label: { SettingsRowLabel(title: "Sign out") }
+                            .buttonStyle(SettingsRowStyle()).disabled(working || resetting).accessibilityIdentifier("signOut")
                     }
-                    LabeledContent("Setup", value: model.setup.depth.title)
-                    ForEach(model.setup.answers.keys.sorted(), id: \.self) { key in LabeledContent(Self.label(for: key), value: Self.display(key, model.setup.answers[key] ?? "")) }
                 }
                 if signedIn {
-                    // F1-L8: sign out and in-app account deletion (App Review 5.1.1(v))
-                    Section("Account") {
-                        Button("Report a problem") { reportOpen = true }.accessibilityIdentifier("settingsReport")
-                        Button("Sign out") { signOut() }.disabled(working || resetting).accessibilityIdentifier("signOut")
-                        Button(working ? "Deleting…" : "Delete account", role: .destructive) { confirmDelete = true }.disabled(working || resetting).accessibilityIdentifier("deleteAccount")
+                    // F1-L8: in-app account deletion (App Review 5.1.1(v)); D97 Make a new companion. Destructive, last.
+                    SettingsGroup(header: "Start over") {
+                        Button { confirmReset = true } label: { SettingsRowLabel(title: resetting ? "Starting over…" : "Make a new companion") }
+                            .buttonStyle(SettingsRowStyle()).disabled(resetting || working).accessibilityIdentifier("makeNewCompanion")
+                        SettingsSeparator()
+                        Button { confirmDelete = true } label: { SettingsRowLabel(title: working ? "Deleting…" : "Delete account", tint: SettingsInk.danger) }
+                            .buttonStyle(SettingsRowStyle()).disabled(working || resetting).accessibilityIdentifier("deleteAccount")
                     }
                 }
-                Section {
+                HStack(spacing: 6) {
                     Link("Privacy Policy", destination: URL(string: "https://bagel-labs-beni.github.io/genita-legal/privacy/")!)
+                    Text("·").accessibilityHidden(true)
                     Link("Terms", destination: URL(string: "https://bagel-labs-beni.github.io/genita-legal/terms/")!)
                 }
-            }.navigationTitle("Settings")
+                .font(SettingsType.font(13, relativeTo: .footnote)).foregroundStyle(SettingsInk.header).tint(SettingsInk.header)
+                .frame(maxWidth: .infinity).padding(.top, 24)
+            }
+            .navigationTitle("Settings")
+            #if os(iOS)
+            // the About you row's preview and counts come from the insight report (GET /v1/profile/insights); read again
+            // on every open — a call may have scrubbed it since ("forget that", That's not me: AU-94). The old one stays
+            // on screen meanwhile.
+            .task { if model.insightsEnabled { await model.loadInsights() } }
+            #endif
             .reportFlow(isPresented: $reportOpen, surface: "settings", auth: model.onboarding.auth) { CallController.shared.lastReplyText }
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .toolbar {
+                // r01 C: the title in Pretendard SemiBold 17 (the bar keeps "Settings" as its name for VoiceOver and tests)
+                ToolbarItem(placement: .principal) { Text("Settings").font(SettingsType.font(17, .semibold, relativeTo: .headline)).foregroundStyle(SettingsInk.ink).accessibilityAddTraits(.isHeader) }
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.font(SettingsType.font(15, .semibold)) }
+            }
             .confirmationDialog("Delete your account?", isPresented: $confirmDelete, titleVisibility: .visible) {
                 Button("Delete account", role: .destructive) { deleteAccount() }
                 Button("Cancel", role: .cancel) {}
@@ -116,6 +134,65 @@ struct SettingsView: View {
         #else
         .frame(width: 390, height: 600)
         #endif
+    }
+
+    /// M02 r01 C (Chelsea OK 04:19): About you is the insight report R1 without its CTA; when the report can't be had
+    /// (flag off, failed) the style card's own lines in the same groups.
+    @ViewBuilder private var aboutYouPage: some View {
+        #if os(iOS)
+        if model.useInsightReport {
+            InsightReportView(model: model, showsCTA: false)
+                .navigationTitle("About you")
+                .navigationBarTitleDisplayMode(.inline)
+        } else {
+            AboutYouPage(model: model)
+        }
+        #else
+        AboutYouPage(model: model)
+        #endif
+    }
+    /// C1 companion card: photo 56 (circle), name KMU80 22, "{voice} voice" 13 #6E6E73.
+    private var companionCard: some View {
+        HStack(spacing: 14) {
+            SettingsAvatar(imageData: model.setup.imageData, name: companionName, size: 56)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(companionName).font(SettingsType.serif(22)).foregroundStyle(SettingsInk.ink).lineLimit(1)
+                Text(companionSubtitle).font(SettingsType.font(13, relativeTo: .footnote)).foregroundStyle(SettingsInk.header).lineLimit(2)
+            }
+            Spacer(minLength: 8)
+            SettingsChevron()
+        }
+        .padding(16).contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+    }
+    private var companionSubtitle: String {
+        let voice = voiceName + " voice"
+        return model.setup.companionDemo == true ? voice + " · Demo companion" : voice
+    }
+    /// C1 About you row: "What {name} knows about you", the report's headline (2 lines max), "{n} things · {m} still learning".
+    private var aboutYouRow: some View {
+        // the report when there is one; else the style card's own lines (the page behind the row shows those — QA)
+        let summary = model.insightReport != nil ? AboutYouSummary(report: model.insightReport, companion: companionName)
+            : AboutYouSummary(noticed: AboutYouPage.noticed(AboutYouPage.styleText(model.setup)), companion: companionName)
+        return HStack(alignment: .top, spacing: 8) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("What \(companionName) knows about you").font(SettingsType.font(17, .semibold)).foregroundStyle(SettingsInk.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(summary.preview).font(SettingsType.font(15, relativeTo: .subheadline)).foregroundStyle(SettingsInk.body).lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let counts = summary.counts {
+                    Text(counts).font(SettingsType.font(13, relativeTo: .footnote)).foregroundStyle(SettingsInk.header)
+                }
+            }
+            Spacer(minLength: 4)
+            SettingsChevron().padding(.top, 4)
+        }
+        .padding(.horizontal, 16).padding(.vertical, 14).contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+    }
+    /// The first screen shows the help answer ("Think with me"); the page holds the rest.
+    private var showsUpValue: String? {
+        model.setup.answers["help"].map { Self.display("help", $0) }
     }
 
     /// "{Name}, their face, voice and your chats together will be removed. What Genita knows about you stays."
@@ -204,6 +281,297 @@ struct SettingsView: View {
                 else { accountError = "Try again in a moment." }
             }
         }
+    }
+}
+
+// MARK: - M02 r01 C components (this file is built into GenitaMac too, so the pieces live here, not in iOS-only files)
+
+// M02 Settings r01 C (춘식이 prefs, build 8): grouped white cards on #F2F2F7, the same look on every settings page.
+// Values: group sides 16, radius 20; header SemiBold 13/18 #6E6E73, 22 above, 8 below, 32 from the edge; cell min 52,
+// sides 16, Regular 17/22 #111, value #8A8A8E, chevron 7 pt / 1.6 pt #C4C4C7; separators 0.5 pt #D9D9DE inset 16.
+
+enum SettingsInk {
+    static let page = Color(red: 242 / 255, green: 242 / 255, blue: 247 / 255)
+    static let card = Color.white
+    static let ink = Color(red: 17 / 255, green: 17 / 255, blue: 17 / 255)
+    static let header = Color(red: 110 / 255, green: 110 / 255, blue: 115 / 255)
+    static let value = Color(red: 138 / 255, green: 138 / 255, blue: 142 / 255)
+    static let chevron = Color(red: 196 / 255, green: 196 / 255, blue: 199 / 255)
+    static let line = Color(red: 217 / 255, green: 217 / 255, blue: 222 / 255)
+    static let body = Color(red: 58 / 255, green: 58 / 255, blue: 58 / 255)
+    static let danger = Color(red: 200 / 255, green: 40 / 255, blue: 30 / 255)
+    static let pending = Color(red: 107 / 255, green: 107 / 255, blue: 107 / 255)
+}
+
+/// Pretendard that follows Dynamic Type (relative to the text style it stands in for).
+enum SettingsType {
+    static func font(_ size: CGFloat, _ weight: Font.Weight = .regular, relativeTo style: Font.TextStyle = .body) -> Font {
+        let face = weight == .semibold ? "SemiBold" : weight == .medium ? "Medium" : weight == .bold ? "Bold" : "Regular"
+        return .custom("PretendardVariable-" + face, size: size, relativeTo: style)
+    }
+    static func serif(_ size: CGFloat, relativeTo style: Font.TextStyle = .title2) -> Font {
+        .custom("KMUTTF-SungkokSemiSerif", size: size, relativeTo: style)
+    }
+}
+
+/// The scrolling page every settings screen sits on.
+struct SettingsPage<Content: View>: View {
+    @ViewBuilder var content: Content
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) { content }
+                .padding(.bottom, 32)
+        }
+        .background(SettingsInk.page.ignoresSafeArea())
+    }
+}
+
+/// A group: optional header (with an optional action on the right) over a white card of rows.
+struct SettingsGroup<Content: View>: View {
+    var header: String? = nil
+    var action: (title: String, run: () -> Void)? = nil
+    @ViewBuilder var content: Content
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let header {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(header).font(SettingsType.font(13, .semibold, relativeTo: .footnote)).foregroundStyle(SettingsInk.header)
+                        .accessibilityAddTraits(.isHeader)
+                    Spacer(minLength: 8)
+                    if let action {
+                        Button(action.title, action: action.run).font(SettingsType.font(13, .medium, relativeTo: .footnote)).foregroundStyle(SettingsInk.ink)
+                            .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 16).padding(.top, 22).padding(.bottom, 8)
+            } else {
+                Color.clear.frame(height: 22)
+            }
+            VStack(spacing: 0) { content }
+                .background(SettingsInk.card, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        }
+        .padding(.horizontal, 16)
+    }
+}
+
+/// A 0.5 pt separator inset 16 from the left, between rows of one group.
+struct SettingsSeparator: View {
+    var body: some View { Rectangle().fill(SettingsInk.line).frame(height: 0.5).padding(.leading, 16) }
+}
+
+/// The 7 pt chevron of a row that opens a page.
+struct SettingsChevron: View {
+    var body: some View {
+        Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(SettingsInk.chevron)
+            .accessibilityHidden(true)
+    }
+}
+
+/// Title on the left, value on the right, optional chevron. min 52 tall.
+struct SettingsRowLabel: View {
+    let title: String
+    var value: String? = nil
+    var chevron = false
+    var tint: Color = SettingsInk.ink
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(title).font(SettingsType.font(17)).foregroundStyle(tint)
+            Spacer(minLength: 12)
+            if let value { Text(value).font(SettingsType.font(17)).foregroundStyle(SettingsInk.value).lineLimit(1).truncationMode(.tail) }
+            if chevron { SettingsChevron() }
+        }
+        .padding(.horizontal, 16).frame(minHeight: 52).contentShape(Rectangle())
+    }
+}
+
+/// A tappable row (button style without the system highlight colour; a light press tint instead).
+struct SettingsRowStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.background(configuration.isPressed ? SettingsInk.line.opacity(0.5) : .clear)
+    }
+}
+
+// MARK: - pages
+
+// M02 r01 C (춘식이 prefs, build 8): the pages the settings rows open.
+
+/// The companion's photo in a circle; the first letter on a warm tint when there is none.
+struct SettingsAvatar: View {
+    let imageData: Data?
+    let name: String
+    var size: CGFloat = 56
+    var body: some View {
+        Group {
+            if let image = imageData.flatMap(Self.image) {
+                image.resizable().scaledToFill()
+            } else {
+                ZStack {
+                    RadialGradient(colors: [Color(red: 0.89, green: 0.80, blue: 0.72), Color(red: 0.69, green: 0.55, blue: 0.45)], center: .topLeading, startRadius: 2, endRadius: size)
+                    Text(String(name.prefix(1)).uppercased()).font(SettingsType.font(size * 0.4, .medium)).foregroundStyle(.white)
+                }
+            }
+        }
+        .frame(width: size, height: size).clipShape(Circle()).accessibilityHidden(true)
+    }
+    private static func image(_ data: Data) -> Image? {
+        #if canImport(UIKit)
+        UIImage(data: data).map { Image(uiImage: $0) }
+        #else
+        NSImage(data: data).map { Image(nsImage: $0) }
+        #endif
+    }
+}
+
+/// What the About you row says. The insight report (GET /v1/profile/insights) fills it once it is on the phone;
+/// until then the row says the companion is still learning instead of listing blanks.
+struct AboutYouSummary: Equatable {
+    var preview: String
+    /// "{n} things · {m} still learning"; nil when there is nothing to count yet
+    var counts: String?
+
+    init(preview: String, counts: String?) { self.preview = preview; self.counts = counts }
+    /// No report: the first noticed line as the preview, "{n} things" from the style card's rows.
+    init(noticed: [(category: String?, claims: [String])], companion: String) {
+        let claims = noticed.flatMap(\.claims)
+        self = Self.make(headline: claims.first, known: claims.count, learning: 0, companion: companion)
+    }
+    init(report: InsightReport?, companion: String) {
+        self = Self.make(headline: report?.headline, known: report?.observations.count ?? 0, learning: report?.learning.count ?? 0, companion: companion)
+    }
+    /// The headline in curly quotes; the counts only when something is known.
+    static func make(headline: String?, known: Int, learning: Int, companion: String) -> AboutYouSummary {
+        guard let h = headline?.trimmingCharacters(in: .whitespacesAndNewlines), !h.isEmpty, known > 0 else {
+            return AboutYouSummary(preview: "\(companion) is still getting to know you.", counts: nil)
+        }
+        let things = known == 1 ? "1 thing" : "\(known) things"
+        // no one-word last line: the last space is unbreakable (insight R1's keepLast rule)
+        let quoted = "“\(h)”"
+        let kept = quoted.range(of: " ", options: .backwards).map { quoted.replacingCharacters(in: $0, with: "\u{00A0}") } ?? quoted
+        return AboutYouSummary(preview: kept, counts: learning > 0 ? "\(things) · \(learning) still learning" : things)
+    }
+}
+
+/// Name and voice of the companion (read-only today).
+struct SettingsCompanionPage: View {
+    @Bindable var model: AppState
+    var body: some View {
+        SettingsPage {
+            VStack(spacing: 10) {
+                SettingsAvatar(imageData: model.setup.imageData, name: model.companionDisplayName, size: 96)
+                Text(model.companionDisplayName).font(SettingsType.serif(28, relativeTo: .title)).foregroundStyle(SettingsInk.ink)
+                if model.setup.companionDemo == true {
+                    // judge accounts start with a ready-made companion (PR #178)
+                    Text("Demo companion").font(SettingsType.font(13, relativeTo: .footnote)).foregroundStyle(SettingsInk.header)
+                        .accessibilityIdentifier("demoCompanionLabel")
+                }
+            }.frame(maxWidth: .infinity).padding(.top, 24)
+            SettingsGroup {
+                SettingsRowLabel(title: "Name", value: model.companionDisplayName)
+                SettingsSeparator()
+                SettingsRowLabel(title: "Voice", value: model.setup.voiceName ?? CuratedVoices.name(model.setup.voiceId) ?? "Default")
+            }
+        }
+        .navigationTitle("Your companion")
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+    }
+}
+
+/// "How {name} shows up": the setup answers (Help with, Relationship, Challenge, Tempo, Reach out, Presence) as rows.
+struct SettingsShowsUpPage: View {
+    @Bindable var model: AppState
+    var body: some View {
+        SettingsPage {
+            SettingsGroup {
+                SettingsRowLabel(title: "Setup", value: model.setup.depth.title)
+                ForEach(Self.keys(model.setup.answers), id: \.self) { key in
+                    SettingsSeparator()
+                    SettingsRowLabel(title: SettingsView.label(for: key), value: SettingsView.display(key, model.setup.answers[key] ?? ""))
+                }
+            }
+        }
+        .navigationTitle("How \(model.companionDisplayName) shows up")
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+    }
+    /// Help with first (it is what the first screen shows), then the onboarding order, then anything else.
+    static func keys(_ answers: [String: String]) -> [String] {
+        let order = ["help", "relationship", "challenge", "tempo", "initiative", "presenceDescription"]
+        return order.filter { answers[$0] != nil } + answers.keys.filter { !order.contains($0) }.sorted()
+    }
+}
+
+// MARK: - About you
+
+/// M02 r01 C "About you" (C2–C4): what the companion knows, in the insight report's words, each one fixable.
+/// Until the insight report is on the phone it shows the imported style card's own lines in the same rows, and one
+/// "Still learning" block instead of repeated "Not enough information yet." lines.
+struct AboutYouPage: View {
+    @Bindable var model: AppState
+    private var name: String { model.companionDisplayName }
+    private var styleText: String { Self.styleText(model.setup) }
+    static func styleText(_ setup: SavedSetup) -> String {
+        guard let rows = setup.styleRows, !rows.isEmpty else { return setup.response }
+        return ImportedStyle(rows: rows, partial: false, toConfirm: [], profile: "", source: "").displayText
+    }
+    var body: some View {
+        let groups = Self.noticed(styleText)
+        SettingsPage {
+            if !groups.isEmpty {
+                SettingsGroup(header: "What \(name) noticed") {
+                    ForEach(Array(groups.enumerated()), id: \.offset) { i, g in
+                        if i > 0 { SettingsSeparator() }
+                        VStack(alignment: .leading, spacing: 4) {
+                            if let category = g.category {
+                                Text(category).font(SettingsType.font(12, .semibold, relativeTo: .caption)).foregroundStyle(SettingsInk.header)
+                            }
+                            ForEach(g.claims, id: \.self) { claim in
+                                Text(claim).font(SettingsType.font(17, .semibold)).foregroundStyle(SettingsInk.ink).fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.vertical, 14)
+                        .accessibilityElement(children: .combine)
+                    }
+                }
+            }
+            // C3: one Still learning block, r16, 14/16 — white on the #F2F2F7 page (lead 11/4: #F4F4F2 vanished on it)
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Still learning").font(SettingsType.font(13, .semibold, relativeTo: .footnote)).foregroundStyle(SettingsInk.header)
+                    .accessibilityAddTraits(.isHeader).padding(.horizontal, 16).padding(.top, 22).padding(.bottom, 8)
+                // an empty slot, not an info card: the line in the secondary tone (춘식이 #6B6B6B)
+                Text("I’ll pick these up as we talk.").font(SettingsType.font(15, relativeTo: .subheadline)).foregroundStyle(SettingsInk.pending)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.vertical, 14)
+                    .background(SettingsInk.card, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            }.padding(.horizontal, 16)
+            SettingsGroup(header: "Where this comes from") {
+                // the paste only: the skip path fills styleRows from the answers too (Codex P3)
+                if !model.setup.response.isEmpty {
+                    SettingsRowLabel(title: "Your ChatGPT reply")
+                    SettingsSeparator()
+                }
+                SettingsRowLabel(title: "Your answers", value: model.setup.depth.title)
+            }
+        }
+        .navigationTitle("About you")
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+    }
+
+    /// The style card's text as observation rows: a heading becomes the row's category, its bullets the claims.
+    /// "Not enough information yet." lines are dropped (they belong to the one Still learning block).
+    static func noticed(_ text: String) -> [(category: String?, claims: [String])] {
+        var out: [(category: String?, claims: [String])] = []
+        for line in SettingsView.styleLines(text) {
+            if line.heading { out.append((line.text, [])); continue }
+            let claim = line.text.hasPrefix("•") ? String(line.text.dropFirst()).trimmingCharacters(in: .whitespaces) : line.text
+            guard !claim.isEmpty, !claim.lowercased().hasPrefix("not enough information") else { continue }
+            if out.isEmpty { out.append((nil, [])) }
+            out[out.count - 1].claims.append(claim)
+        }
+        return out.filter { !$0.claims.isEmpty }
     }
 }
 

@@ -92,6 +92,10 @@ final class CallHUDGridTests: XCTestCase {
         XCTAssertEqual(line(.reconnecting, pro, finds: "Found two for you."), .row, "Reconnecting wins over Finds")
     }
 
+    /// D54: mic off keeps the pill in its slot with one word, and it stays on the row.
+    func testMicOffCueSaysStopped() {
+        XCTAssertEqual(CallCueView.line(cue: .micOff, name: "Jin", findsText: nil, rowWidth: nil)?.text, "Stopped")
+    }
     /// Codex P2: a 20-character name (NM01) made "{name} is thinking" run into the menu button. Too wide → the short word;
     /// every cue that stays on the row fits it on the smallest phone.
     func testRowCuesFitBetweenTheMenuButtonAndItsMirror() {
@@ -99,7 +103,7 @@ final class CallHUDGridTests: XCTestCase {
         XCTAssertEqual(CallCueView.nameLine("Jin", "thinking", short: "Thinking", rowWidth: se.rowPillWidth), "Jin is thinking")
         XCTAssertEqual(CallCueView.nameLine("WWWWWWWWWWWWWWWWWWWW", "thinking", short: "Thinking", rowWidth: se.rowPillWidth), "Thinking")
         XCTAssertEqual(CallCueView.nameLine("WWWWWWWWWWWWWWWWWWWW", "talking", short: "Talking", rowWidth: nil), "WWWWWWWWWWWWWWWWWWWW is talking", "no limit off the row")
-        for text in ["Listening", "Thinking", "Talking", "Stopped. Go ahead.", "Reconnecting…", "Moving to your Mac…"] {
+        for text in ["Listening", "Thinking", "Talking", "Stopped", "Stopped. Go ahead.", "Reconnecting…", "Moving to your Mac…"] {
             XCTAssertLessThanOrEqual(CallCueView.pillWidth(text: text), se.rowPillWidth, text)
         }
     }

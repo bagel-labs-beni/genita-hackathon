@@ -92,7 +92,7 @@ const PAGE_NEW_MOTION = 0.3;
 /**
  * Instant nonverbal reaction (lead's call 11/4): a big move that out-moves the last ~2 s for two frames in a row gets
  * brows up + a small inhale at once, the spoken line follows from the looks as before. Not on a cut (one frame that
- * changes the whole picture), not on a page (scrolling), never inside the 25 s reaction gap (shared both ways).
+ * changes the whole picture), not on a page (scrolling), never inside the 30 s reaction gap (shared both ways).
  * GENITA_WATCH_NONVERBAL=0 turns it off.
  */
 const NV_ON = process.env.GENITA_WATCH_NONVERBAL !== "0";
@@ -770,7 +770,7 @@ export class WatchController {
     if (!QUICK_ON || this.deps.quick === false || !this.sharing || this.closed) return;
     const now = this.deps.now();
     // 11/3 21:3x (lead's call): when a reaction couldn't go out (reactions off, the user or companion talking, inside
-    // the 25 s gap) the quick look still runs at half the rate and only remembers the moment, so "did you see that
+    // the 30 s gap) the quick look still runs at half the rate and only remembers the moment, so "did you see that
     // dunk?" right after a reaction or mid-conversation is answerable (#400). Never spoken from here.
     const remember = this.deps.reactions === false || !this.host.conversationQuiet() || (this.lastReactionAt !== null && now - this.lastReactionAt < REACT_MIN_GAP_MS);
     const slow = remember ? 2 : 1;
@@ -817,7 +817,7 @@ export class WatchController {
         this.log("watch.quick.error", { message: String(err).slice(0, 200) });
         // 11/4: a look that timed out saw nothing: the next look picks from its frames again
         // (min: two looks failing in a row both get their frames back, Codex #542 P2; a frame seen twice costs a look,
-        // a moment said twice can't happen: the 25 s gap and the seen list)
+        // a moment said twice can't happen: the 30 s gap and the seen list)
         if (gen === this.clipGen) {
           this.lastLookedAt = Math.min(this.lastLookedAt, lookedBefore);
           // only the first retry: a look that fails twice is let go

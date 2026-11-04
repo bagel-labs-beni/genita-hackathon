@@ -3,8 +3,9 @@
  * rule is unit-testable without sockets or vendors.
  */
 
-/** at most one reaction every ~25 s (Chelsea 11/3: one per 20–30 s) */
-export const REACT_MIN_GAP_MS = 25_000;
+/** at most one unprompted reaction per 30 s (D67 / scenario CW-03, lead 11/4; was 25 s from Chelsea's 11/3 "one per
+ *  20–30 s"). Spoken reactions and the instant nonverbal share it. */
+export const REACT_MIN_GAP_MS = 30_000;
 /** no reaction in the first seconds of a share: nothing has happened yet */
 export const REACT_AFTER_START_MS = 6_000;
 /** a dialogue line that ended this recently still counts as "talking" */
@@ -31,7 +32,7 @@ export type ReactGate = {
 
 export type GateResult = { ok: true } | { ok: false; why: string };
 
-/** F5-L14: only while sharing, at most once per REACT_MIN_GAP_MS (25 s, Chelsea 11/3), never over dialogue or anyone talking. */
+/** F5-L14: only while sharing, at most once per REACT_MIN_GAP_MS (30 s, D67), never over dialogue or anyone talking. */
 export function reactionAllowed(g: ReactGate): GateResult {
   if (!g.sharing) return { ok: false, why: "not_sharing" };
   if (g.blank) return { ok: false, why: "blank" };

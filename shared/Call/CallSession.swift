@@ -12,13 +12,14 @@ enum CallCue: Equatable {
     case interrupted    // S09-X, held 1.2 s
     case reconnecting   // S09-R
     case answerFailed   // S09-F, with Try again
+    case micOff         // the user turned the mic off mid-call: "Stopped" (motion card 2), same slot as the listening pill
     case micBlocked     // E02 stand-in until the permission sheet lands
 
     enum Link: Equatable { case idle, connecting, live, reconnecting }
 
     /// One slot, highest priority first: failure and reconnect > interrupted > talking/listening.
     static func derive(link: Link, phase: Phase, playing: Bool, awaitingFirstAudio: Bool, micOn: Bool,
-                       interruptedHold: Bool, answerFailed: Bool, micDenied: Bool) -> CallCue {
+                       interruptedHold: Bool, answerFailed: Bool, micDenied: Bool, micStopped: Bool = false) -> CallCue {
         switch link {
         case .reconnecting: return .reconnecting
         case .idle, .connecting: return .none
@@ -32,7 +33,7 @@ enum CallCue: Equatable {
         case .thinking: return .thinking
         case .speaking: return awaitingFirstAudio ? .thinking : .speaking
         case .interrupted: return .interrupted
-        case .listening: return micOn ? .listening : .none
+        case .listening: return micOn ? .listening : micStopped ? .micOff : .none
         }
     }
 }
@@ -91,6 +92,8 @@ enum CallStop: Equatable {
     private(set) var link: CallCue.Link = .idle
     private(set) var phase: Phase = .listening
     private(set) var micOn = false
+    /// The user switched the mic off during this call (not yet back on): the pill says "Stopped" instead of vanishing.
+    private(set) var micStopped = false
     private(set) var micDenied = false
     private(set) var cameraOn = false
     /// D22: the next camera start faces back (the self view was double-tapped while the camera was off)
@@ -141,7 +144,7 @@ enum CallStop: Equatable {
 
     var cue: CallCue {
         CallCue.derive(link: link, phase: phase, playing: playing, awaitingFirstAudio: awaitingFirstAudio, micOn: micOn,
-                       interruptedHold: interruptedHold, answerFailed: answerFailed, micDenied: micDenied)
+                       interruptedHold: interruptedHold, answerFailed: answerFailed, micDenied: micDenied, micStopped: micStopped)
     }
     var canFlipCamera: Bool { cameraOn && camera.canFlip }
     var cameraSession: AVCaptureSession { camera.session }
@@ -204,6 +207,8 @@ enum CallStop: Equatable {
     @ObservationIgnored private var faceLoad: Task<Void, Never>?
     /// a face set download is in flight (from prepareFace or showFace)
     @ObservationIgnored private var faceLoading = false
+    /// one face set request is on the wire now (not the pause between retries): S09's wait stage holds the orb for it
+    private(set) var faceFetching = false
     /// which load `faceLoading` belongs to (AU-25 × #524)
     @ObservationIgnored private var faceLoadGeneration = 0
     /// the account the load in flight is for
@@ -374,7 +379,7 @@ enum CallStop: Equatable {
         audio.stop()
         camera.stop()
         perception.stop(); perceptionOn = false
-        micOn = false; cameraOn = false; playing = false; link = .idle
+        micOn = false; micStopped = false; cameraOn = false; playing = false; link = .idle
         reconnectSince = nil; cancelled = []; seqToUtterance = [:]; lookedUp = []; findsCount = 0
         routed = []; interpretBoard = InterpretBoard(companionName: companionName); uplink.callFraming = false
         restFace()
@@ -471,8 +476,9 @@ enum CallStop: Equatable {
     }
 
     func toggleMic() {
-        if micOn { setMic(false); Self.micWasOn = false; return }
+        if micOn { setMic(false); Self.micWasOn = false; micStopped = true; return }
         guard !userEnded, ownsConversation else { return }
+        micStopped = false
         micDenied = false
         #if DEBUG
         if fixture != nil { setMic(true); Self.micWasOn = true; return }
@@ -669,7 +675,9 @@ enum CallStop: Equatable {
                 return
             }
             #endif
-            guard audio.openMic() else { micDenied = true; return }
+            // AU-56: permission is granted here; a mic that won't open (input busy, a route glitch) is not a denial,
+            // so no E02 "turn it on in Settings". The button stays off and a tap tries again.
+            guard audio.openMic() else { log.error("mic would not open (input unavailable)"); return }
             micOn = true
             socket?.send(.audioStart)
         } else {
@@ -931,6 +939,8 @@ enum CallStop: Equatable {
             start?.persona.name = n.name   // a reconnect's start carries the new name too
             interpretBoard.companionName = n.name
             onCompanionNamed?(n.name)
+            // IC-01 step 7 (AU-52): the rename gets the same "Noted" confirmation as other in-call corrections
+            showProfileChip("Noted: I'm \(n.name) now")
         case let .profileUpdated(p):
             // CC-1 "Updated: …" / "Noted: …" (it answers the GK-1 question, so that chip goes)
             askingChip = nil; askingChipTask?.cancel()
@@ -948,6 +958,8 @@ enum CallStop: Equatable {
         case let .backchannel(b):
             // convo P1 #345: the server's soft "mm-hm" in the companion's own voice, played beside (never as) a reply
             if let audio = b.audio, let pcm = Data(base64Encoded: audio) { self.audio.playCue(pcm: pcm) }
+            // 11/4 watch together (#613): "inhale" = the instant nonverbal reaction — the brows lift with the breath
+            if b.kind == "inhale" { face?.flashBrows() }
         }
     }
 
@@ -975,12 +987,12 @@ enum CallStop: Equatable {
         audio.enqueue(pcm: AudioFrameHeader.payload(of: data), utteranceId: utterance)
     }
 
-    /// `profile.updated` chip: 2.5 s (PROTOCOL.md). Debug UI tests on slow simulators can lengthen it (GENITA_PROFILE_CHIP_MS).
+    /// `profile.updated` chip: 2.4 s (D103; PROTOCOL.md said 2.5). Debug UI tests on slow simulators can lengthen it (GENITA_PROFILE_CHIP_MS).
     static var profileChipMs: Int {
         #if DEBUG
         if let ms = ProcessInfo.processInfo.environment["GENITA_PROFILE_CHIP_MS"].flatMap(Int.init) { return ms }
         #endif
-        return 2500
+        return 2400   // D103: Noted holds 2.4 s
     }
 
     /// GK-1 time on screen. Debug UI tests can change it (GENITA_ASKING_CHIP_MS).
@@ -1095,7 +1107,23 @@ enum CallStop: Equatable {
     // MARK: face (L4)
 
     /// Shows this face set (nil → the still). The driver reads the speaker's playhead for the mouth.
-    func useFace(_ set: FaceSet?, key: String?, owner: String? = nil, reduceMotion: Bool) {
+    /// A renderer built (and its rest frame drawn) off the main thread, for `useFace` (face plan item 5).
+    struct PreparedFace: @unchecked Sendable {
+        let renderer: FaceRenderer
+        let poster: CGImage?
+        let seed: UInt64
+        let reduceMotion: Bool
+        /// one renderer for the live face and its poster (FlowMorph set up once, not twice)
+        static func build(_ set: FaceSet, reduceMotion: Bool) async -> PreparedFace {
+            await Task.detached(priority: .userInitiated) {
+                let seed = UInt64.random(in: 1...UInt64.max)
+                let renderer = FaceRenderer(faceSet: set, outputSize: CompanionFace.outputSize(for: set), seed: seed, reduceMotion: reduceMotion)
+                return PreparedFace(renderer: renderer, poster: renderer.render(at: 0, lip: .rest), seed: seed, reduceMotion: reduceMotion)
+            }.value
+        }
+    }
+
+    func useFace(_ set: FaceSet?, key: String?, owner: String? = nil, reduceMotion: Bool, prepared: PreparedFace? = nil) {
         face?.stop()
         faceKey = key
         faceOwner = owner
@@ -1107,10 +1135,11 @@ enum CallStop: Equatable {
         guard let set else { face = nil; return }
         let size = CompanionFace.outputSize(for: set)
         // one seed for the live face and its poster: same overscan and motion, so the poster → live step doesn't jump
-        let seed = UInt64.random(in: 1...UInt64.max)
+        let seed = prepared?.seed ?? UInt64.random(in: 1...UInt64.max)
         faceSeed = seed
         posterReduceMotion = nil
-        let driver = FaceDriver(faceSet: set, outputSize: size, reduceMotion: reduceMotion, seed: seed)
+        let driver = prepared.map { FaceDriver(renderer: $0.renderer, reduceMotion: reduceMotion) }
+            ?? FaceDriver(faceSet: set, outputSize: size, reduceMotion: reduceMotion, seed: seed)
         driver.playbackClock = { [weak self, weak driver] in
             guard let self, let driver else { return nil }
             self.flushFacePending()
@@ -1121,14 +1150,20 @@ enum CallStop: Equatable {
         if faceOnScreen && faceAnimates { driver.start() }
         if !faceAnimates { renderFaceStill(set, size: size, for: driver) }
         // iPhone too since build 8: the generated face's rest frame shows before it moves (no upload-photo flash)
-        renderFacePoster(set, size: size, seed: seed, reduceMotion: reduceMotion, for: driver)
+        if let prepared, prepared.reduceMotion == reduceMotion, let poster = prepared.poster {
+            posterReduceMotion = reduceMotion
+            facePoster = poster
+        } else {
+            renderFacePoster(set, size: size, seed: seed, reduceMotion: reduceMotion, for: driver)
+        }
     }
 
     /// The live renderer's settings (seed, reduce motion → same overscan and motion), at rest, off the main thread.
     private func renderFacePoster(_ set: FaceSet, size: CGSize, seed: UInt64, reduceMotion: Bool, for driver: FaceDriver) {
         posterReduceMotion = reduceMotion
         Task { [weak self] in
-            let image = await Task.detached(priority: .utility) {
+            // userInitiated (#645): the poster is the first picture of the face the call waits on (the wait stage)
+            let image = await Task.detached(priority: .userInitiated) {
                 FaceRenderer(faceSet: set, outputSize: size, seed: seed, reduceMotion: reduceMotion).render(at: 0, lip: .rest)
             }.value
             // a newer draw (reduce motion changed meanwhile) wins
@@ -1139,9 +1174,14 @@ enum CallStop: Equatable {
 
     /// Same presence (Mac, 11/3): load the companion's face set while the conversation is still on the iPhone, so
     /// the face that arrives here already moves on its first frame. Nothing animates until `showFace`.
-    func prepareFace(reduceMotion: Bool) {
+    /// `keepTrying` (Mac, face plan item 3): a face set that is still being made (or a failed request) is tried again
+    /// every `faceRetryInterval` off screen too, so it is ready when the conversation arrives.
+    func prepareFace(reduceMotion: Bool, keepTrying: Bool = false) {
         guard !CompanionFace.clipLoopFace, !faceOnScreen else { return }
         faceReduceMotion = reduceMotion
+        faceKeepTrying = keepTrying
+        // #645: a prefetch already in flight for this account (PREP-1c) keeps going into S07
+        if faceLoading, faceLoadOwner == Self.tokenSubject(currentEndpoint.token) { return }
         cancelFaceLoad()
         faceLoad = Task { [weak self] in await self?.loadFace() }
     }
@@ -1253,6 +1293,10 @@ enum CallStop: Equatable {
         faceLoad = nil
         faceLoading = false
         faceLoadGeneration += 1
+        faceFetching = false
+        faceRetryNap?.cancel()
+        faceRetryNap = nil
+        faceRetryNow = false
     }
 
     func setFaceReduceMotion(_ on: Bool) {
@@ -1270,6 +1314,11 @@ enum CallStop: Equatable {
     /// AU-25 · S09-P (D28): a call that starts before the face set is made checks again this often while the call
     /// screen is up, so the mouth starts moving in that same call once prep finishes (or the network comes back).
     @ObservationIgnored var faceRetryInterval: Duration = .seconds(5)
+    /// the retry wait in flight (`faceSetReady` cancels it) and whether the next try skips the wait
+    @ObservationIgnored private var faceRetryNap: Task<Void, Never>?
+    @ObservationIgnored private var faceRetryNow = false
+    /// Mac same presence: keep retrying off screen (`prepareFace(keepTrying:)`)
+    @ObservationIgnored private var faceKeepTrying = false
     #if DEBUG
     /// UI-test diagnostics for the face pipeline (why a call shows the still instead of the face)
     var faceDebugShows = 0
@@ -1294,10 +1343,31 @@ enum CallStop: Equatable {
         faceLoading = true
         faceLoadOwner = Self.tokenSubject(currentEndpoint.token)
         defer { if faceLoadGeneration == generation { faceLoading = false } }
-        while await loadFaceOnce() {
-            try? await Task.sleep(for: faceRetryInterval)
-            guard !Task.isCancelled, faceOnScreen, face == nil else { return }
+        func once() async -> Bool {
+            faceFetching = true
+            defer { if faceLoadGeneration == generation { faceFetching = false } }
+            return await loadFaceOnce()
         }
+        while await once() {
+            // face plan item 3: `faceSetReady` (prep just finished) cuts this wait short
+            if !faceRetryNow {
+                let interval = faceRetryInterval
+                let nap = Task<Void, Never> { do { try await Task.sleep(for: interval) } catch {} }
+                faceRetryNap = nap
+                await nap.value
+                if faceRetryNap == nap { faceRetryNap = nil }
+            }
+            faceRetryNow = false
+            guard !Task.isCancelled, faceOnScreen || faceKeepTrying, face == nil else { return }
+        }
+    }
+
+    /// Prep says the face set is made (S09-P polling, PREP-1c): a load waiting out its retry interval asks again now
+    /// instead of up to 5 s later. A request on the wire that comes back "not yet" goes again at once as well.
+    func faceSetReady() {
+        guard faceLoading, face == nil else { return }
+        faceRetryNow = true
+        faceRetryNap?.cancel()
     }
 
     private func makeFaceLoader() -> CompanionFaceLoader {
@@ -1332,10 +1402,13 @@ enum CallStop: Equatable {
             case .none: if face != nil { useFace(nil, key: nil, reduceMotion: faceReduceMotion) }; return false
             case .pending:
                 if face != nil { useFace(nil, key: nil, reduceMotion: faceReduceMotion) }
-                return faceOnScreen
+                return faceOnScreen || faceKeepTrying
             case let .loaded(key, set):
                 log.info("face set \(key, privacy: .public): \(set.patches.count) mouth shapes; \(set.notes.joined(separator: "; "), privacy: .public)")
-                useFace(set, key: key, owner: owner, reduceMotion: faceReduceMotion)
+                // face plan item 5: the renderer (FlowMorph) is built once, off the main thread, and draws the poster
+                let prepared = await PreparedFace.build(set, reduceMotion: faceReduceMotion)
+                guard !Task.isCancelled else { return false }
+                useFace(set, key: key, owner: owner, reduceMotion: faceReduceMotion, prepared: prepared)
                 return false
             }
         } catch {
@@ -1345,7 +1418,7 @@ enum CallStop: Equatable {
             #if DEBUG
             faceDebugLastError = String(describing: error)
             #endif
-            return !Task.isCancelled && faceOnScreen && face == nil
+            return !Task.isCancelled && (faceOnScreen || faceKeepTrying) && face == nil
         }
     }
 

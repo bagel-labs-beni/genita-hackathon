@@ -704,6 +704,8 @@ struct BringingView: View {
         .task(id: s.phase == .ready) {
             // PREP-1c: no button, "Saying hi…", then S07 by itself
             guard s.phase == .ready else { return }
+            // #645: start fetching the face set now, not at S07, so the first call's wait stage is short
+            CallController.shared.prepareFace(reduceMotion: still)
             // the call opens on the made face, not the uploaded photo (no face swap inside S09)
             await model.waitForScene()
             try? await Task.sleep(for: .seconds(PrepStyle.crossfadeSeconds + PrepStyle.readyHoldSeconds))

@@ -4,6 +4,7 @@
  * only wires them to Spark, SAM, Muse Image, Meta voice.
  */
 import { randomUUID } from "node:crypto";
+import { PersonalizeError } from "../personalize/service.ts";
 import { sparkJson, type SparkRequest } from "../meta/spark.ts";
 import { museImageEdit, samDetect } from "../meta/media.ts";
 import { getOps } from "../ops/limits.ts";
@@ -37,6 +38,8 @@ export type PrepDeps = {
   photoPolish?: boolean;
   /** lane 개인화: HISY story (in parallel with the import), corrections, call growth; unset = none */
   personalize?: Personalize;
+  /** after DELETE /v1/profile (AU-92): the server forgets call memory and summaries too */
+  onProfileForgotten?: (userId: string) => Promise<void>;
   /** SUM insight report (src/insights), written in the background from the import / N1–N3 / setup answers; unset = none */
   insights?: Insights;
 };
@@ -157,7 +160,9 @@ export async function checkImage(d: PrepDeps, userId: string, bytes: Buffer, rig
 
 // ---------- F3-L2: import ----------
 
-export async function importStyle(d: PrepDeps, userId: string, pasted: unknown): Promise<StyleCard> {
+export async function importStyle(d: PrepDeps, userId: string, pasted: unknown, genAtRequest?: number): Promise<StyleCard> {
+  // "Forget all of this" while this reads (AU-92): its result is not saved
+  const gen = genAtRequest ?? d.personalize?.generation(userId);
   const p = checkPaste(pasted);
   if (!p.ok) throw new PrepError(400, `import_${p.reason}`, "I couldn't read this one. Paste the whole reply, or try again.");
   const t0 = performance.now();
@@ -180,11 +185,17 @@ export async function importStyle(d: PrepDeps, userId: string, pasted: unknown):
     const s = await Promise.race([storyJob, grace]);
     if (s && s !== "late") card = d.personalize.withStory(card, s);
     // still writing: saved when it lands; GET /v1/profile/story waits for this same job (no second Spark call)
-    else if (s === "late") d.personalize.trackLate(userId, storyJob);
+    else if (s === "late") d.personalize.trackLate(userId, storyJob, gen);
   }
   // under the personalize lock: a call starting at the same moment can't write the old card back
   let importedAt: string | undefined;
-  if (d.personalize) importedAt = await d.personalize.replaceStyle(userId, card);
+  if (d.personalize) {
+    // "Forget all of this" while this read (AU-92): refused, and its insight report with it (the catch below cancels it)
+    try { importedAt = await d.personalize.replaceStyle(userId, card, gen); } catch (err) {
+      if (err instanceof PersonalizeError) throw new PrepError(err.status, err.code, err.message);
+      throw err;
+    }
+  }
   else await d.store.putStyle(userId, card);
   d.log("import.applied", { item_count: card.itemCount, latency_ms: since(t0), chars: p.chars, partial: card.partial, dropped: card.dropped });
   if (importedAt) insightJob?.commit(importedAt);

@@ -61,10 +61,14 @@ jobs:
           pro = [d for d in devices if re.fullmatch(r"iPhone \d+ Pro", d["name"])]
           print((pro or devices)[-1]["udid"])')"
           echo "id=$ID" >> "$GITHUB_OUTPUT"
+          # booted before xcodebuild: a cold boot inside the first launch timed out ("Failed to send signal 19",
+          # "Failed to get launch progress", run 41747773505) and left the retry without its app
+          xcrun simctl boot "$ID" || true
+          xcrun simctl bootstatus "$ID" -b > /dev/null
 
       - name: Start the interpret replay server
         run: |
-          node ios-app/Tools/call-replay/server.mjs --port 8789 --file ios-app/Tools/call-replay/session-int.json --pace 4 > replay.log 2>&1 &
+          node ios-app/Tools/call-replay/server.mjs --port 8789 --file ios-app/Tools/call-replay/session-int.json --pace 4 --tail none > replay.log 2>&1 &
           for _ in $(seq 1 20); do curl -sf http://127.0.0.1:8789/healthz && break; sleep 0.5; done
 
       - name: iOS interpretation states
