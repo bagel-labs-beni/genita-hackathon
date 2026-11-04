@@ -370,6 +370,11 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     private var nowFresh:Bool { Date().timeIntervalSince1970-lastAt<1 && phoneReachable }
     private func tick() {
         let now=Date().timeIntervalSince1970
+        // MA-04: no face frames for a call window nobody can see (hidden, covered, other Space, screen off)
+        if let face=CallController.shared.face {
+            let seen=companionVisible && (companion?.occlusionState.contains(.visible) ?? false)
+            if face.visible != seen {face.visible=seen}
+        }
         if now-diagnosticAt>0.5 {
             diagnosticAt=now
             let root=FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("Genita/Handoff")

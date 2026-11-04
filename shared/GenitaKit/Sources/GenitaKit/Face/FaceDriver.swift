@@ -48,6 +48,12 @@ public final class FaceDriver: ObservableObject {
     private var linkTarget: DisplayLinkTarget?
     #else
     private var timer: Timer?
+    /// Mac CPU (MA-04, ≤ 30 %): the face renders at 24 fps only while the companion talks; listening it moves
+    /// slowly enough for 12 fps; a window the user can't see renders nothing (resumes on the next visible tick).
+    public var visible = true
+    public static let macTalkingFPS = 24.0
+    public static let macListeningFPS = 12.0
+    private var lastRenderAt = 0.0
     #endif
 
     public init(faceSet: FaceSet, outputSize: CGSize, reduceMotion: Bool = false, seed: UInt64 = UInt64.random(in: 1...UInt64.max)) {
@@ -200,6 +206,15 @@ public final class FaceDriver: ObservableObject {
 
     private func tick() {
         guard !rendering else { return }   // drop a frame rather than queue them up
+        #if os(macOS)
+        guard visible else { return }
+        let nowT = CACurrentMediaTime()
+        // talking = a reply's audio is playing now (the utterance id stays set after it ends)
+        let talking = currentUtteranceId != nil && playbackClock() != nil
+        let fps = talking ? Self.macTalkingFPS : Self.macListeningFPS
+        guard nowT - lastRenderAt >= 1 / fps - 0.004 else { return }
+        lastRenderAt = nowT
+        #endif
         rendering = true
         let ms = currentUtteranceId == nil ? nil : playbackClock()
         let lip = ms.map { timeline.sample(atMs: $0 + lookaheadMs) } ?? .rest

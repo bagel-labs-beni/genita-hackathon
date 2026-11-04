@@ -269,10 +269,9 @@ struct MacConversationView: View {
                 Image(systemName: "video.slash").font(.system(size: 18, weight: .regular)).foregroundStyle(Color.white.opacity(0.7))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 16).fill(.ultraThinMaterial).environment(\.colorScheme, .dark)
-                            RoundedRectangle(cornerRadius: 16).fill(Color.black.opacity(0.28))
-                        }
+                        // MA-04: a live material over the animated face re-blurs every frame (CA commit on the main
+                        // thread). Solid stand-in with the same look in a still: the dark material + 28 % black composites to #211D22 (the material look, 춘식이 3× median) ; solved from two CI renders (춘식이 region medians, icon excluded) for a #211D22 composite: #201C21 at 92 %.
+                        RoundedRectangle(cornerRadius: 16).fill(Color(red: 32.0 / 255, green: 28.0 / 255, blue: 33.0 / 255).opacity(0.92))
                     }
                     .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.white.opacity(0.35), lineWidth: 0.7))
                     .accessibilityElement().accessibilityLabel("Your camera is off")
