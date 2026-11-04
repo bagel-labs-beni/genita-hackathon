@@ -244,6 +244,10 @@ struct ConversationView: View {
         }.opacity(handoffEnabled && handoff.motionVisible ? 0 : 1)
         .overlay { if handoffEnabled && !connecting { PhoneHandoffOverlay(model:model) } }
         #if DEBUG
+        // face pipeline probe for UI tests (why S09 shows the still): shows / attempts / loading / face / poster / error
+        .overlay(alignment: .bottomLeading) {
+            Text(call.faceDebug).font(.system(size: 2)).opacity(0.02).allowsHitTesting(false).accessibilityIdentifier("faceDebug")
+        }
         // #291 probe (DEBUG builds only, never in TestFlight): taps that reached ✕ and the call's mode right now
         .overlay(alignment: .bottomLeading) {
             Text("stop:\(debugStopTaps) mode:\(call.mode == .interpret ? "interpret" : "chat") more:\(debugMoreTaps) moreOpen:\(moreOpen) link:\(String(describing: call.link)) face:\(debugFaceTaps) waiting:\(debugWaitingSeen) surface:\(String(describing: handoff.surface))").font(.system(size: 2)).opacity(0.02)

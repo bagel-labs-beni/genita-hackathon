@@ -1123,6 +1123,9 @@ enum CallStop: Equatable {
         // Another account (or signed out) never sees the face set loaded for the one before.
         if face != nil, Self.tokenSubject(currentEndpoint.token) != faceOwner { useFace(nil, key: nil, reduceMotion: reduceMotion) }
         faceOnScreen = true
+        #if DEBUG
+        faceDebugShows += 1
+        #endif
         faceAnimates = animate
         faceReduceMotion = reduceMotion
         face?.reduceMotion = reduceMotion
@@ -1169,6 +1172,15 @@ enum CallStop: Equatable {
     /// screen is up, so the mouth starts moving in that same call once prep finishes (or the network comes back).
     @ObservationIgnored var faceRetryInterval: Duration = .seconds(5)
     #if DEBUG
+    /// UI-test diagnostics for the face pipeline (why a call shows the still instead of the face)
+    var faceDebugShows = 0
+    var faceDebugAttempts = 0
+    var faceDebugLastError = ""
+    var faceDebug: String {
+        "shows=\(faceDebugShows) attempts=\(faceDebugAttempts) loading=\(faceLoading) onScreen=\(faceOnScreen) face=\(face != nil) poster=\(facePoster != nil) err=\(faceDebugLastError)"
+    }
+    #endif
+    #if DEBUG
     /// Tests: the face set loader (stub server, temp cache) instead of the live one.
     @ObservationIgnored var faceLoaderOverride: ((CallEndpoint) -> CompanionFaceLoader)?
     #endif
@@ -1198,6 +1210,9 @@ enum CallStop: Equatable {
 
     /// One load. True = no face yet but one may still come (prep still running, or offline): try again.
     private func loadFaceOnce() async -> Bool {
+        #if DEBUG
+        faceDebugAttempts += 1
+        #endif
         let owner = Self.tokenSubject(currentEndpoint.token)
         do {
             let outcome: CompanionFaceLoader.Outcome
@@ -1228,6 +1243,9 @@ enum CallStop: Equatable {
             // Offline or the server said no: keep what is on screen (the still, or the face from before); with no
             // face yet, try again while the call screen is up.
             log.error("face set: \(String(describing: error), privacy: .public)")
+            #if DEBUG
+            faceDebugLastError = String(describing: error)
+            #endif
             return !Task.isCancelled && faceOnScreen && face == nil
         }
     }

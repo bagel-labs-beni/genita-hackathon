@@ -133,6 +133,27 @@ final class FindsTabUITests: XCTestCase {
         capture(app, "cam-pip-live-face")
     }
 
+    /// The fixture face set must reach the screen on a call (live face or its rest-frame poster), not stay on the still.
+    /// No recorded session here (a closed port), so nothing races the wait; the face pipeline probe says why on failure.
+    func testFixtureFaceSetReachesTheCall() throws {
+        let faceSet = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appending(path: "shared/GenitaKit/Tests/GenitaKitTests/Fixtures/face-animal").path
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launchEnvironment = ["GENITA_REVIEW_STAGE": "conversation", "GENITA_SERVER_URL": "ws://127.0.0.1:9/v1/session",
+                                 "GENITA_FACE_SET_DIR": faceSet, "GENITA_FIXTURE_SCRIPT": "none"]
+        app.launch()
+        let face = any(app, "companionFace"), probe = any(app, "faceDebug")
+        XCTAssertTrue(face.waitForExistence(timeout: 15))
+        let end = Date().addingTimeInterval(30)
+        while Date() < end, !["live", "poster"].contains(face.value as? String ?? "") { Thread.sleep(forTimeInterval: 0.25) }
+        let note = XCTAttachment(string: "value=\(String(describing: face.value)) probe=\(probe.exists ? probe.label : "-")")
+        note.name = "face-probe"; note.lifetime = .keepAlways; add(note)
+        print("FACE_FPS= probe \(probe.exists ? probe.label : "-") value=\(String(describing: face.value))")
+        capture(app, "face-fixture-reaches-call")
+        XCTAssertTrue(["live", "poster"].contains(face.value as? String ?? ""), "generated layer on the call; probe: \(probe.exists ? probe.label : "-")")
+    }
+
     /// Boxes pop on the live preview, then fade (the board's 4 s).
     func testBoxesOverLivePreviewThenFade() throws {
         let app = launch(camera.merging(["GENITA_FINDS_STATE": "30"]) { $1 })
