@@ -3,8 +3,7 @@ import Observation
 
 /// F10-U-SHEET · The result sheet's state during a call (r03 board, direction A, 19 states).
 /// Platform-neutral: the iPhone sheet draws it, the Mac can later. Rules from the r03 state map:
-///   searching 328 (Finds r01: question title + stage line + 3 skeleton rows) → rising 328 → half 468 → full 728
-///   · peek 148 · dismissed 0 (+Undo) · browser.
+///   searching 148 → rising (148→468, text first) → half 468 → full 728 · peek 148 · dismissed 0 (+Undo) · browser.
 ///   Face tap or the user starting to talk = collapse to peek (not while a finger is on the sheet or reading full).
 ///   X, or swiping down from peek = dismissed (it stays in Finds, Undo restores). A new result never takes the
 ///   card you're reading: a banner offers it instead.
@@ -15,9 +14,8 @@ enum SheetState: String, CaseIterable, Sendable {
     var height: CGFloat {
         switch self {
         case .idle, .dismissed: 0
-        // Finds r01: searching is no longer a 148 strip; it holds the question, the stage line and skeleton rows
-        case .searching, .rising: 328
-        case .peek: 148
+        case .searching, .peek: 148
+        case .rising: 328
         case .half: 468
         case .full: 728
         }
@@ -207,8 +205,6 @@ struct FindEntry: Identifiable, Equatable {
                 if i.slot == "hero" { card.hero = image }
                 if i.slot.hasPrefix("step-"), let n = Int(i.slot.dropFirst(5)), card.steps.indices.contains(n - 1) { card.steps[n - 1].image = image }
                 if i.slot.hasPrefix("product-"), let n = Int(i.slot.dropFirst(8)), card.products?.indices.contains(n - 1) == true { card.products?[n - 1].image = image }
-                // Finds r01: each web result's og:image; `source-N` is 0-based (unlike step-/product-, which are 1-based)
-                if i.slot.hasPrefix("source-"), let n = Int(i.slot.dropFirst(7)), card.sources.indices.contains(n) { card.sources[n].image = image }
                 e.card = card
             }
         case let .findFailed(f):
@@ -444,7 +440,6 @@ struct FindEntry: Identifiable, Equatable {
         let pick = { (mine: FindImage?, theirs: FindImage?) -> FindImage? in mine?.status != .ready && theirs?.status == .ready ? theirs : mine }
         c.hero = pick(c.hero, listed.hero)
         for s in c.steps.indices where listed.steps.indices.contains(s) { c.steps[s].image = pick(c.steps[s].image, listed.steps[s].image) }
-        for s in c.sources.indices where listed.sources.indices.contains(s) { c.sources[s].image = pick(c.sources[s].image, listed.sources[s].image) }
         if var products = c.products, let lp = listed.products {
             for p in products.indices where lp.indices.contains(p) { products[p].image = pick(products[p].image, lp[p].image) }
             c.products = products
@@ -519,7 +514,6 @@ struct FindEntry: Identifiable, Equatable {
             let stop = { (img: FindImage?) -> FindImage? in img?.status == .pending ? FindImage(slot: img!.slot, status: .failed, url: img!.url) : img }
             card.hero = stop(card.hero)
             for s in card.steps.indices { card.steps[s].image = stop(card.steps[s].image) }
-            for s in card.sources.indices { card.sources[s].image = stop(card.sources[s].image) }
             if let products = card.products { card.products = products.map { var p = $0; p.image = stop(p.image); return p } }
             if card != entries[i].card { entries[i].card = card }
             entries[i].checking = false
