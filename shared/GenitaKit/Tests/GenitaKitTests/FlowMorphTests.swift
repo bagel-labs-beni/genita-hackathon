@@ -348,9 +348,10 @@ struct LipRigTests {
         m.amountsOverride = [0.35, 0.45]
         let narrow = Int(pixels(m.render(.rest, at: 2))[k])
         #expect(wide > 200)
-        // shaded: 212 vs 235 on CI — the 4-row synthetic inside is mostly rim (rim pixels keep the key), so the full
-        // x0.55 only reaches its middle; without the shade both are 235
-        #expect(Double(narrow) < 0.95 * Double(wide))
+        // the narrow gap gives way to what lies under the teeth layer (f07da2c9): 227 vs 235 on CI — the 4-row synthetic
+        // inside is mostly rim and the layer underneath is close to the teeth's brightness; without any narrow-gap
+        // handling both are the opaque layer's 235
+        #expect(narrow <= wide - 4)
     }
 
     /// p6 regression in #539: a prep inside mask leaking past the mouth corner showed the key's inside on the cheek.
