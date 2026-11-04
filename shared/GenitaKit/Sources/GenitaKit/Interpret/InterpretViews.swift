@@ -13,6 +13,8 @@ enum InterpretInk {
     static let onInkSoft = onInk.opacity(0.76)
     static let onInkFaint = onInk.opacity(0.28)
     static let pill = ink.opacity(0.84)
+    /// D3: the partner's bubble on the ink canvas
+    static let themFill = Color.white.opacity(0.10)
     static let dim = ink.opacity(0.46)
     static let glass = Color.black.opacity(0.42)
     static let glassLine = Color.white.opacity(0.34)
@@ -160,8 +162,9 @@ struct InterpretBubbleView: View {
         .fixedSize(horizontal: false, vertical: true)
         .padding(.horizontal, 16).padding(.vertical, 12)
         .frame(maxWidth: 320, alignment: .leading)
-        .background(me ? InterpretInk.onInk : InterpretInk.pill, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay { if !me { RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(InterpretInk.onInkFaint, lineWidth: 1) } }
+        // D3 (Chelsea 04:53): the partner's bubble is a white 10 % fill, no border (pill ink was invisible on the ink canvas — QA)
+        .background(me ? InterpretInk.onInk : InterpretInk.themFill, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        // D3 (Chelsea 04:53): the partner's bubble is fill only — with a border it read as a text field to type into
         .opacity(faint ? 0.6 : 1)
         .frame(maxWidth: .infinity, alignment: me ? .trailing : .leading)
         .accessibilityElement(children: .combine)

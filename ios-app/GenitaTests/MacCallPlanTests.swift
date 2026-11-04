@@ -108,21 +108,44 @@ final class MacCallPlanTests: XCTestCase {
     func testEvidenceQuotesTheServerStyleAndSituation() throws {
         let e = ProductPicks.evidence(from: try sampleCard())
         XCTAssertEqual(e.lines, ["“Clean, minimal clothes. Understated colors.” · Mild and dry this weekend, 18°C",
-                                 "From your import and what you said · northline.example.com · fieldandco.example.com"])
+                                 "From your style and what you said · northline.example.com +1"])
     }
 
     func testNoImportMeansNoStyleQuote() throws {
         var c = try sampleCard()
         c.evidence = .init(style: "", situation: "Mild and dry this weekend, 18°C")
         XCTAssertEqual(ProductPicks.evidence(from: c).lines, ["Mild and dry this weekend, 18°C",
-                                                              "From what you said · northline.example.com · fieldandco.example.com"])
+                                                              "From what you said · northline.example.com +1"])
+    }
+
+    /// D4 source line: sites counted once; without server evidence a style chip counts as style.
+    func testSourceLineCountsSitesAndStyle() throws {
+        var c = try sampleCard()
+        c.products = c.products.map { ps in ps.map { var p = $0; p.domain = "shop.example"; p.url = "https://shop.example/\(p.id)"; return p } }
+        c.sources = []
+        XCTAssertEqual(ProductPicks.sourceLine(c), "From your style and what you said · shop.example", "one shop, no +1")
+        c.evidence = nil
+        XCTAssertTrue(ProductPicks.sourceLine(c).hasPrefix("From your style and what you said"), "a style chip, no evidence")
+        c.products = c.products.map { ps in ps.map { var p = $0; p.taste = ""; return p } }
+        XCTAssertTrue(ProductPicks.sourceLine(c).hasPrefix("From what you said"))
+    }
+
+    /// D4: the colour legend never shows; the marks on the chips say where each came from.
+    func testNoColourLegend() throws {
+        var c = try sampleCard()
+        c.evidence = nil
+        XCTAssertFalse(ProductPicks.evidence(from: c).lines.contains { $0.hasPrefix("Blue:") || $0.hasPrefix("Grey:") })
+        XCTAssertTrue(ProductPicks.isLegend("Blue: your style, from your import. Grey: what you said."))
+        XCTAssertTrue(ProductPicks.isLegend("Grey: what you said. I don’t know your style yet."))
+        XCTAssertFalse(ProductPicks.isLegend("Searched the web · northline.example.com +1"))
     }
 
     func testOlderCardsShowTheirWhyAndHow() throws {
         var c = try sampleCard()
         c.evidence = nil
         c.why = ["Because"]
-        XCTAssertEqual(ProductPicks.evidence(from: c).lines, ["Because"] + c.how)
+        // D4: their why and how as written, minus the old colour legend
+        XCTAssertEqual(ProductPicks.evidence(from: c).lines, ["Because"] + c.how.filter { !ProductPicks.isLegend($0) })
     }
 
     func testSearchingWhyIsTheEarlierImportLine() throws {
