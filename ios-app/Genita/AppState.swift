@@ -205,6 +205,10 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     @ObservationIgnored var insightAnswersTask: Task<Void, Never>?
     /// verdicts one after another (a later answer never brings back a removed trait)
     @ObservationIgnored var insightVerdictTask: Task<String?, Never>?
+    /// AU-15: the import failed after "Continue in the background" — the banner over the current onboarding screen
+    var importFailedQuietly = false
+    /// AU-15: back on I02 from the banner — the one-line "That one didn't come through." note over the title
+    var importRetryNote = false
     @ObservationIgnored var importTask: Task<Void, Never>?
     @ObservationIgnored var companionTask: Task<Void, Never>?
     /// `409 reset_in_progress` on create: this many more tries, this far apart (tests shorten it)
@@ -341,7 +345,8 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     /// CS01 "Not now", an expired session (4401) or sign-out: A02, and a restart stays there.
     func signedOut() {
         invalidateOnboardingWork()
-        flowError = nil
+        // AU-18: an I02 "Please sign in again." from the old session doesn't follow into the next one
+        flowError = nil; importError = nil
         authGeneration += 1
         signInRouting?.cancel(); signInRouting = nil
         onHandoffAccountChange?(nil)
@@ -356,8 +361,9 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     func signedIn(userId: String? = nil, consented: Bool, qaSamplePhotos: Bool = false) {
         invalidateOnboardingWork()
         accountDeletedNotice = false
-        // an error from the signed-out session must not follow into the new one (QA build 5: N3 kept "Please sign in again.")
-        flowError = nil
+        // an error from the signed-out session must not follow into the new one (QA build 5: N3 kept "Please sign in again.";
+        // AU-18: I02's import error too)
+        flowError = nil; importError = nil
         authGeneration += 1
         self.qaSamplePhotos = qaSamplePhotos
         signInRouting?.cancel(); signInRouting = nil
@@ -528,6 +534,8 @@ extension AppState {
             setup.name = "Summer"
         }
         #endif
+        // AU-15 review: GENITA_REVIEW_VARIANT=import-failed shows the background-import failure banner on that screen
+        if variant == "import-failed" { importFailedQuietly = true }
         if variant == "image" || reviewStage == .conversation || reviewStage == .connecting,
            let url = Bundle.main.url(forResource: "companion", withExtension: "png") { setup.imageData = try? Data(contentsOf: url) }
         else { setup.imageData = nil }

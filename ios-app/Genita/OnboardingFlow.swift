@@ -286,7 +286,7 @@ extension AppState {
     /// I02 "Use this response" → I03. Spark makes the six-row style (4–8 s); the pasted text isn't stored on the server.
     func startImport() {
         importTask?.cancel()
-        importError = nil
+        importError = nil; importFailedQuietly = false; importRetryNote = false
         let text = setup.response
         story = nil; storyChanged = [:]; storyFailed = false; hisyPage = 0; insightReport = nil; insightUnavailable = false; insightAnswersSent = nil
         guard serverWired else { importing = false; return }
@@ -295,6 +295,9 @@ extension AppState {
         importing = true
         importTask = Task { [weak self] in
             guard let self else { return }
+            // AU-17: the import keeps running when the user leaves the app during I03 (iOS gives ~30 s; Spark takes 4–8 s)
+            let bg = BackgroundTaskToken.begin("genita.import")
+            defer { bg.end() }
             do {
                 let style = try await onboarding.importReply(text)
                 // "Forget all of this" meanwhile (AU-92): the old answer is never applied
@@ -315,9 +318,19 @@ extension AppState {
                 importing = false
                 importError = Self.importErrorLine(error)
                 if stage == .preparing { returnTo(.paste) }
+                // AU-15: the user already moved on ("Continue in the background"): say so where they are
+                else if stage != .paste, error as? GenitaAuthError != .unauthorized, error as? GenitaAuthError != .consentRequired { importFailedQuietly = true }
                 route(error)
             }
         }
+    }
+
+    /// AU-15 banner "Paste again": I02 with the reply still on the phone, and the note over the title.
+    func pasteImportAgain() {
+        importFailedQuietly = false
+        importRetryNote = true
+        importError = nil
+        go(.paste)
     }
 
     func cancelImport() { importTask?.cancel(); importTask = nil; importing = false; returnTo(.paste) }
@@ -913,5 +926,22 @@ extension AppState {
         guard setup.firstCallPending == true else { return nil }
         setup.firstCallPending = false
         return 2000
+    }
+}
+
+/// A UIKit background task that is ended exactly once: by its owner, or by iOS's expiration handler (AU-17).
+@MainActor final class BackgroundTaskToken {
+    private var id: UIBackgroundTaskIdentifier = .invalid
+    static func begin(_ name: String) -> BackgroundTaskToken {
+        let token = BackgroundTaskToken()
+        token.id = UIApplication.shared.beginBackgroundTask(withName: name) { [weak token] in
+            MainActor.assumeIsolated { token?.end() }
+        }
+        return token
+    }
+    func end() {
+        guard id != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(id)
+        id = .invalid
     }
 }

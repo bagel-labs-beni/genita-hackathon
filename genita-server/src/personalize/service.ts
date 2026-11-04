@@ -255,10 +255,13 @@ export class Personalize {
   }
 
   /** Replace the user's style (import, N1–N3) under the same lock as every other write.
-   *  → the card's importedAt (the SUM insight report of this import is saved only onto this card) */
-  async replaceStyle(userId: string, card: StyleCard, since?: number): Promise<string> {
+   *  → the card's importedAt (the SUM insight report of this import is saved only onto this card)
+   *  `signal`: checked again inside the lock, right before the write — a cancelled import that waited for the lock
+   *  never lands (AU-16). */
+  async replaceStyle(userId: string, card: StyleCard, since?: number, signal?: AbortSignal): Promise<string> {
     const at = this.now().toISOString();
     await this.serial(userId, async () => {
+      if (signal?.aborted) throw new PersonalizeError(499, "import_cancelled");
       // an import that started before "Forget all of this" never brings the old profile back (AU-92)
       if (since !== undefined && since !== this.generation(userId)) throw new PersonalizeError(409, "profile_forgotten", "The profile was cleared while this was reading.");
       await this.store.putStyle(userId, { ...card, importedAt: at });

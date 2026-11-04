@@ -250,8 +250,30 @@ import UniformTypeIdentifiers
         }()
         DesignShape(node: card).designSlot(card, width: width, top: top)
         ForEach(texts.filter { $0.id != title.id && $0.y < 700 && ($0.y < 319 || $0.y >= 617) }) { n in
-            DesignText(node: n).designSlot(n, width: width, top: top)
+            if stage == .paste, model.importRetryNote, n.characters?.hasPrefix("Paste the full response") == true {
+                // AU-15 (춘식이 F2): back from a failed background import — the subtitle itself says so, same slot, no shift
+                let line = n.lineHeight ?? 24
+                HStack(alignment: .top, spacing: 6) {
+                    Circle().fill(Color(red: 251 / 255, green: 227 / 255, blue: 180 / 255)).frame(width: 18, height: 18)
+                        .overlay(Text("!").font(TypeStyle.body(12, .bold)).foregroundStyle(Color(red: 138 / 255, green: 75 / 255, blue: 0)))
+                        .padding(.top, max(0, (line - 18) / 2))
+                    Text("That one didn’t come through. Paste it again below.")
+                        .font(TypeStyle.body(n.fontSize ?? 18, .medium))
+                        .lineSpacing(max(0, line - (UIFont(name: "PretendardVariable-Medium", size: n.fontSize ?? 18)?.lineHeight ?? line)))
+                        .foregroundStyle(Color(red: 138 / 255, green: 75 / 255, blue: 0))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .designSlot(n, width: width, top: top)
+                .transition(.opacity)
+                .accessibilityElement(children: .combine).accessibilityIdentifier("importRetryNote")
+            } else {
+                DesignText(node: n).designSlot(n, width: width, top: top)
+            }
         }
+        .animation(.easeInOut(duration: 0.2), value: model.importRetryNote)
+        // a new paste or an edit brings the usual subtitle back (200 ms crossfade above)
+        .onChange(of: model.setup.response) { _, _ in if model.importRetryNote { model.importRetryNote = false } }
         let body = texts.first { $0.y == 319 }!
         if stage == .prompt {
             // ui-deferred: the prompt fades at both scroll edges (20 pt under the header, 32 pt at the bottom), never a hard cut.

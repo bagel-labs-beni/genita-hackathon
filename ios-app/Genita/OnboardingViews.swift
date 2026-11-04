@@ -36,6 +36,14 @@ struct RootView: View {
                 }
                 }
             }.toolbar(.hidden, for: .navigationBar)
+                // AU-15: a background import failed — told on whatever onboarding screen is up (not on I01–I03, the call)
+                .overlay(alignment: .top) {
+                    if model.importFailedQuietly, ImportFailBanner.shows(on: model.stage) {
+                        ImportFailBanner(onPaste: { model.pasteImportAgain() }, onDismiss: { model.importFailedQuietly = false })
+                            .transition(.opacity.combined(with: .move(edge: .top)))
+                    }
+                }
+                .animation(.easeOut(duration: 0.22), value: model.importFailedQuietly)
                 // F1-L7 / F12: /me picks the first screen (consent, name, onboarding step, or straight to the call)
                 .task { await model.routeOnLaunch() }
                 .font(TypeStyle.body()).background(Color("Canvas"))
