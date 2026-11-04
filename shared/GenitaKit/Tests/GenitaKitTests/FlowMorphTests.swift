@@ -399,6 +399,23 @@ struct LipRigTests {
         #expect(lum(30, 21) < 50)                       // the cavity stays dark
     }
 
+    /// CA-06 (p6, dim photo): a pure black inside reads as a cut-out hole; it takes a warm, dark red-brown from the
+    /// skin's light instead (still clearly darker than the skin).
+    @Test func aBlackVoidTakesAWarmLitTone() throws {
+        let w = 60, h = 30
+        var p = [Float](repeating: 0, count: w * h * 3), inn = [Float](repeating: 0, count: w * h)
+        for y in 0..<h { for x in 0..<w {
+            let i = (y * w + x) * 3, inside = (10..<50).contains(x) && (10..<26).contains(y)
+            if inside { inn[y * w + x] = 1 }
+            let c: (Float, Float, Float) = inside ? (4, 4, 4) : (170, 130, 110)
+            p[i] = c.0; p[i + 1] = c.1; p[i + 2] = c.2
+        } }
+        let o = FlowMorph.toneTeethLit(p, interior: inn, width: w, height: h, tone: FlowMap.Rig.TeethTone())
+        let i = (18 * w + 30) * 3
+        #expect(o[i] > 25 && o[i] > o[i + 1] + 8)      // lit, warm (red over green)
+        #expect(o[i] < 80)                               // still a dark inside
+    }
+
     /// The chin rows follow a slow, scaled copy of the amounts: a sudden opening barely moves them.
     @Test func theChinFollowsSlowly() throws {
         let set = try Synth.faceSet(keys: ["MBP", "AH2"], rig: true)

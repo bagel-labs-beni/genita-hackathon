@@ -1774,6 +1774,20 @@ final class FlowMorph: @unchecked Sendable {
                     let l = (c.0 + c.1 + c.2) / 3, a = 0.08 * toothy
                     c = (c.0 + (l * tint.0 - c.0) * a, c.1 + (l * tint.1 - c.1) * a, c.2 + (l * tint.2 - c.2) * a)
                 }
+                // 11/4 CA-06 (p6, dim photo): a black void reads as a cut-out hole — the darkest inside takes a warm red-brown
+                // from the skin's own light, a little lighter toward the tongue, keeping its relative shading; not at the corners
+                if let sk = skin {
+                    // the ring around a round key's opening is its lips (darker than skin): reference the brighter of the two
+                    let sm = max((sk.0 + sk.1 + sk.2) / 3, 150)
+                    let l0 = (c.0 + c.1 + c.2) / 3, fL = 0.3 * sm
+                    if l0 < fL, fL > 1 {
+                        // darker under the upper lip, lighter toward the tongue (a real open mouth has a gradient, not a void)
+                        let rr = Float(y - top) / max(1, Float(bot - top))
+                        let g = (0.65 + 0.9 * rr * rr) * (0.85 + 0.3 * l0 / fL)
+                        let a = clip((fL - l0) / fL) * 0.85 * (1 - sstep(0.6, 0.95, dx))
+                        c = (c.0 + (sm * 0.5 * g - c.0) * a, c.1 + (sm * 0.24 * g - c.1) * a, c.2 + (sm * 0.24 * g - c.2) * a)
+                    }
+                }
                 let cav = (1 - toothy) * clip((0.35 - sat) / 0.1) * clip((thr + 25 - mx) / 20)
                 if cav > 0 {
                     // warmer, a little darker (v44 took ×0.5 and drew black holes in dim photos): 40 % of cavityDark
