@@ -610,6 +610,8 @@ if (args.some((a) => a === "--moments" || a.startsWith("--moments="))) {
     const call = new Call(url);
     await call.open(!MAC_BIN);
     const logFrom = logs.length;
+    // the share's start on the client clock: a page comment lands in the held lead, before the clip plays
+    const shareAt = performance.now();
     let playAt = 0;
     let macDone: Record<string, unknown> | null = null;
     let macExit: number | null = 0;
@@ -654,7 +656,7 @@ if (args.some((a) => a === "--moments" || a.startsWith("--moments="))) {
     // on the client clock (includes the network); via / over-dialogue / memo counts aren't knowable there
     const remoteReact = (() => {
       if (!REMOTE) return null;
-      const ev = call.wev.find((e) => e.type === "reaction" && (e._t as number) >= playAt);
+      const ev = call.wev.find((e) => e.type === "reaction" && (e._t as number) >= shareAt);
       if (!ev) return null;
       const reply = call.ev.find((e) => e.type === "reply" && e.utteranceId === ev.utteranceId);
       return { event: "watch.react", t: ev._t, utteranceId: ev.utteranceId, moment: ev.moment, line: reply?.text ?? "(reply text not seen)", via: "n/a (remote)", lineOpen: false, talkOver: null } as Record<string, unknown>;
