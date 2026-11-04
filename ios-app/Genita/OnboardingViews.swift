@@ -9,10 +9,10 @@ struct RootView: View {
         NavigationStack {
             Group {
                 if model.launchRouting {
-                    // LG-03: signed in, routing not decided yet → the dark ground the splash hands to, never A01/A02
-                    CallInk.ink.ignoresSafeArea().accessibilityElement().accessibilityLabel("Opening").accessibilityIdentifier("launchRouting")
-                        // never stuck on it: /me can hang offline; after 6 s the saved screen shows as before
-                        .task { try? await Task.sleep(for: .seconds(6)); model.launchRouting = false }
+                    // LG-03: signed in, routing not decided yet → the dark ground the splash hands to, never A01/A02.
+                    // It lasts until routeOnLaunch ends (its requests time out on their own); a slow network gets a
+                    // quiet spinner after 2 s instead of the sign-in screen (Codex P2)
+                    LaunchRoutingView()
                 } else {
                 switch model.stage {
                 // PRD A01 → A02: after the launch splash (A01) the static welcome doesn't wait for a tap; it hands
@@ -42,6 +42,19 @@ struct RootView: View {
         }.tint(Color("Ink"))
     }
 }
+/// LG-03: the dark launch ground while a signed-in launch is routed; a small spinner once it takes a while.
+private struct LaunchRoutingView: View {
+    @State private var slow = false
+    var body: some View {
+        ZStack {
+            CallInk.ink.ignoresSafeArea()
+            if slow { ProgressView().tint(CallInk.onInk).transition(.opacity) }
+        }
+        .accessibilityElement().accessibilityLabel("Opening").accessibilityIdentifier("launchRouting")
+        .task { try? await Task.sleep(for: .seconds(2)); withAnimation(.easeOut(duration: 0.3)) { slow = true } }
+    }
+}
+
 /// V04 · the companion voices the server offers (11/2: SeamlessM4T v2 on our GPU, D3). The list, the preview
 /// clips and the pick all go through genita-server; the phone's own voices are only the silent offline fallback
 /// for calls (`deviceFallbackKey`) and never show here.
