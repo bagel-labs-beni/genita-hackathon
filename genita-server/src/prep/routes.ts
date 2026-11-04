@@ -532,16 +532,17 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
           return send(res, 200, await ins.get(user, waitMs));
         }
         if (m === "POST" && p === "/v1/profile/insights") {
+          const gen = d.personalize?.generation(user);   // before the body: a forget while it arrives wins (Codex P1)
           const b = JSON.parse((await readBody(req, PROFILE_JSON_LIMIT)).toString("utf8") || "{}") as Record<string, unknown> | null;
           if (!b || typeof b !== "object" || Array.isArray(b)) throw new PrepError(400, "bad_json");
           // each write is up to two Spark calls
           if (!allowInsightWrite(user)) throw new PrepError(429, "rate_limited", "try again in a minute");
           // no import card and no N1–N3 card (both failed, or never sent): R1 is still written, from the P answers
           // alone (Chelsea 11/4) — an empty N1–N3 card holds it. A background import still reading keeps its slot.
-          if (d.personalize && !importJobs.has(user) && !(await d.store.getStyle(user))) {
-            const gen = d.personalize.generation(user);
+          // (only a "processing" job blocks it: a failed background import leaves its entry behind — Codex P2)
+          if (d.personalize && importJobs.get(user)?.status !== "processing" && !(await d.store.getStyle(user))) {
             const empty = skipStyleCard({ interests: [], avoid: [], replies: null });
-            if (empty.ok) await d.personalize.replaceStyle(user, empty.card, gen).catch((err) => d.log("insights.empty_card_failed", { reason: String(err).slice(0, 120) }));
+            if (empty.ok) await d.personalize.createStyleIfMissing(user, empty.card, gen ?? 0).catch((err) => d.log("insights.empty_card_failed", { reason: String(err).slice(0, 120) }));
           }
           await ins.fromAnswers(user, b.answers);
           return send(res, 202, { status: "pending" });

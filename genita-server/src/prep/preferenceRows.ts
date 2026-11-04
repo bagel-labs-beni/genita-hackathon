@@ -14,7 +14,7 @@
  * Read-only view: the stored card's `display` is never rewritten (corrections, HISY topics and toConfirm still see
  * what the import itself found). Pure — no I/O.
  */
-import type { DisplayItem, DisplayRow, StyleCard } from "./importProfile.ts";
+import { isDislike, type DisplayItem, type DisplayRow, type StyleCard } from "./importProfile.ts";
 import type { Depth, SetupAnswers } from "./personaCard.ts";
 import type { InsightCategory, StoredInsights } from "../insights/profile.ts";
 
@@ -161,26 +161,37 @@ export function preferenceRows(card: StyleCard | null | undefined, prefs?: Saved
   const fromSetup = setupLines(prefs);
   const fromInsights = insightLines(card?.insights);
   const sections = card?.sections;
+  const norm = (t: string) => lower(t).replace(/[.\s]+$/, "").trim();
+  // lines the user took out (saved corrections and ones still being applied) never come back through a fallback or R1
+  const gone = new Set([...(card?.removed ?? []).map((r) => r.text), ...(card?.pendingCorrections ?? []).flatMap((p) => p.items)].map(norm));
+  const kept = (t: string) => !!t && !gone.has(norm(t));
   return ROWS.map(({ key, title }) => {
     const own = card?.display?.find((r) => r.key === key);
-    let imported: DisplayItem[] = (own?.items ?? []).filter((i) => i?.text && !/^not enough information/i.test(i.text));
+    const imported: DisplayItem[] = (own?.items ?? []).filter((i) => i?.text && !/^not enough information/i.test(i.text));
     if (!imported.length && sections) {
       for (const s of IMPORT_FALLBACK[key] ?? []) {
         const list = Array.isArray(sections[s]) ? sections[s] : [];
-        for (const f of list) if (f?.text) imported.push({ text: f.text, label: s === "approach" ? "suggested" : f.label });
+        for (const f of list) if (f?.text && kept(f.text)) imported.push({ text: f.text, label: s === "approach" ? "suggested" : f.label });
       }
     }
-    const survey: DisplayItem[] = [
-      ...fromInsights[key].map((text) => ({ text, label: "observed" as const })),
-      ...fromSetup[key].map((text) => ({ text, label: "explicit" as const })),
-    ];
-    // the survey keeps one slot when it has a line (it beats the import)
-    if (survey.length) imported = imported.slice(0, ROW_MAX - 1);
+    const r1: DisplayItem[] = fromInsights[key].filter(kept).map((text) => ({ text, label: "observed" as const }));
+    const answers: DisplayItem[] = fromSetup[key].map((text) => ({ text, label: "explicit" as const }));
     const seen = new Set<string>();
-    const items = [...imported, ...survey].filter((i) => {
-      const k = lower(i.text).replace(/[.\s]+$/, "");
+    const all = [...imported, ...r1, ...answers].filter((i) => {
+      const k = norm(i.text);
       return k && !seen.has(k) && (seen.add(k), true);
-    }).slice(0, ROW_MAX);
+    });
+    let items = all.slice(0, ROW_MAX);
+    // reserved slots (Codex P2): one for the P answers (the survey beats the import), and on Likes & dislikes one for
+    // a dislike (toStyleCard's rule) — each takes the last slot not already reserved
+    const reserve = (pick: DisplayItem | undefined, protect: Set<DisplayItem>) => {
+      if (!pick || items.includes(pick)) return;
+      for (let i = items.length - 1; i >= 0; i--) if (!protect.has(items[i])) { items = [...items.slice(0, i), ...items.slice(i + 1), pick]; return; }
+    };
+    const answer = all.find((i) => answers.some((a) => a.text === i.text));
+    const dislike = key === "likes" ? all.find((i) => imported.includes(i) && isDislike(i.text)) : undefined;
+    reserve(answer, new Set(dislike && items.includes(dislike) ? [dislike] : []));
+    reserve(dislike, new Set(answer ? [answer] : []));
     return { key: own?.key ?? key, title: own?.title ?? title, items };
   });
 }

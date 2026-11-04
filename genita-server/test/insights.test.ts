@@ -1036,3 +1036,18 @@ test("routes: no-import path (N1–N3 empty, Quick: 3 answers) → R1 written fr
     assert.ok(rows.every((r) => r.items.length > 0 && r.items.every((i) => !/not enough information/i.test(i.text))), JSON.stringify(rows));
   }
 });
+
+test("createStyleIfMissing (Codex P1): never overwrites a card that landed first, and a forget since wins", async (t) => {
+  const h = harness(() => null);
+  t.after(h.cleanup);
+  const { skipStyleCard } = await import("../src/prep/importProfile.ts");
+  const empty = (skipStyleCard({ interests: [], avoid: [], replies: null }) as { ok: true; card: StyleCard }).card;
+  await h.p.replaceStyle("u1", CARD);
+  assert.equal(await h.p.createStyleIfMissing("u1", empty, h.p.generation("u1")), false);
+  assert.equal((await h.store.getStyle("u1"))!.source, "import", "the import stays");
+  const gen = h.p.generation("u2");
+  await h.p.forgetAll("u2");
+  assert.equal(await h.p.createStyleIfMissing("u2", empty, gen), false, "a forget since the request began wins");
+  assert.equal(await h.p.createStyleIfMissing("u3", empty, h.p.generation("u3")), true);
+  assert.equal((await h.store.getStyle("u3"))!.source, "skip");
+});

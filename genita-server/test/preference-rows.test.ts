@@ -109,3 +109,31 @@ test("preference rows: withPreferenceRows doesn't touch the stored card and reco
   odd.display[1].items = [{ text: "Not enough information yet.", label: "suggested" }];
   assert.ok(!lines(preferenceRows(odd, quick), "response").some((l) => /not enough/i.test(l)));
 });
+
+test("preference rows (Codex P2): the P answer keeps its slot even with 2 import lines + an R1 line in the row", () => {
+  const card = toStyleCard({ sections: { ...empty(), help: [f("Plans the week."), f("Edits drafts.")] }, rules: [], to_confirm: [] });
+  card.insights = { observations: [{ id: "o1", category: "help", claim: "You want a sounding board.", verdict: null }] } as unknown as StoredInsights;
+  const help = lines(preferenceRows(card, quick), "help");
+  assert.equal(help.length, 3);
+  assert.ok(help.includes("Thinking things through together: ideas, decisions and clarity."), JSON.stringify(help));
+  assert.equal(help[0], "Plans the week.");
+});
+
+test("preference rows (Codex P2): Likes & dislikes keeps the dislike and the P answer", () => {
+  const card = toStyleCard({ sections: { ...empty(), likes: [f("Likes ramen."), f("Likes jazz."), f("Dislikes seafood.")] }, rules: [], to_confirm: [] });
+  const likes = lines(preferenceRows(card, quick), "likes");
+  assert.equal(likes.length, 3);
+  assert.ok(likes.includes("Dislikes seafood."), JSON.stringify(likes));
+  assert.ok(likes.includes("A close companion: personal and emotionally present."), JSON.stringify(likes));
+});
+
+test("preference rows (Codex P2): a line the user took out never comes back through a fallback or R1", () => {
+  const card = toStyleCard({ sections: { ...empty(), support: [f("Wants a nudge on deadlines.")] }, rules: [], to_confirm: [] });
+  card.insights = { observations: [{ id: "o1", category: "interest", claim: "You love sailing.", verdict: null }] } as unknown as StoredInsights;
+  card.removed = [{ text: "Wants a nudge on deadlines.", at: "2026-11-04T00:00:00Z" }];
+  card.pendingCorrections = [{ cardId: "c1", items: ["You love sailing."], text: "", asOf: "2026-11-04T00:00:00Z" }];
+  const rows = preferenceRows(card, quick);
+  assert.ok(!lines(rows, "help").some((l) => /deadlines/.test(l)));
+  assert.ok(!lines(rows, "interests").some((l) => /sailing/.test(l)));
+  assert.ok(rows.every((r) => r.items.length >= 1));
+});
