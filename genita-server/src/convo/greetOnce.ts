@@ -15,7 +15,9 @@ export function userIsLeaving(userText: string): boolean {
 }
 
 // "look who finally showed up", "you finally made it", "there you are", "you're back", "welcome back", "finally decided to show up"
-const GREET_AGAIN = /\b(?:look (?:who(?:'s| is)?|at you)\b[^,.!?]*\b(?:show(?:ed|s)? up|here|back|made it|decided|finally|crawl(?:ed|ing)? back|alive)|(?:you\s+|she\s+)?(?:finally|actually)\s+(?:decided\s+to\s+)?(?:show(?:ed)?\s+up|made\s+it|call(?:ed)?|here|back|join(?:ed)?|pick(?:ed)?\s+up)|(?:decided|bothered)\s+to\s+(?:show\s+up|call|join)|there\s+you\s+are|you(?:'re|\s+are)\s+back(?=\s*(?:[,.!?…]|$))|welcome\s+back|you\s+made\s+it|(?:oh\s+)?hey\s+stranger|long\s+time\s+no\s+(?:see|talk)|(?:i was )?starting to think you (?:ditched|forgot|ghosted))\b/i;
+// each phrase must end its clause (Codex r1: "You made it through a tough interview" is praise, not a hello)
+const END = String.raw`(?=\s*(?:[,.!?…—]|$))`;
+const GREET_AGAIN = new RegExp(String.raw`\b(?:look (?:who(?:'s| is)?|at you)\b[^,.!?]*\b(?:show(?:ed|s)? up|here|back|made it|decided to [a-z]+|finally|crawl(?:ed|ing)? back|alive)${END}|(?:you\s+|she\s+)?(?:finally|actually)\s+(?:decided\s+to\s+)?(?:show(?:ed)?\s+up|made\s+it|call(?:ed)?|here|back|join(?:ed)?|pick(?:ed)?\s+up)${END}|(?:decided|bothered)\s+to\s+(?:show\s+up|call|join)${END}|there\s+you\s+are${END}|you(?:'re|\s+are)\s+back${END}|welcome\s+back${END}|you\s+made\s+it${END}|(?:oh\s+)?hey\s+stranger|long\s+time\s+no\s+(?:see|talk)|(?:i was )?starting to think you (?:ditched|forgot|ghosted))`, "i");
 const HELLO_ONLY = /^\s*(?:oh\s+|well\s+)?(?:hey|hi|hello|heya|hiya|yo|sup)(?:\s+(?:you|there|girl|dude|babe|friend))?\s*$/i;
 const USER_HELLO = /^\s*(?:hey|hi|hello|heya|hiya|yo|sup|what'?s up|wassup)\b[\s\w'!.?,]{0,20}$/i;
 
@@ -43,14 +45,22 @@ const SEND_OFF = /\b(?:bye|goodbye|good ?night|night night|ttyl|talk (?:to you )
 /** their line asks something ("can I throw in the leftover rice too?"): it needs an answer, never a send-off */
 const ASKS = /\?\s*$|^\s*(?:can|could|should|would|will|do|does|is|are|what|how|which|why|when|where|who)\b/i;
 
+/** a sentence carrying real help ("call 911", "988") is never cut for its send-off clause (Codex r1 P1) */
+const HELP = /\b(?:911|988|999|112|000|police|emergency|ambulance|crisis|hotline|lifeline|call (?:someone|a friend|for help|them now))\b/i;
+
 /**
- * A send-off sentence ("Go, have fun! I want the full story after.") to a question that isn't them leaving: dropped ("").
+ * A send-off ("Go, have fun! I want the full story after.") to a question that isn't them leaving: its clause goes
+ * ("Get into the shop now; talk later." → "Get into the shop now."), a sentence that is only a send-off returns "".
  * A plan ("I'm going to a party tonight") may still get "go have fun" (the persona's "nudge them to go").
  */
 export function noUnpromptedGoodbye(sentence: string, userText: string): string {
   if (!ASKS.test(userText) || userIsLeaving(userText)) return sentence;
-  const body = sentence.replace(TAGS, "");
-  return SEND_OFF.test(body) ? "" : sentence;
+  const lead = TAGS.exec(sentence)?.[1] ?? "";
+  const body = sentence.slice(lead.length);
+  if (!SEND_OFF.test(body) || HELP.test(body)) return sentence;
+  const end = /[.!?…]+["')\]]*\s*$/.exec(body)?.[0]?.trim() ?? ".";
+  const kept = body.replace(/[.!?…]+["')\]]*\s*$/, "").split(/\s*(?:[,;]|—| - )\s*/).filter((p) => p.trim() && !SEND_OFF.test(p) && !/^(?:go|okay|ok|so|and|have fun|enjoy)$/i.test(p.trim()));
+  return kept.length ? `${lead}${cap(kept.join(", "))}${end.replace(/!+/, ".")}` : "";
 }
 
 function cap(s: string): string {

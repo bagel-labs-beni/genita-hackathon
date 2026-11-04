@@ -22,6 +22,8 @@ test("a second hello after the opener goes; the rest of the sentence stays", () 
   assert.equal(noRepeatGreeting("Oh hey, you're back!", "can I throw in the rice?"), "");
   assert.equal(noRepeatGreeting("Well hey, Tuesday night troublemaker, you made it.", "hey"), "Tuesday night troublemaker.");
   // not a greeting: untouched
+  // Codex r1 P2: praise that happens to say "you made it"
+  assert.equal(noRepeatGreeting("You made it through a tough interview without freezing.", "Did I do okay in the interview?"), "You made it through a tough interview without freezing.");
   for (const s of ["That's brutal, making you pitch his version like that.", "Black one, no contest.", "Finally, a dish that needs no oven.", "You're back to square one with the deck, huh."]) assert.equal(noRepeatGreeting(s, "x"), s);
 });
 
@@ -31,6 +33,9 @@ test("a send-off answers only a line that is leaving or a plan, never a question
   assert.equal(noUnpromptedGoodbye("Bye, go crush it!", "ok I gotta go"), "Bye, go crush it!");
   assert.equal(noUnpromptedGoodbye("Go, have fun! I want the full story after.", "I'm going to a party tonight"), "Go, have fun! I want the full story after.");
   assert.equal(noUnpromptedGoodbye("Throw it in, it gets crispy.", "can I throw in the leftover rice too?"), "Throw it in, it gets crispy.");
+  // Codex r1 P1: real help is never cut; only the send-off clause goes
+  assert.equal(noUnpromptedGoodbye("Get into a busy shop and call 911; we can talk later.", "Someone is following me, what should I do?"), "Get into a busy shop and call 911; we can talk later.");
+  assert.equal(noUnpromptedGoodbye("Yeah, toss it in, talk later!", "can I throw in the leftover rice too?"), "Yeah, toss it in.");
   assert.ok(userIsLeaving("ok I gotta go"));
   assert.ok(userIsLeaving("alright I'm heading out"));
   assert.ok(!userIsLeaving("can I throw in the leftover rice too?"));
@@ -43,6 +48,10 @@ test("a cooking tip is not guilt, and the guilt fallback never says goodbye to a
   assert.equal(guardSentence("Don't go overboard with the garlic though.", ctx), null);
   assert.equal(guardSentence("Don't leave me hanging tonight.", { camera: false, userText: "I'm going out" }), "guilt");
   assert.equal(guardSentence("No, don't go!", { camera: false, userText: "I'm going out" }), "guilt");
+  // Codex r1 P1: leaving the call or going to friends stays guilt
+  assert.equal(guardSentence("Don't leave this call, I need you here.", { camera: false, userText: "Can I go hang out with my friends?" }), "guilt");
+  assert.equal(guardSentence("Don't go to your friends, stay with me tonight.", { camera: false, userText: "Can I go hang out with my friends?" }), "guilt");
+  assert.equal(guardSentence("Don't go hang out with them tonight.", { camera: false, userText: "Can I go hang out with my friends?" }), "guilt");
   assert.equal(fallbackLine("guilt", "can I throw in the leftover rice too?"), null);
   assert.match(fallbackLine("guilt", "ok I gotta go") ?? "", /have fun/);
 });

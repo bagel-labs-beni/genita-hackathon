@@ -2784,7 +2784,8 @@ export class Session {
             if (!neverSpoken(cls)) guarded.first ??= { raw, cls };
             else guarded.narration = true;
             // no frame reached us and the reply was about what it "sees": the retry answers without vision
-            if ((cls === "unseen" || cls === "appearance") && !guardCtx.camera) guarded.unseen = true;
+            // (a shared screen counts as seen: Codex r1 P2)
+            if ((cls === "unseen" || cls === "appearance") && !guardCtx.camera && !built?.seen) guarded.unseen = true;
             this.log("convo.guard", { utteranceId, cls });
             cutBefore = true;
             continue;
