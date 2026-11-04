@@ -14,6 +14,7 @@ test("an item that adds something new is kept", () => {
   assert.equal(restatesHeadline("Hi.", "Hi there."), false, "a one-word headline is never enough to judge");
   assert.equal(restatesHeadline("Short, direct answers.", "You want short, direct answers at work."), false, "a condition is new");
   assert.equal(restatesHeadline("Short, direct answers.", "You don't want short, direct answers."), false, "a negation is new");
+  assert.equal(restatesHeadline("Short answers, not long answers.", "I want long answers, not short answers."), false, "the opposite is new");
 });
 
 test("saved cards drop a restating item on read, but never end up empty", () => {

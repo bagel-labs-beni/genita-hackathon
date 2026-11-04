@@ -400,18 +400,17 @@ function lineEvidence(text: string, card: StyleCard, id: SparkStoryId): Evidence
 
 // filler an item wraps around the headline ("You want it …"); "not", "at", "when" etc. are left out on purpose:
 // a condition, an exception or a negation is something new (Codex P2)
-const STOP = new Set(["a", "an", "the", "and", "or", "to", "of", "you", "your", "you're", "it", "is", "are", "be", "so", "that", "this", "i", "me", "my", "like", "want", "prefer", "need", "love", "really", "always"]);
+const STOP = new Set(["a", "an", "the", "and", "or", "to", "of", "you", "your", "you're", "it", "is", "are", "be", "so", "that", "this", "i", "me", "my", "by", "like", "want", "prefer", "need", "love", "really", "always"]);
 const contentWords = (s: string) =>
   s.toLowerCase().replace(/[’']/g, "'").split(/[^\p{L}\p{N}']+/u).filter((w) => w.length > 1 && !STOP.has(w)).map((w) => w.replace(/(ing|ed|es|s)$/, ""));
 
-/** An item that only says the headline again: most of the headline's words are in it and it adds none of its own. */
+/** An item that only says the headline again: the same words in the same order, nothing added (word order kept, so
+ *  "long, not short" never matches "short, not long"; Codex P2). */
 export function restatesHeadline(headline: string, text: string): boolean {
-  const head = [...new Set(contentWords(headline))];
+  const head = contentWords(headline);
   if (head.length < 2) return false;
-  const body = new Set(contentWords(text));
-  const shared = head.filter((w) => body.has(w)).length;
-  const extra = [...body].filter((w) => !head.includes(w)).length;
-  return shared / head.length >= 0.75 && extra === 0;
+  const body = contentWords(text);
+  return body.length === head.length && body.every((w, i) => w === head[i]);
 }
 
 /** Cards already saved before the rule (or Spark slipping): restating items are dropped on read; a card that would be
