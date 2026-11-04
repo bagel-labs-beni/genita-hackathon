@@ -103,6 +103,8 @@ import Foundation
         }
         guard gen == generation else { return } // signed out meanwhile
         account = next
+        // Open at login (on by default) once an account is signed in on this Mac for the first time
+        switch next { case .needsConsent, .noCompanion, .ready: MacLoginItem.shared.signedIn(); default: break }
         if next == .signedOut { generation += 1; useHandoffAccount(nil) }
         else if let accountID { useHandoffAccount(accountID) }
         guard let plan else { return }
@@ -112,6 +114,18 @@ import Foundation
         call.prepareFace(reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
         if wantsCall { startCall() }
     }
+
+    /// The launch's first account check, shared by the home window's task and a hidden launch at login (one `/me`).
+    /// It runs in its own task, so a window ordered out or closed mid-check can't cancel it into the offline state.
+    func refreshAtLaunch() async {
+        if let launchCheck { return await launchCheck.value }
+        guard account == .checking else { return }
+        let check = Task { await refresh() }
+        launchCheck = check
+        await check.value
+        launchCheck = nil
+    }
+    private var launchCheck: Task<Void, Never>?
 
     /// MAC-1 · Sign in with Apple on the web (Developer ID apps can't use the native sheet).
     func signInWithApple() {
@@ -346,7 +360,7 @@ struct MacAccountRow: View {
             }
         }
         .font(.custom("PretendardVariable-Regular", fixedSize: 13)) // Figma: Pretendard everywhere but the serif titles
-        .task { if call.account == .checking { await call.refresh() } }
+        .task { await call.refreshAtLaunch() }
         // 4401 → MAC-1, 4403 → MAC-2 (the control window is always there, so this sees every stop)
         .onChange(of: CallController.shared.stopped) { _, stop in if let stop { call.callStopped(stop) } }
     }

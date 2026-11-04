@@ -202,15 +202,7 @@ final class ServerOwnershipLink: NSObject, ObservableObject, URLSessionWebSocket
                 switch result {
                 case let .success(.string(text)):
                     if let data = text.data(using: .utf8), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                        self.onMessage?(object)
-                        if let event = PresenceEvent(object) {
-                            switch event {
-                            case let .ownership(_, _, trigger): self.lastOwnershipTrigger = trigger
-                            case .claimResult: self.lastOwnershipTrigger = nil
-                            default: break
-                            }
-                            for effect in PresenceState.reduce(&self.state, event, me: self.device) { self.onEffect?(effect) }
-                        }
+                        self.handle(object)
                     }
                     self.receive(task, gen)
                 case .success:
@@ -221,6 +213,21 @@ final class ServerOwnershipLink: NSObject, ObservableObject, URLSessionWebSocket
             }
         }
     }
+    /// One server message: proximity reads it first (`onMessage`), then the ownership reducer.
+    private func handle(_ object: [String: Any]) {
+        onMessage?(object)
+        guard let event = PresenceEvent(object) else { return }
+        switch event {
+        case let .ownership(_, _, trigger): lastOwnershipTrigger = trigger
+        case .claimResult: lastOwnershipTrigger = nil
+        default: break
+        }
+        for effect in PresenceState.reduce(&state, event, me: device) { onEffect?(effect) }
+    }
+    #if DEBUG
+    /// Checks only (mac-app/Tools/login-item): a message as if it came from the server socket.
+    func reviewReceive(_ object: [String: Any]) { handle(object) }
+    #endif
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
         guard webSocketTask === task else { return }
         backoff = 1

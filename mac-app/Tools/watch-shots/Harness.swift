@@ -34,7 +34,7 @@ import CoreText
             case "mac-rs-half": MacResultFixture.load(.results, into: call.finds, state: .half); override = ""
             case "mac-rs-failed": MacResultFixture.load(.failed, into: call.finds, state: .searching); override = ""
             case "mac-link": MacResultFixture.load(.results, into: call.finds, state: .half); override = "link"
-            case "a02", "a02-j", "a02-m", "a02-m2", "a02-m2-error", "cs01", "mac-2", "mac-3", "mac-3-paired", "mac-4", "mac-4-unpaired", "mac-4-resume", "mac-offline", "launch", "settings", "settings-call": break
+            case "a02", "a02-j", "a02-m", "a02-m2", "a02-m2-error", "cs01", "mac-2", "mac-3", "mac-3-paired", "mac-4", "mac-4-unpaired", "mac-4-resume", "mac-offline", "launch", "settings", "settings-call", "settings-approval", "settings-call-approval": break
             case _ where state.hasPrefix("splash-"): break
             case "c01": override = ""
             case "mc-m": MacHandoff.shared.reviewCanMove = true; override = "menu"
@@ -65,9 +65,12 @@ import CoreText
                 page = AnyView(MacLaunchReviewFrame(t: t, me: signedIn ? 500 : 2500, signedIn: signedIn) {
                     if signedIn { MacHomeView(kind: .onPhone, name: "Mina", handoff: MacHandoff.shared) } else { MacSignInView() }
                 })
-            case "settings": MacCall.shared.reviewAccountLabel("mina@example.com"); page = AnyView(MacSettingsSheet())
+            case "settings": MacCall.shared.reviewAccountLabel("mina@example.com"); MacLoginItem.shared.reviewStatus(.enabled); page = AnyView(MacSettingsSheet())
+            // Open at login waiting for approval in System Settings ▸ Login Items (CEO 11/4)
+            case "settings-approval": MacCall.shared.reviewAccountLabel("mina@example.com"); MacLoginItem.shared.reviewStatus(.requiresApproval); page = AnyView(MacSettingsSheet())
+            case "settings-call-approval": MacCall.shared.reviewAccountLabel("mina@example.com"); MacLoginItem.shared.reviewStatus(.requiresApproval); page = AnyView(MacSettingsSheet(compact: true))
             // Settings from the call window (phone-sized, ~340 pt): the compact width (Mac QA 11/3)
-            case "settings-call": MacCall.shared.reviewAccountLabel("mina@example.com"); page = AnyView(MacSettingsSheet(compact: true))
+            case "settings-call": MacCall.shared.reviewAccountLabel("mina@example.com"); MacLoginItem.shared.reviewStatus(.enabled); page = AnyView(MacSettingsSheet(compact: true))
             default: page = AnyView(MacConversationView(reviewOverride: override).frame(width: 390, height: 844))
             }
             let view = page.environment(\.colorScheme, .light)
