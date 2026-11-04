@@ -13,7 +13,7 @@ Genita is a face-to-face video call with an AI companion. It starts out knowing 
 | 📱 iPhone (TestFlight) | **https://testflight.apple.com/join/Ybqh482p** |
 | 💻 Mac (notarized DMG) | **https://bagel-labs-beni.github.io/genita-legal/mac/Genita-latest.dmg** |
 | 🔑 Judge access code | **`GENITA-3ANZMN`**: tap **Judge access** on the first screen. No Apple ID or email needed. |
-| 🎬 Demo video (3 min) | *link coming* |
+| 🎬 Demo video (3 min) | **https://youtu.be/O2b4_xFajqE** |
 
 ---
 
