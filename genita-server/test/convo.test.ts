@@ -1927,3 +1927,9 @@ test("Codex #675 r2: 'your skin is wrinkled' next to undertones is still appeara
   assert.equal(guardSentence("Your warm skin tone works well with black.", { camera: true, userText: "What goes with mashed potatoes?" }), "appearance");
   assert.equal(guardSentence("Your warm skin tone works well with black.", { camera: true, userText: "What goes with this black dress?" }), null);
 });
+test("Codex #675 r3: a verdict on the skin tone itself, or a non-clothes 'which one is better', gets no color exception", async () => {
+  const { guardSentence } = await import("../src/convo/guard.ts");
+  assert.equal(guardSentence("Your skin tone is blotchy and uneven.", { camera: true, userText: "Which outfit should I wear?" }), "appearance");
+  assert.equal(guardSentence("Your warm skin tone is dull.", { camera: true, userText: "Which one is better for learning Python?" }), "appearance");
+  assert.equal(guardSentence("You have warm undertones, so dark brown shoes or leather accessories will pull it together.", { camera: true, userText: "Which one looks better on me, the white one or the black one?" }), null);
+});

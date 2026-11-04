@@ -347,3 +347,18 @@ test("Codex #675 r2: emergency help and a move ask in other words are never drop
   assert.match(reply, /move the call over there/);
   s.close();
 });
+test("Codex #675 r3: 'get somewhere safe' and 'transfer the call to it' are never dropped as an early pick", async () => {
+  const { deps, sink, events } = setup(() => true);
+  deps.spark = async function* (): AsyncGenerator<SparkStreamEvent> {
+    yield { type: "text", delta: "Your Mac is open. I'd say get somewhere safe right now. I'd say transfer the call to it so I can see the outfit." };
+    yield { type: "done", responseId: "r", text: "", status: "completed" };
+  };
+  const s = new Session("p12", sink, deps);
+  await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  await s.onClientText(JSON.stringify({ type: "text", text: ASK }));
+  await waitFor(() => events.some((e) => e.type === "reply" && (e as { final?: boolean }).final === true));
+  const reply = String((events.filter((e) => e.type === "reply").at(-1) as { text?: string }).text);
+  assert.match(reply, /somewhere safe/);
+  assert.match(reply, /transfer the call/);
+  s.close();
+});
