@@ -249,7 +249,7 @@ import UniformTypeIdentifiers
         let card: DesignNode = {
             var node = nodes.first { $0.name == (stage == .prompt ? "Your prompt" : stage == .paste ? "Your AI’s response" : "Your preferences") && $0.type != "text" }!
             // I01: room under the card for Open ChatGPT / Open Claude and the N1–N3 link (PRD v12 B-defaults, D33)
-            if stage == .prompt { node.h = min(node.h, max(100, contentBottom - 96 - node.y - top)) }
+            if stage == .prompt { node.h = min(node.h, max(100, contentBottom - 104 - node.y - top)) }   // b14: + the 44 pt no-AI row
             return node
         }()
         DesignShape(node: card).designSlot(card, width: width, top: top)
@@ -311,9 +311,20 @@ import UniformTypeIdentifiers
                     .background(CallInk.ink.opacity(0.84), in: Capsule()).transition(.opacity)
                     .position(x: width / 2, y: cardBottom + 32 - 38).accessibilityIdentifier("promptCopiedToast")
             }
+            // b14 (Chelsea 11/4 16:39 "GPT 안 쓰는 사람 샛길"): the N1–N3 door is a peer option, not fine print. Same material
+            // as the Open buttons (white, 1 pt #E3E3E3, radius 12), the card's column, 44 pt, 8 pt under the Open row
             Button { model.go(.skipTopics) } label: {
-                Text("I don’t use an AI assistant").font(TypeStyle.body(14)).underline().foregroundStyle(CallInk.mute).frame(height: 44)
-            }.buttonStyle(.plain).position(x: width / 2, y: cardBottom + 78).accessibilityIdentifier("skipImport")
+                HStack(spacing: 4) {
+                    Text("I don’t use an AI assistant").font(TypeStyle.body(15, .medium)).foregroundStyle(CallInk.ink).lineLimit(1).minimumScaleFactor(0.9)
+                    Spacer(minLength: 8)
+                    Text("3 quick picks").font(TypeStyle.body(13)).foregroundStyle(CallInk.mute).lineLimit(1)
+                    Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(CallInk.mute)
+                }.padding(.leading, 16).padding(.trailing, 14).frame(width: width - 62, height: 44)
+                    .background(.white, in: RoundedRectangle(cornerRadius: 12)).overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(white: 0.89), lineWidth: 1))
+                    .contentShape(RoundedRectangle(cornerRadius: 12))
+            }.buttonStyle(NoAIRowStyle())
+                .accessibilityLabel("I don’t use an AI assistant").accessibilityHint("Three quick picks instead").accessibilityIdentifier("skipImport")
+                .position(x: width / 2, y: cardBottom + 82)
         } else {
             let editorHeight = max(1, min(card.h - 76, keyboardTop - body.y - top - 8))
             // I02 / I04 (TF 331): a long reply scrolled up under "Your AI’s response" and the Paste pill with a hard cut. Same
@@ -818,5 +829,12 @@ enum PresenceChips {
         var updated = selected
         if updated.contains(key) { updated.remove(key) } else if updated.count < max { updated.insert(key) }
         return updated
+    }
+}
+
+/// b14 I01 no-AI row: #F2F2F2 while held (mock TbzFuosXMi9gsZ9GcJh7LQ "Pressed").
+private struct NoAIRowStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.overlay(RoundedRectangle(cornerRadius: 12).fill(Color.black.opacity(configuration.isPressed ? 0.05 : 0)).allowsHitTesting(false))
     }
 }
