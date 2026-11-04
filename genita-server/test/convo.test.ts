@@ -1982,3 +1982,59 @@ test("Codex #664 r2: medical / danger emergencies get no hold beat", async () =>
   for (const t of ["I can't breathe. My chest feels tight.", "someone is following me", "I think I'm having a heart attack", "my throat is closing"]) assert.ok(NO_BEAT_EMERGENCY.test(t), t);
   for (const t of ["what's for dinner?", "tell me about octopuses", "I had a long day"]) assert.ok(!NO_BEAT_EMERGENCY.test(t), t);
 });
+
+test("Codex #664 r3 P1: breathing / break-in variants get no hold beat (regex + slow Session reply)", { skip: !v1 }, async (t) => {
+  const { NO_BEAT_EMERGENCY } = await import("../src/session/session.ts");
+  for (const s of ["My baby has stopped breathing.", "Someone is breaking into my house.", "he isn't breathing", "someone broke into our apartment", "there's a guy in my house", "my dad collapsed and won't wake up"]) assert.ok(NO_BEAT_EMERGENCY.test(s), s);
+  for (const s of ["take a deep breath with me", "I love breakfast", "tell me a story about a fireplace"]) assert.ok(!NO_BEAT_EMERGENCY.test(s), s);
+  const prev = process.env.GENITA_HOLD_CAP_MS;
+  process.env.GENITA_HOLD_CAP_MS = "100";
+  t.after(() => { if (prev === undefined) delete process.env.GENITA_HOLD_CAP_MS; else process.env.GENITA_HOLD_CAP_MS = prev; });
+  for (const line of ["My baby has stopped breathing.", "Someone is breaking into my house."]) {
+    const client = new Client();
+    const session = new Session("capEmerg", client, {
+      config, openAsr: () => { throw new Error("no asr"); },
+      async *spark(): AsyncGenerator<SparkStreamEvent> {
+        await new Promise((r) => setTimeout(r, 900));
+        yield { type: "text", delta: "<sad> Call nine one one right now." };
+        yield { type: "done", responseId: "r", text: "", status: "completed" };
+      },
+      async *tts() {},
+    });
+    await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+    await session.onClientText(JSON.stringify({ type: "text", text: line }));
+    await client.waitFor((m) => m.type === "reply" && m.final === true, 8000);
+    assert.ok(!client.json.some((m) => m.type === "say" && BEAT.test(String(m.text))), `no beat before the help: ${line}`);
+    session.close();
+  }
+});
+
+test("Codex #664 r3 P2: the same hold beat never plays twice in a row, even when recent replies rule out two beats", { skip: !v1 }, async (t) => {
+  const prev = process.env.GENITA_HOLD_CAP_MS;
+  process.env.GENITA_HOLD_CAP_MS = "100";
+  t.after(() => { if (prev === undefined) delete process.env.GENITA_HOLD_CAP_MS; else process.env.GENITA_HOLD_CAP_MS = prev; });
+  const replies = ["<warm> Mm, that sounds cozy.", "<curious> Ooh, tell me more.", "<warm> Sure, here it is.", "<warm> Sure, one more."];
+  let n = 0;
+  const client = new Client();
+  const session = new Session("capRepeat", client, {
+    config, openAsr: () => { throw new Error("no asr"); },
+    async *spark(): AsyncGenerator<SparkStreamEvent> {
+      const k = n++;
+      if (k >= 2) await new Promise((r) => setTimeout(r, 900));
+      yield { type: "text", delta: replies[k] ?? "<warm> Sure." };
+      yield { type: "done", responseId: "r", text: "", status: "completed" };
+    },
+    async *tts() {},
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  const beatsSaid: string[] = [];
+  for (const text of ["a cozy night in", "what else", "and a recipe please", "one more recipe please"]) {
+    client.json.length = 0;
+    await session.onClientText(JSON.stringify({ type: "text", text }));
+    await client.waitFor((m) => m.type === "reply" && m.final === true, 8000);
+    beatsSaid.push(...client.json.filter((m) => m.type === "say" && BEAT.test(String(m.text))).map((m) => String(m.text)));
+  }
+  assert.ok(beatsSaid.length >= 2, `two slow turns each got a beat (${beatsSaid.join(",")})`);
+  for (let i = 1; i < beatsSaid.length; i++) assert.notEqual(beatsSaid[i], beatsSaid[i - 1], beatsSaid.join(","));
+  session.close();
+});
