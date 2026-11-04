@@ -12,13 +12,14 @@ enum CallCue: Equatable {
     case interrupted    // S09-X, held 1.2 s
     case reconnecting   // S09-R
     case answerFailed   // S09-F, with Try again
+    case micOff         // the user turned the mic off mid-call: "Stopped" (motion card 2), same slot as the listening pill
     case micBlocked     // E02 stand-in until the permission sheet lands
 
     enum Link: Equatable { case idle, connecting, live, reconnecting }
 
     /// One slot, highest priority first: failure and reconnect > interrupted > talking/listening.
     static func derive(link: Link, phase: Phase, playing: Bool, awaitingFirstAudio: Bool, micOn: Bool,
-                       interruptedHold: Bool, answerFailed: Bool, micDenied: Bool) -> CallCue {
+                       interruptedHold: Bool, answerFailed: Bool, micDenied: Bool, micStopped: Bool = false) -> CallCue {
         switch link {
         case .reconnecting: return .reconnecting
         case .idle, .connecting: return .none
@@ -32,7 +33,7 @@ enum CallCue: Equatable {
         case .thinking: return .thinking
         case .speaking: return awaitingFirstAudio ? .thinking : .speaking
         case .interrupted: return .interrupted
-        case .listening: return micOn ? .listening : .none
+        case .listening: return micOn ? .listening : micStopped ? .micOff : .none
         }
     }
 }
@@ -91,6 +92,8 @@ enum CallStop: Equatable {
     private(set) var link: CallCue.Link = .idle
     private(set) var phase: Phase = .listening
     private(set) var micOn = false
+    /// The user switched the mic off during this call (not yet back on): the pill says "Stopped" instead of vanishing.
+    private(set) var micStopped = false
     private(set) var micDenied = false
     private(set) var cameraOn = false
     /// D22: the next camera start faces back (the self view was double-tapped while the camera was off)
@@ -141,7 +144,7 @@ enum CallStop: Equatable {
 
     var cue: CallCue {
         CallCue.derive(link: link, phase: phase, playing: playing, awaitingFirstAudio: awaitingFirstAudio, micOn: micOn,
-                       interruptedHold: interruptedHold, answerFailed: answerFailed, micDenied: micDenied)
+                       interruptedHold: interruptedHold, answerFailed: answerFailed, micDenied: micDenied, micStopped: micStopped)
     }
     var canFlipCamera: Bool { cameraOn && camera.canFlip }
     var cameraSession: AVCaptureSession { camera.session }
@@ -374,7 +377,7 @@ enum CallStop: Equatable {
         audio.stop()
         camera.stop()
         perception.stop(); perceptionOn = false
-        micOn = false; cameraOn = false; playing = false; link = .idle
+        micOn = false; micStopped = false; cameraOn = false; playing = false; link = .idle
         reconnectSince = nil; cancelled = []; seqToUtterance = [:]; lookedUp = []; findsCount = 0
         routed = []; interpretBoard = InterpretBoard(companionName: companionName); uplink.callFraming = false
         restFace()
@@ -471,8 +474,9 @@ enum CallStop: Equatable {
     }
 
     func toggleMic() {
-        if micOn { setMic(false); Self.micWasOn = false; return }
+        if micOn { setMic(false); Self.micWasOn = false; micStopped = true; return }
         guard !userEnded, ownsConversation else { return }
+        micStopped = false
         micDenied = false
         #if DEBUG
         if fixture != nil { setMic(true); Self.micWasOn = true; return }

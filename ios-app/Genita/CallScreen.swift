@@ -201,6 +201,7 @@ struct CallCueView: View {
         case .thinking: (nameLine(name, "thinking", short: "Thinking", rowWidth: rowWidth), nil)
         case .speaking: (nameLine(name, "talking", short: "Talking", rowWidth: rowWidth), nil)
         case .interrupted: ("Stopped. Go ahead.", nil)
+        case .micOff: ("Stopped", nil)
         case .reconnecting: ("Reconnecting…", nil)
         case .answerFailed: ("Couldn’t get an answer.", "Try again")
         case .micBlocked: ("Microphone is off for Genita.", "Settings")
@@ -218,7 +219,9 @@ struct CallCueView: View {
             switch cue {
             case .none, .speaking: icon = AnyView(CueWave())
             case .listening, .interrupted: icon = AnyView(CueDot())
-            case .thinking, .reconnecting: icon = AnyView(CueSpinner())
+            case .micOff: icon = AnyView(Circle().fill(CallInk.onInk.opacity(0.5)).frame(width: 8, height: 8).frame(width: 20, height: 20))
+            case .thinking: icon = AnyView(CueThinkingDots())
+            case .reconnecting: icon = AnyView(CueSpinner())
             case .answerFailed, .micBlocked: icon = AnyView(CueAlert())
             }
         }
@@ -284,8 +287,31 @@ struct ProfileChipView: View {
     }
 }
 
+/// The Listening dot breathes (card 1, 1.4 s). Still under Reduce Motion / UI tests.
 private struct CueDot: View {
-    var body: some View { Circle().fill(CallInk.blueOnInk).frame(width: 8, height: 8) }
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        TimelineView(.animation(paused: reduceMotion || CallMotion.reviewStill)) { ctx in
+            let s = reduceMotion || CallMotion.reviewStill ? 1 : (1 - cos(ctx.date.timeIntervalSinceReferenceDate / MotionCall.breathSeconds * 2 * .pi)) / 2
+            Circle().fill(CallInk.blueOnInk).frame(width: 8, height: 8).scaleEffect(0.8 + 0.35 * s).opacity(0.55 + 0.45 * s)
+        }
+    }
+}
+
+/// "is thinking": three dots in a wave (card 1, 1.2 s, 0.15 s apart), not a spinner. Still dots under Reduce Motion / UI tests.
+private struct CueThinkingDots: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        TimelineView(.animation(paused: reduceMotion || CallMotion.reviewStill)) { ctx in
+            let t = ctx.date.timeIntervalSinceReferenceDate
+            HStack(spacing: 3) {
+                ForEach(0..<3, id: \.self) { i in
+                    let lift = reduceMotion || CallMotion.reviewStill ? 0.5 : max(0, sin((t - Double(i) * MotionCall.waveStagger) / MotionCall.waveSeconds * 2 * .pi))
+                    Circle().fill(CallInk.onInk).frame(width: 4, height: 4).offset(y: -3 * lift).opacity(0.45 + 0.55 * lift)
+                }
+            }.frame(width: 20, height: 20)
+        }
+    }
 }
 
 struct CueAlert: View {

@@ -110,11 +110,14 @@ import XCTest
     // MARK: status line
 
     func testCueShowsOneThingInBoardPriority() {
-        func cue(link: CallCue.Link = .live, phase: Phase = .listening, playing: Bool = false, awaiting: Bool = false, mic: Bool = true, hold: Bool = false, failed: Bool = false, denied: Bool = false) -> CallCue {
-            CallCue.derive(link: link, phase: phase, playing: playing, awaitingFirstAudio: awaiting, micOn: mic, interruptedHold: hold, answerFailed: failed, micDenied: denied)
+        func cue(link: CallCue.Link = .live, phase: Phase = .listening, playing: Bool = false, awaiting: Bool = false, mic: Bool = true, hold: Bool = false, failed: Bool = false, denied: Bool = false, stopped: Bool = false) -> CallCue {
+            CallCue.derive(link: link, phase: phase, playing: playing, awaitingFirstAudio: awaiting, micOn: mic, interruptedHold: hold, answerFailed: failed, micDenied: denied, micStopped: stopped)
         }
         XCTAssertEqual(cue(), .listening)
-        XCTAssertEqual(cue(mic: false), .none, "no Listening pill while the mic is off")
+        XCTAssertEqual(cue(mic: false), .none, "no Listening pill before the mic was ever on")
+        XCTAssertEqual(cue(mic: false, stopped: true), .micOff, "D54: the user turned the mic off mid-call: the pill says Stopped, it does not vanish")
+        XCTAssertEqual(cue(mic: true, stopped: true), .listening, "mic back on: Listening again")
+        XCTAssertEqual(cue(phase: .thinking, mic: false, stopped: true), .thinking, "a reply in flight keeps its own cue")
         XCTAssertEqual(cue(phase: .thinking), .thinking)
         XCTAssertEqual(cue(phase: .speaking, awaiting: true), .thinking, "server says speaking, sound not out yet")
         XCTAssertEqual(cue(phase: .speaking), .speaking, "between sentences the pill stays")
