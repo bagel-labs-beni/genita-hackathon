@@ -127,7 +127,7 @@ test("S5 hard cap (QA 11/4 #726: 26 s cards): past it one fitting page is shown 
 const shopItem = (n: number) => ({ name: `Leather Boot ${n}`, url: `https://shop-${n}.example.com/products/boot-${n}`, store: "S", price: "$100", image: "", taste: "", situation: "" });
 const shopOpen = (n: number) => ({ type: "web_search_call", status: "completed", action: { type: "open_page", url: `https://shop-${n}.example.com/products/boot-${n}` } });
 
-test("S5 speed: a slow shop page does not hold the card past the page budget, and the card keeps 2 links", async () => {
+async function slowShopCard(): Promise<{ created: number; links: number }> {
   const { runProduct } = await import("../src/finds/product.ts");
   const v: FindsVendors = {
     async spark() { await sleep(10); return { text: JSON.stringify({ label: "Boots", items: [shopItem(1), shopItem(2)] }), output: [shopOpen(1)] } as SparkResult; },
@@ -143,11 +143,27 @@ test("S5 speed: a slow shop page does not hold the card past the page budget, an
     signal: new AbortController().signal, now: () => performance.now(), hedge: 1, log() {}, putImage: async () => "x",
     emit: (e: ServerEvent) => { if (e.type === "find.created") { created = performance.now() - t0; links = e.card.products?.length ?? 0; } },
   } as unknown as Parameters<typeof runProduct>[0]);
+  return { created, links };
+}
+async function withEnv<T>(k: string, v: string | undefined, f: () => Promise<T>): Promise<T> {
+  const saved = process.env[k];
+  if (v === undefined) delete process.env[k]; else process.env[k] = v;
+  try { return await f(); } finally { if (saved === undefined) delete process.env[k]; else process.env[k] = saved; }
+}
+
+test("S5 speed: a slow shop page does not hold the card past the page budget; by default an unread link is never shown (F7)", async () => {
+  const { created, links } = await withEnv("GENITA_PRODUCT_FILL_UNREAD", undefined, slowShopCard);
   assert.ok(created >= 0 && created < 3600, `card within the 3 s page budget (${Math.round(created)} ms)`);
-  assert.equal(links, 2, "the unread shop's product link fills the second slot (no one-link card)");
+  assert.equal(links, 1, "Codex r1 P1: a page nobody opened (maybe invented) stays out by default");
 });
 
-test("S5 speed: past the soft cap a lane with one opened page + one listed product page is enough (no wait for stragglers)", async () => {
+test("S5 speed (GENITA_PRODUCT_FILL_UNREAD=1): the unread shop's product link fills the second slot", async () => {
+  const { created, links } = await withEnv("GENITA_PRODUCT_FILL_UNREAD", "1", slowShopCard);
+  assert.ok(created >= 0 && created < 3600, `card within the 3 s page budget (${Math.round(created)} ms)`);
+  assert.equal(links, 2);
+});
+
+test("S5 speed (GENITA_PRODUCT_FILL_UNREAD=1): past the soft cap a lane with one opened page + one listed product page is enough", async () => withEnv("GENITA_PRODUCT_FILL_UNREAD", "1", async () => {
   let calls = 0;
   const v: FindsVendors = {
     async spark() { calls++; if (calls === 1) { await sleep(10); return { text: JSON.stringify({ items: [shopItem(1), shopItem(2)] }), output: [shopOpen(1)] } as SparkResult; } return new Promise(() => {}); },
@@ -156,7 +172,7 @@ test("S5 speed: past the soft cap a lane with one opened page + one listed produ
   const r = await Promise.race([hedgedSearch(v, "p", 2, new AbortController().signal, [], { softMs: 40 }), sleep(1000).then(() => "stuck" as const)]);
   assert.notEqual(r, "stuck", "the lane with 2 product links won at the soft cap");
   assert.equal(JSON.parse((r as SparkResult).text).items.length, 2);
-});
+}));
 
 test("S5 speed: budgets have env knobs with the old values recoverable", async () => {
   const p = await import("../src/finds/product.ts");
@@ -165,5 +181,6 @@ test("S5 speed: budgets have env knobs with the old values recoverable", async (
   assert.equal(p.productSoftMs({ GENITA_PRODUCT_SOFT_MS: "10000" }), 10_000);
   assert.equal(p.productHardMs({ GENITA_PRODUCT_HARD_MS: "16000" }), 16_000);
   assert.equal(p.productDeadlineMs({ GENITA_PRODUCT_DEADLINE_MS: "0" }), 0);
-  assert.equal(p.fillUnread({ GENITA_PRODUCT_FILL_UNREAD: "0" }), false);
+  assert.equal(p.fillUnread({}), false, "off by default (Codex r1 P1)");
+  assert.equal(p.fillUnread({ GENITA_PRODUCT_FILL_UNREAD: "1" }), true);
 });

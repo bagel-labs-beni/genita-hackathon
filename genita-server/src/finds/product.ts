@@ -68,10 +68,11 @@ export function productDeadlineMs(env: NodeJS.ProcessEnv = process.env): number 
 /**
  * S5 one-link cards: a listed result whose URL reads as one product page (/products/…) counts toward the 2 links
  * even when neither the search nor our own read opened it in time (a slow shop, not a wrong page).
- * GENITA_PRODUCT_FILL_UNREAD=0 turns it off (only opened / read-as-product pages count, as before).
+ * OFF by default (Codex r1 P1: an unread URL may be one the model invented, and F7 shows only pages that were really
+ * opened). GENITA_PRODUCT_FILL_UNREAD=1 turns it on; unset/0 = only opened / read-as-product pages count, as before.
  */
 export function fillUnread(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.GENITA_PRODUCT_FILL_UNREAD !== "0";
+  return env.GENITA_PRODUCT_FILL_UNREAD === "1";
 }
 
 type ProductJson = {
