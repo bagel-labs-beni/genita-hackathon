@@ -73,6 +73,20 @@ import SwiftUI
         XCTAssertNil(still.time(0)); XCTAssertNil(still.leaving(at: t0.addingTimeInterval(1.01)))
     }
 
+    func testDroppedAnswerHoldsNetThenFades() throws {
+        let (a, _) = try meshes()
+        let clock = RevealClock()
+        XCTAssertEqual(clock.dropAlpha(at: t0), 0, "nothing shown yet: nothing to hold")
+        clock.update(to: a, at: t0, glide: FaceScanOverlay.glide)
+        XCTAssertEqual(clock.dropAlpha(at: t0), 1, "the answer went missing: the net stays")
+        XCTAssertEqual(clock.dropAlpha(at: t0.addingTimeInterval(RevealClock.dropHold - 0.01)), 1)
+        let mid = clock.dropAlpha(at: t0.addingTimeInterval(RevealClock.dropHold + 0.05))
+        XCTAssertGreaterThan(mid, 0); XCTAssertLessThan(mid, 1)
+        XCTAssertEqual(clock.dropAlpha(at: t0.addingTimeInterval(RevealClock.dropHold + 1)), 0)
+        clock.noteDrop(nil)   // the answer is back
+        XCTAssertEqual(clock.dropAlpha(at: t0.addingTimeInterval(5)), 1, "a new drop starts its own hold")
+    }
+
     func testSweepNeverRunsBack() {
         let clock = RevealClock()
         XCTAssertEqual(clock.netY(100, monotonic: true), 100)
