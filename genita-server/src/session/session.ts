@@ -747,7 +747,10 @@ export class Session {
     if (!persona) return this.error("bad_persona", "start.persona.name is required", false);
     this.persona = persona;
     const u = msg.user && typeof msg.user === "object" ? (msg.user as Record<string, unknown>) : {};
-    this.user = { name: str(u.name, 80), profile: str(u.profile, 4000) };
+    // fail closed (lead 11/4, AU-92): with the server's profile store, the app's copy is never used — not even for a
+    // line that arrives before the store answers. Only the server's profile (when it lands) counts.
+    const serverProfile = !!(this.deps.personalize && this.deps.userId);
+    this.user = { name: str(u.name, 80), profile: serverProfile ? undefined : str(u.profile, 4000) };
     this.memories = !this.deps.memory && Array.isArray(msg.memories) ? msg.memories.map((m) => str(m, 300)).filter((m): m is string => !!m).slice(-24) : [];
     if (Array.isArray(msg.history) && !this.deps.memory) {
       for (const h of msg.history.slice(-MAX_HISTORY)) {

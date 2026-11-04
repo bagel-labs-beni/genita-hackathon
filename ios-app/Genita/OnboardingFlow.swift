@@ -45,6 +45,8 @@ extension AppState {
         let route = StartRouter.route(state, device: .iphone)
         // a companion on the server but not on this phone (reinstall, new phone, a judge's ready-made one):
         // bring its name, card and face back first
+        // a queued "Forget all of this" goes first: nothing restored below can carry what it removes (Codex #583 r19)
+        if setup.forgetPending == true { await retryPendingForget() }
         if route == .connecting || route == .textWhilePreparing, setup.companionName == nil || me?.companionDemo == true { await restoreCompanion(for: request) }
         guard launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled,
               ownsOnboardingResponse(request) else {
@@ -55,7 +57,6 @@ extension AppState {
             return
         }
         apply(route, me: me, afterSignIn: afterSignIn)
-        if setup.forgetPending == true { await retryPendingForget() }
     }
 
     func restoreCompanion(for request: OnboardingSessionGeneration.Snapshot? = nil) async {
@@ -69,7 +70,8 @@ extension AppState {
         setup.companionCreated = true
         setup.companionDemo = c.demo
         if let p = c.session?.persona { setup.serverPersona = p }
-        if let profile = c.session?.user?.profile, !profile.isEmpty { setup.styleProfile = profile }
+        // a "Forget all of this" not yet confirmed: never bring the profile back onto the phone (Codex #583 r19)
+        if setup.forgetPending != true, let profile = c.session?.user?.profile, !profile.isEmpty { setup.styleProfile = profile }
         prep = c.prep
         // the face on this phone: the companion's call scene (the original photo isn't downloadable)
         // (Meta-only `sceneUrl` is a token-protected server path, so it goes through the account client)
@@ -269,7 +271,10 @@ extension AppState {
     /// A queued "Forget all of this" the server never confirmed: sent again (on launch, once signed in).
     func retryPendingForget() async {
         guard setup.forgetPending == true, serverWired, onboarding.auth.token != nil else { return }
-        if (try? await onboarding.forgetProfile()) != nil { setup.forgetPending = nil }
+        if (try? await onboarding.forgetProfile()) != nil {
+            setup.forgetPending = nil
+            profileForgotten()   // anything restored meanwhile goes again (Codex #583 r19)
+        }
     }
 
     /// The phone drops its copy too: the I04 rows, the call's profile text, the pasted reply, the story cards, the
