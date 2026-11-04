@@ -17,7 +17,7 @@ import { createHash } from "node:crypto";
 import type { SparkRequest } from "../meta/spark.ts";
 import { isSensitiveDetail } from "../personalize/sensitive.ts";
 import { storyTextProblem } from "../personalize/story.ts";
-import { looksLikeInjection, redactSensitive } from "../prep/importProfile.ts";
+import { N3_CHATS_NO, SKIP_AVOID_TEXT, SKIP_REPLIES, looksLikeInjection, redactSensitive, type StyleCard } from "../prep/importProfile.ts";
 import type { InsightCategory, InsightChip, InsightEvidence, InsightReport, InsightSettings, InsightSource, Observation, InsightType, InsightMix, InsightStrength, InsightWatchout, InsightChain } from "./profile.ts";
 
 export type InsightPick = { question: string; label: string };
@@ -127,6 +127,202 @@ const norm = (s: string) =>
 const STOP = new Set("you your youre the and a an to of in on at for with that this it its is are be by not from like likes really very just so but or as about into than then them they their who what when".split(" "));
 const stems = (s: string) => (norm(s).match(/[\p{L}\p{N}]{3,}/gu) ?? []).filter((w) => !STOP.has(w)).map((w) => w.slice(0, 4));
 
+/**
+ * The profile findings an observation was built from (AU-91): a finding sharing two content words with one of its
+ * quotes (or its claim), or holding every word of a short pick ("Spicy" → "Food: spicy."). "That's not me" takes
+ * these out of the call profile too, not only the observation.
+ */
+export function findingsBehind(card: Pick<StyleCard, "sections">, o: Pick<Observation, "claim" | "evidence" | "chips">): string[] {
+  // a finding as the items N1–N3 / the import list in it: "Style: a, b.", "Dislikes a, b clothes.", "Likes a in our chats."
+  const itemsOf = (t: string) => t
+    .replace(/^\s*[A-Za-z][A-Za-z ]{1,20}:\s+/, "")
+    .replace(/^\s*(?:dislikes|avoids|likes)\s+/i, "")
+    .replace(/\s+(?:clothes|in our chats)\.?\s*$/i, "")
+    .replace(/\.\s*$/, "")
+    .split(/\s*,\s*|\s+and\s+/).map((x) => norm(x)).filter(Boolean);
+  const label = (t: string) => t.replace(/^\s*[A-Za-z][A-Za-z ]{1,20}:\s+/, "");
+  // a pick's own finding, as N1–N3 wrote it ("Talk it out" → "Talk it through with me.", Codex #581)
+  const picks = o.evidence.filter((e) => e.source === "answer").map((e) => e.quote);
+  const mapped = new Set(picks.map((q) => SKIP_REPLIES[q] ?? SKIP_AVOID_TEXT[q.toLowerCase()] ?? N3_CHATS_NO[q.toLowerCase()]).filter(Boolean).map((t) => norm(t!)));
+  // quotes from the paste / the claim: two different shared content words ("short … shorter" is one, Codex r2)
+  // the user's own words only — never the model's claim ("You explain screen contents through your replies." is not
+  // something they said, Codex #581 r37)
+  const quotes = o.evidence.filter((e) => e.source !== "answer").map((e) => e.quote).filter(Boolean);
+  // a pick or chip ("Spicy", "Seafood", "Long walks in the mountains") is a whole item of a finding — any length (Codex #581 r9)
+  // a paste quote that is exactly one item ("Minimal" → "Style: Minimal.") too (Codex #581 r17)
+  const short = [...picks, ...(o.chips ?? []).map((c) => c.label), ...o.evidence.filter((e) => e.source !== "answer").map((e) => e.quote)].map((q) => norm(q)).filter(Boolean);
+  const out: string[] = [];
+  const pasteQuotes = o.evidence.filter((e) => e.source !== "answer").map((e) => norm(e.quote));
+  // a word overlap is the same finding only when most of the shorter one's words are shared (two of four is not:
+  // "Likes help drafting messages" is not "Never send messages without my approval", Codex #581 r18)
+  // ...and the quote has to say most of the LINE: a partial quote ("screen contents") never takes a longer line
+  // ("Keep screen contents out of replies.") — the line's own words decide, whatever kind of line it is (Codex #581 r35)
+  // near-whole only: the quote says (almost) every word of the line — no partial match ever removes a line (Codex #581 r38)
+  const overlaps = (a: string[], b: Set<string>) => { const x = new Set(a); const n = [...b].filter((w) => x.has(w)).length; return n >= 2 && n / b.size >= 0.9; };
+  for (const [key, list] of Object.entries(card.sections ?? {})) {
+    if (!Array.isArray(list)) continue;
+    for (const f of list as Array<{ text: string }>) {
+      const fw = new Set(stems(label(f.text)));
+      if (!fw.size) continue;
+      const items = itemsOf(f.text);
+      // a boundary (what they need approved, what to avoid) only ever goes on an exact link, never on a word overlap
+      // a list item named word for word inside a paste quote ("I like spicy food." → "Food: spicy.") — Codex #581 r23
+      // a line that gates or forbids (approval, never, without …) goes only on an exact link — its N1 pick, or a quote /
+      // pick that is the whole line — never on an overlap, an item or a word inside a quote (Codex #581 r26, r27)
+      // a gate on what Genita does (Codex #581 r28): approval words, or never / without / avoid / unless / authorise /
+      // permission / require / clearance / only after|if|when / must not — "asks for options before deciding" is not one
+      const guarded = APPROVAL.test(f.text) || GATE.test(f.text) || OPERATIONAL.has(key);
+      const whole = short.includes(norm(f.text).replace(/\s+$/, ""));
+      const inQuote = !guarded && key !== "boundaries" && items.some((it) => pasteQuotes.some((q) => wordIn(it, q)));
+      // settings never go, not even on an exact quote, in the older matching too (Codex #581 link r1)
+      if (guarded) continue;
+      const hit = mapped.has(norm(f.text)) || whole
+        || (!guarded && key !== "boundaries" && quotes.some((q) => overlaps(stems(q), fw)))
+        || (!guarded && short.some((q) => items.includes(q)))
+        || inQuote;
+      if (hit && !out.includes(f.text)) out.push(f.text);
+    }
+  }
+  return out;
+}
+
+/**
+ * What "That's not me" on `o` does to the profile (AU-91 r3): a list finding ("Food: spicy, seafood.") loses only the
+ * picked item; any other finding behind it goes whole. `picks` = the pick labels it stood on (they leave card.picks
+ * too, so a rewritten report can't build on them again).
+ */
+export function editsBehind(card: Pick<StyleCard, "sections">, o: Pick<Observation, "claim" | "evidence" | "chips">): { drop: Set<string>; rewrite: Map<string, string>; picks: string[]; items: string[]; removedLines: Array<{ text: string; from: string; section?: string }> } {
+  const drop = new Set<string>(), rewrite = new Map<string, string>();
+  const allPicks = [...o.evidence.filter((e) => e.source === "answer").map((e) => e.quote), ...(o.chips ?? []).map((c) => c.label)].filter(Boolean);
+  const short = [...allPicks, ...o.evidence.filter((e) => e.source !== "answer").map((e) => e.quote)].filter(Boolean);
+  const items: string[] = [], removedLines: Array<{ text: string; from: string }> = [];
+  const shortN = new Set(short.map((q) => norm(q)));
+  const pasteN = o.evidence.filter((e) => e.source !== "answer").map((e) => norm(e.quote));
+  for (const t of findingsBehind(card, o)) {
+    const m = t.match(/^(\s*[A-Za-z][A-Za-z ]{1,20}:\s+|\s*(?:dislikes|avoids|likes)\s+)(.+?)(\s+(?:clothes|in our chats)\.?|\.)?\s*$/i);
+    const parts = m ? m[2].split(/\s*,\s*|\s+and\s+/) : [];
+    // an item goes when it is a pick / chip / quote itself, or named word for word in a paste quote
+    const gone = (x: string) => shortN.has(norm(x)) || pasteN.some((q) => wordIn(norm(x), q));
+    const keep = parts.filter((x) => !gone(x));
+    if (m && parts.length > 1 && keep.length && keep.length < parts.length) {
+      rewrite.set(t, `${m[1]}${keep.join(", ")}${m[3] ?? "."}`);
+      // the original line and the item on its own are removed lines: an analysis from before can't bring them back
+      const out = parts.filter((x) => gone(x));
+      items.push(...out);
+      removedLines.push({ text: t, from: t }, ...out.map((x) => ({ text: `${m[1]}${x}${m[3] ?? "."}`, from: t })));
+    } else {
+      drop.add(t); removedLines.push({ text: t, from: t });
+      // the items it held are denied too, so a narrower quote ("minimal") can't bring them back (Codex #581 r24)
+      if (m) items.push(...parts.filter((x) => gone(x)).map((x) => x.trim()));
+    }
+  }
+  // every pick it stood on (a long one too: "Long walks in the mountains", Codex #581 r4) leaves card.picks
+  return { drop, rewrite, picks: allPicks, items, removedLines };
+}
+
+/** `item` ("spicy", "dark brown") as whole words inside an already-normalised `text` */
+const wordIn = (item: string, text: string) => !!item && ` ${text} `.includes(` ${item} `);
+
+/** The "When …" rules that say the same as what was removed (two shared content words with the claim, a quote or a
+ * removed line): "not me" takes them out of the call too (Codex #581 r11). */
+const APPROVAL = /\b(?:approv\w*|permission|consent\w*|confirm\w*|sign[- ]?off|check with me|ask (?:me )?(?:first|before)|before (?:sending|posting|buying|booking|paying)|without (?:my )?(?:ok|okay|say-so|go-ahead)|never (?:send|post|buy|book|pay)|don['’]t (?:send|post|buy|book|pay))\b/i;
+const GATE = /\b(?:never|without|don['’]t|do not|avoid|unless|authori[sz]\w*|permission|require\w*|clearance|only|go-?ahead|okay|ok|say-?so|must not|not allowed|private|privacy|secret|confidential|personal|redact\w*|mask\w*|hide|hidden|out of|free of|exclud\w*|leave out|omit\w*|strip\w*|skip\w*|keep\b[^.]*\bout\b|anonymi[sz]\w*|initials|pseudonym\w*|blur\w*)\b|^\s*no\b/i;
+/** sections that say what Genita may do (help, boundaries, approach): never changed on a word overlap — only an exact link */
+// response = how Genita answers ("Anonymize names in replies.") — instructions to Genita, like the others (Codex link r2)
+export const OPERATIONAL = new Set(["help", "boundaries", "approach", "response"]);
+const LIMITS = /\b(?:never|don['’]t|do not|avoid|no|not|private|privacy|secret|without|before|first|only|unless|ask|check|authori[sz]\w*|allow\w*|ok|okay|sign\w*|verify|review|wait|require\w*|clearance|must|need)\b/i;
+export function rulesBehind<R extends { when: string; then: string }>(rules: R[], _o: Pick<Observation, "claim" | "evidence">, removed: string[]): R[] {
+  // a rule goes only when what it asks of Genita (`then`) restates what was removed — most words shared both ways
+  // ("keep replies short and direct" ~ "Prefers short, direct replies."). The "When …" part never counts, so a
+  // separate condition on the same topic ("When drafting messages, require clearance to send") stays (Codex #581 r25)
+  // only what was actually taken out of the profile counts — never the claim or a quote alone (Codex #581 r34)
+  const sources = removed.filter(Boolean).map((t) => new Set(stems(t)));
+  return rules.filter((r) => {
+    // only a style rule goes ("When deciding / answering / explaining …, keep replies short"): a rule conditioned on
+    // something they do or say ("When I say yes, send …") is theirs and stays, whatever words it shares (Codex #581 r33)
+    if (!/^\s*(?:when\s+(?:i(?:'m| am)\s+|you(?:'re| are)\s+)?)?(?:deciding|answering|replying|explaining|talking|chatting|giving (?:advice|answers|options)|suggesting|recommending|planning)(?:\s+(?:things|something|questions|stuff|with me))?\s*[,.]?\s*$/i.test(r.when)) return false;   // the WHOLE When is a style context
+    // one protection for rules and lines alike (Codex #581 r31)
+    if (APPROVAL.test(`${r.when} ${r.then}`) || LIMITS.test(`${r.when} ${r.then}`) || GATE.test(`${r.when} ${r.then}`)) return false;
+    const tw = [...new Set(stems(r.then))];
+    if (tw.length < 2) return false;
+    return sources.some((src) => { const n = tw.filter((w) => src.has(w)).length; return n >= 2 && n / tw.length >= 0.7 && n / src.size >= 0.5; });
+  });
+}
+
+/** Spark's `based_on` (1-based numbers of the <profile> lines it was shown) → those lines; only when it saw them */
+function citedLines(raw: unknown, inputs: InsightInputs): string[] {
+  if (inputs.text || !Array.isArray(raw)) return [];
+  return [...new Set(raw.filter((n): n is number => Number.isInteger(n) && n >= 1 && n <= inputs.findings.length).map((n) => inputs.findings[n - 1]))].slice(0, 4);
+}
+
+/**
+ * AU-91 link, made once when a report is saved onto its card: the lines Spark cited (`basis`), the line an N1–N3 pick
+ * was written as, a line a quote says whole, or one item of a list line a pick / chip / quote names exactly.
+ * A gated or operational line (approval, never, private, help / boundaries / approach) is never linked: those
+ * are settings the user changes themselves, never by a "not me".
+ */
+export function linkSources(card: Pick<StyleCard, "sections">, o: Pick<Observation, "evidence" | "chips" | "basis">): Array<{ section: string; text: string; item?: string }> {
+  const out: Array<{ section: string; text: string; item?: string }> = [];
+  const add = (x: { section: string; text: string; item?: string }) => { if (!out.some((y) => y.section === x.section && y.text === x.text && y.item === x.item)) out.push(x); };
+  const picks = o.evidence.filter((e) => e.source === "answer").map((e) => e.quote);
+  const mapped = new Set(picks.map((q) => SKIP_REPLIES[q] ?? SKIP_AVOID_TEXT[q.toLowerCase()] ?? N3_CHATS_NO[q.toLowerCase()]).filter(Boolean).map((t) => norm(t!)));
+  const exact = [...picks, ...(o.chips ?? []).map((c) => c.label), ...o.evidence.filter((e) => e.source !== "answer").map((e) => e.quote)].map((q) => norm(q)).filter(Boolean);
+  const basis = new Set((o.basis ?? []).map((t) => norm(t)));
+  for (const [section, list] of Object.entries(card.sections ?? {})) {
+    if (!Array.isArray(list) || OPERATIONAL.has(section)) continue;
+    for (const f of list as Array<{ text: string }>) {
+      if (APPROVAL.test(f.text) || GATE.test(f.text)) continue;
+      const line = norm(f.text);
+      const m = f.text.match(/^(\s*[A-Za-z][A-Za-z ]{1,20}:\s+|\s*(?:dislikes|avoids|likes)\s+)(.+?)(\s+(?:clothes|in our chats)\.?|\.)?\s*$/i);
+      const parts = m ? m[2].split(/\s*,\s*|\s+and\s+/) : [];
+      // a list line (two or more items) is linked by its items only — a cited or quoted list never takes the items the
+      // observation didn't name (Codex #581 link r1)
+      if (parts.length > 1) {
+        if (exact.includes(line)) { add({ section, text: f.text }); continue; }   // the whole list quoted word for word
+        for (const it of parts) if (exact.includes(norm(it))) add({ section, text: f.text, item: it.trim() });
+        continue;
+      }
+      // cited, its pick's line, said whole, or the whole line inside a longer quote ("usually asks for two or three
+      // options before deciding" ⊃ "Asks for two or three options before deciding.")
+      if (basis.has(line) || mapped.has(line) || exact.includes(line) || (line.split(" ").length >= 3 && exact.some((q) => wordIn(line, q)))) { add({ section, text: f.text }); continue; }
+      if (parts.length === 1 && exact.includes(norm(parts[0]))) add({ section, text: f.text });
+    }
+  }
+  return out;
+}
+
+/**
+ * "That's not me" on a report saved with links (AU-91): exactly its linked lines go — a linked item leaves its list
+ * line, the last item takes the line; a line changed since (a correction) is left alone. Same shape as editsBehind.
+ */
+export function editsFromSources(card: Pick<StyleCard, "sections">, o: Pick<Observation, "evidence" | "chips" | "sources">): ReturnType<typeof editsBehind> & { sectionOf: Map<string, string> } {
+  const drop = new Set<string>(), rewrite = new Map<string, string>();
+  const picks = [...o.evidence.filter((e) => e.source === "answer").map((e) => e.quote), ...(o.chips ?? []).map((c) => c.label)].filter(Boolean);
+  const items: string[] = [], removedLines: Array<{ text: string; from: string; section?: string }> = [];
+  const byLine = new Map<string, Array<{ section: string; text: string; item?: string }>>();
+  // a link into a settings section (an older link) is never acted on (Codex #581 link r4)
+  for (const src of o.sources ?? []) if (!OPERATIONAL.has(src.section)) byLine.set(src.text, [...(byLine.get(src.text) ?? []), src]);
+  for (const [text, links] of byLine) {
+    const present = Object.entries(card.sections ?? {}).some(([k, v]) => k === links[0].section && Array.isArray(v) && (v as Array<{ text: string }>).some((f) => f.text === text));
+    if (!present) continue;
+    const whole = links.some((l) => !l.item);
+    const m = text.match(/^(\s*[A-Za-z][A-Za-z ]{1,20}:\s+|\s*(?:dislikes|avoids|likes)\s+)(.+?)(\s+(?:clothes|in our chats)\.?|\.)?\s*$/i);
+    const parts = m ? m[2].split(/\s*,\s*|\s+and\s+/) : [];
+    const out = new Set(links.filter((l) => l.item).map((l) => norm(l.item!)));
+    const keep = parts.filter((x) => !out.has(norm(x)));
+    if (!whole && m && keep.length && keep.length < parts.length) {
+      rewrite.set(text, `${m[1]}${keep.join(", ")}${m[3] ?? "."}`);
+      const gone = parts.filter((x) => out.has(norm(x)));
+      items.push(...gone.map((x) => x.trim()));
+      removedLines.push({ text, from: text, section: links[0].section }, ...gone.map((x) => ({ text: `${m[1]}${x}${m[3] ?? "."}`, from: text, section: links[0].section })));
+    } else {
+      drop.add(text); removedLines.push({ text, from: text, section: links[0].section });
+      if (m) items.push(...parts.map((x) => x.trim()));
+    }
+  }
+  return { drop, rewrite, picks, items, removedLines, sectionOf: new Map([...byLine].map(([t, l]) => [t, l[0].section])) };
+}
+
 /** the claim mostly restates its own evidence */
 function isEcho(claim: string, quotes: string[]): boolean {
   const c = stems(claim);
@@ -209,6 +405,10 @@ export function withoutRemoved<T>(items: T[], text: (x: T) => string, removed: A
 /** "forget that …" / corrected-away lines (card.removed): traits that cite or say them go, with what was built on them (Codex P1) */
 export function scrubRemoved<R extends InsightReport>(r: R, removed: Array<{ text: string; forget?: true | boolean }> | undefined): R {
   const keys = avoidKeys((removed ?? []).map((x) => ({ text: x.text, forget: !!x.forget })));
+  // the "not me" record (with its correction and the picks it blocks) goes only for what they asked to FORGET; a line
+  // removed by a correction or a "not me" (AU-91) never takes it (Codex #581 r6)
+  const forgetKeys = avoidKeys((removed ?? []).filter((x) => x.forget).map((x) => ({ text: x.text, forget: true })));
+  const forgot = (t: string | undefined) => !!t && forgetKeys.length > 0 && mentionsAvoided(t, forgetKeys);
   if (!keys.length) return r;
   const gone = r.observations
     .filter((o) => [o.claim, o.use_in_call, ...o.evidence.map((e) => e.quote), ...(o.chips ?? []).map((c) => c.label)].some((t) => mentionsAvoided(t, keys)))
@@ -217,7 +417,7 @@ export function scrubRemoved<R extends InsightReport>(r: R, removed: Array<{ tex
   const said = (t: string | undefined) => !!t && mentionsAvoided(t, keys);
   // the lines stitched over all traits, and the "not me" list (Codex r3: it went on to the call profile as "Not true …")
   const first = out.observations[0];
-  const denied = (out as { denied?: Array<{ claim: string; correction?: string }> }).denied;
+  const denied = (out as { denied?: Array<{ claim: string; correction?: string; picks?: string[]; items?: string[] }> }).denied;
   return {
     ...out,
     headline: said(out.headline) ? first?.claim ?? FALLBACK_HEADLINE : out.headline,
@@ -229,7 +429,7 @@ export function scrubRemoved<R extends InsightReport>(r: R, removed: Array<{ tex
     watchouts: out.watchouts.filter((w) => !said(w.text) && !said(w.fix)),
     mix: out.mix.filter((m) => !said(m.evidence.quote)),
     learning: out.learning.filter((l) => !said(l.label)),
-    ...(denied ? { denied: denied.filter((d) => !said(d.claim) && !said(d.correction)) } : {}),
+    ...(denied ? { denied: denied.filter((d) => !forgot(d.claim) && !forgot(d.correction) && !(d.picks ?? []).some(forgot) && !(d.items ?? []).some(forgot)) } : {}),
   };
 }
 
@@ -386,6 +586,7 @@ export function toReport(raw: unknown, inputs: InsightInputs, meta: { at: string
       surprise: num(x.surprise, 0.5),
       use_in_call: use,
       ...(chips.length ? { chips } : {}),
+      ...(citedLines(x.based_on, inputs).length ? { basis: citedLines(x.based_on, inputs) } : {}),
       verdict: null,
     };
     obs.push(kept);
@@ -593,6 +794,7 @@ Fields:
   - category: talk | think | humor | taste | help | boundary | rhythm | interest. Mix categories. One may be a playful prediction ("You'll …") about how they'll use you, clearly grounded.
   - use_in_call: starts with "I'll", at most 70 characters, a concrete thing you will do in calls because of it.
   - chips: only for taste/interest: short labels from the material (polarity like/dislike). Otherwise [].
+  - based_on: the numbers of the <profile> lines it stands on ([3, 7]); [] when there is no <profile> or none fits.
 - strengths: 0-3 lines, at most 60 characters, what this person is great at BECAUSE of one observation's evidence; trait = that observation's 0-based index. It must reuse at least two concrete words from that observation's quote (it is shown with that receipt) and claim nothing the quote doesn't say. Write none rather than a compliment that fits anyone.
 - watchouts: 0-2 playful, kind lines (text at most 70 characters): the funny flip side of one observation, reusing at least two concrete words from its quote (it is shown with that receipt) and claiming nothing the quote doesn't say, never a flaw diagnosis; fix = what you'll do about it, starting with "I'll", at most 60 characters; trait = the observation index.
 - chain: the reading's logic in three steps, built only from the observations: you_are (starts "You", at most 50 characters) → so_you (starts "So you", at most 50) → so_ill (starts "So I'll", at most 60).
@@ -628,8 +830,9 @@ export const INSIGHT_SCHEMA = {
           surprise: { type: "number" },
           use_in_call: S,
           chips: { type: "array", items: { type: "object", properties: { label: S, polarity: { type: "string", enum: ["like", "dislike"] } }, required: ["label", "polarity"], additionalProperties: false } },
+          based_on: { type: "array", items: { type: "integer" } },
         },
-        required: ["category", "claim", "evidence", "confidence", "score", "surprise", "use_in_call", "chips"],
+        required: ["category", "claim", "evidence", "confidence", "score", "surprise", "use_in_call", "chips", "based_on"],
         additionalProperties: false,
       },
     },
@@ -647,8 +850,9 @@ export const INSIGHT_SCHEMA = {
 export function buildInsightRequest(inputs: InsightInputs): Omit<SparkRequest, "text"> & { schemaName: string; schema: Record<string, unknown> } {
   const parts: string[] = [];
   if (inputs.text) parts.push(`<pasted_reply>\n${strip(inputs.text, "pasted_reply").slice(0, TEXT_MAX)}\n</pasted_reply>`);
-  // AU-23: the stored profile carries the user's corrections ("That's not me", calls): always sent, and it wins
-  if (inputs.findings.length) parts.push(`<profile>\n${strip(inputs.findings.map((f) => `- ${f}`).join("\n"), "profile")}\n</profile>`);
+  // AU-23: the stored profile carries the user's corrections ("That's not me", calls): always sent, and it wins;
+  // numbered, so each observation can say which lines it stands on (based_on → sources, AU-91)
+  if (inputs.findings.length) parts.push(`<profile>\n${strip(inputs.findings.map((f, i) => `${i + 1}. ${f}`).join("\n"), "profile")}\n</profile>`);
   if (inputs.picks.length) parts.push(`<picks>\n${strip(inputs.picks.map((p) => `- ${p.question}: "${p.label}"`).join("\n"), "picks")}\n</picks>`);
   if (inputs.denied?.length) parts.push(`<not_true>\n${strip(inputs.denied.map((d) => `- "${d.claim}"${d.correction ? ` — they said: "${d.correction}"` : ""}`).join("\n"), "not_true")}\n</not_true>`);
   if (inputs.unknowns?.length) parts.push(`<still_unknown>${strip(inputs.unknowns.join("; "), "still_unknown")}</still_unknown>`);
