@@ -143,7 +143,8 @@ final class FindsTabUITests: XCTestCase {
         app.launchEnvironment = ["GENITA_REVIEW_STAGE": "conversation", "GENITA_SERVER_URL": "ws://127.0.0.1:9/v1/session",
                                  "GENITA_FACE_SET_DIR": faceSet, "GENITA_FIXTURE_SCRIPT": "none"]
         app.launch()
-        let face = any(app, "companionFace"), probe = any(app, "faceDebug")
+        let face = app.descendants(matching: .any).matching(identifier: "companionFace").firstMatch
+        let probe = app.descendants(matching: .any).matching(identifier: "faceDebug").firstMatch
         XCTAssertTrue(face.waitForExistence(timeout: 15))
         let end = Date().addingTimeInterval(30)
         while Date() < end, !["live", "poster"].contains(face.value as? String ?? "") { Thread.sleep(forTimeInterval: 0.25) }
