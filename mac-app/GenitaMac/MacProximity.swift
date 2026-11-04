@@ -67,6 +67,9 @@ import os
         guard screenLocked != locked else { return }
         screenLocked = locked
         if locked { stopScan() }
+        // 11/4: a locked Mac captures only black. The share stops here, so the server never hears a black screen
+        // (and never says "it shows up black" on the iPhone the call moved to). Share again after unlocking.
+        if locked, let sharing = handoff?.sharing, sharing.isSharing { sharing.stop() }
         if enabled { handoff?.server.setActive(!locked) }
     }
 
