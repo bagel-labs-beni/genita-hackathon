@@ -155,6 +155,9 @@ final class OnboardingUITests: XCTestCase {
         input.tap()
         input.typeText("Communication style: warm and direct. Response preferences: two options, one recommended.")
         capture("I02")
+        // a reply long enough to scroll: its top lines go under "Your AI’s response" and the Paste pill with a fade, not a cut
+        input.typeText((1...14).map { "\n\($0). Likes: quick weeknight meals." }.joined())
+        capture("I02-long-scrolled")
         // the primary button comes back once the keyboard is down (tap the title, as on the device)
         app.buttons["Dismiss keyboard"].tap()
         XCTAssertTrue(primary.waitForExistence(timeout: 5))
