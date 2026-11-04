@@ -1,0 +1,13 @@
+{
+  "type": "turn.metrics",
+  "utteranceId": 4,
+  "model": "muse-spark-1.3",
+  "ttsModel": "seamless-m4t-v2",
+  "speechEndToCompleteMs": 0,
+  "replyStartToFirstTokenMs": 1623,
+  "replyStartToFirstSentenceMs": 1668,
+  "firstSentenceToFirstAudioMs": 252,
+  "speechEndToFirstAudioMs": 1921,
+  "audioMs": 4240,
+  "speculative": "hit"
+}

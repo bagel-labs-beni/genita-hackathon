@@ -1,0 +1,19 @@
+{
+  "name": "genita-handoff-effects",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:handoff": "node scripts-build-handoff.mjs"
+  },
+  "dependencies": {
+    "three": "0.170.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "description": "Build script for the Genita phone-to-Mac handoff effect bundle"
+}

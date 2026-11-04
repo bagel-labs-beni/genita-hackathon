@@ -1,0 +1,18 @@
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJnZW5pdGEifQ.c2ln",
+  "expiresAt": "2026-12-02T08:29:40.000Z",
+  "isNew": true,
+  "user": {
+    "id": "3f2c1d1e-6a3b-4c1d-9f7e-2b8a1c0d9e11",
+    "provider": "apple",
+    "email": null,
+    "displayName": null,
+    "aiConsentAt": null,
+    "createdAt": "2026-11-02T08:29:40.000Z"
+  },
+  "consented": false,
+  "hasCompanion": false,
+  "prepStatus": "none",
+  "companionDemo": false,
+  "conversation": null
+}

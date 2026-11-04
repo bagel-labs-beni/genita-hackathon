@@ -1,0 +1,3 @@
+# Generated effect bundles preserve trailing whitespace inside upstream GLSL strings.
+shared/Handoff/handoff-effect.js whitespace=-blank-at-eol
+shared/Handoff/handoff-effect.html whitespace=-blank-at-eol

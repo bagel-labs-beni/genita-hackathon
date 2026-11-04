@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Sparkle compares these: CFBundleVersion = the CI build number (run×10+attempt, same formula as iOS),
+	     CFBundleShortVersionString = the iOS marketing version. Set via CURRENT_PROJECT_VERSION / MARKETING_VERSION. -->
+	<!-- The app is "Genita" everywhere people see it: file Genita.app, menu bar, About / Quit, Dock, Finder, Spotlight,
+	     permission prompts and the Privacy & Security lists (Chelsea 11/4). PRODUCT_NAME = Genita (target and module stay
+	     GenitaMac). Builds up to 7 were GenitaMac.app: Sparkle 2 finds Genita.app in the update DMG by bundle id and installs
+	     it at the old path, then MacBundleName renames the bundle to Genita.app at first launch. Bundle id, signing, feed and
+	     EdDSA key: unchanged. -->
+	<key>CFBundleName</key>
+	<string>Genita</string>
+	<key>CFBundleDisplayName</key>
+	<string>Genita</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_genita-handoff._tcp</string>
+	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>Show yourself in the conversation.</string>
+	<!-- Sparkle 2 auto-update (lane 업데이트·모션): appcast on GitHub Pages, EdDSA-signed DMGs, check at launch + daily, silent download, "Restart to update". Private key: SSM /genita/apple/sparkle_ed_private. -->
+	<key>SUFeedURL</key>
+	<string>https://bagel-labs-beni.github.io/genita-legal/mac/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>yV79iW9rznjxfzqZsttsTvp8JCGZ+Ep6ytdUo+rpeuw=</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUAutomaticallyUpdate</key>
+	<true/>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
+	<key>SUVerifyUpdateBeforeExtraction</key>
+	<true/>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Genita notices when your iPhone is close to this Mac, so the conversation can move over by itself.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Connect your iPhone to move Genita between devices.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Talk in the conversation.</string>
+</dict>
+</plist>

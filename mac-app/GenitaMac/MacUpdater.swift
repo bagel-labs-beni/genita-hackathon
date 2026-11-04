@@ -1,0 +1,194 @@
+import AppKit
+import SwiftUI
+#if canImport(Sparkle)
+import Sparkle
+#endif
+
+/// Mac auto-update (Sparkle 2, lane 업데이트·모션). Feed + EdDSA public key live in mac-app/Info.plist
+/// (`SUFeedURL`, `SUPublicEDKey`); device-test.yml signs each notarized DMG with `sign_update` and publishes the
+/// appcast on GitHub Pages (bagel-labs-beni/genita-legal /mac/appcast.xml).
+///
+/// Behaviour: check at launch and every 24 h (`SUScheduledCheckInterval`), download silently
+/// (`SUAutomaticallyUpdate`), then instead of waiting for quit we show a small "Restart to update" pill on the
+/// window; tapping it installs and relaunches. If the user ignores it, Sparkle installs on the next quit.
+/// `/v1/app-config` `updates.mac.minBuild` above this build triggers an immediate background check.
+/// DEBUG builds and UI tests never self-update.
+final class MacUpdater: NSObject {
+    static let shared = MacUpdater()
+    #if canImport(Sparkle)
+    private var controller: SPUStandardUpdaterController?
+    #endif
+    private var installNow: (() -> Void)?
+    private var readyVersion: String?
+    private var panel: NSPanel?
+    private var panelObservers: [NSObjectProtocol] = []
+    private var activeObserver: NSObjectProtocol?
+
+    static var installedBuild: Int? { GenitaAppConfigStore.installedBuild }
+
+    @MainActor func start() {
+        #if canImport(Sparkle) && !DEBUG
+        guard controller == nil, !ProcessInfo.processInfo.arguments.contains("--uitesting") else { return }
+        let controller = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: self, userDriverDelegate: nil)
+        self.controller = controller
+        checkInBackground() // at launch; Sparkle schedules the daily checks itself
+        watchMinBuild()
+        activeObserver = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.showPillIfReady() }
+        }
+        #endif
+    }
+
+    @MainActor private func checkInBackground() {
+        #if canImport(Sparkle)
+        guard let updater = controller?.updater, !updater.sessionInProgress, installNow == nil else { return }
+        updater.checkForUpdatesInBackground()
+        #endif
+    }
+
+    /// Server says this build is too old → check now instead of waiting for the daily check.
+    @MainActor private func watchMinBuild() {
+        let minBuild = withObservationTracking {
+            GenitaAppConfigStore.shared.config.updates.mac.minBuild
+        } onChange: { [weak self] in
+            Task { @MainActor in self?.watchMinBuild() }
+        }
+        if let installed = Self.installedBuild, minBuild > installed { checkInBackground() }
+    }
+
+    // MARK: "Restart to update" pill (a borderless child panel on the main window — no change to the window's views)
+
+    @MainActor private func showPillIfReady() {
+        guard let version = readyVersion, installNow != nil, panel == nil,
+              let window = NSApp.windows.first(where: { $0.isVisible && !($0 is NSPanel) && $0.contentView != nil }) else { return }
+        let config = GenitaAppConfigStore.shared.config
+        let pill = UpdateReadyPill(
+            title: config.text("mac.update.ready"),
+            action: config.text("mac.update.restart"),
+            version: version,
+            restart: { [weak self] in self?.restart() },
+            later: { [weak self] in self?.hidePill() }
+        )
+        let host = NSHostingView(rootView: pill)
+        host.frame.size = host.fittingSize
+        let size = host.fittingSize
+        let panel = NSPanel(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = false
+        panel.contentView = host
+        window.addChildWindow(panel, ordered: .above)
+        self.panel = panel
+        Self.place(panel, by: window)
+        // the window moves / resizes / changes screen: place the pill again (a child keeps its old offset otherwise)
+        panelObservers = [NSWindow.didMoveNotification, NSWindow.didResizeNotification, NSWindow.didChangeScreenNotification].map { name in
+            NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self, weak window] _ in
+                MainActor.assumeIsolated { if let panel = self?.panel, let window { Self.place(panel, by: window) } }
+            }
+        }
+    }
+
+    /// QA 291 (11/4): 38 pt under the window top put the pill over the home title ("Jin is on this Mac."). It hangs
+    /// 8 pt under the window (the pill's own 28 pt padding is the gap), above it when there's no room below (a tall
+    /// call window), otherwise inside the window's bottom — and the result is always kept on the visible screen.
+    @MainActor private static func place(_ panel: NSPanel, by window: NSWindow) {
+        let size = panel.frame.size
+        let frame = window.frame
+        let visible = (window.screen ?? NSScreen.main)?.visibleFrame ?? frame
+        let inset: CGFloat = 28 - 8
+        var y = frame.minY - size.height + inset
+        if y < visible.minY { y = frame.maxY - inset }
+        if y + size.height > visible.maxY { y = frame.minY - 4 }
+        y = min(max(y, visible.minY), visible.maxY - size.height)
+        let x = min(max(frame.midX - size.width / 2, visible.minX), visible.maxX - size.width)
+        panel.setFrameOrigin(NSPoint(x: x, y: y))
+    }
+
+    @MainActor private func hidePill() {
+        panelObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        panelObservers = []
+        guard let panel else { return }
+        panel.parent?.removeChildWindow(panel)
+        panel.orderOut(nil)
+        self.panel = nil
+    }
+
+    @MainActor private func resetPending() {
+        installNow = nil
+        readyVersion = nil
+        hidePill()
+    }
+
+    @MainActor private func restart() {
+        hidePill()
+        installNow?() // Sparkle installs the downloaded update and relaunches
+    }
+}
+
+#if canImport(Sparkle)
+extension MacUpdater: SPUUpdaterDelegate {
+    /// The update is downloaded and would install on quit: take over and offer an immediate restart.
+    func updater(_ updater: SPUUpdater, willInstallUpdateOnQuit item: SUAppcastItem, immediateInstallationBlock immediateInstallHandler: @escaping () -> Void) -> Bool {
+        let version = item.versionString   // the build number (171); the short version is 0.1 for every build
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                self.installNow = immediateInstallHandler
+                self.readyVersion = version
+                self.showPillIfReady()
+            }
+        }
+        return true
+    }
+
+    /// Download / install failed (or the cycle ended with an error): drop the dead handler and the pill so
+    /// the next launch, daily or server-requested check can start over.
+    func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
+        let code = (error as NSError).code
+        guard code != Int(SUError.noUpdateError.rawValue) else { return }
+        DispatchQueue.main.async { MainActor.assumeIsolated { self.resetPending() } }
+    }
+
+    func updater(_ updater: SPUUpdater, didFinishUpdateCycleFor updateCheck: SPUUpdateCheck, error: Error?) {
+        guard let error, (error as NSError).code != Int(SUError.noUpdateError.rawValue) else { return }
+        DispatchQueue.main.async { MainActor.assumeIsolated { self.resetPending() } }
+    }
+}
+#endif
+
+/// Glass pill: "Update ready · Restart to update". Springs in; Reduce Motion → fade.
+struct UpdateReadyPill: View {
+    var title: String
+    var action: String
+    var version: String
+    var restart: () -> Void
+    var later: () -> Void
+    @State private var shown = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "sparkles").font(.system(size: 13, weight: .semibold)).foregroundStyle(.white.opacity(0.9))
+                .symbolEffect(.bounce, options: .nonRepeating, value: shown)
+            // Sparkle 161 → 171 check (11/4): "Update ready · 0.1" named the version the user already has (every build is 0.1),
+            // and the button read "Restart to…". The title alone; texts never truncate.
+            Text(title).font(.custom("PretendardVariable-Medium", fixedSize: 12.5)).foregroundStyle(.white).lineLimit(1).fixedSize()
+            Button(action: restart) {
+                Text(action).font(.custom("PretendardVariable-SemiBold", fixedSize: 12.5)).lineLimit(1).fixedSize().padding(.horizontal, 11).padding(.vertical, 5)
+                    .background(.white, in: Capsule()).foregroundStyle(.black)
+            }.buttonStyle(.plain).accessibilityIdentifier("macUpdateRestart").accessibilityHint("Installs build \(version) and reopens Genita")
+            Button(action: later) { Image(systemName: "xmark").font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(0.7)).frame(width: 24, height: 24).contentShape(Rectangle()) }   // 10 pt bold read as a speck (icon sweep 11/4)
+                .buttonStyle(.plain).accessibilityLabel("Later")
+        }
+        .fixedSize()
+        .padding(.leading, 14).padding(.trailing, 10).padding(.vertical, 7)
+        .background(Capsule().fill(.black.opacity(0.78)))
+        .overlay(Capsule().strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.25), radius: 14, y: 6)
+        // room for the whole shadow (14 + 6): at 12 the panel's edge cut it into a visible rectangle (QA 291)
+        .padding(28)
+        .scaleEffect(shown || reduceMotion ? 1 : 0.92)
+        .offset(y: shown || reduceMotion ? 0 : -10)
+        .opacity(shown ? 1 : 0)
+        .onAppear { withAnimation(reduceMotion ? .easeOut(duration: 0.2) : .spring(response: 0.45, dampingFraction: 0.72)) { shown = true } }
+    }
+}

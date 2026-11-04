@@ -1,0 +1,11 @@
+{
+  "type": "audio",
+  "utteranceId": 4,
+  "seq": 42,
+  "sentence": 0,
+  "offsetMs": 380,
+  "durationMs": 420,
+  "sampleRate": 24000,
+  "model": "seamless-m4t-v2",
+  "words": []
+}

@@ -1,0 +1,52 @@
+{
+  "type": "find.created",
+  "findId": "9a1e3f55-2b6c-4d7e-8f90-1a2b3c4d5e6f",
+  "card": {
+    "id": "9a1e3f55-2b6c-4d7e-8f90-1a2b3c4d5e6f",
+    "kind": "link",
+    "createdAt": "2026-11-02T10:25:00.000Z",
+    "eyebrow": "From your link",
+    "title": "Carry-on packing guide",
+    "subtitle": "travel.example.com · 3 takeaways",
+    "status": "3 takeaways",
+    "say": "Three things from your link.",
+    "hero": {
+      "slot": "hero",
+      "status": "pending"
+    },
+    "items": [],
+    "steps": [
+      {
+        "text": "Roll soft clothes, fold the structured ones."
+      },
+      {
+        "text": "Keep liquids in one clear pouch, packed last."
+      },
+      {
+        "text": "Wear your heaviest shoes on the plane."
+      }
+    ],
+    "options": [],
+    "why": [],
+    "ask": [
+      "What about shoes?",
+      "Is it for Europe?"
+    ],
+    "sources": [
+      {
+        "title": "Carry-on packing guide",
+        "url": "https://travel.example.com/carry-on",
+        "domain": "travel.example.com"
+      }
+    ],
+    "how": [
+      "Couldn't open the page you pasted. These points come from search results about it, not the page itself.",
+      "The picture is an illustration I made."
+    ],
+    "page": {
+      "url": "https://travel.example.com/carry-on",
+      "opened": false
+    },
+    "saved": true
+  }
+}

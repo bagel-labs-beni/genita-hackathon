@@ -1,0 +1,25 @@
+title = "Genita secret-scanning policy"
+
+[extend]
+useDefault = true
+
+# 2026-11-02 false-positive decision (lead review, see docs/genita/PUBLIC_RELEASE_CHECK.md):
+# shared/protocol-samples/http/signin.json is a wire-format fixture compared by
+# genita-server/test/auth.test.ts, AuthTests.swift and ProtocolSamplesTests.swift.
+# Its `token` is a dummy JWT (claims: iss only, no sub/exp, 4-char placeholder signature).
+# Only this one file is excluded. Never add secret values here.
+[[allowlists]]
+description = "dummy JWT in protocol sample fixture (not a credential)"
+paths = ['''^shared/protocol-samples/http/signin\.json$''']
+
+# 2026-11-03 false-positive decision (integration lane): the Crockford base32 alphabet constant in the proximity
+# handoff token code (feat/proximity-handoff, 9f3672fb) is a public alphabet, not a credential. Scoped to that path.
+[[allowlists]]
+description = "Crockford base32 alphabet constant (not a credential)"
+paths = ['''^genita-server/src/handoff/proximity\.ts$''']
+
+# 2026-11-04 false-positive decision (call lane trace, #667 Gitleaks): CompanionFaceSeedTests.swift (fix/sceneframe, 0c6b5b34)
+# uses the made-up face keys "v1-0123456789ab" / "...ac" to test the seed function. Not a credential. Scoped to that file.
+[[allowlists]]
+description = "made-up face-key test strings (not credentials)"
+paths = ['''^ios-app/GenitaTests/CompanionFaceSeedTests\.swift$''']

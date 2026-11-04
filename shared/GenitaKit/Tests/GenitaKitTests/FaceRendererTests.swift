@@ -1,0 +1,743 @@
+import CoreGraphics
+import CoreImage
+import CoreImage.CIFilterBuiltins
+import Foundation
+import Testing
+@testable import GenitaKit
+
+private let fixture = Bundle.module.url(forResource: "face-animal", withExtension: nil, subdirectory: "Fixtures")!
+
+/// Loaded once: the analysis is the slow part.
+private let animalSet: FaceSet = try! FaceSet(directory: fixture)
+
+private func bytes(_ image: CGImage?) -> [UInt8] {
+    guard let image, let data = image.dataProvider?.data else { return [] }
+    return [UInt8](data as Data)
+}
+
+private func meanDiff(_ a: [UInt8], _ b: [UInt8]) -> Double {
+    guard a.count == b.count, !a.isEmpty else { return .infinity }
+    var s = 0.0
+    for i in 0..<a.count { s += abs(Double(a[i]) - Double(b[i])) }
+    return s / Double(a.count)
+}
+
+private let openA = LipFrame(weights: [.A: 1], openness: 0.9)
+
+struct FaceSetTests {
+    @Test func fallbackTableFindsTheNearestShapeOrRest() {
+        let r = FaceSet.resolve(available: [.A, .MBP])
+        #expect(r[.O]! == .A)
+        #expect(r[.EI]! == .A)
+        #expect(r[.FV]! == .MBP)
+        #expect(r[.TH]! == nil)
+        #expect(r[.WQ]! == nil)
+        #expect(r[.rest]! == nil)
+        let full = FaceSet.resolve(available: Set(LipViseme.shapes))
+        for v in LipViseme.shapes { #expect(full[v]! == v) }
+        #expect(FaceSet.resolve(available: [.L, .U])[.TH]! == .L)
+        #expect(FaceSet.resolve(available: [.L, .U])[.WQ]! == .U)
+    }
+
+    @Test func emotionsPickTheBaseFace() {
+        #expect(FaceExpression(emotion: "laugh") == .smile)
+        #expect(FaceExpression(emotion: "Happy") == .smile)
+        #expect(FaceExpression(emotion: "joy") == .smile)
+        #expect(FaceExpression(emotion: "affection") == .warm)
+        #expect(FaceExpression(emotion: "tender") == .warm)
+        #expect(FaceExpression(emotion: "sad") == .neutral)
+        #expect(FaceExpression(emotion: nil) == .neutral)
+    }
+
+    @Test func loadsTheFixtureWithPatchesAlignedAroundTheirOwnMouth() throws {
+        let set = animalSet
+        print("face-animal notes:", set.notes)
+        #expect(set.pixelSize == CGSize(width: 512, height: 910))
+        #expect(Set(set.expressions.keys) == Set(FaceExpression.allCases))
+        #expect(set.patches.count >= 8)
+        for (v, p) in set.patches {
+            #expect(abs(p.shift.dx) <= 16 && abs(p.shift.dy) <= 16, "\(v) shift \(p.shift)")
+            #expect(p.surroundDiff <= FaceSet.maxSurroundDiff)
+            #expect(set.mouthBox.intersects(p.rect))
+        }
+        // The dog's A opens far wider than its resting mouth: its patch follows its own box.
+        if let a = set.patches[.A], let mbp = set.patches[.MBP] {
+            #expect(a.rect.height > mbp.rect.height * 1.5)
+        }
+    }
+
+    @Test func missingExpressionsFallBackToNeutral() throws {
+        var manifest = try JSONDecoder().decode(FaceManifest.self, from: Data(contentsOf: fixture.appendingPathComponent("manifest.json")))
+        manifest.images["smile"] = nil
+        manifest.images["blink"] = nil
+        manifest.visemes["WQ"] = nil
+        let set = try FaceSet(manifest: manifest) { try Data(contentsOf: fixture.appendingPathComponent($0)) }
+        #expect(set.expressions[.smile] == nil)
+        #expect(set.image(for: .smile) === set.image(for: .neutral))
+        #expect(set.hasBlink == false)
+        #expect(set.resolved[.WQ]! == .U)
+        let r = FaceRenderer(faceSet: set, outputSize: CGSize(width: 90, height: 160))
+        r.setEmotion("happy", at: 0)
+        #expect(r.expressionWeights(at: 1) == [.neutral: 1])
+        #expect(r.blinkAmount(at: 3) == 0)
+    }
+
+    @Test func boxesOutsideTheImageDoNotCrash() throws {
+        var manifest = try JSONDecoder().decode(FaceManifest.self, from: Data(contentsOf: fixture.appendingPathComponent("manifest.json")))
+        manifest.mouthBox = [1.1, 0.55, 1.2, 0.6]
+        manifest.boxes = ["A": .init(face: nil, mouth: [.nan, 0.5, 2, 0.6])]
+        let set = try FaceSet(manifest: manifest) { try Data(contentsOf: fixture.appendingPathComponent($0)) }
+        for p in set.patches.values {
+            #expect(CGRect(origin: .zero, size: set.pixelSize).contains(p.rect))
+        }
+    }
+
+    @Test func aManifestWithoutNeutralIsRejected() {
+        let m = FaceManifest(version: 1, size: nil, faceBox: [0, 0, 1, 1], mouthBox: [0.4, 0.5, 0.6, 0.6], images: [:], visemes: [:], boxes: nil, rejected: nil)
+        #expect(throws: FaceSetError.missingNeutral) { try FaceSet(manifest: m) { _ in Data() } }
+    }
+}
+
+struct FaceRendererTests {
+    let size = CGSize(width: 180, height: 320)
+
+    @Test func sameSeedSameCallsSamePixels() {
+        let a = FaceRenderer(faceSet: animalSet, outputSize: size, seed: 7)
+        let b = FaceRenderer(faceSet: animalSet, outputSize: size, seed: 7)
+        a.setEmotion("happy", at: 0.4); b.setEmotion("happy", at: 0.4)
+        for t in [0.5, 1.7, 3.3] {
+            let x = bytes(a.render(at: t, lip: openA)), y = bytes(b.render(at: t, lip: openA))
+            #expect(!x.isEmpty)
+            #expect(x == y, "t=\(t)")
+        }
+    }
+
+    @Test func blinksComeEveryTwoToSixSecondsAndDependOnTheSeed() {
+        func onsets(_ seed: UInt64) -> [Double] {
+            let r = FaceRenderer(faceSet: animalSet, outputSize: size, seed: seed)
+            var out: [Double] = []
+            var was = false
+            for i in 0..<3000 {
+                let t = Double(i) / 100
+                let on = r.blinkAmount(at: t) > 0.5
+                if on && !was { out.append(t) }
+                was = on
+            }
+            return out
+        }
+        let o = onsets(3)
+        #expect(o.count >= 4)
+        for (x, y) in zip(o, o.dropFirst()) { #expect(y - x >= 1.95 && y - x <= 6.1, "gap \(y - x)") }
+        #expect(onsets(3) == o)
+        #expect(onsets(4) != o)
+    }
+
+    @Test func reduceMotionHoldsStillButTheMouthMoves() {
+        let r = FaceRenderer(faceSet: animalSet, outputSize: size, seed: 1, reduceMotion: true)
+        for i in 0..<600 { #expect(r.blinkAmount(at: Double(i) / 20) == 0) }
+        let still1 = bytes(r.render(at: 1.3, lip: .rest)), still2 = bytes(r.render(at: 2.9, lip: .rest))
+        #expect(still1 == still2)
+        #expect(meanDiff(still1, bytes(r.render(at: 2.9, lip: openA))) > 0.05)
+
+        let moving = FaceRenderer(faceSet: animalSet, outputSize: size, seed: 1)
+        #expect(bytes(moving.render(at: 1.3, lip: .rest)) != bytes(moving.render(at: 2.9, lip: .rest)))
+    }
+
+    @Test func openVisemeChangesOnlyTheLowerFace() throws {
+        let r = FaceRenderer(faceSet: animalSet, outputSize: size, reduceMotion: true)
+        let rest = bytes(r.render(at: 1, lip: .rest)), open = bytes(r.render(at: 1, lip: openA))
+        let w = Int(size.width), h = Int(size.height)
+        func rowDiff(_ y0: Int, _ y1: Int) -> Double {
+            var s = 0.0, n = 0.0
+            for y in y0..<y1 { for x in 0..<w { for c in 0..<3 { let i = (y * w + x) * 4 + c; s += abs(Double(rest[i]) - Double(open[i])); n += 1 } } }
+            return s / n
+        }
+        let mouthY = Int(animalSet.mouthBox.midY / animalSet.pixelSize.height * Double(h))
+        #expect(rowDiff(0, h / 5) < 0.2)                  // top of the frame untouched
+        #expect(rowDiff(mouthY - 10, mouthY + 20) > 2)    // mouth + jaw changed
+    }
+
+    @Test func expressionCrossfadesOverAQuarterSecond() {
+        let r = FaceRenderer(faceSet: animalSet, outputSize: size)
+        r.setEmotion("joy", at: 1)
+        let mid = r.expressionWeights(at: 1.125)
+        #expect((mid[.neutral] ?? 0) > 0.2 && (mid[.smile] ?? 0) > 0.2)
+        #expect(r.expressionWeights(at: 1.3) == [.smile: 1])
+        r.setEmotion("tender", at: 2)
+        #expect(r.expressionWeights(at: 2.5) == [.warm: 1])
+    }
+
+    @Test func aNewExpressionMidFadeStartsFromTheCurrentMix() {
+        let r = FaceRenderer(faceSet: animalSet, outputSize: size)
+        r.setEmotion("happy", at: 1)
+        let before = r.expressionWeights(at: 1.125)
+        r.setEmotion("warm", at: 1.125)
+        let after = r.expressionWeights(at: 1.125)
+        #expect(abs((after[.neutral] ?? 0) - (before[.neutral] ?? 0)) < 1e-6)
+        #expect(abs((after[.smile] ?? 0) - (before[.smile] ?? 0)) < 1e-6)
+        #expect(abs(after.values.reduce(0, +) - 1) < 1e-6)
+        #expect(r.expressionWeights(at: 1.4) == [.warm: 1])
+    }
+
+    @Test func throughputAt540x960() {
+        let r = FaceRenderer(faceSet: animalSet, outputSize: CGSize(width: 540, height: 960), seed: 2)
+        let tl = LipTimeline()
+        tl.appendPCM(lipTestPCM(amplitude: 0.4, ms: 2000), offsetMs: 0)
+        tl.appendText("a moment of the warm afternoon light")
+        tl.finishAudio()
+        _ = r.render(at: 0, lip: .rest) // warm-up
+        let n = 50
+        let start = Date()
+        for i in 0..<n {
+            let t = Double(i) / 25
+            #expect(r.render(at: t, lip: tl.sample(atMs: t * 1000)) != nil)
+        }
+        let fps = Double(n) / Date().timeIntervalSince(start)
+        print(String(format: "FaceRenderer 540x960: %.1f fps over %d frames", fps, n))
+        #expect(fps > 2)
+    }
+}
+
+@MainActor
+struct FaceDriverTests {
+    private func event(_ json: String) throws -> ServerEvent {
+        try JSONDecoder().decode(ServerEvent.self, from: Data(json.utf8))
+    }
+
+    @Test func serverEventsMoveTheMouthAndCancelRestsIt() throws {
+        let d = FaceDriver(faceSet: animalSet, outputSize: CGSize(width: 90, height: 160), reduceMotion: true, seed: 5)
+        guard case let .replyDelta(delta) = try event(#"{"type":"reply.delta","utteranceId":9,"text":"wow ah"}"#),
+              case let .audio(audio) = try event(#"{"type":"audio","utteranceId":9,"seq":1,"sentence":0,"offsetMs":0,"durationMs":600,"sampleRate":24000,"model":"m","words":[]}"#)
+        else { Issue.record("decode"); return }
+        d.handle(replyDelta: delta)
+        d.handle(audio: audio, pcm: lipTestPCM(amplitude: 0.4, ms: 600))
+        #expect(d.currentUtteranceId == 9)
+        let rest = bytes(d.renderFrame(at: 1, playbackMs: nil))
+        let talking = bytes(d.renderFrame(at: 1, playbackMs: 300))
+        #expect(meanDiff(rest, talking) > 0.05)
+        d.cancel(utteranceId: 8)               // another utterance: ignored
+        #expect(d.currentUtteranceId == 9)
+        d.cancel(utteranceId: 9)
+        #expect(d.currentUtteranceId == nil)
+        #expect(meanDiff(bytes(d.renderFrame(at: 1, playbackMs: 300)), rest) == 0)
+    }
+
+    /// watch "inhale" (#613): ignored while a reply plays (watch lane: the app must not stack it on the talking face)
+    @Test func anInhaleIsIgnoredWhileAReplyPlays() throws {
+        let d = FaceDriver(faceSet: animalSet, outputSize: CGSize(width: 90, height: 160), seed: 5)
+        var playing: Double? = nil
+        d.playbackClock = { playing }
+        #expect(d.flashBrows())                     // idle: brows go up
+        guard case let .replyDelta(delta) = try event(#"{"type":"reply.delta","utteranceId":4,"text":"hi"}"#) else { Issue.record("decode"); return }
+        d.handle(replyDelta: delta)
+        #expect(d.flashBrows())                     // a reply was announced but nothing plays yet
+        playing = 300
+        #expect(!d.flashBrows())                    // the reply is playing
+        d.cancel(utteranceId: 4)
+        #expect(d.flashBrows())                     // barge-in / done: back to idle
+    }
+
+    @Test func alignerTimingsReachTheMouth() throws {
+        let driver = FaceDriver(faceSet: animalSet, outputSize: CGSize(width: 90, height: 160), seed: 1)
+        func audio(_ id: Int) throws -> ServerEvent.Audio {
+            guard case let .audio(a) = try event(#"{"type":"audio","utteranceId":\#(id),"seq":1,"sentence":0,"offsetMs":0,"durationMs":600,"sampleRate":24000,"model":"m","words":[]}"#) else { throw CocoaError(.coderReadCorrupt) }
+            return a
+        }
+        driver.handle(audio: try audio(4), pcm: lipTestPCM(amplitude: 0.4, ms: 600))
+        driver.handle(timing: 4, words: [LipWordTiming(text: "ma", startMs: 0, endMs: 600)],
+                      phonemes: [LipPhonemeTiming(phoneme: "M", startMs: 0, endMs: 300), LipPhonemeTiming(phoneme: "AA", startMs: 300, endMs: 600)])
+        #expect((driver.timeline.sample(atMs: 150).weights[.MBP] ?? 0) > 0.9)
+        driver.handle(timing: 3, words: [], phonemes: [LipPhonemeTiming(phoneme: "OW", startMs: 0, endMs: 600)])   // late, older
+        #expect((driver.timeline.sample(atMs: 150).weights[.MBP] ?? 0) > 0.9)
+    }
+
+    @Test func lateEventsOfAnOldOrCancelledUtteranceAreIgnored() throws {
+        let d = FaceDriver(faceSet: animalSet, outputSize: CGSize(width: 90, height: 160), reduceMotion: true, seed: 5)
+        func audio(_ id: Int) throws -> ServerEvent.Audio {
+            guard case let .audio(a) = try event(#"{"type":"audio","utteranceId":\#(id),"seq":1,"sentence":0,"offsetMs":0,"durationMs":600,"sampleRate":24000,"model":"m","words":[]}"#) else { throw CocoaError(.coderReadCorrupt) }
+            return a
+        }
+        d.handle(audio: try audio(9), pcm: lipTestPCM(amplitude: 0.4, ms: 600))
+        d.cancel(utteranceId: 9)
+        d.handle(audio: try audio(9), pcm: lipTestPCM(amplitude: 0.4, ms: 600))   // late chunk of the cancelled reply
+        #expect(d.currentUtteranceId == nil)
+        #expect(d.timeline.receivedAudioEndMs == 0)
+        d.handle(audio: try audio(10), pcm: lipTestPCM(amplitude: 0.4, ms: 600))
+        d.handle(audio: try audio(9), pcm: lipTestPCM(amplitude: 0.4, ms: 900))   // older reply
+        #expect(d.currentUtteranceId == 10)
+        #expect(d.timeline.receivedAudioEndMs == 600)
+    }
+}
+
+/// v2 mouth quality: one mouth at a time, and no shading band where the patch meets the skin.
+struct MouthQualityTests {
+    private let size = CGSize(width: 180, height: 320)
+
+    @Test func midCrossfadeShowsOneMouthNotTwo() {
+        #expect(animalSet.patches[.A] != nil && animalSet.patches[.O] != nil)
+        let r = FaceRenderer(faceSet: animalSet, outputSize: size, reduceMotion: true)
+        let mixed = bytes(r.render(at: 1, lip: LipFrame(weights: [.A: 0.55, .O: 0.45], openness: 0.9)))
+        let pureA = bytes(r.render(at: 1, lip: LipFrame(weights: [.A: 1], openness: 0.9)))
+        #expect(meanDiff(mixed, pureA) < 0.001)
+    }
+
+    @Test func anOpenVowelWithoutSoundIsTheRestMouth() {
+        let r = FaceRenderer(faceSet: animalSet, outputSize: size, reduceMotion: true)
+        let quiet = bytes(r.render(at: 1, lip: LipFrame(weights: [.A: 1], openness: 0.01)))
+        let rest = bytes(r.render(at: 1, lip: LipFrame(weights: [.rest: 1], openness: 0.01)))
+        #expect(meanDiff(quiet, rest) < 0.001)
+    }
+
+    /// A Muse edit that also darkened the skin just above the lip (seen on the human set as a grey
+    /// band) must not carry that shading onto the base face.
+    @Test func localShadingAboveTheLipIsCorrected() throws {
+        let w = 200, h = 200
+        func image(_ paint: (Int, Int) -> (UInt8, UInt8, UInt8)) -> PixelBuffer {
+            var d = [UInt8](repeating: 255, count: w * h * 4)
+            for y in 0..<h { for x in 0..<w { let p = paint(x, y); let i = (y * w + x) * 4; d[i] = p.0; d[i + 1] = p.1; d[i + 2] = p.2 } }
+            return PixelBuffer(PixelBuffer.makeImage(d, width: w, height: h), width: w, height: h)
+        }
+        let skin: (UInt8, UInt8, UInt8) = (200, 160, 140)
+        let base = image { x, y in (80..<120).contains(x) && (120..<135).contains(y) ? (180, 90, 90) : skin }
+        let band = { (x: Int, y: Int) in (70..<130).contains(x) && (100..<118).contains(y) }
+        let vis = image { x, y in
+            if (85..<115).contains(x) && (118..<140).contains(y) { return (60, 30, 30) }
+            if band(x, y) { return (170, 130, 110) }
+            return skin
+        }
+        let mouth = CGRect(x: 80, y: 120, width: 40, height: 15), own = CGRect(x: 85, y: 118, width: 30, height: 22)
+        let patch = try #require(FaceSet.makePatch(base: base, baseGray: base.analysis(), viseme: vis, ownMouth: own, mouth: mouth, cover: mouth, face: CGRect(x: 40, y: 40, width: 120, height: 140)))
+        let p = PixelBuffer(patch.image, width: patch.image.width, height: patch.image.height)
+        let ox = Int(patch.rect.minX), oy = Int(patch.rect.minY)
+        func composited(_ x: Int, _ y: Int, _ c: Int) -> Double {
+            let px = x - ox, py = y - oy
+            guard p.contains(px, py) else { return Double(base.at(x, y, c)) }
+            let a = Double(p.at(px, py, 3)) / 255
+            return Double(p.at(px, py, c)) + Double(base.at(x, y, c)) * (1 - a)
+        }
+        var s = 0.0, n = 0.0
+        for y in 100..<118 { for x in 70..<130 { for c in 0..<3 { s += abs(composited(x, y, c) - Double(base.at(x, y, c))); n += 1 } } }
+        let bandDiff = s / n
+        print(String(format: "band diff after patch: %.2f / 255", bandDiff))
+        #expect(bandDiff < 4.5)   // global colour match alone: 7.55 (hard-edged band; real shading is smoother)
+        // the new mouth itself stays dark (the correction is shading, not content)
+        var m = 0.0, mn = 0.0
+        for y in 124..<136 { for x in 92..<108 { m += composited(x, y, 0); mn += 1 } }
+        #expect(m / mn < 100)
+    }
+
+    /// Teeth in an edit whose skin came out warmer than the base stay white (no hue shift).
+    @Test func contentKeepsItsHue() throws {
+        let w = 200, h = 200
+        func image(_ paint: (Int, Int) -> (UInt8, UInt8, UInt8)) -> PixelBuffer {
+            var d = [UInt8](repeating: 255, count: w * h * 4)
+            for y in 0..<h { for x in 0..<w { let p = paint(x, y); let i = (y * w + x) * 4; d[i] = p.0; d[i + 1] = p.1; d[i + 2] = p.2 } }
+            return PixelBuffer(PixelBuffer.makeImage(d, width: w, height: h), width: w, height: h)
+        }
+        let base = image { x, y in (80..<120).contains(x) && (120..<135).contains(y) ? (180, 90, 90) : (200, 160, 140) }
+        let vis = image { x, y in (88..<112).contains(x) && (122..<132).contains(y) ? (235, 235, 235) : (225, 160, 140) }
+        let mouth = CGRect(x: 80, y: 120, width: 40, height: 15)
+        let patch = try #require(FaceSet.makePatch(base: base, baseGray: base.analysis(), viseme: vis, ownMouth: mouth, mouth: mouth, cover: mouth, face: CGRect(x: 40, y: 40, width: 120, height: 140)))
+        let p = PixelBuffer(patch.image, width: patch.image.width, height: patch.image.height)
+        let px = 100 - Int(patch.rect.minX), py = 127 - Int(patch.rect.minY)
+        let a = Double(p.at(px, py, 3)) / 255
+        let r = Double(p.at(px, py, 0)) / a, g = Double(p.at(px, py, 1)) / a, b = Double(p.at(px, py, 2)) / a
+        print(String(format: "tooth after patch: %.0f %.0f %.0f", r, g, b))
+        #expect(abs(r - g) < 3 && abs(g - b) < 3)
+    }
+
+    // MARK: alive base (⑦)
+
+    private func faceCI(_ set: FaceSet) -> CGRect { FaceRenderer.ciRect(set.faceBox, height: set.pixelSize.height) }
+
+    @Test func theMouthSitsInsideTheSolidPartOfTheHeadLayer() {
+        let face = faceCI(animalSet)
+        let mouth = FaceRenderer.ciRect(animalSet.mouthBox, height: animalSet.pixelSize.height)
+        let e = FaceRenderer.headEllipse(face: face)
+        for p in [CGPoint(x: mouth.midX, y: mouth.midY), CGPoint(x: mouth.minX, y: mouth.minY), CGPoint(x: mouth.maxX, y: mouth.minY)] {
+            let nx = (p.x - e.center.x) / e.rx, ny = (p.y - e.center.y) / e.ry
+            #expect((nx * nx + ny * ny).squareRoot() < FaceRenderer.headMaskInner)
+        }
+    }
+
+    @Test func aliveMotionIsSmallSmoothAndSeeded() {
+        let out: CGFloat = 540
+        let r = FaceRenderer(faceSet: animalSet, outputSize: CGSize(width: out, height: 960), seed: 7)
+        let k = out / animalSet.pixelSize.width * AliveMotion.overscan   // still px → output px
+        let mouth = FaceRenderer.ciRect(animalSet.mouthBox, height: animalSet.pixelSize.height)
+        let p0 = CGPoint(x: mouth.midX, y: mouth.midY)
+        var prev: CGPoint?
+        var maxStep: CGFloat = 0, maxOff: CGFloat = 0, maxRoll = 0.0
+        var moved = false
+        for i in 0..<1500 {   // 60 s at 25 fps, silent
+            let m = r.motionTransforms(at: Double(i) / 25, open: 0)
+            let p = p0.applying(m.head.concatenating(m.camera))
+            let off = hypot(p.x - p0.x, p.y - p0.y) * k
+            maxOff = max(maxOff, off)
+            if off > 1 { moved = true }
+            if let q = prev { maxStep = max(maxStep, hypot(p.x - q.x, p.y - q.y) * k) }
+            prev = p
+            maxRoll = max(maxRoll, abs(atan2(Double(m.head.b), Double(m.head.a))) * 180 / .pi)
+        }
+        print(String(format: "alive: mouth max offset %.2f px, max step %.3f px/frame, head roll max %.2f°", maxOff, maxStep, maxRoll))
+        #expect(moved)
+        #expect(maxOff < 9)
+        #expect(maxStep < 0.6)
+        #expect(maxRoll < 2.0)
+        // seeded: same frames in time order (every run starts still, AliveMotion.settleSeconds), different seeds differ
+        let ra = FaceRenderer(faceSet: animalSet, outputSize: CGSize(width: out, height: 960), seed: 7)
+        let rb = FaceRenderer(faceSet: animalSet, outputSize: CGSize(width: out, height: 960), seed: 8)
+        for i in 0..<105 { _ = ra.motionTransforms(at: Double(i) / 25, open: 0); _ = rb.motionTransforms(at: Double(i) / 25, open: 0) }
+        let a = ra.motionTransforms(at: 4.2, open: 0), b = rb.motionTransforms(at: 4.2, open: 0)
+        #expect(a.head != b.head)
+    }
+
+    /// 11/3 pm (Chelsea: "the background is locked but the person bobs up and down"): by default the
+    /// person layer never moves vertically — no speech nod, no vertical drift, no breathing.
+    @Test func thePersonNeverBobsVerticallyByDefault() {
+        let size = CGSize(width: 540, height: 960)
+        let talk = FaceRenderer(faceSet: animalSet, outputSize: size, seed: 3)
+        let face = faceCI(animalSet)
+        let eyes = CGPoint(x: face.midX, y: face.maxY - face.height * 0.3)   // on the roll axis: any vertical move is a bob
+        let k = size.width / animalSet.pixelSize.width
+        var lo = CGFloat.infinity, hi = -CGFloat.infinity
+        for i in 0..<250 {
+            let t = Double(i) / 25
+            let open = (i % 12) < 4 ? 0.9 : 0.05      // a syllable every ~0.5 s
+            let m = talk.motionTransforms(at: t, open: open)
+            let y = eyes.applying(m.head.concatenating(m.camera)).y * k
+            lo = min(lo, y); hi = max(hi, y)
+        }
+        print(String(format: "vertical: eyes p2p %.2f px", hi - lo))
+        // 11/4: the rigid speech sway may move the whole head up to ±1.5 px (was ~16 px on T9 with nod + drift + breathing)
+        #expect(hi - lo <= 3.2)
+    }
+
+    /// 11/4 ("the face is frozen"): the head moves as one rigid piece with the speech, within ±1.5 px, ±0.6°, ±0.4 %;
+    /// map alive.sway 0 brings back the still head.
+    @Test func theRigidSpeechSwayStaysWithinItsCaps() {
+        let face = faceCI(animalSet), extent = CGRect(origin: .zero, size: CGSize(width: animalSet.pixelSize.width, height: animalSet.pixelSize.height))
+        let out: CGFloat = 540, k = out / animalSet.pixelSize.width
+        var on = AliveMotion(seed: 4), off = AliveMotion(seed: 4)
+        on.headGain = 0; on.rollGain = 0; on.nodGain = 0          // the served still-face map: only the sway moves
+        off.headGain = 0; off.rollGain = 0; off.nodGain = 0; off.swayGain = 0
+        let p0 = CGPoint(x: face.midX, y: face.midY)
+        var maxD: CGFloat = 0, maxDeg = 0.0, maxScale = 0.0, moved = false, offMax: CGFloat = 0
+        for i in 0..<500 {
+            let t = Double(i) / 25
+            let open = (i / 100) % 2 == 0 ? ((i % 12) < 4 ? 0.9 : 0.1) : 0.0   // 4 s talk, 4 s quiet
+            let ta = on.transforms(at: t, open: open, face: face, extent: extent, outputWidth: out)
+            let tb = off.transforms(at: t, open: open, face: face, extent: extent, outputWidth: out)
+            let a = ta.head.concatenating(ta.camera), b = tb.head.concatenating(tb.camera)
+            let pa = p0.applying(a), pb = p0.applying(b)
+            maxD = max(maxD, max(abs(pa.x - p0.x), abs(pa.y - p0.y)) * k)
+            offMax = max(offMax, hypot(pb.x - p0.x, pb.y - p0.y) * k)
+            maxDeg = max(maxDeg, abs(atan2(Double(a.b), Double(a.a))) * 180 / .pi)
+            maxScale = max(maxScale, abs((Double(a.a * a.a + a.b * a.b)).squareRoot() - 1))
+            if hypot(pa.x - p0.x, pa.y - p0.y) * k > 0.3 { moved = true }
+        }
+        print(String(format: "sway: max %.2f px, %.2f deg, scale %.4f; off %.3f px", maxD, maxDeg, maxScale, offMax))
+        #expect(moved)
+        #expect(maxD <= 3.2)          // ±1.5 px translation plus the roll/scale about the neck at the face centre
+        #expect(maxDeg <= AliveMotion.swayMaxDeg + 1e-6)
+        #expect(maxScale <= AliveMotion.swayMaxScale + 1e-6)
+        #expect(offMax < 0.05)
+    }
+
+    /// 11/4 CA-09: measured 1.5–3.7 px whole-frame moves (roll and the 2D / animal framing zoom on top of the clamped
+    /// translation). Every face-box corner now moves ≤ 1.35 output px, after the zoom.
+    @Test func theSwayStaysWithinOnePointFivePixelsOnScreen() {
+        let face = faceCI(animalSet), extent = CGRect(origin: .zero, size: CGSize(width: animalSet.pixelSize.width, height: animalSet.pixelSize.height))
+        // still px → output px on screen: aspect fill (the overscan) and the framing zoom
+        let out: CGFloat = 540, zoom: CGFloat = 1.35, toOut = out / animalSet.pixelSize.width * AliveMotion.overscan * zoom
+        let pts = [CGPoint(x: face.minX, y: face.minY), CGPoint(x: face.maxX, y: face.minY), CGPoint(x: face.minX, y: face.maxY),
+                   CGPoint(x: face.maxX, y: face.maxY), CGPoint(x: face.midX, y: face.midY)]
+        for (gain, smoothing) in [(1.0, 0.0), (2.0, 0.0), (FaceRenderer.nonHumanSway, FaceRenderer.nonHumanSwaySmoothing)] {   // a person, the map's max sway, a non-person
+            var m = AliveMotion(seed: 4); m.headGain = 0; m.rollGain = 0; m.nodGain = 0; m.swayGain = gain; m.swaySmoothing = smoothing
+            var worst: CGFloat = 0, moved = false
+            for i in 0..<500 {
+                let t = Double(i) / 25, open = (i % 12) < 4 ? 0.9 : 0.1
+                let tr = m.transforms(at: t, open: open, face: face, extent: extent, outputWidth: out, screenScale: toOut)
+                let a = tr.head.concatenating(tr.camera)
+                for q in pts { let p = q.applying(a); worst = max(worst, hypot(p.x - q.x, p.y - q.y) * toOut) }
+                if hypot(face.midX - CGPoint(x: face.midX, y: face.midY).applying(a).x, 0) * toOut > 0.3 { moved = true }
+            }
+            print(String(format: "screen sway (gain %.1f, smoothing %.2f s): worst corner %.3f px", gain, smoothing, worst))
+            #expect(moved)
+            #expect(worst <= AliveMotion.swayScreenMaxPx + 0.01)
+        }
+    }
+
+    /// codex P2: the cap holds in on-screen pixels for any output shape (a tall output fills by height) — through the
+    /// renderer's own scale.
+    /// the flow fixture (an animal) with the served `alive.sway` (nil = no `alive` block) and, optionally, another kind
+    private func flowSet(sway: Double?, kind: String? = nil) throws -> FaceSet {
+        let dir = Bundle.module.url(forResource: "face-flow-animal", withExtension: nil, subdirectory: "Fixtures")!
+        var m = try JSONDecoder().decode(FaceManifest.self, from: Data(contentsOf: dir.appendingPathComponent("manifest.json")))
+        if let sway { var a = FlowMap.Alive(); a.sway = sway; m.flow?.map?.alive = a }
+        if let kind { m.flow?.kind = kind }
+        return try FaceSet(manifest: m) { try Data(contentsOf: dir.appendingPathComponent(($0 as NSString).lastPathComponent)) }
+    }
+
+    /// Build 10 (Chelsea: "the person moving left and right is distracting"): with no `alive` block, one without
+    /// `sway`, or `sway` 0, the frame never translates, rolls or scales — person, animal, or no flow at all.
+    @Test func noServedSwayMeansAStillFrame() throws {
+        let noSway = try JSONDecoder().decode(FlowMap.Alive.self, from: Data(#"{"headX": 0, "headRoll": 0, "lockY": true}"#.utf8))
+        #expect(noSway.sway == 0)
+        #expect(FlowMap.Alive().sway == 0)
+        for set in [animalSet, try flowSet(sway: nil), try flowSet(sway: nil, kind: "human"), try flowSet(sway: 0), try flowSet(sway: 0, kind: "human")] {
+            let r = FaceRenderer(faceSet: set, outputSize: CGSize(width: 540, height: 960), seed: 4)
+            var worst = 0.0
+            for i in 0..<250 {
+                let cam = r.motionTransforms(at: Double(i) / 25, open: (i % 12) < 4 ? 0.9 : 0.1).camera
+                worst = max(worst, abs(Double(cam.tx)) + abs(Double(cam.ty)) + abs(Double(cam.b)) + abs(Double(cam.a) - 1))
+            }
+            #expect(worst < 1e-9)
+        }
+    }
+
+    @Test func theSwayCapHoldsOnATallOutput() throws {
+        let set = try flowSet(sway: 2)   // a served sway (an animal: halved and smoothed); build 10 serves 0
+        let face = faceCI(set)
+        for size in [CGSize(width: 540, height: 1280), CGSize(width: 540, height: 960), CGSize(width: 960, height: 540)] {
+            let still = FaceRenderer(faceSet: animalSet, outputSize: size, seed: 4).screenScale   // no framing zoom
+            #expect(abs(still - max(size.width / animalSet.pixelSize.width, size.height / animalSet.pixelSize.height) * AliveMotion.overscan) < 1e-6)
+            let r = FaceRenderer(faceSet: set, outputSize: size, seed: 4)
+            let s = r.screenScale
+            let pts = [CGPoint(x: face.minX, y: face.minY), CGPoint(x: face.maxX, y: face.minY), CGPoint(x: face.minX, y: face.maxY),
+                       CGPoint(x: face.maxX, y: face.maxY), CGPoint(x: face.midX, y: face.midY)]
+            var worst: CGFloat = 0
+            for i in 0..<500 {
+                let open = (i % 12) < 4 ? 0.9 : 0.1
+                let cam = r.motionTransforms(at: Double(i) / 25, open: open).camera   // the sway (the frame moves as one)
+                for q in pts { let p = q.applying(cam); worst = max(worst, hypot(p.x - q.x, p.y - q.y) * s) }
+            }
+            print(String(format: "sway on %.0fx%.0f: worst corner %.3f px", size.width, size.height, worst))
+            #expect(worst <= AliveMotion.swayScreenMaxPx + 0.01)
+            #expect(worst > 0.3)
+        }
+    }
+
+    /// codex P3: a tiny or non-finite smoothing constant leaves the sway unfiltered (no runaway sub-step count).
+    @Test func aDegenerateSmoothingConstantIsOff() {
+        let face = faceCI(animalSet), extent = CGRect(origin: .zero, size: CGSize(width: animalSet.pixelSize.width, height: animalSet.pixelSize.height))
+        for bad in [1e-20, 0, -1, .nan, .infinity] {
+            var raw = AliveMotion(seed: 5), m = AliveMotion(seed: 5); m.swaySmoothing = bad
+            for i in 0..<50 {
+                let t = Double(i) / 25
+                let a = raw.transforms(at: t, open: 0.6, face: face, extent: extent, outputWidth: 540).camera
+                let b = m.transforms(at: t, open: 0.6, face: face, extent: extent, outputWidth: 540).camera
+                #expect(abs(a.tx - b.tx) < 1e-9 && abs(a.ty - b.ty) < 1e-9)
+            }
+        }
+    }
+
+    /// 11/4 CA-09 (dog eye band 0.52 / 1.19 vs 0.3 / 0.8): the non-person sway is low-passed. Its frame-to-frame steps
+    /// shrink (fur and line art shimmer with every sub-pixel step) while its reach stays (the sway still reads).
+    @Test func aSmoothedSwayTakesSmallerStepsButKeepsItsReach() {
+        let face = faceCI(animalSet), extent = CGRect(origin: .zero, size: CGSize(width: animalSet.pixelSize.width, height: animalSet.pixelSize.height))
+        let out: CGFloat = 540, k = out / animalSet.pixelSize.width
+        func run(_ smoothing: Double) -> (step: CGFloat, p95: CGFloat, reach: CGFloat) {
+            var m = AliveMotion(seed: 4); m.headGain = 0; m.rollGain = 0; m.nodGain = 0; m.swayGain = FaceRenderer.nonHumanSway; m.swaySmoothing = smoothing
+            let p0 = CGPoint(x: face.midX, y: face.maxY - face.height * 0.3)   // the eye line
+            var steps: [CGFloat] = [], reach: CGFloat = 0, prev: CGPoint?
+            for i in 0..<750 {   // 30 s: talk with syllable-rate loudness, then quiet, alternating every 4 s
+                let t = Double(i) / 25
+                let open = (i / 100) % 2 == 0 ? ((i % 12) < 4 ? 0.9 : 0.1) : 0.0
+                let tr = m.transforms(at: t, open: open, face: face, extent: extent, outputWidth: out)
+                let p = p0.applying(tr.head.concatenating(tr.camera))
+                reach = max(reach, hypot(p.x - p0.x, p.y - p0.y) * k)
+                if let q = prev { steps.append(hypot(p.x - q.x, p.y - q.y) * k) }
+                prev = p
+            }
+            let s = steps.sorted()
+            return (s.last ?? 0, s[Int(Double(s.count - 1) * 0.95)], reach)
+        }
+        let raw = run(0), smooth = run(FaceRenderer.nonHumanSwaySmoothing)
+        print(String(format: "sway steps: raw max %.3f p95 %.3f reach %.2f px; smoothed max %.3f p95 %.3f reach %.2f px",
+                      raw.step, raw.p95, raw.reach, smooth.step, smooth.p95, smooth.reach))
+        #expect(smooth.step <= 0.5 * raw.step)
+        #expect(smooth.p95 <= 0.6 * raw.p95)
+        #expect(smooth.reach >= 0.35 * raw.reach)   // the syllable-rate nod is what goes; the slow sway stays
+        #expect(smooth.reach >= 0.25)
+    }
+
+    /// A jump in time (a new reply's clock, a seek) restarts the filter: the first frame after it is the unfiltered sway,
+    /// not a slide from where the old clock left off.
+    @Test func aSmoothedSwayRestartsOnATimeJump() {
+        let face = faceCI(animalSet), extent = CGRect(origin: .zero, size: CGSize(width: animalSet.pixelSize.width, height: animalSet.pixelSize.height))
+        var raw = AliveMotion(seed: 6), smooth = AliveMotion(seed: 6)
+        smooth.swaySmoothing = FaceRenderer.nonHumanSwaySmoothing
+        var differed = false
+        for i in 0..<200 {
+            let t = Double(i) / 25, open = (i % 12) < 4 ? 0.9 : 0.1
+            let a = raw.transforms(at: t, open: open, face: face, extent: extent, outputWidth: 540).camera
+            let b = smooth.transforms(at: t, open: open, face: face, extent: extent, outputWidth: 540).camera
+            if abs(a.tx - b.tx) + abs(a.ty - b.ty) > 1e-3 { differed = true }
+        }
+        #expect(differed)
+        for t in [1.0, 20.0] {   // back in time, then forward by more than 0.5 s
+            let a = raw.transforms(at: t, open: 0.5, face: face, extent: extent, outputWidth: 540).camera
+            let b = smooth.transforms(at: t, open: 0.5, face: face, extent: extent, outputWidth: 540).camera
+            #expect(abs(a.a - b.a) < 1e-9 && abs(a.b - b.b) < 1e-9 && abs(a.tx - b.tx) < 1e-6 && abs(a.ty - b.ty) < 1e-6)
+        }
+    }
+
+    @Test func speechOnsetsNodTheHeadWhenTheVerticalLockIsOff() {
+        var quiet = AliveMotion(seed: 3), talk = AliveMotion(seed: 3)
+        quiet.lockVertical = false; talk.lockVertical = false
+        let face = faceCI(animalSet), extent = CGRect(origin: .zero, size: CGSize(width: animalSet.pixelSize.width, height: animalSet.pixelSize.height))
+        let p0 = CGPoint(x: face.midX, y: face.midY)
+        var maxDiff: CGFloat = 0
+        for i in 0..<100 {
+            let t = Double(i) / 25
+            let open = (i % 12) < 4 ? 0.9 : 0.05
+            let q = quiet.transforms(at: t, open: 0, face: face, extent: extent, outputWidth: 540).head
+            let s = talk.transforms(at: t, open: open, face: face, extent: extent, outputWidth: 540).head
+            maxDiff = max(maxDiff, abs(p0.applying(q).y - p0.applying(s).y) * 540 / animalSet.pixelSize.width)
+        }
+        #expect(maxDiff > 1)
+        #expect(maxDiff < 4)
+    }
+}
+
+
+/// 11/4 brow flash: stressed (loudest 20 %) vowels lift the brows for 0.3 s, at least 1.6 s apart.
+struct BrowFlashTests {
+    @Test func loudVowelsFlashBrieflyAndRarely() {
+        // ten vowels 0.5 s apart; every third is loud
+        var ph: [LipPhonemeTiming] = []
+        for i in 0..<10 { ph.append(LipPhonemeTiming(phoneme: "AA1", startMs: i * 500, endMs: i * 500 + 150)) }
+        let loud: (Double) -> Double = { ms in
+            let i = Int(ms / 500); let inVowel = ms - Double(i * 500) < 150
+            return inVowel ? (i % 3 == 0 ? 0.9 : 0.3) : 0.02
+        }
+        let on = BrowFlash.onsets(phonemes: ph, loudness: loud)
+        #expect(!on.isEmpty)
+        for (a, b) in zip(on, on.dropFirst()) { #expect(b - a >= BrowFlash.minGap - 1e-9) }
+        let s = on[0]
+        #expect(BrowFlash.weight(atMs: (s + 0.15) * 1000, phonemes: ph, loudness: loud) == 1)
+        #expect(BrowFlash.weight(atMs: (s + 0.35) * 1000, phonemes: ph, loudness: loud) == 0)
+        #expect(BrowFlash.weight(atMs: (s - 0.05) * 1000, phonemes: ph, loudness: loud) == 0)
+        #expect(BrowFlash.weight(atMs: 1000, phonemes: [], loudness: loud) == 0)
+    }
+
+    /// codex P2: a flash that has started survives later clauses (a louder vowel arriving re-ranks the list)
+    @Test func aStartedFlashIsKeptWhenLaterPhonemesArrive() {
+        var tr = BrowFlash.Tracker()
+        let first = (0..<4).map { LipPhonemeTiming(phoneme: "AA1", startMs: $0 * 500, endMs: $0 * 500 + 150) }
+        let quietLoud: (Double) -> Double = { ms in ms < 150 ? 0.6 : (ms < 2000 && Int(ms) % 500 < 150 ? 0.3 : 0.02) }
+        // the first vowel is the loud one so far: its flash starts
+        _ = tr.weight(atMs: 0, phonemes: first, loudness: quietLoud)
+        #expect(tr.weight(atMs: 120, phonemes: first, loudness: quietLoud) > 0.9)
+        // a much louder clause arrives: the started flash keeps going
+        let more = first + (4..<8).map { LipPhonemeTiming(phoneme: "AA1", startMs: $0 * 500, endMs: $0 * 500 + 150) }
+        let loudLater: (Double) -> Double = { ms in ms >= 2000 && Int(ms) % 500 < 150 ? 1.0 : quietLoud(ms) }
+        #expect(tr.weight(atMs: 130, phonemes: more, loudness: loudLater) > 0.9)   // still in the hold (onset −0.06 s)
+        #expect(tr.shown.count == 1)
+    }
+
+    /// codex P2 (cdeb8965): more audio with the same phonemes re-ranks the loudness; the onset cache follows it
+    @Test func moreAudioRefreshesTheStressOnsets() {
+        var tr = BrowFlash.Tracker()
+        let ph = (0..<6).map { LipPhonemeTiming(phoneme: "AA1", startMs: $0 * 100, endMs: $0 * 100 + 60) }
+        let early: (Double) -> Double = { ms in ms < 60 ? 0.9 : 0.3 }        // vowel 0 loudest
+        let later: (Double) -> Double = { ms in ms >= 200 && ms < 260 ? 1.0 : 0.02 }   // after more PCM: vowel 2 loudest
+        _ = tr.weight(atMs: -100, phonemes: ph, audioRevision: 300, loudness: early)
+        // same phonemes, new audio, 10 ms later: vowel 0 (onset −0.06 s) is no longer stressed, nothing has started
+        #expect(tr.weight(atMs: -90, phonemes: ph, audioRevision: 900, loudness: later) == 0)
+        #expect(tr.weight(atMs: 250, phonemes: ph, audioRevision: 900, loudness: later) == 1)   // vowel 2's flash
+    }
+
+    /// 11/4 watch "inhale" (#613): a time-driven flash — up within 0.1 s, held, down by 0.3 s (≤ 0.5 s), once.
+    @Test func anInhaleFlashesTheBrowsOnceOnTheRenderClock() {
+        var b = BrowFlash.Timed()
+        #expect(b.weight(at: 5) == 0)
+        b.trigger(at: 10)
+        #expect(b.weight(at: 9.9) == 0)
+        #expect(b.weight(at: 10.05) > 0 && b.weight(at: 10.05) < 1)
+        #expect(b.weight(at: 10.15) == 1)
+        #expect(b.weight(at: 10.29) > 0)
+        #expect(b.weight(at: 10.31) == 0)
+        #expect(b.onset == nil)                                  // done: it does not come back
+        #expect(b.weight(at: 10.15) == 0)
+        b.trigger(at: 20); _ = b.weight(at: 20.1)
+        #expect(b.weight(at: 3) == 0 && b.onset == nil)          // a clock that goes back drops it
+        #expect(BrowFlash.rise + BrowFlash.hold + BrowFlash.fall <= 0.5)
+    }
+
+    /// The renderer lifts the brow band for an inhale without any reply playing (no lip context).
+    @Test func anInhaleLiftsTheBrowsWithoutAReply() {
+        let size = CGSize(width: 180, height: 320)
+        let a = FaceRenderer(faceSet: animalSet, outputSize: size, seed: 3), b = FaceRenderer(faceSet: animalSet, outputSize: size, seed: 3)
+        #expect(a.hasBrowBand)
+        b.flashBrows(at: 1.0)
+        let still = bytes(a.render(at: 1.15, lip: .rest)), lifted = bytes(b.render(at: 1.15, lip: .rest))
+        #expect(meanDiff(still, lifted) > 0.01)
+        // after the flash both render the same frame again
+        #expect(meanDiff(bytes(a.render(at: 1.6, lip: .rest)), bytes(b.render(at: 1.6, lip: .rest))) < 1e-9)
+        // Reduce Motion: no lift
+        let c = FaceRenderer(faceSet: animalSet, outputSize: size, seed: 3, reduceMotion: true), d = FaceRenderer(faceSet: animalSet, outputSize: size, seed: 3, reduceMotion: true)
+        d.flashBrows(at: 1.0)
+        #expect(meanDiff(bytes(c.render(at: 1.15, lip: .rest)), bytes(d.render(at: 1.15, lip: .rest))) < 1e-9)
+    }
+
+    @Test func aClockJumpBackForgetsTheOldFlashes() {
+        var tr = BrowFlash.Tracker()
+        let ph = (0..<4).map { LipPhonemeTiming(phoneme: "AA1", startMs: $0 * 500, endMs: $0 * 500 + 150) }
+        let loud: (Double) -> Double = { ms in ms < 150 ? 0.9 : 0.1 }
+        _ = tr.weight(atMs: 0, phonemes: ph, loudness: loud); _ = tr.weight(atMs: 200, phonemes: ph, loudness: loud)
+        #expect(tr.shown.count == 1)
+        _ = tr.weight(atMs: 20, phonemes: [], loudness: loud)   // the next reply starts
+        #expect(tr.shown.isEmpty)
+    }
+
+    @Test func theBrowMaskLiftsTheBrowsButNotTheEyes() throws {
+        let face = CGRect(x: 100, y: 300, width: 400, height: 500), extent = CGRect(x: 0, y: 0, width: 600, height: 1000)
+        let g = FaceRenderer.browGeometry(eyeY: 640, mouthY: 420, faceWidth: 400)
+        let brow = FaceRenderer.ellipseMask(center: CGPoint(x: face.midX, y: g.browY), rx: face.width * 0.42, ry: g.browRy, inner: 0.45, extent: extent)
+        let eyes = FaceRenderer.ellipseMask(center: CGPoint(x: face.midX, y: g.eyeY), rx: face.width * 0.5, ry: g.eyeRy, inner: 0.7, extent: extent)
+        let cut = CIFilter.sourceOutCompositing(); cut.inputImage = brow; cut.backgroundImage = eyes
+        let m = cut.outputImage!.cropped(to: extent)
+        let ctx = CIContext()
+        func alpha(_ p: CGPoint) -> Float {
+            var px = [UInt8](repeating: 0, count: 4)
+            ctx.render(m, toBitmap: &px, rowBytes: 4, bounds: CGRect(x: p.x, y: p.y, width: 1, height: 1), format: .RGBA8, colorSpace: nil)
+            return Float(px[3]) / 255
+        }
+        #expect(alpha(CGPoint(x: face.midX - 50, y: g.browY)) > 0.9)    // the brow centre moves
+        #expect(alpha(CGPoint(x: face.midX - 80, y: g.eyeY)) < 0.05)    // the eye stays
+    }
+
+    @Test func theBrowBandEndsAboveTheEyes() {
+        let g = FaceRenderer.browGeometry(eyeY: 600, mouthY: 400, faceWidth: 400)
+        #expect(g.browY - g.browRy > g.eyeY + g.eyeRy * 0.5)   // brow ellipse bottom above the eye cut-out's core
+        #expect(g.browY - g.eyeY <= 48 + 0.001)                 // capped at 0.12 face widths (a hair-wide face box)
+    }
+
+    @Test func theEyeLineComesFromTheBlinkStill() throws {
+        let w = 300, h = 400
+        // lids: (x, row from the top, height) per eye; `down` draws the whole blink still lower (an unaligned still)
+        func img(lids: [(Int, Int, Int)], down: Int = 0) -> CGImage {
+            let c = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                              space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            c.setFillColor(gray: 0.7, alpha: 1); c.fill(CGRect(x: 0, y: 0, width: w, height: h))
+            c.setFillColor(gray: 0.1, alpha: 1)
+            c.fill(CGRect(x: 60, y: h - 132 - down, width: 180, height: 6))   // brows (rows 126–132 from the top)
+            c.setFillColor(gray: 0.35, alpha: 1)
+            for (x, row, lh) in lids { c.fill(CGRect(x: x, y: h - row - lh - down, width: 70, height: lh)) }
+            return c.makeImage()!
+        }
+        let face = CGRect(x: 40, y: 60, width: 220, height: 300)
+        let open = img(lids: []), shut = [(70, 158, 12), (160, 158, 12)]
+        let e = try #require(FaceRenderer.eyeLine(neutral: open, blink: img(lids: shut), face: face, mouthTop: 280))
+        #expect(abs(e.y - 164) < 6 && e.top <= 160 && e.bottom >= 168)
+        #expect(FaceRenderer.eyeLine(neutral: open, blink: open, face: face, mouthTop: 280) == nil)
+        // codex P2: a blink still drawn 8 px lower is read through the renderer's alignment (dy 8), not its brows
+        let low = try #require(FaceRenderer.eyeLine(neutral: open, blink: img(lids: shut, down: 8), shift: (0, 8), face: face, mouthTop: 280))
+        #expect(abs(low.y - 164) < 6)
+        // codex P2: a tilted face (eyes 35 px apart in height): the span takes in both eyes
+        let tilt = try #require(FaceRenderer.eyeLine(neutral: open, blink: img(lids: [(70, 150, 12), (160, 185, 12)]), face: face, mouthTop: 280))
+        #expect(tilt.top <= 152 && tilt.bottom >= 195)
+    }
+}

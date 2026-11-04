@@ -1,0 +1,6 @@
+{
+  "type": "error",
+  "code": "spark_unavailable",
+  "message": "The companion could not answer. Try again.",
+  "retryable": true
+}

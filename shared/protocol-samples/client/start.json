@@ -1,0 +1,47 @@
+{
+  "type": "start",
+  "persona": {
+    "name": "Mina",
+    "kind": "human",
+    "traits": [
+      "warm",
+      "dry humor"
+    ],
+    "speakingStyle": "short, playful",
+    "backstory": "Pastry chef in Seoul.",
+    "voice": {
+      "id": "seamless:0"
+    }
+  },
+  "user": {
+    "name": "Chelsea",
+    "profile": "Founder. Loves spicy food.",
+    "id": "device-3F2A9C",
+    "timeZone": "Asia/Seoul"
+  },
+  "memories": [
+    "Her sister Jiwoo visits next week."
+  ],
+  "history": [
+    {
+      "role": "user",
+      "text": "hi"
+    },
+    {
+      "role": "assistant",
+      "text": "Hey you!"
+    }
+  ],
+  "mode": "chat",
+  "language": "English",
+  "lip": {
+    "mode": "none",
+    "fallback": "none"
+  },
+  "bargeIn": {
+    "minMs": 400,
+    "minWords": 2
+  },
+  "mic": true,
+  "greetAfterMs": 2000
+}

@@ -1,0 +1,96 @@
+import SwiftUI
+
+/// CS01 · AI data consent (design-flow r01 board §1, "Before we start."). Shown once after the first
+/// sign-in, and whenever the server closes the call with 4403 (signed in, no AI-data consent yet).
+/// Agree → POST /me/consent → back to where the user was going. Not now → sign out → A02.
+struct ConsentView: View {
+    @Bindable var model: AppState
+    @State private var sending = false
+    @State private var failed = false
+
+    private let rows: [(String, String)] = [
+        ("What you say and type", "To answer you. Voice is turned into text first."),
+        ("The image you choose", "To make their face, voice and video."),
+        ("Camera and screen, only while on", "Nothing is seen until you turn it on. Video isn’t kept."),
+        // PRD v12 9.2 / D16: no "Never used to train AI models" line (hackathon-credit inputs may be used by Meta);
+        // the Mac CS01 already dropped it (QA build 7, ONB-08)
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Dynamic Type: the copy scrolls above the two buttons once it outgrows the screen (fits as before at the default size)
+            ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+            Text("Before we start.").font(TypeStyle.title(35)).foregroundStyle(CallInk.ink).padding(.top, 54)
+                .accessibilityAddTraits(.isHeader)
+            Text("Genita uses AI services to make your companion and talk with you. Here’s what goes to them, and\u{00A0}when.")
+                .font(TypeStyle.text(16)).foregroundStyle(CallInk.mute).padding(.top, 16).fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 20) {
+                ForEach(rows, id: \.0) { row in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(row.0).font(TypeStyle.text(16, .medium)).foregroundStyle(CallInk.ink)
+                        Text(row.1).font(TypeStyle.text(14)).foregroundStyle(CallInk.mute).fixedSize(horizontal: false, vertical: true)
+                    }.accessibilityElement(children: .combine)
+                }
+            }.padding(.top, 32)
+            HStack(spacing: 16) {
+                // PRD v12 D16: Genita's own pages; Privacy Policy first, then Terms (Figma 4:2, LG-01 step 5, AU-02)
+                Link("Privacy Policy", destination: URL(string: "https://bagel-labs-beni.github.io/genita-legal/privacy/")!)
+                Link("Terms", destination: URL(string: "https://bagel-labs-beni.github.io/genita-legal/terms/")!)
+            }.font(TypeStyle.text(14, .medium)).foregroundStyle(CallInk.ink).underline().padding(.top, 24).frame(minHeight: 44)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 24)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            // at large text the copy scrolls under the buttons: fade its last 24 pt instead of a hard cut (empty space at the default size)
+            .mask { VStack(spacing: 0) { Color.black; LinearGradient(colors: [.black, .black.opacity(0)], startPoint: .top, endPoint: .bottom).frame(height: 24) } }
+            Button { agree() } label: {
+                ZStack {
+                    if sending { ProgressView().tint(CallInk.onInk) } else { Text("Agree and continue") }
+                }.font(TypeStyle.text(16, .medium)).foregroundStyle(CallInk.onInk)
+                    .frame(maxWidth: .infinity).frame(minHeight: 50).background(GlassCTA(color: CallInk.ink))
+            }.buttonStyle(.plain).disabled(sending).accessibilityIdentifier("consentAgree")
+            Button("Not now") { notNow() }
+                .font(TypeStyle.text(16, .medium)).foregroundStyle(CallInk.ink).frame(maxWidth: .infinity).frame(minHeight: 50)
+                .disabled(sending).accessibilityIdentifier("consentNotNow")
+                .padding(.bottom, 8)
+        }
+        .padding(.horizontal, 24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(CallInk.sheet.ignoresSafeArea())
+        .dynamicTypeSize(TextScale.screen)
+        .alert("Couldn’t save that. Try again.", isPresented: $failed) { Button("OK", role: .cancel) {} }
+    }
+
+    private func agree() {
+        guard !sending else { return }
+        #if DEBUG
+        // Appetize preview: the screen is shown and has to be agreed to, but there is no server to tell
+        if BrowserPreview.isActive { model.consentAccepted(); return }
+        #endif
+        sending = true
+        Task { @MainActor in
+            defer { sending = false }
+            do {
+                try await GenitaAuthClient().consent()
+                guard model.stage == .consent else { return } // left this screen meanwhile
+                await model.consentAgreed()
+            } catch GenitaAuthError.unauthorized {
+                // the session expired here: the token is gone, sign in again (A02)
+                model.signedOut()
+            } catch {
+                failed = true
+            }
+        }
+    }
+
+    private func notNow() {
+        guard !sending else { return }
+        sending = true
+        Task { @MainActor in
+            defer { sending = false }
+            await GenitaAuthClient().logout()
+            model.signedOut()
+        }
+    }
+}

@@ -1,0 +1,202 @@
+name: Call client
+
+# F4-L10 / F4-U-S09 / F10-U-SHEET / F10-U-FINDS / F5-U-CAM: builds both apps, runs the unit tests, and drives the call screen through its states
+# with a recorded real session (ios-app/Tools/call-replay). Screenshots are uploaded as an artifact.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - ".github/workflows/call-client.yml"
+      - "ios-app/**"
+      - "mac-app/**"
+      - "shared/**"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  apple:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: macos-15
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 26
+        run: |
+          XC="$(ls -d /Applications/Xcode_26.*.app | sort -V | tail -1)"
+          sudo xcode-select -s "$XC"
+          xcodebuild -version
+
+      - name: Pick an iPhone simulator
+        id: simulator
+        run: |
+          ID="$(xcrun simctl list devices available -j | python3 -c '
+          import json, re, sys
+          devices = [d for runtime, group in json.load(sys.stdin)["devices"].items() if "iOS-26" in runtime for d in group if d["name"].startswith("iPhone")]
+          pro = [d for d in devices if re.fullmatch(r"iPhone \d+ Pro", d["name"])]
+          print((pro or devices)[-1]["udid"])')"
+          echo "id=$ID" >> "$GITHUB_OUTPUT"
+          xcrun simctl list devices available | grep "$ID"
+
+      - name: Start the call replay server
+        run: |
+          node ios-app/Tools/call-replay/server.mjs --scale 3 > replay.log 2>&1 &
+          node ios-app/Tools/call-replay/server.mjs --port 8789 > replay-finds.log 2>&1 &
+          node ios-app/Tools/onboarding-stub/server.mjs --port 8790 > onboarding-stub.log 2>&1 &
+          for _ in $(seq 1 20); do curl -sf http://127.0.0.1:8788/healthz && curl -sf http://127.0.0.1:8789/healthz && curl -sf http://127.0.0.1:8790/healthz && break; sleep 0.5; done
+
+      - name: iOS build, unit tests, call screen states
+        # SWIFT_OPTIMIZATION_LEVEL=-O: GenitaKit compiles into the app target, and its face set build (pixel loops)
+        # runs 15-20x slower at -Onone than optimized (face-animal + flow on a Mac: 14.9 s vs 0.9 s), so CI timings didn't reflect the app.
+        # The Debug configuration (DEBUG fixtures, testability) stays.
+        run: |
+          xcodebuild test \
+            -project ios-app/Genita.xcodeproj -scheme Genita \
+            -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.id }}" \
+            -only-testing:GenitaTests \
+            -only-testing:GenitaUITests/SplashUITests \
+            -only-testing:GenitaUITests/CallScreenUITests \
+            -only-testing:GenitaUITests/FindsSheetUITests \
+            -only-testing:GenitaUITests/GenitaUITests/testJudgeAccessSheet \
+            -only-testing:GenitaUITests/GenitaUITests/testA02LegalLinksOpenSafari \
+            -only-testing:GenitaUITests/GenitaUITests/testA02HidesGoogleByDefault \
+            -only-testing:GenitaUITests/GenitaUITests/testA02ShowsGoogleWhenFlagOff \
+            -only-testing:GenitaUITests/GenitaUITests/testA02ESignInFailedCardDoesNotCoverTheTitle \
+            -only-testing:GenitaUITests/EmailSignInUITests \
+            -only-testing:GenitaUITests/FindsTabUITests \
+            -only-testing:GenitaUITests/CameraGuideUITests \
+            -only-testing:GenitaUITests/UpdateBannerUITests \
+            -only-testing:GenitaUITests/OnboardingUITests \
+            -only-testing:GenitaUITests/InsightReportUITests \
+            -only-testing:GenitaUITests/InsightHeaderUITests \
+            -only-testing:GenitaUITests/QASamplePhotoUITests \
+            -only-testing:GenitaUITests/CompanionKindsUITests \
+            -only-testing:GenitaUITests/LaunchRoutingUITests \
+            -only-testing:GenitaUITests/ImportFailBannerUITests \
+            -only-testing:GenitaUITests/VoiceSettingsUITests \
+            -skip-testing:GenitaUITests/OnboardingUITests/testV03MotionHuman \
+            -skip-testing:GenitaUITests/OnboardingUITests/testV03MotionAnimal \
+            -skip-testing:GenitaUITests/OnboardingUITests/testV03MotionCharacter \
+            -resultBundlePath build-output/ios.xcresult \
+            SWIFT_OPTIMIZATION_LEVEL=-O \
+            CODE_SIGNING_ALLOWED=NO | grep -E "^Test Suite|^Test Case .*(passed|failed|skipped)|Executed [0-9]+ test|error:|\*\* (TEST|BUILD)|FACE_FPS=" | cut -c1-240
+          exit "${PIPESTATUS[0]}"
+
+      - name: Replay server log, app log, crash reports
+        if: always()
+        run: |
+          cat replay.log || true
+          cat onboarding-stub.log || true
+          xcrun simctl spawn "${{ steps.simulator.outputs.id }}" log show --last 15m --style compact --predicate 'subsystem == "ai.thebeni.genita"' | tail -n 80 || true
+          for f in $(ls -t ~/Library/Logs/DiagnosticReports/Genita* 2>/dev/null | head -2); do
+            echo "== $f"
+            python3 - "$f" <<'PY' || head -c 6000 "$f"
+          import json, sys
+          raw = open(sys.argv[1]).read().split("\n", 1)[1]
+          d = json.loads(raw)
+          print("exception:", d.get("exception"), "termination:", d.get("termination", {}).get("indicator"))
+          print("asi:", json.dumps(d.get("asi"))[:3000])
+          imgs = d.get("usedImages", [])
+          for t in d.get("threads", []):
+              if t.get("triggered") or t.get("queue") == "com.apple.main-thread":
+                  print("-- thread", t.get("queue"), "triggered" if t.get("triggered") else "")
+                  for fr in t.get("frames", [])[:40]:
+                      img = imgs[fr["imageIndex"]].get("name", "?") if fr.get("imageIndex", -1) < len(imgs) else "?"
+                      print("  ", img, fr.get("symbol", hex(fr.get("imageOffset", 0))), fr.get("sourceFile", ""), fr.get("sourceLine", ""))
+          for fr in (d.get("lastExceptionBacktrace") or [])[:30]:
+              print("  exc", imgs[fr["imageIndex"]].get("name", "?") if fr.get("imageIndex", -1) < len(imgs) else "?", fr.get("symbol", ""))
+          PY
+          done
+
+      - name: Export call screenshots
+        if: always()
+        run: |
+          if [ -d build-output/ios.xcresult ]; then
+            mkdir -p build-output/raw build-output/screens
+            xcrun xcresulttool export attachments --path build-output/ios.xcresult --output-path build-output/raw
+            python3 - <<'PY'
+          import json, pathlib, shutil
+          raw = pathlib.Path("build-output/raw"); screens = pathlib.Path("build-output/screens")
+          for test in json.loads((raw / "manifest.json").read_text()):
+              for item in test["attachments"]:
+                  name = item["suggestedHumanReadableName"].split("_")[0]
+                  if name.startswith(("call-", "auth-", "onb-")):
+                      shutil.copy(raw / item["exportedFileName"], screens / f"{name}.png")
+          PY
+            ls build-output/screens
+          fi
+
+      - name: Mac build
+        working-directory: ios-app
+        run: |
+          xcodebuild -project Genita.xcodeproj -target GenitaMac -configuration Debug -sdk macosx CODE_SIGNING_ALLOWED=NO | grep -E "error:|warning: .*shared/Call|\*\* BUILD" | cut -c1-240
+          exit "${PIPESTATUS[0]}"
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: call-screens
+          path: build-output/screens
+          if-no-files-found: warn
+
+  # V03 face scan recordings (#507): its own runner, so the 45-minute call-screen job doesn't grow and a simulator
+  # recording hiccup (code=405, #503) can't take that job down. Runs for PRs titled with V03 and on manual dispatch.
+  v03-recordings:
+    if: github.event_name == 'workflow_dispatch' || (github.event.pull_request.draft == false && contains(github.event.pull_request.title, 'V03'))
+    runs-on: macos-15
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 26
+        run: |
+          XC="$(ls -d /Applications/Xcode_26.*.app | sort -V | tail -1)"
+          sudo xcode-select -s "$XC"
+
+      - name: Pick an iPhone simulator
+        id: simulator
+        run: |
+          ID="$(xcrun simctl list devices available -j | python3 -c '
+          import json, re, sys
+          devices = [d for runtime, group in json.load(sys.stdin)["devices"].items() if "iOS-26" in runtime for d in group if d["name"].startswith("iPhone")]
+          pro = [d for d in devices if re.fullmatch(r"iPhone \d+ Pro", d["name"])]
+          print((pro or devices)[-1]["udid"])')"
+          echo "id=$ID" >> "$GITHUB_OUTPUT"
+
+      - name: Build for testing
+        run: |
+          xcodebuild build-for-testing -project ios-app/Genita.xcodeproj -scheme Genita \
+            -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.id }}" \
+            -derivedDataPath build-output/dd CODE_SIGNING_ALLOWED=NO | grep -E "error:|\*\* TEST BUILD" | cut -c1-240
+          exit "${PIPESTATUS[0]}"
+
+      - name: Record V03 (person, animal, character)
+        run: |
+          ID="${{ steps.simulator.outputs.id }}"
+          xcrun simctl boot "$ID" || true
+          xcrun simctl bootstatus "$ID" -b > /dev/null
+          mkdir -p build-output/v03
+          for kind in Human Animal Character; do
+            xcrun simctl io "$ID" recordVideo --codec=h264 --force "build-output/v03/onb-V03-motion-$kind.mp4" > /dev/null 2>&1 &
+            REC=$!; sleep 1
+            xcodebuild test-without-building -project ios-app/Genita.xcodeproj -scheme Genita \
+              -destination "platform=iOS Simulator,id=$ID" -derivedDataPath build-output/dd \
+              -only-testing:GenitaUITests/OnboardingUITests/testV03Motion$kind \
+              CODE_SIGNING_ALLOWED=NO | grep -E "^Test Case .*(passed|failed)|error:|\*\* TEST" | cut -c1-240 || true
+            sleep 3   # let the recorder flush the last frames (the 11/4 Character clip stopped at 41 %)
+            kill -INT $REC; wait $REC || true
+          done
+          ls -la build-output/v03
+
+      - name: Upload recordings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v03-recordings
+          path: build-output/v03
+          if-no-files-found: warn
