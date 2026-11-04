@@ -158,7 +158,7 @@ struct SettingsView: View {
             SettingsAvatar(imageData: model.setup.imageData, name: companionName, size: 56)
             VStack(alignment: .leading, spacing: 2) {
                 Text(companionName).font(SettingsType.serif(22)).foregroundStyle(SettingsInk.ink).lineLimit(1)
-                Text(companionSubtitle).font(SettingsType.font(13, relativeTo: .footnote)).foregroundStyle(SettingsInk.secondary).lineLimit(2)
+                companionSubtitleView
             }
             Spacer(minLength: 8)
             SettingsChevron()
@@ -166,12 +166,31 @@ struct SettingsView: View {
         .padding(16).contentShape(Rectangle())
         .accessibilityElement(children: .combine)
     }
-    private var companionSubtitle: String {
+    /// "{voice} voice" and, when there is one, "Together N days" / "Met today" / "Demo companion" (D99). One line when both fit
+    /// ("{voice} voice · Together 12 days"); else two lines without the dot; a voice name that overflows alone is tail-truncated.
+    @ViewBuilder private var companionSubtitleView: some View {
         let voice = voiceName + " voice"
-        if model.setup.companionDemo == true { return voice + " · Demo companion" }
+        let extra = companionSubtitleExtra
+        let font = SettingsType.font(13, relativeTo: .footnote)
+        Group {
+            if let extra {
+                ViewThatFits(in: .horizontal) {
+                    Text(voice + " · " + extra).lineLimit(1)
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(voice).lineLimit(1).truncationMode(.tail)
+                        Text(extra).lineLimit(1).truncationMode(.tail)
+                    }
+                }
+            } else {
+                Text(voice).lineLimit(1).truncationMode(.tail)
+            }
+        }
+        .font(font).foregroundStyle(SettingsInk.secondary)
+    }
+    private var companionSubtitleExtra: String? {
+        if model.setup.companionDemo == true { return "Demo companion" }
         // D99 "함께한 날": nothing when the date is unknown
-        if let together = CompanionTogether.label(createdAt: model.setup.companionSince) { return voice + " · " + together }
-        return voice
+        return CompanionTogether.label(createdAt: model.setup.companionSince)
     }
     /// C1 About you row: "What {name} knows about you", the report's headline (2 lines max), "{n} things · {m} still learning".
     private var aboutYouRow: some View {

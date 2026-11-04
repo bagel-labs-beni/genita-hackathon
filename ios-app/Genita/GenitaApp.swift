@@ -36,6 +36,14 @@ import SwiftUI
                         model.setup.response = "Communication style: clear and warm."
                         model.setup.voice = 0
                     }
+                    // D99 review shots: the Settings C1 card with a fixed companion. "long" = a long voice name + a date, "none" = no date.
+                    if let i = ProcessInfo.processInfo.arguments.firstIndex(of: "--fixture-companion-card"), ProcessInfo.processInfo.arguments.indices.contains(i + 1) {
+                        let long = ProcessInfo.processInfo.arguments[i + 1] == "long"
+                        model.setup.companionName = "Jin"; model.setup.companionCreated = true; model.setup.voiceId = "72"
+                        model.setup.voiceName = long ? "Warm baritone, unhurried" : "Tara"
+                        model.setup.companionSince = long || ProcessInfo.processInfo.arguments[i + 1] == "dated"
+                            ? ISO8601DateFormatter().string(from: Date().addingTimeInterval(-12 * 86400)) : nil
+                    }
                     if let i = ProcessInfo.processInfo.arguments.firstIndex(of: "--media-state"), ProcessInfo.processInfo.arguments.indices.contains(i + 1) {
                         PhoneHandoff.shared.media.showDeniedForReview(ProcessInfo.processInfo.arguments[i + 1] == "camera-denied" ? .camera : .microphone)
                     }
