@@ -701,6 +701,8 @@ export class Session {
   /** prompt-100 style: the once-per-call coloring question went out; when the last style verdict was asked for */
   private styleAsked = false;
   private lastStyleAt: number | null = null;
+  private styleSaid: string[] = [];
+  private styleTurnPending = false;
   /** resolves when the running correction check ends (a "forget that …" waits for it instead of being skipped) */
   private correctionDone: Promise<void> = Promise.resolve();
   /** this call was counted as a new call by personalize (not a handoff) */
@@ -774,7 +776,7 @@ export class Session {
     // the call's own turns go too, like a memory Forget — not left to the memory subscription, which a failed memory
     // start may not have (Codex #583 r22)
     this.dropSpeculation(); this.dispatch({ type: "client_barge_in" });
-    this.history = []; this.recentReplies = []; this.memories = []; this.greeting = null; this.styleAsked = false; this.lastStyleAt = null;
+    this.history = []; this.recentReplies = []; this.memories = []; this.greeting = null; this.styleAsked = false; this.lastStyleAt = null; this.styleSaid = []; this.styleTurnPending = false;
     this.user = { ...this.user, profile: undefined };
     this.taste = [];
     this.ask = null;
@@ -1048,7 +1050,7 @@ export class Session {
         this.dropHeld(); this.asrEpoch++; this.bcGen++; this.backchannel?.stop(); this.cuedTurn = false;
         if (this.segmentOpen) { this.dropLateFinal = true; this.segmentOpen = false; }
         this.dropSpeculation(); this.dispatch({ type: "client_barge_in" });
-        this.history = []; this.recentReplies = []; this.memories = []; this.greeting = null; this.styleAsked = false; this.lastStyleAt = null;
+        this.history = []; this.recentReplies = []; this.memories = []; this.greeting = null; this.styleAsked = false; this.lastStyleAt = null; this.styleSaid = []; this.styleTurnPending = false;
         this.handedPast = false; // Codex #536 r2: after a Forget the other device's turns are gone as a past too
         this.historyRevision = revision;
         // #341: what greetings opened on goes too (Codex #352)
@@ -2224,6 +2226,8 @@ export class Session {
     if (this.history.length > MAX_HISTORY) this.history.splice(0, this.history.length - MAX_HISTORY);
     this.deps.onHistoryChange?.(role);
     if (role === "assistant") this.recentReplies = [...this.recentReplies, text].slice(-3);
+    // prompt-100 style: only earlier style verdicts count as used reasons (chit-chat about black isn't a verdict, No-AI eval)
+    if (role === "assistant" && this.styleTurnPending) { this.styleSaid = [...this.styleSaid, text].slice(-4); this.styleTurnPending = false; }
   }
 
   /** Pure apart from consuming pending camera frames. */
@@ -2297,8 +2301,11 @@ export class Session {
         this.lastStyleAt = null;
       }
       else if (camera.length > 0 && (outfitPick || isStyleTurn(text))) {
-        const said = forgetInCall(this.history, this.removedLines).filter((h) => h.role === "assistant").map((h) => h.text).slice(-4);
+        // the earlier verdicts of this call, minus what was forgotten
+        const kept = new Set(forgetInCall(this.history, this.removedLines).filter((h) => h.role === "assistant").map((h) => h.text));
+        const said = this.styleSaid.filter((t) => kept.has(t));
         const s = styleLine({ profile: this.user?.profile, memories: this.memories, said, askedColoring: this.styleAsked });
+        this.styleTurnPending = true;
         if (s.asks) this.styleAsked = true;
         style = s.line;
         this.lastStyleAt = this.now();
