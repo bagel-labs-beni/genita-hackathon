@@ -67,6 +67,10 @@ import os
     /// needs voice processing, a route change) moves what is left of them to the new player (AU-48).
     private var scheduled: [PlaybackCarry.Entry<AVAudioPCMBuffer>] = []
     private var observers: [NSObjectProtocol] = []
+    /// DEMO P0 11/4: the mic's health check while it is on (see `MicStall`).
+    private var micWatch: Timer?
+    private var micOpenedAt: TimeInterval = 0
+    private var lastMicHeal: TimeInterval = 0
     private let log = Logger(subsystem: "ai.thebeni.genita", category: "call-audio")
 
     init() {}
@@ -80,6 +84,8 @@ import os
 
     func stop() {
         flush()
+        micWatch?.invalidate()
+        micWatch = nil
         micOpen = false
         pipeline?.enabled = false
         if engineHasMic { engine.inputNode.removeTap(onBus: 0) }
@@ -98,16 +104,52 @@ import os
     /// Call after permission is granted. Returns false if no input is available.
     @discardableResult func openMic() -> Bool {
         if micOpen { return true }
-        if !engineHasMic { buildEngine(withMic: true) }
+        // DEMO P0 11/4: an input that stopped delivering (an engine kept alive through playback) is rebuilt, so turning
+        // the mic off and on always gives a working one
+        let now = ProcessInfo.processInfo.systemUptime
+        if !engineHasMic || MicStall.stalled(now: now, lastBuffer: pipeline?.lastBufferUptime, since: -.infinity) {
+            buildEngine(withMic: true)
+        }
         guard engineHasMic else { return false }
         if voiceProcessing { engine.inputNode.isVoiceProcessingInputMuted = false }
         micOpen = true
         pipeline?.enabled = true
+        micOpenedAt = now
+        watchMic()
         return true
+    }
+
+    /// DEMO P0 11/4 (TF 331: the first turn was answered, then the user's voice never reached the server again while
+    /// the pill said Listening). While the mic is on, a tap that has delivered nothing for `MicStall.thresholdS`, or a
+    /// voice-processing input left muted, is healed: the call's session category is set again and the engine rebuilt
+    /// with the mic (what is still playing carries over, AU-48). At most once per `MicStall.healGapS`.
+    private func watchMic() {
+        guard micWatch == nil else { return }
+        micWatch = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkMic() }
+        }
+    }
+
+    private func checkMic() {
+        guard micOpen else { micWatch?.invalidate(); micWatch = nil; return }
+        if voiceProcessing, engineHasMic, engine.inputNode.isVoiceProcessingInputMuted {
+            log.error("mic: voice-processing input was muted while on; unmuting")
+            engine.inputNode.isVoiceProcessingInputMuted = false
+        }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard engineHasMic ? MicStall.stalled(now: now, lastBuffer: pipeline?.lastBufferUptime, since: max(micOpenedAt, lastMicHeal)) : true,
+              now - lastMicHeal >= MicStall.healGapS else { return }
+        lastMicHeal = now
+        log.error("mic: no input for \(MicStall.thresholdS, privacy: .public)s while on; resetting the session and rebuilding the engine")
+        configureSession()
+        buildEngine(withMic: true)
+        if !engineHasMic { log.error("mic: rebuild found no input") }
     }
 
     func closeMic() {
         guard micOpen else { return }
+        micWatch?.invalidate()
+        micWatch = nil
         micOpen = false
         pipeline?.enabled = false
         if voiceProcessing { engine.inputNode.isVoiceProcessingInputMuted = true }
@@ -392,7 +434,13 @@ final class MicPipeline: @unchecked Sendable {
         if input.channelCount > 1 { converter?.channelMap = [0] }
     }
 
+    private var _lastBufferUptime: TimeInterval?
+    /// When the input tap last delivered a buffer (system uptime), muted or not; nil before the first.
+    var lastBufferUptime: TimeInterval? { lock.withLock { _lastBufferUptime } }
+
     func process(_ buffer: AVAudioPCMBuffer) -> [Data] {
+        let at = ProcessInfo.processInfo.systemUptime
+        lock.withLock { _lastBufferUptime = at }
         guard let converter, enabled else { return [] }
         let ratio = output.sampleRate / buffer.format.sampleRate
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 32
@@ -419,6 +467,19 @@ final class MicPipeline: @unchecked Sendable {
         }
         if resumed { onSpeechDuringCue?() }
         return frames
+    }
+}
+
+/// DEMO P0 11/4: is the mic's input tap stalled? It delivers a buffer every ~20 ms while the engine runs.
+enum MicStall {
+    /// no buffer for this long while the mic is on = stalled
+    static let thresholdS: TimeInterval = 1.5
+    /// the least time between two heals (a rebuild takes a moment to deliver its first buffer)
+    static let healGapS: TimeInterval = 3
+    /// `since`: when the current input was opened or last rebuilt (it gets `thresholdS` to deliver its first buffer).
+    static func stalled(now: TimeInterval, lastBuffer: TimeInterval?, since: TimeInterval) -> Bool {
+        let last = max(lastBuffer ?? -.infinity, since)
+        return now - last > thresholdS
     }
 }
 
