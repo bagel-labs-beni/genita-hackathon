@@ -2658,6 +2658,8 @@ export class Session {
     const beat = () => {
         // hold cap B (11/4): never a beat while they're talking again (a pause the ASR took for the end of the turn)
         if (signal.aborted || this.reply !== reply || sentences.length || this.userTurnOpen()) return;
+        // Codex #664 r1: a real crisis line never gets a beat ahead of the help (no "Mm." before 988)
+        if (realCrisisSignal(text) || mayBeSelfHarm(text)) return;
         const before = sentences.length;
         beating = true;
         // rotate (never the same twice in a row), and never the opening word of the last replies (QA P3, #423)

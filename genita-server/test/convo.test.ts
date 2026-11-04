@@ -1955,3 +1955,24 @@ test("hold cap B turn-taking (default 1400 ms): a quick answer gets no beat, a s
   assert.ok(beats() <= 1, `at most one beat (got ${beats()})`);
   session.close();
 });
+
+test("Codex #664 r1: a slow reply to a real crisis line gets no hold beat ahead of the help", { skip: !v1 }, async (t) => {
+  const prev = process.env.GENITA_HOLD_CAP_MS;
+  process.env.GENITA_HOLD_CAP_MS = "100";
+  t.after(() => { if (prev === undefined) delete process.env.GENITA_HOLD_CAP_MS; else process.env.GENITA_HOLD_CAP_MS = prev; });
+  const client = new Client();
+  const session = new Session("capCrisis", client, {
+    config, openAsr: () => { throw new Error("no asr"); },
+    async *spark(): AsyncGenerator<SparkStreamEvent> {
+      await new Promise((r) => setTimeout(r, 900));
+      yield { type: "text", delta: "<sad> I'm really glad you told me. Please call or text 988 right now." };
+      yield { type: "done", responseId: "r", text: "", status: "completed" };
+    },
+    async *tts() {},
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "I want to kill myself." }));
+  await client.waitFor((m) => m.type === "reply" && m.final === true, 8000);
+  assert.ok(!client.json.some((m) => m.type === "say" && BEAT.test(String(m.text))), "no beat before the help");
+  session.close();
+});
