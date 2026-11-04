@@ -161,8 +161,11 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     var sceneFresh = false   // both observed: a view that drew the placeholder redraws when trust arrives (Codex P2)
     var sceneTrusted: Bool { sceneCompanionConfirmed || sceneFresh }
     /// Until `/prep` answers (no `sceneKey` yet) the saved scene counts only for this account.
+    /// Face plan item 2 (11/4): the signed-in account's own saved scene shows at once on a relaunch, before `/me` and
+    /// `/companion` answer (they took 0.5–1.1 s, with a placeholder meanwhile). It is always a generated scene, never
+    /// the upload; if the server's companion turns out to be another one, `adoptServerCompanion` drops it then.
     var sceneImageData: Data? {
-        guard sceneTrusted else { return nil }
+        guard sceneTrusted || setup.accountId != nil else { return nil }
         return sceneImage.flatMap { saved in
             if let key = sceneKey { return saved.key == key ? saved.data : nil }
             return saved.key.hasPrefix(sceneOwner) ? saved.data : nil

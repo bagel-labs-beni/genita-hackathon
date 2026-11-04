@@ -1,6 +1,7 @@
 import CoreGraphics
 import CryptoKit
 import Foundation
+import ImageIO
 import SwiftUI
 
 /// L4 · The companion's animated Meta face on the call screen (docs/specs/metaface.md "App").
@@ -74,14 +75,31 @@ struct FaceFrameView: View {
 /// its images (`GET /v1/companion/face/{key}`) with the call's bearer token, cached in Caches by account +
 /// manifest, decoded and aligned off the main thread.
 ///
+/// Face plan items 2 + 6 (11/4): with an `early` consumer, a returning account gets the face it saw last straight
+/// from Caches — its rest-frame poster (PNG), then the set — before `/prep` is asked; `/prep` then only says whether
+/// it changed. A flow face never downloads the 10 viseme stills (the flow morph draws every mouth), and on a first
+/// download the set is built from neutral + person + flow as soon as they land; the expression stills follow and
+/// the full set replaces it.
+///
 /// Threat line: caller = the app · auth = the existing session JWT (`Authorization: Bearer`, same as the call
 /// socket) · abuse = read-only, the caller's own companion; image refs on another host are never fetched, so
-/// the token never leaves the session's host · data = the companion's own images.
+/// the token never leaves the session's host · data = the companion's own images, cached per account (another
+/// account's token never matches a cached key, and only one set is kept).
 struct CompanionFaceLoader: Sendable {
     typealias Fetch = @Sendable (URLRequest) async throws -> (Data, URLResponse)
     /// `.pending`: the account's companion exists but its face set isn't made yet (prep still running).
     enum Outcome { case none, pending, unchanged, loaded(key: String, set: FaceSet) }
     enum LoadError: Error, Equatable { case status(String, Int), foreignHost(String), missingNeutral }
+    /// What comes before the final outcome. `true` back from the consumer = it is on screen now.
+    enum Early: @unchecked Sendable {
+        /// The rest frame saved for this account's last face set (drawn at the consumer's reduce-motion setting).
+        case poster(key: String, image: CGImage)
+        /// A drawable set: the one on disk (key = its cache key), or the first-download set without the expression
+        /// stills (key = cache key + `partialSuffix`, so the next load still finishes it).
+        case face(key: String, set: FaceSet)
+    }
+    typealias EarlyConsumer = @Sendable (Early) async -> Bool
+    static let partialSuffix = "+partial"
 
     var endpoint: CallEndpoint
     var cacheRoot: URL
@@ -98,70 +116,72 @@ struct CompanionFaceLoader: Sendable {
     }
 
     /// `.none` = no token or no companion (the still stays); `.pending` = the face isn't made yet;
-    /// `.unchanged` = `currentKey` is still current.
-    func load(currentKey: String?) async throws -> Outcome {
+    /// `.unchanged` = `currentKey` (or the set handed to `early` from disk) is still current.
+    /// `posterReduceMotion` picks which saved poster `early` gets; `timing` collects the face.timing marks.
+    func load(currentKey: String?, posterReduceMotion: Bool = false, timing: FaceLoadTiming? = nil, early: EarlyConsumer? = nil) async throws -> Outcome {
         guard let token = endpoint.token, !token.isEmpty, let base = Self.httpBase(of: endpoint.url) else { return .none }
+        let subject = CallController.tokenSubject(token) ?? "anon"
+        // 1. Item 2: the set this account had last, from Caches, before any request.
+        var shownKey = currentKey
+        if let early, let disk = Self.diskManifest(root: cacheRoot, subject: subject), disk.key != currentKey {
+            if let poster = Self.loadPoster(root: cacheRoot, key: disk.key, reduceMotion: posterReduceMotion) {
+                if await early(.poster(key: disk.key, image: poster)) { timing?.mark("poster", note: "disk") }
+            }
+            let dir = cacheRoot.appending(path: disk.key, directoryHint: .isDirectory)
+            let parts = Self.parts(of: disk.manifest)
+            let bytes = Self.diskBytes(parts.all(withVisemes: true), dir: dir)
+            if let set = try? await Self.makeSet(disk.manifest, parts: parts, bytes: bytes, withVisemes: !parts.flowComplete(bytes)) {
+                timing?.mark("compute", note: "disk")
+                if await early(.face(key: disk.key, set: set)) { shownKey = disk.key }
+            }
+            guard !Task.isCancelled else { return .unchanged }
+        }
+
+        // 2. /prep: is that still the face?
         let body: Data
         do { body = try await get(base.appending(path: "v1/companion/prep"), token: token, what: "prep").0 }
         catch LoadError.status(_, 404) { return .none }   // no companion on this account
+        timing?.mark("prep")
         guard let prep = try? JSONDecoder().decode(Prep.self, from: body), !prep.unreadable else { return .none }
         // prep still running: the face comes later; prep failed (PREP-1e): nothing comes until a Try again
         guard let manifest = prep.face else { return prep.status == "failed" ? .none : .pending }
-        let key = Self.cacheKey(subject: CallController.tokenSubject(token) ?? "anon", manifest: manifest)
-        if key == currentKey { return .unchanged }
+        let key = Self.cacheKey(subject: subject, manifest: manifest)
+        if key == shownKey { return .unchanged }
 
-        // Every image the manifest names, by its manifest key (also the cache file name).
-        var refs: [String: String] = [:]
-        for (k, ref) in manifest.images.merging(manifest.visemes, uniquingKeysWith: { a, _ in a }) where Self.safeName(k) { refs[k] = ref }
-        // Option B flow morph files (#226): extension-less refs, decoded by role (key image, f16 flow, lip /
-        // interior masks, …). Every file the entry names is fetched, so a role GenitaKit adds later comes along.
-        var flowNames: Set<String> = []
-        if let flow = manifest.flow {
-            for (k, f) in flow.files where Self.safeName(k) {
-                for child in Mirror(reflecting: f).children {
-                    guard let role = child.label, let ref = child.value as? String else { continue }   // 2D snap faces have no flows
-                    refs["flow\(k)\(role)"] = ref; flowNames.insert("flow\(k)\(role)")
-                }
-            }
-            refs["flowmask"] = flow.mask; flowNames.insert("flowmask")
-            if let n = flow.neutralRoi { refs["flowneutral"] = n; flowNames.insert("flowneutral") }
-        }
-        guard let neutralRef = refs["neutral"] else { throw LoadError.missingNeutral }
+        // 3. Download. Every image the manifest names, by its manifest key (also the cache file name).
+        let parts = Self.parts(of: manifest)
+        guard parts.images["neutral"] != nil else { throw LoadError.missingNeutral }
         let dir = cacheRoot.appending(path: key, directoryHint: .isDirectory)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        var bytes: [String: Data] = [:]   // ref → image bytes
-        try await withThrowingTaskGroup(of: (String, Data?).self) { group in
-            for (k, ref) in refs {
-                group.addTask {
-                    let file = dir.appending(path: k)
-                    if let cached = try? Data(contentsOf: file), !cached.isEmpty { return (ref, cached) }
-                    do {
-                        let url = try Self.resolve(ref, base: base)
-                        let (data, _) = try await get(url, token: token, what: k)
-                        try? data.write(to: file, options: .atomic)
-                        return (ref, data)
-                    } catch {
-                        // A rejected or missing image: the face set falls back to its nearest shape.
-                        if k == "neutral" { throw error }
-                        return (ref, nil)
-                    }
-                }
-            }
-            for try await (ref, data) in group { if let data { bytes[ref] = data } }
-        }
-        guard bytes[neutralRef] != nil else { throw LoadError.missingNeutral }
+        // Item 6: neutral + person + flow first. The expression stills come after, unless they're on disk already
+        // (one build then) or nobody draws the early set.
+        let laterOnDisk = parts.later.keys.allSatisfy { Self.cached(dir.appending(path: $0)) != nil }
+        let staged = early != nil && parts.flow != nil && !laterOnDisk
+        var bytes = try await fetchAll(staged ? parts.first : parts.all(withVisemes: false), dir: dir, base: base, token: token)
         Self.prune(cacheRoot, keeping: key)
-        let images = bytes
-        // A flow set with any file missing is dropped as a whole: the face uses its key patches.
-        var useManifest = manifest
-        if !flowNames.isEmpty, flowNames.contains(where: { refs[$0].map { images[$0] == nil } ?? true }) { useManifest.flow = nil }
-        let finalManifest = useManifest
-        let set = try await Task.detached(priority: .userInitiated) {
-            try FaceSet(manifest: finalManifest) { ref in
-                guard let data = images[ref] else { throw FaceSetError.undecodable(ref) }
-                return data
-            }
-        }.value
+        // a flow set with a file missing is dropped: the face needs its viseme stills after all
+        var withVisemes = !parts.flowComplete(bytes)
+        if withVisemes { bytes.merge(try await fetchAll(parts.visemes, dir: dir, base: base, token: token)) { a, _ in a } }
+        timing?.mark("download")
+        guard bytes[parts.images["neutral"]!] != nil else { throw LoadError.missingNeutral }
+        var set = try await Self.makeSet(manifest, parts: parts, bytes: bytes, withVisemes: withVisemes)
+        if set.flow == nil, !withVisemes {
+            // the flow files came but didn't decode (FaceSet note "flow: … → key patches"): same fallback
+            withVisemes = true
+            bytes.merge(try await fetchAll(parts.visemes, dir: dir, base: base, token: token)) { a, _ in a }
+            set = try await Self.makeSet(manifest, parts: parts, bytes: bytes, withVisemes: true)
+        }
+        timing?.mark("compute")
+        if staged {
+            _ = await early?(.face(key: key + Self.partialSuffix, set: set))
+            guard !Task.isCancelled else { return .unchanged }
+            bytes.merge(try await fetchAll(parts.later, dir: dir, base: base, token: token)) { a, _ in a }
+            timing?.mark("expressions")
+            set = try await Self.makeSet(manifest, parts: parts, bytes: bytes, withVisemes: withVisemes, priority: .utility)
+        }
+        // the whole set is on disk: the next launch starts from it (manifest.json last, so its presence means done)
+        try? Data(Self.ownerTag(subject).utf8).write(to: dir.appending(path: Self.ownerFile), options: .atomic)
+        if let json = try? JSONEncoder().encode(manifest) { try? json.write(to: dir.appending(path: Self.manifestFile), options: .atomic) }
         return .loaded(key: key, set: set)
     }
 
@@ -179,6 +199,106 @@ struct CompanionFaceLoader: Sendable {
             face = try? c?.decodeIfPresent(FaceManifest.self, forKey: .face)
             if face == nil, let c, c.contains(.face), (try? c.decodeNil(forKey: .face)) == false { unreadable = true }
         }
+    }
+
+    /// A manifest's files by manifest key (= cache file name) → ref, in the order the face needs them.
+    struct Parts {
+        /// neutral, person and any other image that isn't an expression still
+        var images: [String: String] = [:]
+        /// blink, smile, warm, surprised, concerned (only shown later in a call)
+        var later: [String: String] = [:]
+        var visemes: [String: String] = [:]
+        /// Option B flow morph files (#226), nil without a flow block
+        var flow: [String: String]?
+        /// what has to land before the first set can be built
+        var first: [String: String] { images.merging(flow ?? [:]) { a, _ in a } }
+        func all(withVisemes: Bool) -> [String: String] {
+            first.merging(later) { a, _ in a }.merging(withVisemes ? visemes : [:]) { a, _ in a }
+        }
+        /// every flow file is there (no flow block = nothing to draw with)
+        func flowComplete(_ bytes: [String: Data]) -> Bool {
+            guard let flow, !flow.isEmpty else { return false }
+            return flow.values.allSatisfy { bytes[$0] != nil }
+        }
+    }
+
+    static let expressionKeys: Set<String> = Set(FaceExpression.allCases.map(\.rawValue)).subtracting(["neutral"])
+
+    static func parts(of manifest: FaceManifest) -> Parts {
+        var p = Parts()
+        for (k, ref) in manifest.images where safeName(k) {
+            if expressionKeys.contains(k) { p.later[k] = ref } else { p.images[k] = ref }
+        }
+        for (k, ref) in manifest.visemes where safeName(k) && p.images[k] == nil && p.later[k] == nil { p.visemes[k] = ref }
+        // extension-less refs, decoded by role (key image, f16 flow, lip / interior masks, …). Every file the entry
+        // names is fetched, so a role GenitaKit adds later comes along.
+        if let flow = manifest.flow {
+            var f: [String: String] = [:]
+            for (k, files) in flow.files where safeName(k) {
+                for child in Mirror(reflecting: files).children {
+                    guard let role = child.label, let ref = child.value as? String else { continue }   // 2D snap faces have no flows
+                    f["flow\(k)\(role)"] = ref
+                }
+            }
+            f["flowmask"] = flow.mask
+            if let n = flow.neutralRoi { f["flowneutral"] = n }
+            p.flow = f
+        }
+        return p
+    }
+
+    /// Builds the set off the main thread. A flow set with any file missing is dropped as a whole (the face uses its
+    /// key patches); `withVisemes: false` (flow faces) leaves the viseme stills out — the renderer never draws them.
+    static func makeSet(_ manifest: FaceManifest, parts: Parts, bytes: [String: Data], withVisemes: Bool,
+                        priority: TaskPriority = .userInitiated) async throws -> FaceSet {
+        var m = manifest
+        if !parts.flowComplete(bytes) { m.flow = nil }
+        if !withVisemes { m.visemes = [:] }
+        let use = m
+        return try await Task.detached(priority: priority) {
+            try FaceSet(manifest: use) { ref in
+                guard let data = bytes[ref] else { throw FaceSetError.undecodable(ref) }
+                return data
+            }
+        }.value
+    }
+
+    /// ref → bytes for `refs` (manifest key → ref): Caches first, else the server. A missing image other than
+    /// neutral falls back to its nearest shape in the set.
+    private func fetchAll(_ refs: [String: String], dir: URL, base: URL, token: String) async throws -> [String: Data] {
+        var bytes: [String: Data] = [:]
+        try await withThrowingTaskGroup(of: (String, Data?).self) { group in
+            for (k, ref) in refs {
+                group.addTask {
+                    let file = dir.appending(path: k)
+                    if let cached = Self.cached(file) { return (ref, cached) }
+                    do {
+                        let url = try Self.resolve(ref, base: base)
+                        let (data, _) = try await get(url, token: token, what: k)
+                        try? data.write(to: file, options: .atomic)
+                        return (ref, data)
+                    } catch {
+                        // A rejected or missing image: the face set falls back to its nearest shape.
+                        if k == "neutral" { throw error }
+                        return (ref, nil)
+                    }
+                }
+            }
+            for try await (ref, data) in group { if let data { bytes[ref] = data } }
+        }
+        return bytes
+    }
+
+    private static func cached(_ file: URL) -> Data? {
+        guard let data = try? Data(contentsOf: file), !data.isEmpty else { return nil }
+        return data
+    }
+
+    /// ref → bytes from the cache folder only (no request).
+    static func diskBytes(_ refs: [String: String], dir: URL) -> [String: Data] {
+        var out: [String: Data] = [:]
+        for (k, ref) in refs { if let d = cached(dir.appending(path: k)) { out[ref] = d } }
+        return out
     }
 
     private func get(_ url: URL, token: String, what: String) async throws -> (Data, URLResponse) {
@@ -220,11 +340,93 @@ struct CompanionFaceLoader: Sendable {
         return "v\(manifest.version ?? 0)-" + digest.prefix(12).map { String(format: "%02x", $0) }.joined()
     }
 
-    /// One face set on disk at a time (~3 MB); older manifests and other accounts' sets go.
+    /// A cache folder name `cacheKey` made (never a path out of the cache).
+    static func isCacheKey(_ key: String) -> Bool {
+        !key.isEmpty && key.count <= 48 && key.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }
+    }
+
+    static let manifestFile = "manifest.json"
+    static let ownerFile = "owner"
+
+    /// Which account a cache folder belongs to, without the account id itself on disk.
+    static func ownerTag(_ subject: String) -> String {
+        SHA256.hash(data: Data("genita-face-owner".utf8) + Data([0]) + Data(subject.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// The fully downloaded set this account had last: its folder holds `manifest.json` and this account's owner tag;
+    /// the folder's name is the key `cacheKey` gave it (another account's token never matches either).
+    static func diskManifest(root: URL, subject: String) -> (key: String, manifest: FaceManifest)? {
+        let tag = Data(ownerTag(subject).utf8)
+        for dir in (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? [] {
+            let name = dir.lastPathComponent
+            guard isCacheKey(name), cached(dir.appending(path: ownerFile)) == tag, let data = cached(dir.appending(path: manifestFile)),
+                  let m = try? JSONDecoder().decode(FaceManifest.self, from: data) else { continue }
+            return (name, m)
+        }
+        return nil
+    }
+
+    // MARK: poster (face plan item 2)
+
+    /// `<root>/<key>/poster-rm0.png` (rm1 = drawn with reduce motion). nil for anything but a cache key.
+    static func posterURL(root: URL, key: String, reduceMotion: Bool) -> URL? {
+        let k = key.replacingOccurrences(of: partialSuffix, with: "")
+        guard isCacheKey(k) else { return nil }
+        return root.appending(path: k, directoryHint: .isDirectory).appending(path: "poster-rm\(reduceMotion ? 1 : 0).png")
+    }
+
+    /// Keeps the rendered rest frame next to its set (PNG). Only into a folder the loader made for that key, so
+    /// review keys ("dir:…") and pruned sets write nothing.
+    static func savePoster(_ image: CGImage, root: URL, key: String, reduceMotion: Bool) {
+        guard let url = posterURL(root: root, key: key, reduceMotion: reduceMotion),
+              FileManager.default.fileExists(atPath: url.deletingLastPathComponent().path) else { return }
+        let data = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil) else { return }
+        CGImageDestinationAddImage(dest, image, nil)
+        guard CGImageDestinationFinalize(dest) else { return }
+        try? (data as Data).write(to: url, options: .atomic)
+    }
+
+    static func loadPoster(root: URL, key: String, reduceMotion: Bool) -> CGImage? {
+        guard let url = posterURL(root: root, key: key, reduceMotion: reduceMotion), let data = cached(url),
+              let src = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        return CGImageSourceCreateImageAtIndex(src, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
+    }
+
+    /// One face set on disk at a time (~7.5 MB for a person face with flow: 91 files, measured on prod 11/4; ~4.7 MB
+    /// now that flow faces skip the viseme stills); older manifests and other accounts' sets go.
     static func prune(_ root: URL, keeping key: String) {
         let fm = FileManager.default
         for url in (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? [] where url.lastPathComponent != key {
             try? fm.removeItem(at: url)
         }
+    }
+}
+
+/// #645 part 1: milliseconds from the start of one face load to each step, logged as one `face.timing` line
+/// (prep, download, compute, renderer, poster, firstFrame; a step's first time only, "(disk)" when it came from Caches).
+final class FaceLoadTiming: @unchecked Sendable {
+    private let lock = NSLock()
+    private let start = CFAbsoluteTimeGetCurrent()
+    private var marks: [(name: String, ms: Int, note: String?)] = []
+    private var logged = false
+
+    func mark(_ name: String, note: String? = nil) {
+        let ms = Int(((CFAbsoluteTimeGetCurrent() - start) * 1000).rounded())
+        lock.withLock { if !marks.contains(where: { $0.name == name }) { marks.append((name, ms, note)) } }
+    }
+
+    func has(_ name: String) -> Bool { lock.withLock { marks.contains { $0.name == name } } }
+
+    var line: String {
+        lock.withLock { "face.timing " + marks.map { "\($0.name)=\($0.ms)\($0.note.map { "(\($0))" } ?? "")" }.joined(separator: " ") }
+    }
+
+    /// The line once, when every step in `needed` is in (nil before that and after it was handed out).
+    func lineOnce(needing needed: [String]) -> String? {
+        let ready = lock.withLock { !logged && needed.allSatisfy { n in marks.contains { $0.name == n } } }
+        guard ready else { return nil }
+        let l = line
+        return lock.withLock { if logged { return nil }; logged = true; return l }
     }
 }
