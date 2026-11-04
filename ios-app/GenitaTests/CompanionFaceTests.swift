@@ -304,7 +304,9 @@ import XCTest
         let other = CallController()
         other.faceRetryInterval = .milliseconds(50)
         made.value = false
-        other.faceLoaderOverride = { CompanionFaceLoader(endpoint: $0, cacheRoot: cache, fetch: fetch) }
+        // its own cache: the set saved above would come from disk first (face plan item 2) and never ask /prep
+        let otherCache = tempDir()
+        other.faceLoaderOverride = { CompanionFaceLoader(endpoint: $0, cacheRoot: otherCache, fetch: fetch) }
         other.showFace(reduceMotion: true, animate: false)
         try await Task.sleep(for: .milliseconds(200))
         other.hideFace()

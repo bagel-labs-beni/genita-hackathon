@@ -537,7 +537,7 @@ import UIKit
         model.sceneImage = ("a|https://x/scene.jpg", Data([1, 2, 3]))
         let relaunched = AppState(storage: store, imageURL: photo)
         relaunched.setup.accountId = "a"; relaunched.setup.imageId = "c1"
-        XCTAssertNil(relaunched.sceneImageData, "not before the server confirmed the companion")
+        XCTAssertEqual(relaunched.sceneImageData, Data([1, 2, 3]), "face plan item 2: the same account's scene shows before the server answers")
         relaunched.adoptServerCompanion(imageId: "c1")
         XCTAssertEqual(relaunched.sceneImageData, Data([1, 2, 3]), "before /prep answers: the saved scene")
         relaunched.setup.accountId = "b"
@@ -570,7 +570,7 @@ import UIKit
         model.setup.accountId = "a"; model.setup.imageId = "old"
         model.setup.imageData = Data([9])
         model.sceneImage = ("a|https://x/scene.jpg", Data([1, 2, 3]))
-        XCTAssertNil(model.sceneImageData, "unconfirmed at launch: not shown")
+        XCTAssertEqual(model.sceneImageData, Data([1, 2, 3]), "unconfirmed at launch: the same account's generated scene shows (face plan item 2)")
         model.adoptServerCompanion(imageId: "new")   // the server has another companion now
         XCTAssertNil(model.sceneImage, "the old companion's scene is dropped (memory and disk)")
         XCTAssertNil(model.setup.imageData, "and its picture")
@@ -582,7 +582,10 @@ import UIKit
         other.sceneImage = ("a|https://x/scene.jpg", Data([7]))      // cached by whichever companion, same URL
         let next = AppState(storage: store, imageURL: photo)
         next.setup.accountId = "a"; next.setup.imageId = "new"
-        XCTAssertNil(next.sceneImageData, "a cached scene waits for the server's word, even with the same key")
+        XCTAssertEqual(next.sceneImageData, Data([7]), "a cached scene shows at once for the same account")
+        next.setup.accountId = nil
+        XCTAssertNil(next.sceneImageData, "no known account: it waits for the server's word")
+        next.setup.accountId = "a"
         next.adoptServerCompanion(imageId: "new")
         XCTAssertEqual(next.sceneImageData, Data([7]), "same companion confirmed: the cache counts")
     }

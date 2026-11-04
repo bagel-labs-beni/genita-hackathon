@@ -1,4 +1,5 @@
 import AVFoundation
+import Combine
 import Foundation
 import Observation
 import os
@@ -1184,6 +1185,7 @@ enum CallStop: Equatable {
         if let prepared, prepared.reduceMotion == reduceMotion, let poster = prepared.poster {
             posterReduceMotion = reduceMotion
             facePoster = poster
+            posterShown(poster, key: key, reduceMotion: reduceMotion)
         } else {
             renderFacePoster(set, size: size, seed: seed, reduceMotion: reduceMotion, for: driver)
         }
@@ -1200,6 +1202,59 @@ enum CallStop: Equatable {
             // a newer draw (reduce motion changed meanwhile) wins
             guard let self, self.face === driver, self.posterReduceMotion == reduceMotion else { return }
             self.facePoster = image
+            if let image { self.posterShown(image, key: self.faceKey, reduceMotion: reduceMotion) }
+        }
+    }
+
+    /// Face plan item 2: the rest frame goes to Caches next to its set (PNG, keyed by account + manifest and the
+    /// reduce-motion setting), so the next launch shows it before the set is built again. Review keys write nothing.
+    private func posterShown(_ image: CGImage, key: String?, reduceMotion: Bool) {
+        faceTiming?.mark("poster")
+        guard let key else { return }
+        let root = makeFaceLoader().cacheRoot
+        Task.detached(priority: .utility) { CompanionFaceLoader.savePoster(image, root: root, key: key, reduceMotion: reduceMotion) }
+    }
+
+    /// Face plan items 2 + 6: what the loader has before its final answer, for the account this load is for — the
+    /// saved rest frame of the account's last set (only while nothing of the face is up yet), then a drawable set
+    /// (from Caches, or the first download without the expression stills). True = it is on screen.
+    private func useEarlyFace(_ early: CompanionFaceLoader.Early, owner: String?, timing: FaceLoadTiming) async -> Bool {
+        guard !Task.isCancelled, owner == Self.tokenSubject(currentEndpoint.token) else { return false }
+        switch early {
+        case let .poster(_, image):
+            guard face == nil, facePoster == nil else { return false }
+            faceOwner = owner
+            posterReduceMotion = faceReduceMotion
+            facePoster = image
+            return true
+        case let .face(key, set):
+            if face != nil, faceKey == key { return true }
+            let prepared = await PreparedFace.build(set, reduceMotion: faceReduceMotion)
+            guard !Task.isCancelled, owner == Self.tokenSubject(currentEndpoint.token) else { return false }
+            timing.mark("renderer")
+            useFace(set, key: key, owner: owner, reduceMotion: faceReduceMotion, prepared: prepared)
+            watchFirstFrame(timing)
+            return true
+        }
+    }
+
+    /// While the face's reply is still audible (at most a minute): swapping the driver then would drop its timeline.
+    private func waitUntilNothingPlays() async {
+        for _ in 0..<600 {
+            guard !Task.isCancelled, playing else { return }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+    }
+
+    /// #645 part 1: the load's `face.timing` line goes out once the face has drawn its first frame and the load is over.
+    @ObservationIgnored private var faceTiming: FaceLoadTiming?
+    @ObservationIgnored private var faceFirstFrameWatch: AnyCancellable?
+    private func watchFirstFrame(_ timing: FaceLoadTiming) {
+        guard let face, !timing.has("firstFrame") else { return }
+        let log = self.log
+        faceFirstFrameWatch = face.$frame.compactMap { $0 }.first().sink { _ in
+            timing.mark("firstFrame")
+            if let line = timing.lineOnce(needing: ["firstFrame", "done"]) { log.info("\(line, privacy: .public)") }
         }
     }
 
@@ -1414,6 +1469,15 @@ enum CallStop: Equatable {
         faceDebugAttempts += 1
         #endif
         let owner = Self.tokenSubject(currentEndpoint.token)
+        let timing = FaceLoadTiming()
+        faceTiming = timing
+        // a saved poster put up for another account's load has no face to be swapped by: it goes now
+        if face == nil, facePoster != nil, faceOwner != owner { facePoster = nil }
+        let early: CompanionFaceLoader.EarlyConsumer = { [weak self] e in await self?.useEarlyFace(e, owner: owner, timing: timing) ?? false }
+        defer {
+            timing.mark("done")
+            if let line = timing.lineOnce(needing: ["firstFrame", "done"]) { log.info("\(line, privacy: .public)") }
+        }
         do {
             let outcome: CompanionFaceLoader.Outcome
             #if DEBUG
@@ -1422,24 +1486,30 @@ enum CallStop: Equatable {
                 let key = "dir:" + dir
                 outcome = key == faceKey ? .unchanged : .loaded(key: key, set: try await Task.detached { try FaceSet(directory: URL(fileURLWithPath: dir)) }.value)
             } else {
-                outcome = try await makeFaceLoader().load(currentKey: faceKey)
+                outcome = try await makeFaceLoader().load(currentKey: faceKey, posterReduceMotion: faceReduceMotion, timing: timing, early: early)
             }
             #else
-            outcome = try await makeFaceLoader().load(currentKey: faceKey)
+            outcome = try await makeFaceLoader().load(currentKey: faceKey, posterReduceMotion: faceReduceMotion, timing: timing, early: early)
             #endif
             guard !Task.isCancelled else { return false }
             switch outcome {
             case .unchanged: return false
-            case .none: if face != nil { useFace(nil, key: nil, reduceMotion: faceReduceMotion) }; return false
+            // (a saved poster shown before /prep answered goes too: that face is gone or being made again)
+            case .none: if face != nil || facePoster != nil { useFace(nil, key: nil, reduceMotion: faceReduceMotion) }; return false
             case .pending:
-                if face != nil { useFace(nil, key: nil, reduceMotion: faceReduceMotion) }
+                if face != nil || facePoster != nil { useFace(nil, key: nil, reduceMotion: faceReduceMotion) }
                 return faceOnScreen || faceKeepTrying
             case let .loaded(key, set):
                 log.info("face set \(key, privacy: .public): \(set.patches.count) mouth shapes; \(set.notes.joined(separator: "; "), privacy: .public)")
                 // face plan item 5: the renderer (FlowMorph) is built once, off the main thread, and draws the poster
                 let prepared = await PreparedFace.build(set, reduceMotion: faceReduceMotion)
                 guard !Task.isCancelled else { return false }
+                timing.mark("renderer")
+                // item 6: the full set replaces its partial one between replies, so a reply being heard keeps its mouth
+                if faceKey == key + CompanionFaceLoader.partialSuffix { await waitUntilNothingPlays() }
+                guard !Task.isCancelled else { return false }
                 useFace(set, key: key, owner: owner, reduceMotion: faceReduceMotion, prepared: prepared)
+                watchFirstFrame(timing)
                 return false
             }
         } catch {
