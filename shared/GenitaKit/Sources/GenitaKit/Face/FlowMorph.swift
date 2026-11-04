@@ -1745,7 +1745,9 @@ final class FlowMorph: @unchecked Sendable {
                 if let sk = skin {
                     let l0 = (c.0 + c.1 + c.2) / 3, fL = 0.25 * (sk.0 + sk.1 + sk.2) / 3
                     if l0 < fL, fL > 1 {
-                        let g = (0.75 + 0.35 * Float(y - top) / max(1, Float(bot - top))) * (0.85 + 0.3 * l0 / fL)
+                        // darker under the upper lip, lighter toward the tongue (a real open mouth has a gradient, not a void)
+                        let rr = Float(y - top) / max(1, Float(bot - top))
+                        let g = (0.65 + 0.9 * rr * rr) * (0.85 + 0.3 * l0 / fL)
                         let sm = (sk.0 + sk.1 + sk.2) / 3
                         let a = clip((fL - l0) / fL) * 0.8 * (1 - sstep(0.6, 0.95, dx))
                         c = (c.0 + (sm * 0.42 * g - c.0) * a, c.1 + (sm * 0.22 * g - c.1) * a, c.2 + (sm * 0.22 * g - c.2) * a)
