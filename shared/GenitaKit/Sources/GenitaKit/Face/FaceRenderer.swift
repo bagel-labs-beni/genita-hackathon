@@ -170,6 +170,8 @@ public final class FaceRenderer: @unchecked Sendable {
     public var expressionStillWeights: [FaceExpression: Double] { lock.lock(); defer { lock.unlock() }; return stills.shown.mapValues(\.band) }
     /// Laugh events on lip-rig faces play as `smileopen` (demo setting; the laugh warp fights the rig).
     nonisolated(unsafe) public static var laughAsSmileOpen = true
+    /// The next frame starts the alive motion still again and eases it in (`AliveMotion.restartRun`).
+    public func restartMotion() { lock.lock(); motion.restartRun(); lock.unlock() }
     /// Cancel / barge-in: drop the mouth's smoothing and held shapes so it rests on the next frame (an expression
     /// on screen relaxes smoothly; its reply's events are dropped).
     public func resetMouth() { lock.lock(); flowMorph?.reset(); stills.cancel(); browTracker = BrowFlash.Tracker(); lock.unlock() }
@@ -435,16 +437,9 @@ public final class FaceRenderer: @unchecked Sendable {
         // resolution: the frame so far (mouth, jaw, blink included) is cut into head, body and
         // background layers that move separately, so the mouth rides the head and never slides.
         let out = CGRect(origin: .zero, size: outputSize)
-        let scale = max(outputSize.width / extent.width, outputSize.height / extent.height) * (reduceMotion ? 1 : AliveMotion.overscan)
-        var fill = CGAffineTransform(a: scale, b: 0, c: 0, d: scale,
-                                     tx: (outputSize.width - extent.width * scale) / 2, ty: (outputSize.height - extent.height * scale) / 2)
-        if framingZoom > 1.001 {
-            // zoom about the framing point where it already sits on screen (inside the image: no edge shows)
-            let c = CGPoint(x: framingCenter.x - extent.minX, y: framingCenter.y - extent.minY).applying(fill)
-            fill = fill.concatenating(CGAffineTransform(translationX: -c.x, y: -c.y))
-                .concatenating(CGAffineTransform(scaleX: framingZoom, y: framingZoom))
-                .concatenating(CGAffineTransform(translationX: c.x, y: c.y))
-        }
+        // (one transform with `framedScene`, so the call scene shown before the face set lands sits on these pixels)
+        let fill = Self.fillTransform(still: extent.size, output: outputSize, zoom: framingZoom,
+                                      center: CGPoint(x: framingCenter.x - extent.minX, y: framingCenter.y - extent.minY), reduceMotion: reduceMotion)
         let filled = img.clampedToExtent().transformed(by: fill)
         guard !reduceMotion else { return filled.cropped(to: out) }
         var m = motionState(at: t, open: open, face: Self.ciRect(faceSet.faceBox, height: h))
@@ -574,8 +569,9 @@ public final class FaceRenderer: @unchecked Sendable {
     static func framing(_ set: FaceSet) -> (zoom: CGFloat, center: CGPoint) {
         let f = set.faceBox, H = Double(set.pixelSize.height)
         let fh = Double(f.height) / max(1, H)
-        let fr = set.flow?.map.framing
-        let human = (set.flow?.kind ?? "human") == "human"
+        // the manifest's kind and map framing, also when the flow didn't load (server `framing` uses them; Codex P2)
+        let fr = set.mapFraming
+        let human = (set.framingKind ?? "human") == "human"
         var z = fr?.zoom ?? (human || fh <= 0 ? 1 : min(1.35, max(1, 0.35 / fh)))
         z = z.isFinite ? min(2, max(1, z)) : 1
         let cy = fr?.cy.map { $0 * H } ?? (Double(f.midY) - 0.1 * Double(f.height))

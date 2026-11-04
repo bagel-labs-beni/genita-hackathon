@@ -384,8 +384,11 @@ struct MouthQualityTests {
         #expect(maxOff < 9)
         #expect(maxStep < 0.6)
         #expect(maxRoll < 2.0)
-        let a = FaceRenderer(faceSet: animalSet, outputSize: CGSize(width: out, height: 960), seed: 7).motionTransforms(at: 4.2, open: 0)
-        let b = FaceRenderer(faceSet: animalSet, outputSize: CGSize(width: out, height: 960), seed: 8).motionTransforms(at: 4.2, open: 0)
+        // seeded: same frames in time order (every run starts still, AliveMotion.settleSeconds), different seeds differ
+        let ra = FaceRenderer(faceSet: animalSet, outputSize: CGSize(width: out, height: 960), seed: 7)
+        let rb = FaceRenderer(faceSet: animalSet, outputSize: CGSize(width: out, height: 960), seed: 8)
+        for i in 0..<105 { _ = ra.motionTransforms(at: Double(i) / 25, open: 0); _ = rb.motionTransforms(at: Double(i) / 25, open: 0) }
+        let a = ra.motionTransforms(at: 4.2, open: 0), b = rb.motionTransforms(at: 4.2, open: 0)
         #expect(a.head != b.head)
     }
 

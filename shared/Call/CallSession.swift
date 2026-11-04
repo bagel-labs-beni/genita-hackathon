@@ -1146,9 +1146,10 @@ enum CallStop: Equatable {
         let seed: UInt64
         let reduceMotion: Bool
         /// one renderer for the live face and its poster (FlowMorph set up once, not twice)
-        static func build(_ set: FaceSet, reduceMotion: Bool) async -> PreparedFace {
+        /// `key` = the face set's cache key: its seed (`CompanionFace.seed(forKey:)`) is the disk poster's too
+        static func build(_ set: FaceSet, key: String?, reduceMotion: Bool) async -> PreparedFace {
             await Task.detached(priority: .userInitiated) {
-                let seed = UInt64.random(in: 1...UInt64.max)
+                let seed = CompanionFace.seed(forKey: key)
                 let renderer = FaceRenderer(faceSet: set, outputSize: CompanionFace.outputSize(for: set), seed: seed, reduceMotion: reduceMotion)
                 return PreparedFace(renderer: renderer, poster: renderer.render(at: 0, lip: .rest), seed: seed, reduceMotion: reduceMotion)
             }.value
@@ -1167,7 +1168,8 @@ enum CallStop: Equatable {
         guard let set else { face = nil; return }
         let size = CompanionFace.outputSize(for: set)
         // one seed for the live face and its poster: same overscan and motion, so the poster → live step doesn't jump
-        let seed = prepared?.seed ?? UInt64.random(in: 1...UInt64.max)
+        // face plan item 1: from the face key (the motion starts still at t = 0 either way, see AliveMotion)
+        let seed = prepared?.seed ?? CompanionFace.seed(forKey: key)
         faceSeed = seed
         posterReduceMotion = nil
         let driver = prepared.map { FaceDriver(renderer: $0.renderer, reduceMotion: reduceMotion) }
@@ -1502,7 +1504,7 @@ enum CallStop: Equatable {
             case let .loaded(key, set):
                 log.info("face set \(key, privacy: .public): \(set.patches.count) mouth shapes; \(set.notes.joined(separator: "; "), privacy: .public)")
                 // face plan item 5: the renderer (FlowMorph) is built once, off the main thread, and draws the poster
-                let prepared = await PreparedFace.build(set, reduceMotion: faceReduceMotion)
+                let prepared = await PreparedFace.build(set, key: key, reduceMotion: faceReduceMotion)
                 guard !Task.isCancelled else { return false }
                 timing.mark("renderer")
                 // item 6: the full set replaces its partial one between replies, so a reply being heard keeps its mouth

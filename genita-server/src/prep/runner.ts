@@ -76,6 +76,34 @@ export function prepProgress(p: PrepState): { done: number; total: number } {
 /** The expression keys this server makes (GENITA_FACE_EMOTION_KEYS=0 drops surprised / concerned). */
 const EXPRESSION_KEYS = FACE_EXPRESSIONS.filter((k) => faceKeysFor("human").includes(k));
 
+/**
+ * Face plan item 1: the call-screen crop of the scene, so the app can draw the scene exactly like the face set's rest
+ * frame before the set is downloaded. Mirrors GenitaKit `FaceRenderer.framing(set)` on the manifest the app will get:
+ * `zoom` (1…2) about (`cx`, `cy`), fractions of the still (y down). People are never zoomed; a non-human face shorter
+ * than 35 % of the still is zoomed up to it (≤ 1.35×), centred a tenth of the face height above the face centre;
+ * `flow.map.framing` wins. Kind = the flow's (no flow on a finished set = a person, as the app reads it); before the
+ * flow exists, the companion type. null until the scene and its face box are known.
+ */
+export function sceneFraming(c: CompanionRecord): { zoom: number; cx: number; cy: number } | null {
+  const p = c.prep;
+  const face = p.steps.face;
+  const ref = face?.face?.ref?.face;
+  if (p.steps.scene.status !== "done" || !ref || ref.length !== 4 || !ref.every(Number.isFinite)) return null;
+  const k = ref.map((v) => Math.min(1, Math.max(0, v)));
+  const [x1, y1, x2, y2] = k[2] - k[0] > 0.002 && k[3] - k[1] > 0.002 ? k : [0, 0, 1, 1];
+  const fh = y2 - y1, midX = (x1 + x2) / 2, midY = (y1 + y2) / 2;
+  const flow = face?.face?.flow;
+  const kind = flow ? flow.kind : face?.status === "done" ? "human" : c.type;
+  const fr = flow?.map?.framing;
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+  const mapZoom = fr && typeof fr === "object" && !Array.isArray(fr) ? num((fr as Record<string, unknown>).zoom) : undefined;
+  const mapCy = fr && typeof fr === "object" && !Array.isArray(fr) ? num((fr as Record<string, unknown>).cy) : undefined;
+  const human = (kind ?? "human") === "human";
+  const zoom = Math.min(2, Math.max(1, mapZoom ?? (human || fh <= 0 ? 1 : Math.min(1.35, Math.max(1, 0.35 / fh)))));
+  const cy = Math.min(1, Math.max(0, mapCy ?? midY - 0.1 * fh));
+  return { zoom, cx: Math.min(1, Math.max(0, midX)), cy };
+}
+
 export function prepView(c: CompanionRecord) {
   const p = c.prep;
   return {
@@ -85,6 +113,8 @@ export function prepView(c: CompanionRecord) {
     maxAttempts: MAX_PREP_ATTEMPTS,
     sceneUrl: p.steps.scene.url ?? null,
     sceneSource: p.steps.scene.source ?? null,
+    /** face plan item 1: the scene's call-screen crop (see `sceneFraming`) */
+    framing: sceneFraming(c),
     // Keep the legacy prep response shape neutral for existing clients.
     emotionVideos: {},
     /** Meta-only face set manifest (team/metaface spec), once the face step is done */

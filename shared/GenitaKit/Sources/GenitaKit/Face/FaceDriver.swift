@@ -165,7 +165,17 @@ public final class FaceDriver: ObservableObject {
         return queue.sync { renderer.render(at: t, lip: lip) }
     }
 
+    private var running: Bool {
+        #if os(iOS)
+        link != nil
+        #else
+        timer != nil
+        #endif
+    }
+
     public func start() {
+        // face plan item 1: the first live frame is the rest frame (the poster / framed scene), then the motion eases in
+        if !running { let r = renderer; queue.async { r.restartMotion() } }
         #if os(iOS)
         guard link == nil else { return }
         let target = DisplayLinkTarget { [weak self] in self?.tick() }
