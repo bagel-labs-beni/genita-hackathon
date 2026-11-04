@@ -20,7 +20,7 @@ import { SentenceSplitter } from "../text/sentences.ts";
 import { parseTaggedSentence } from "../text/tags.ts";
 import { fallbackLine, guardSentence, mayBeSelfHarm, neverSpoken, realCrisisSignal, type GuardClass } from "./guard.ts";
 import { noteHook, openerBlock, openerKind, pickOpenerHook, profileHooks } from "./opener.ts";
-import { noInventedOpener, noRepeatGreeting, noUnpromptedGoodbye } from "./greetOnce.ts";
+import { noFinallyTone, noInventedOpener, noRepeatGreeting, noUnpromptedGoodbye } from "./greetOnce.ts";
 import { noPolicyTalk } from "./faceTalk.ts";
 import { initiativeBlock, initiativeInput, type InitiativeSource } from "./initiative.ts";
 import { cueRhythm, moodFrom, moodLine, turnHints } from "./rhythm.ts";
@@ -127,7 +127,7 @@ export const adapter = {
       let tts = kept.length ? part : avoidRepeatedOpener(part, recent);
       if (tts) tts = dropRepeatedName(tts, ctx.scenario.user.name, [...recent.slice(-2), ...kept]);
       // prompt-100: as the session, no second hello once the call has our reply, no send-off to a question
-      if (tts && ctx.turn.kind === "user") tts = noUnpromptedGoodbye(ctx.history.some((h) => h.role === "assistant") ? noRepeatGreeting(tts, userText) : tts, userText);
+      if (tts && ctx.turn.kind === "user") tts = noUnpromptedGoodbye(ctx.history.some((h) => h.role === "assistant") ? noRepeatGreeting(tts, userText) : noFinallyTone(tts, userText), userText);
       if (tts && ctx.turn.kind === "user") tts = noPolicyTalk(tts, userText);
       if (tts && ctx.turn.kind === "greet") tts = noInventedOpener(tts, { first: !kept.length, name: ctx.scenario.user.name });
       if (tts) tts = unseenToHeard(tts, !!ctx.camera); // scripted calls send no frames unless the turn says so

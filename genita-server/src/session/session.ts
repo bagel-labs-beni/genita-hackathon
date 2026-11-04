@@ -71,7 +71,7 @@ import type { TasteLine } from "../personalize/reasons.ts";
 import { backchannelOn, convoV1, englishOnly, eotHoldOn, initiativeOn } from "../convo/flags.ts";
 import { Backchannel } from "../convo/backchannel.ts";
 import { EOT, eotTuning, joinSegments, judgeEndOfTurn, type EotKind, type EotVerdict } from "../convo/endOfTurn.ts";
-import { noInventedOpener, noRepeatGreeting, noUnpromptedGoodbye } from "../convo/greetOnce.ts";
+import { noFinallyTone, noInventedOpener, noRepeatGreeting, noUnpromptedGoodbye } from "../convo/greetOnce.ts";
 import { FACE_RETRY_LINE, isFaceTurn, noPolicyTalk } from "../convo/faceTalk.ts";
 import { addressUser, thirdPersonCouldBeUser, fallbackLine, guardSentence, neverSpoken, NO_FRAME_RETRY_LINE, NO_ANSWER_LINE, LOST_LINE, UPSTREAM_RETRY_MS, realCrisisSignal, mayBeSelfHarm, nameAsYou, type GuardClass } from "../convo/guard.ts";
 import { isInterjectionOnly } from "../text/toolNarration.ts";
@@ -80,7 +80,7 @@ import { mentionsProfile, moodFrom, moodLine, turnHints, type Mood } from "../co
 import { carriedMood, moodScaledIntensity, saveCallMood } from "../convo/callMood.ts";
 import { holdsSteady, personaBaseline, restingFace } from "../convo/moodState.ts";
 import { forgetOpenerTopics, pickOpenerTopic, storedTopics } from "../convo/openerTopics.ts";
-import { InitiativeGovernor, initiativeBlock, initiativeInput, type InitiativeSource } from "../convo/initiative.ts";
+import { InitiativeGovernor, freshThreads, initiativeBlock, initiativeInput, type InitiativeSource } from "../convo/initiative.ts";
 import { cueRhythm } from "../convo/rhythm.ts";
 import type { PerceptionSource } from "../convo/types.ts";
 
@@ -2136,9 +2136,13 @@ export class Session {
       const input = initiativeInput(again.source);
       // prompt-100 r4: never the same topic or opening word twice in a call; the camera now beats an old thread
       // what was asked to be forgotten in this call is not sent back as "already said" (Codex r5 P1)
-      const said = forgetInCall(this.history, this.removedLines).filter((h) => h.role === "assistant").map((h) => h.text).slice(-6);
+      const kept = forgetInCall(this.history, this.removedLines);
+      const said = kept.filter((h) => h.role === "assistant").map((h) => h.text).slice(-6);
+      // a stored thread about what was just forgotten in this call is never offered either (Codex r6 P1)
+      const gone = this.history.filter((h) => !kept.includes(h)).map((h) => h.text);
+      const offer = gone.length ? freshThreads(threads, gone) : threads;
       const camera = !!(this.frames && this.now() - this.frames.at <= FRAMES_TTL_MS);
-      this.cueTurn = { source: again.source, block: cueRhythm(initiativeBlock(again.source, threads, { said, camera }), again.source, this.recentReplies), input };
+      this.cueTurn = { source: again.source, block: cueRhythm(initiativeBlock(again.source, offer, { said, camera }), again.source, this.recentReplies), input };
       this.log("convo.initiative", { source: again.source, threads: threads.length, n: gov.count });
       this.dispatch({ type: "text", text: input });
     } finally {
@@ -2719,7 +2723,7 @@ export class Session {
         // isn't them leaving never gets a send-off ("Go, have fun!" to "can I throw in the leftover rice?"), convo/greetOnce.ts
         if (this.v1 && tts && !interpret && !self && !synthetic) {
           const greeted = this.history.some((h) => h.role === "assistant") || sentences.some((x) => x.opener);
-          const once = noUnpromptedGoodbye(greeted ? noRepeatGreeting(tts, guardCtx.userText) : tts, guardCtx.userText);
+          const once = noUnpromptedGoodbye(greeted ? noRepeatGreeting(tts, guardCtx.userText) : noFinallyTone(tts, guardCtx.userText), guardCtx.userText);
           if (once !== tts) {
             this.log("convo.greet_once", { utteranceId, dropped: !once });
             if (!once) { cutBefore = true; continue; }

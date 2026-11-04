@@ -17,7 +17,7 @@ export function userIsLeaving(userText: string): boolean {
 // "look who finally showed up", "you finally made it", "there you are", "you're back", "welcome back", "finally decided to show up"
 // each phrase must end its clause (Codex r1: "You made it through a tough interview" is praise, not a hello)
 const END = String.raw`(?=\s*(?:[,.!?…—]|$))`;
-const GREET_AGAIN = new RegExp(String.raw`\b(?:look (?:who(?:'s| is)?|at you)\b[^,.!?]*\b(?:show(?:ed|s)? up|here|back|made it|decided to [a-z]+|finally|crawl(?:ed|ing)? back|alive)${END}|(?:you\s+|she\s+)?(?:finally|actually)\s+(?:decided\s+to\s+)?(?:show(?:ed)?\s+up|made\s+it|call(?:ed)?|here|back|join(?:ed)?|pick(?:ed)?\s+up)${END}|(?:decided|bothered)\s+to\s+(?:show\s+up|call|join)${END}|you(?:'re|\s+are)\s+back${END}|welcome\s+back${END}|(?:good|nice|glad|great|so good)\s+to\s+(?:finally\s+)?(?:hear|see|meet|talk\s+to|catch)\s+you(?:\s+(?:live|again|for\s+real))?${END}|(?:finally\s+)?(?:putting|put|get\s+to\s+put)\s+a\s+face\s+to\s+the\s+(?:name|voice|banter|mischief)${END}|finally\s+(?:live|talking\s+for\s+real|hear(?:ing)?\s+you)(?:\s+and\s+not\s+just\s+texting)?${END}|(?:oh\s+)?hey\s+stranger|long\s+time\s+no\s+(?:see|talk)|(?:i was )?starting to think you (?:ditched|forgot|ghosted))`, "i");
+const GREET_AGAIN = new RegExp(String.raw`\b(?:look (?:who(?:'s| is)?|at you)\b[^,.!?]*\b(?:show(?:ed|s)? up|here|back|made it|decided to [a-z]+|finally|crawl(?:ed|ing)? back|alive)${END}|(?:you\s+|she\s+)?(?:finally|actually)\s+(?:decided\s+to\s+)?(?:show(?:ed)?\s+up|made\s+it|call(?:ed)?|here|back|join(?:ed)?|pick(?:ed)?\s+up)${END}|(?:decided|bothered)\s+to\s+(?:show\s+up|call|join)${END}|you(?:'re|\s+are)\s+back${END}|welcome\s+back${END}|(?:good|nice|glad|great|so good)\s+to\s+(?:finally\s+)?(?:hear|see|meet|talk\s+to|catch)\s+you(?:\s+(?:live|again|for\s+real))?${END}|(?:finally\s+)?(?:putting|put|get\s+to\s+put)\s+a\s+face\s+to\s+the\s+(?:name|voice|banter|mischief)${END}|finally\s+(?:live|talking\s+for\s+real|hear(?:ing)?\s+you|(?:getting\s+to\s+)?(?:actually\s+)?talk(?:ing)?(?:\s+for\s+real)?)(?:\s+and\s+not\s+just\s+texting)?${END}|(?:oh\s+)?hey\s+stranger|long\s+time\s+no\s+(?:see|talk)|(?:i was )?starting to think you (?:ditched|forgot|ghosted))`, "i");
 /** "Look who actually stayed up late with me" (bake-off-100 run3): a piece that opens with "look who" is a hello tease */
 const LOOK_WHO = /^\s*(?:(?:oh|well|hey)\s+)?(?:look who\b(?!'?s talking| is talking)|look at you\s*$)/i;
 /** only back to their own hello: "You made it just in time." to "I caught the last train" is a reaction (Codex r5) */
@@ -53,6 +53,12 @@ export function noRepeatGreeting(sentence: string, userText: string): string {
   if (!real.length) return USER_HELLO.test(userText) ? `${lead}${cap(hellos.join(", ") || "hey")}${end.replace(/\?/, ".")}` : "";
   // the hello itself goes too: the opener already said it
   return `${lead}${cap(real.join(", "))}${end}`;
+}
+
+/** the "at last you showed up" tone, even on the call's first reply (11/4 r6: "Hey Summer, look who finally showed up.") */
+const FINALLY_TONE = /\b(?:look who\b|(?:finally|actually)\s+(?:decided\s+to\s+)?show(?:ed)?\s+up|decided to show up|bout time|about time you|took you long enough|nice of you to show up)/i;
+export function noFinallyTone(sentence: string, userText: string): string {
+  return FINALLY_TONE.test(sentence) ? noRepeatGreeting(sentence, userText) : sentence;
 }
 
 const SEND_OFF = /\b(?:bye|goodbye|good ?night|night night|ttyl|talk (?:to you )?(?:later|soon|tomorrow)|catch you (?:later|soon)|see (?:you|ya) (?:later|soon|tomorrow)|(?:i want|give me|tell me) the full story after|go,? have fun)\b/i;

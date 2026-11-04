@@ -1428,7 +1428,8 @@ test("CV-01 (eval v2 11/4): with no past in the call, 'again' about them is cut 
   await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", user: { name: "Summer" } }));
   await session.onClientText(JSON.stringify({ type: "text", text: "hi" }));
   const a = await client.waitFor((m) => m.type === "reply" && m.final === true);
-  assert.equal(a.text, "Look who crawled back. Bet you're craving late-night ramen talk.");
+  // prompt-100 r6: "Look who crawled back" is the "at last you showed up" tone and becomes a plain hey
+  assert.equal(a.text, "Hey. Bet you're craving late-night ramen talk.");
   await session.onClientText(JSON.stringify({ type: "text", text: "do you remember what I told you about my ex?" }));
   const b = await client.waitFor((m) => m.type === "reply" && m.final === true && m.text !== a.text);
   assert.equal(b.text, "Spill it, I'm listening.");

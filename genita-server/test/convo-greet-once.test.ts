@@ -171,3 +171,12 @@ test("r5 (Codex): help after a refusal clause stays, 'figure out' is not a body 
   assert.equal(noRepeatGreeting("Hey, you made it just in time.", "hey"), "Hey.");
   assert.equal(noRepeatGreeting("There you are, so what's the verdict on the fit?", "hi"), "So what's the verdict on the fit?");
 });
+
+test("r6: no 'finally showed up' even on the first reply; 'finally getting to actually talk' is a repeat hello; forgotten threads are not offered", async () => {
+  const { noFinallyTone } = await import("../src/convo/greetOnce.ts");
+  const { freshThreads } = await import("../src/convo/initiative.ts");
+  assert.equal(noFinallyTone("Hey Summer, look who finally showed up.", "hey"), "Hey Summer.");
+  assert.equal(noFinallyTone("Oh, you're back! What are you cooking?", "hey"), "Oh, you're back! What are you cooking?");
+  assert.equal(noRepeatGreeting("Hey Summer, finally getting to actually talk.", "hey"), "Hey Summer.");
+  assert.deepEqual(freshThreads(["Likes jasmine tea before bed", "Started a pottery class"], ["I always have jasmine tea before bed"]), ["Started a pottery class"]);
+});
