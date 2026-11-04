@@ -3,8 +3,8 @@
  *
  * Ops-only (D41): prepares the judge demo companion template once. Runs the server's normal
  * prep (photo check → companion → whatever prep pipeline this build has → prefs/persona) for
- * the sample person (default assets/demo/jin.jpg, Muse Image-generated, see
- * ios-app/ASSET-SOURCES.md) under the reserved account provider "dev", sub "demo:template",
+ * the sample person (--image <path>; default assets/demo/jin.jpg, which is not in the
+ * public repository) under the reserved account provider "dev", sub "demo:template",
  * name "Jin", the default voice. Judge sign-ins then copy it (src/prep/demo.ts).
  *
  * Env: DATABASE_URL (the server's DB), MODEL_API_KEY, the server's blob env (GENITA_S3_* or
