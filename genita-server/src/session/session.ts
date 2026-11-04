@@ -171,6 +171,8 @@ export type SessionDeps = {
 /** Demo S5 (agreed with the convo lane 11/3): the product-ask turn's reply while the search runs in the background. */
 /** S5: how long the spoken pick may take before the plain ack goes out instead (the pick call is ~1–2 s) */
 const PICK_WAIT_MS = 4000;
+export const RECIPE_REACTION_LINE =
+  "An ingredient check of what they are showing is already running and you will say what you see right after it. Reply now with ONE short, warm sentence (under 10 words) reacting to what they asked, as you. Don't list ingredients, don't name a dish, and never say you are looking, checking or can't see.";
 export const PRODUCT_REACTION_LINE =
   "A shopping search for this is already running in the background and its card will appear on its own. Reply with ONE short sentence (under 10 words): a natural, in-character reaction to what they asked or what you see (taste, color, how it goes with the outfit); talk to them as you. Never say you are searching, looking, checking or pulling anything up, no 'let me…'; don't name products, stores, prices or links.";
 /** The slice of the personalize service a call uses (structural, so tests can fake it). */
@@ -2540,7 +2542,7 @@ export class Session {
             yield { type: "text" as const, delta: text };
             yield { type: "done" as const, responseId: null, text, status: "completed" };
           })();
-        } else if (started.kind === "product") {
+        } else if (started.kind === "product" || started.kind === "recipe") {
           // demo S5: the search can take 10–30 s, so no silent wait and no "On it." — one quick in-character reaction
           // (no tools: nothing to narrate, no guessed products); the card and its own line follow when it lands.
           // A failed reaction falls back to the short ack.
@@ -2548,7 +2550,13 @@ export class Session {
           const textOnly = Array.isArray(req.input)
             ? req.input.map((m) => ("content" in m && Array.isArray(m.content) ? { ...m, content: m.content.filter((c) => c.type === "input_text").map((c) => (c as { text: string }).text).join(" ") } : m))
             : req.input;
-          const react = this.sparkSource({ ...req, input: textOnly as typeof req.input, instructions: `${req.instructions ?? ""}\n${PRODUCT_REACTION_LINE}\n`, tools: undefined }, signal, undefined, false);
+          // P0 11/4: the recipe turn too gets its own generated line (not a fixed "Ooh, let me see."); what is in view is
+          // said after the ingredient check (D23), so this line never lists ingredients
+          const reactLine = started.kind === "recipe" ? RECIPE_REACTION_LINE : PRODUCT_REACTION_LINE;
+          const react = this.sparkSource({ ...req, input: textOnly as typeof req.input, instructions: `${req.instructions ?? ""}\n${reactLine}\n`, tools: undefined }, signal, undefined, false);
+          // P0 11/4 (Codex #738): an empty recipe reaction falls back to the normal generated answer, never the fixed ack
+          const recipeTurn = started.kind === "recipe";
+          const fullAnswer = () => this.sparkSource({ ...req, tools: undefined }, signal, undefined, false);
           pre = (async function* () {
             let said = false;
             try {
@@ -2563,7 +2571,7 @@ export class Session {
             } catch (err) {
               if (said) throw err;
             }
-            if (!said) yield* fixed;
+            if (!said) yield* (recipeTurn ? fullAnswer() : fixed);
           })();
         } else pre = fixed;
         this.log("finds.ack", { utteranceId, kind: started.kind });
