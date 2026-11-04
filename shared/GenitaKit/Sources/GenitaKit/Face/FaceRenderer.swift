@@ -179,6 +179,8 @@ public final class FaceRenderer: @unchecked Sendable {
         self.reduceMotion = reduceMotion
         rng = SplitMix64(seed: seed)
         motion = AliveMotion(seed: seed)
+        // build 10: no frame sway unless the served map asks (`alive.sway`); a missing or old map never brings it back
+        motion.swayGain = 0
         if let a = faceSet.flow?.map.alive ?? (faceSet.flow?.kind == "human" ? FlowMap.Alive() : nil) {
             motion.headGain = a.headGain; motion.nodGain = a.nodGain
             motion.rollGain = a.rollGain ?? a.headGain; motion.nodWidth = a.nodWidth; motion.cameraGain = a.camera
