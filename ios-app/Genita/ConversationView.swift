@@ -33,15 +33,22 @@ struct ConversationView: View {
     #if DEBUG
     @State private var debugWaitHold = ProcessInfo.processInfo.environment["GENITA_WAIT_STAGE"] != nil
     #endif
-    /// S09: nothing generated to show yet (no scene, poster or live face). Upload photos never count.
+    /// S09: no picture of the generated face yet (the scene, or the face set's rendered poster / still; a driver
+    /// whose first frame isn't drawn doesn't count — Codex P2), and one is still coming: not after the prep failed
+    /// (S09-PF, the call goes on as usual), and at most `waitCap` when no prep is running. Upload photos never count.
     /// DEBUG `GENITA_WAIT_STAGE=hold` keeps it waiting, `=<seconds>` lets the face arrive after that long
     /// (review shots of the wait stage and the arrival on unwired builds).
     private var waitingForFace: Bool {
         #if DEBUG
         if debugWaitHold { return true }
         #endif
-        return companionImage == nil && call.facePoster == nil && call.face == nil
+        guard !hasFacePicture, model.prep?.isFailed != true else { return false }
+        let prepRunning = model.prep.map { !$0.isReady } ?? false
+        return prepRunning || !waitCapOver
     }
+    private var hasFacePicture: Bool { companionImage != nil || call.facePoster != nil || call.faceStill != nil }
+    /// the wait stage gives up after this long when nothing is being made (a scene or face set that never loads)
+    @State private var waitCapOver = false
     @State private var connectedTaps = 0
     @State private var appConfig = GenitaAppConfigStore.shared
     @Environment(\.scenePhase) private var scenePhase
@@ -66,7 +73,7 @@ struct ConversationView: View {
                 let moveLine = !connecting && handoffEnabled && (handoff.moving || handoff.moveFailed)
                 let findsPill = call.finds.pillText
                 // S09 wait stage: "Getting {name} ready" until the face is here; S09-PREP keeps its own line instead
-                let waitingPill: String? = !connecting && waitingForFace && model.callPrepIndicator == nil ? "Getting \(call.companionName) ready" : nil
+                let waitingPill: String? = !connecting && waitingForFace && model.callPrepIndicator == nil ? CallCueView.waitingLine(name: call.companionName, rowWidth: grid.rowPillWidth) : nil
                 // HUD r01 A: which line the status pill is on, so the prep line, the chip and camera labels stack around it
                 let moveShown = moveLine && !findsTabOpen && !interpreting && !unclear
                 let statusWidth = moveShown ? CallCueView.pillWidth(text: HandoffMoveStatusLine.text(moving: handoff.moving))
@@ -298,7 +305,9 @@ struct ConversationView: View {
             if now { waitStageUp = true; return }
             guard was, !connecting else { waitStageUp = false; return }
             // the arrival is card 10's moment: its one tap moves here when the face came after the call went live
-            if connectedTaps == 0 { connectedTaps = 1 } else { faceArrivedTaps += 1 }
+            // (the wait gave up with no picture: only the live tap it held back)
+            if !hasFacePicture { if connectedTaps == 0, call.link == .live { connectedTaps = 1 } }
+            else if connectedTaps == 0 { connectedTaps = 1 } else { faceArrivedTaps += 1 }
             Task { try? await Task.sleep(for: .milliseconds(320)); if !waitingForFace { waitStageUp = false } }
         }
         #if DEBUG
@@ -309,6 +318,11 @@ struct ConversationView: View {
         }
         #endif
         .sensoryFeedback(trigger: faceArrivedTaps) { _, _ in MotionDetails.live(reduceMotion: reduceMotion) ? .impact(weight: .medium) : nil }
+        .task(id: connecting) {
+            guard !connecting, !waitCapOver else { return }
+            try? await Task.sleep(for: .seconds(20))
+            if !Task.isCancelled { waitCapOver = true }
+        }
         .task(id: connecting) {
             guard !connecting, !faceWaitOver else { return }
             try? await Task.sleep(for: .seconds(2.5))

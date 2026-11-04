@@ -185,6 +185,12 @@ struct CallCueView: View {
         guard let rowWidth else { return full }
         return pillWidth(text: full) <= rowWidth ? full : short
     }
+    /// S09 wait stage: "Getting {name} ready" when it fits on the row, else "Getting ready" (a long name never runs
+    /// off the screen; Codex P3)
+    static func waitingLine(name: String, rowWidth: CGFloat) -> String {
+        let full = "Getting \(name) ready"
+        return pillWidth(text: full) <= rowWidth ? full : "Getting ready"
+    }
     private static func textWidth(_ text: String) -> CGFloat {
         let font = UIFont(name: "PretendardVariable-Medium", size: 14) ?? .systemFont(ofSize: 14, weight: .medium)
         return ceil((text as NSString).size(withAttributes: [.font: font]).width)
