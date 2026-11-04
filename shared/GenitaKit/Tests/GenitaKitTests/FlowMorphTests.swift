@@ -469,8 +469,11 @@ struct Flat2DTests {
         } }
         for y in 5..<35 { let i = (y * w + 5) * 3; p[i] = 60; p[i + 1] = 60; p[i + 2] = 60 }           // a stray arc far left
         let r = try #require(FlowMorph.flatten2D(key: p, neutral: n, mask: mask, width: w, height: h, mouth: CGRect(x: 20, y: 18, width: 20, height: 4)))
-        let tooth = (16 * w + 30) * 3, inside = (22 * w + 30) * 3
-        #expect(abs(r.pix[tooth] - r.pix[inside]) < 1 && r.pix[inside] < 100)   // teeth and inside: one flat dark tone
+        // teeth and inside: one flat dark tone that keeps the key's pencil grain (±10 %, df7ddd2b) — the teeth row is no
+        // longer 240; the 2 px rim is the drawing's ink outline, so the tooth is sampled 2 px inside (row 17)
+        let tooth = (17 * w + 30) * 3, inside = (22 * w + 30) * 3
+        #expect(r.pix[tooth] < 100 && r.pix[inside] < 100)
+        #expect(abs(r.pix[tooth] - r.pix[inside]) < 0.2 * r.pix[inside])
         #expect(r.region[22 * w + 30] > 0.9)                                      // the mouth replaces the still
         #expect(r.region[20 * w + 5] < 0.1)                                       // the stray arc does not
         // codex P1: a mouth box outside the ROI returns nil, never crashes
