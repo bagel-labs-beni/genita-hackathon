@@ -67,18 +67,6 @@ function importQuotesOf(report: InsightReport): Map<string, ImportQuote[]> {
   return quotes;
 }
 
-/** The DB records that an import supported a trait, never the copied words themselves. */
-function storeReport(report: InsightReport): InsightReport {
-  const storeEvidence = (e: InsightEvidence): InsightEvidence => e.source === "import" ? { ...e, quote: "", highlight: "" } : e;
-  return {
-    ...report,
-    observations: report.observations.map((o) => ({ ...o, evidence: o.evidence.map(storeEvidence) })),
-    strengths: report.strengths.map((x) => ({ ...x, evidence: storeEvidence(x.evidence) })),
-    watchouts: report.watchouts.map((x) => ({ ...x, evidence: storeEvidence(x.evidence) })),
-    mix: report.mix.map((x) => ({ ...x, evidence: storeEvidence(x.evidence) })),
-  };
-}
-
 /** Restore only this process's import receipts; without them, omit the receipt rather than render an empty quote. */
 function responseReport(report: InsightReport, saved?: ImportQuotes): InsightReport {
   const used = new Map<string, number>();
@@ -148,6 +136,7 @@ export class Insights {
     this.log = o.log ?? (() => {});
     this.now = o.now ?? (() => new Date());
     this.enabled = o.enabled ?? process.env.GENITA_INSIGHTS !== "0";
+    this.personalize.onForget((userId) => this.forget(userId));
   }
 
   private nowMs(): number { return this.now().getTime(); }
@@ -172,9 +161,13 @@ export class Insights {
 
   private rememberImportQuotes(userId: string, report: InsightReport) {
     this.pruneImportMemory();
+    // The original import starts the retention window. A rewrite completing
+    // after expiry cannot make a new two-hour receipt window.
+    const text = this.texts.get(userId);
+    if (!text || this.nowMs() - text.at > TEXT_TTL_MS) { this.importQuotes.delete(userId); return; }
     const quotes = importQuotesOf(report);
     if (!quotes.size) { this.importQuotes.delete(userId); return; }
-    this.importQuotes.set(userId, { quotes, at: this.texts.get(userId)?.at ?? this.nowMs() });
+    this.importQuotes.set(userId, { quotes, at: text.at });
   }
 
   private reportFor(userId: string, card: StyleCard | null | undefined): InsightReport | null {
@@ -270,9 +263,12 @@ export class Insights {
         const kept = scrubRemoved(withoutObservations(report, gone), c.removed);
         const observations = kept.observations.map((o) => (right.has(o.id) ? { ...o, verdict: "right" as const, confidence: "high" as const } : o));
         saved = { ...kept, observations };
-        return { ...c, insights: { ...storeReport(saved), ...(denied.length ? { denied } : {}) } };
+        return { ...c, insights: { ...saved, ...(denied.length ? { denied } : {}) } };
       });
-      if (next?.insights && saved) this.rememberImportQuotes(userId, saved);
+      // `forget()` advances seq through Personalize's callback. Check again
+      // after the serialized write so a receipt can never come back from an
+      // in-flight job after that forget.
+      if (next?.insights && saved && this.seq.get(userId) === mine) this.rememberImportQuotes(userId, saved);
       this.failedAt.delete(userId);
     })()
       .catch((err) => {
@@ -381,12 +377,12 @@ export class Insights {
       if (!ins || !o) return null;
       found = true;
       if (b.verdict === "right") {
-        return { ...c, insights: storeReport({ ...ins, observations: ins.observations.map((x) => (x.id === id ? { ...x, verdict: "right" as const, confidence: "high" as const } : x)) }) };
+        return { ...c, insights: { ...ins, observations: ins.observations.map((x) => (x.id === id ? { ...x, verdict: "right" as const, confidence: "high" as const } : x)) } };
       }
       const learning = ins.learning.some((l) => l.id === o.category) ? ins.learning : [...ins.learning, { id: o.category, label: LEARN_LABEL[o.category] }];
       const denied = [...(ins.denied ?? []), { id, claim: o.claim, category: o.category, ...(correction ? { correction } : {}), at: this.now().toISOString() }].slice(-DENIED_MAX);
       // the type / strengths / watch-outs / headline built on it go too (Codex P2)
-      return { ...c, insights: { ...storeReport({ ...withoutObservations(ins, [id]), learning: learning.slice(0, 5) }), denied } };
+      return { ...c, insights: { ...withoutObservations(ins, [id]), learning: learning.slice(0, 5), denied } };
     });
     if (!found || !next?.insights) throw new InsightsError(404, "not_found", "no such insight");
     this.log("insights.verdict", { verdict: b.verdict, corrected: !!correction });

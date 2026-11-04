@@ -60,6 +60,27 @@ export type DeniedInsight = { id: string; claim: string; category: InsightCatego
 /** stored in the style card (user_styles.style_json.insights) */
 export type StoredInsights = InsightReport & { denied?: DeniedInsight[] };
 
+/**
+ * Persistence boundary for a style card's insights. Import receipts prove that a
+ * trait came from an import, but their copied words are response-only memory.
+ * Keep this pure so every style-card write can use the same boundary.
+ */
+export function storedInsights(insights: StoredInsights): StoredInsights {
+  const storedEvidence = (e: InsightEvidence): InsightEvidence => e.source === "import" ? { ...e, quote: "", highlight: "" } : e;
+  return {
+    ...insights,
+    observations: insights.observations.map((o) => ({ ...o, evidence: o.evidence.map(storedEvidence) })),
+    strengths: insights.strengths.map((x) => ({ ...x, evidence: storedEvidence(x.evidence) })),
+    watchouts: insights.watchouts.map((x) => ({ ...x, evidence: storedEvidence(x.evidence) })),
+    mix: insights.mix.map((x) => ({ ...x, evidence: storedEvidence(x.evidence) })),
+  };
+}
+
+/** Apply the insight persistence boundary without coupling this module to StyleCard. */
+export function storedStyle<T extends { insights?: StoredInsights }>(card: T): T {
+  return card.insights ? { ...card, insights: storedInsights(card.insights) } : card;
+}
+
 const MAX_LINES = 4;
 const safe = (s: string) => s.replace(/[<>\n\r]/g, " ").replace(/\s+/g, " ").trim().slice(0, 160);
 

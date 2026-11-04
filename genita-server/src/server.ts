@@ -37,6 +37,7 @@ import { DEFAULT_VOICES } from "./prep/voices.ts";
 const CURATED_SPEAKERS = DEFAULT_VOICES.map((v) => Number(v.id)).filter((n) => Number.isInteger(n));
 import { createVoiceSeats } from "./tts/capacity.ts";
 import { createPrep } from "./prep/index.ts";
+import { storedStyle } from "./insights/profile.ts";
 import { demoTemplateWanted, readDemoPointer, startDemoTemplate } from "./prep/demoTemplate.ts";
 import { DEMO_TEMPLATE_SUB } from "./prep/demo.ts";
 import { createCompanionReset, guardDemoSeed } from "./prep/reset.ts";
@@ -200,7 +201,7 @@ export async function startServer(
       // in the profile's per-user lock: a personalize save under way can't write the old count back (Codex AU-90)
       const personalize = deps.personalize ?? prep.deps.personalize;
       if (personalize && "resetGrowth" in personalize) await (personalize as { resetGrowth(u: string): Promise<void> }).resetGrowth(userId);
-      else { const style = await prep.deps.store.getStyle(userId); if (style?.growth) await prep.deps.store.putStyle(userId, { ...style, growth: { calls: 0, asked: [] } }); }
+      else { const style = await prep.deps.store.getStyle(userId); if (style?.growth) await prep.deps.store.putStyle(userId, storedStyle({ ...style, growth: { calls: 0, asked: [] } })); }
     },
   });
   // F6-L7: who holds the sound. conversations.active_device/epoch with accounts, memory without.

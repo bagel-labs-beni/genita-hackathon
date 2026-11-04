@@ -237,6 +237,7 @@ test("D95 r2: filtered traits keep their own receipt; import mix never persists;
   const legacy = toReport(RAW, INPUTS, { at: new Date().toISOString(), from: "import" });
   legacy.mix = [{ id: "import-mix", left: "Light", right: "Serious", position: 1, evidence: { source: "import", quote: "ok but which one is cheaper lol", source_label: "From the reply you pasted" } }];
   await h.p.replaceStyle("u1", { ...CARD, insights: legacy });
+  assert.ok(!JSON.stringify((await h.store.getStyle("u1"))!.insights).includes("which one is cheaper lol"), "the shared style persistence boundary scrubs a legacy report before any later rewrite");
   const mixed = await h.ins.verdict("u1", legacy.observations[0].id, { verdict: "right" });
   assert.equal(mixed.mix.length, 0, "a mix without an in-memory import receipt is omitted");
   assert.ok(!JSON.stringify((await h.store.getStyle("u1"))!.insights).includes("which one is cheaper lol"), "a legacy import mix is scrubbed on write");
@@ -244,11 +245,76 @@ test("D95 r2: filtered traits keep their own receipt; import mix never persists;
   const h2 = harness((req) => (req.schemaName === "insight_report" ? RAW : { updates: [], answered: false }));
   t.after(h2.cleanup);
   const second = h2.ins.begin("u2", PASTE);
-  second.commit(await h2.p.replaceStyle("u2", { ...CARD, sections: { ...CARD.sections, communication: [f("Jokes about cheaper choices.")] } }));
+  second.commit(await h2.p.replaceStyle("u2", CARD));
   await h2.ins.get("u2", 3000);
   await h2.p.voiceCorrection("u2", "Forget about cheaper lol.", "");
   const afterForget = await h2.ins.get("u2", 0);
-  assert.ok(!JSON.stringify(afterForget.report).includes("which one is cheaper lol"), "a forgotten import receipt is never re-attached");
+  assert.ok(!JSON.stringify(afterForget.report).includes("which one is cheaper lol"), "a forget whose target exists only in an import receipt clears volatile receipts too");
+});
+
+test("D95 r3: a forget during an in-flight insight write cannot restore its import receipt", async (t) => {
+  let releaseSpark!: () => void;
+  const sparkGate = new Promise<void>((resolve) => { releaseSpark = resolve; });
+  const h = harness(async (req) => {
+    if (req.schemaName === "insight_report") await sparkGate;
+    return req.schemaName === "insight_report" ? RAW : { updates: [], answered: false };
+  });
+  t.after(h.cleanup);
+  const put = h.store.putStyle.bind(h.store);
+  let holdWrite = false;
+  let writeEntered!: () => void;
+  const writeStarted = new Promise<void>((resolve) => { writeEntered = resolve; });
+  let releaseWrite!: () => void;
+  const writeGate = new Promise<void>((resolve) => { releaseWrite = resolve; });
+  h.store.putStyle = async (userId, card) => {
+    if (holdWrite) {
+      holdWrite = false;
+      writeEntered();
+      await writeGate;
+    }
+    return put(userId, card);
+  };
+
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  holdWrite = true;
+  releaseSpark();
+  await writeStarted;
+  const forgetting = h.p.voiceCorrection("u1", "Forget about cheaper lol.", "");
+  await Promise.resolve(); // notifyForget runs before the forget's serialized DB update
+  releaseWrite();
+  await forgetting;
+  const after = await h.ins.get("u1", 3000);
+  assert.ok(!JSON.stringify(after.report).includes("which one is cheaper lol"), "a late patch completion did not re-register the receipt");
+});
+
+test("D95 r3: a rewrite that completes after the import TTL cannot restart receipt retention", async (t) => {
+  let ms = Date.parse("2026-11-04T00:00:00Z");
+  let reports = 0;
+  let releaseRewrite!: () => void;
+  const rewriteGate = new Promise<void>((resolve) => { releaseRewrite = resolve; });
+  let rewriteEntered!: () => void;
+  const rewriteStarted = new Promise<void>((resolve) => { rewriteEntered = resolve; });
+  const h = harness(async (req) => {
+    if (req.schemaName !== "insight_report") return null;
+    reports++;
+    if (reports === 2) {
+      rewriteEntered();
+      await rewriteGate;
+    }
+    return RAW;
+  }, () => new Date(ms));
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  await h.ins.get("u1", 3000);
+  ms += 2 * 60 * 60_000 - 1;
+  await h.ins.fromAnswers("u1", { help: "Think with me" });
+  await rewriteStarted;
+  ms += 2;
+  releaseRewrite();
+  const after = await h.ins.get("u1", 3000);
+  assert.ok(after.report!.observations.every((o) => o.evidence.every((e) => e.source !== "import")), "a post-expiry rewrite returned no renewed import receipt");
 });
 
 test("service: setup answers re-write the report (import text kept in memory only) with settings; verdicts stick", async (t) => {
