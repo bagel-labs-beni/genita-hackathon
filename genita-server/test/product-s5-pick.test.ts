@@ -29,6 +29,11 @@ test("pick: another kind or another colour contradicts the spoken pick; a name w
   assert.equal(contradictsPick("Stan Smith White Sneakers", PICK), false);
   assert.equal(contradictsPick("Nike Air Force 1 '07", PICK), false);
   assert.equal(contradictsPick("Campo leather shoe", PICK), false);
+  // a brand isn't a colour (Codex #726)
+  const brown = { item: "brown boots", color: "brown", say: "" };
+  assert.equal(contradictsPick("Red Wing Iron Ranger Boot", brown), false);
+  assert.equal(contradictsPick("Black Chelsea Boot", brown), true);
+  assert.equal(contradictsPick("Black Leather Boots", brown), true);
 });
 
 function vendors(lanes: (() => Promise<SparkResult>)[], prompts: string[] = []): FindsVendors {
@@ -95,4 +100,16 @@ test("S5: a pick whose line doesn't name its item says nothing specific (the pla
   const p = await decidePick(v, { question: "q", recent: [], taste: [], frames: [], signal: new AbortController().signal });
   assert.equal(p?.item, "white sneakers");
   assert.equal(p?.say, "");
+});
+
+test("Codex #726: duplicates across lanes don't crowd out the third lane's second product", async () => {
+  const four = [{ name: "White Sneaker A", slug: "a" }, { name: "Black Chelsea Bootie", slug: "b" }, { name: "Black Boot C", slug: "c" }, { name: "Black Boot D", slug: "d" }];
+  const v = vendors([
+    async () => laneOf(four),
+    async () => { await sleep(10); return laneOf(four); },
+    async () => { await sleep(20); return laneOf([{ name: "White Sneaker E", slug: "e" }]); },
+  ]);
+  const { ctx } = ctxFor(v, { pick: Promise.resolve(PICK), hedge: 3 });
+  const r = await runProduct(ctx);
+  assert.deepEqual(r.card!.products!.map((p) => p.name).sort(), ["White Sneaker A", "White Sneaker E"]);
 });

@@ -519,7 +519,15 @@ export function contradictsPick(product: string, pick: Pick): boolean {
   const want = kindOf(pick.item);
   const got = kindOf(product);
   if (want && got && want !== got) return true;
-  return offColor(product, colorFamilies(pick.color));
+  return offColor(withoutBrandColors(product), colorFamilies(pick.color));
+}
+const MATERIAL_WORD = /^(leather|suede|canvas|wool|cotton|linen|denim|silk|nylon|vegan|patent|rubber|knit|velvet|satin|mesh|low|high|mid|platform|chunky|classic|court|ankle|chelsea|combat|lace-up|slip-on)$/i;
+/** "Red Wing Iron Ranger": a capitalized colour word followed by another capitalized word that isn't a kind or a material is a brand, not a colour (Codex #726) */
+export function withoutBrandColors(name: string): string {
+  return name.replace(/\b([A-Z][a-z]+)\s+([A-Z][a-zA-Z'-]+)/g, (m, a: string, b: string) => {
+    if (!colorFamilies(a).size || MATERIAL_WORD.test(b) || kindOf(b)) return m;
+    return `_ ${b}`;
+  });
 }
 type Pick = ProductPick;
 
@@ -667,13 +675,14 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
   const label = str(j?.label, 40) || label0;
 
   // candidates, deduped by page: opened in the trace, or (checked below) a page we can read ourselves
-  // up to 4 from the winner, plus the other lanes' top-ups (mergeLanes) so a second product can fill the card
-  const raw = (Array.isArray(j?.items) ? (j!.items as ItemJson[]) : []).slice(0, 8);
+  // the winner's items first, then the other lanes' top-ups (mergeLanes); capped after dedupe and filters (Codex #726)
+  const raw = Array.isArray(j?.items) ? (j!.items as ItemJson[]) : [];
   const seen = new Set<string>();
   const cands: { item: ItemJson; url: string; inTrace: boolean }[] = [];
   const dropped: { notOpened: number; notProduct: number; offOccasion?: number; offColor?: number; otherDepartment?: number; offPick?: number } = { notOpened: 0, notProduct: 0 };
   const colors = pick?.color ? colorFamilies(pick.color) : askedColors(ctx.question, ctx.previous);
   for (const item of raw) {
+    if (cands.length >= 6) break;
     const claimed = str(item?.url, 600);
     const hit = matchOpened(claimed, opened);
     const url = httpsOf(hit ?? claimed);
