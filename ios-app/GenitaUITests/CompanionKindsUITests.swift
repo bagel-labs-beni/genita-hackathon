@@ -76,6 +76,8 @@ final class CompanionKindsUITests: XCTestCase {
         // NM01: the suggested name
         let name = app.textFields["companionNameInput"]
         XCTAssertTrue(name.waitForExistence(timeout: 10), "NM01")
+        XCTAssertTrue(app.buttons["useSuggestedName"].waitForExistence(timeout: 10), "NM01 opens empty: Use {name}")
+        app.buttons["useSuggestedName"].tap()
         expectation(for: NSPredicate(format: "value != nil AND value != ''"), evaluatedWith: name)
         waitForExpectations(timeout: 10)
         capture("NM01")
