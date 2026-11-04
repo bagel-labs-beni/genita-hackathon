@@ -321,10 +321,16 @@ struct ConversationView: View {
             guard was, !connecting else { waitStageUp = false; return }
             // the arrival is card 10's moment: its one tap moves here when the face came after the call went live
             // (the wait gave up with no picture: only the live tap it held back)
-            if !hasFacePicture { waitGaveUp = true; if connectedTaps == 0, call.link == .live { connectedTaps = 1 } }
+            if !hasFacePicture { if connectedTaps == 0, call.link == .live { connectedTaps = 1 } }
             // before the link is live the arrival taps on its own and card 10's live tap stays for the link (Codex P3)
             else if connectedTaps == 0, call.link == .live { connectedTaps = 1 } else { faceArrivedTaps += 1 }
-            Task { try? await Task.sleep(for: .milliseconds(320)); if !waitingForFace { waitStageUp = false } }
+            // still over after the step back (not a blink while prep turns ready and the idle cap restarts): it gave up
+            Task {
+                try? await Task.sleep(for: .milliseconds(320))
+                guard !waitingForFace else { return }
+                waitStageUp = false
+                if !hasFacePicture { waitGaveUp = true }
+            }
         }
         #if DEBUG
         .task(id: connecting) {
@@ -339,8 +345,10 @@ struct ConversationView: View {
             for await frame in face.$frame.values where frame != nil { liveFrameDrawn = true; break }
         }
         .sensoryFeedback(trigger: faceArrivedTaps) { _, _ in MotionDetails.live(reduceMotion: reduceMotion) ? .impact(weight: .medium) : nil }
-        .task(id: connecting) {
-            guard !connecting, !waitCapOver else { return }
+        // the idle cap starts again when prep moves on (running → ready brings a scene and a face set request; Codex P2)
+        .task(id: "\(connecting) \(model.prep?.status ?? "")") {
+            guard !connecting else { return }
+            waitCapOver = false
             try? await Task.sleep(for: .seconds(20))
             if !Task.isCancelled { waitCapOver = true }
         }
