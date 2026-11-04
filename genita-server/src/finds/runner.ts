@@ -6,7 +6,7 @@
  * on screen so "Ask about this" follow-ups make sense.
  */
 import { webAnswerCard, type WebSearch } from "./webAnswer.ts";
-import { assessLine, runGeneral } from "./general.ts";
+import { applySourceImage, assessLine, runGeneral } from "./general.ts";
 import { JUDGE_TIMEOUT_MS, judgeEnabled, judgeWithin, sparkJudge, type Judge, type JudgeResult } from "./judge.ts";
 import type { Intent } from "./intent.ts";
 import { findUrl } from "./parse.ts";
@@ -797,6 +797,7 @@ export class FindsRunner {
         if (m && card.steps[Number(m[1]) - 1]) card.steps[Number(m[1]) - 1].image = img;
         const p = e.slot.match(/^product-(\d+)$/);
         if (p && card.products?.[Number(p[1]) - 1]) card.products[Number(p[1]) - 1].image = img;
+        applySourceImage(card, img);
         void this.persist(card);
       }
     }

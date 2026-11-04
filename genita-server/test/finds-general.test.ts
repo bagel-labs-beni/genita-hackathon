@@ -10,7 +10,7 @@ import { Session, type SessionDeps, type ClientSink } from "../src/session/sessi
 import type { SparkRequest, SparkStreamEvent } from "../src/meta/spark.ts";
 import assert from "node:assert/strict";
 import { classifyTurn } from "../src/finds/intent.ts";
-import { GENERAL_REPLY_LINE, GENERAL_SAY, firstSentenceOnly, isGeneralAsk, runGeneral } from "../src/finds/general.ts";
+import { GENERAL_IMAGE_MS, GENERAL_REPLY_LINE, GENERAL_SAY, firstSentenceOnly, isGeneralAsk, questionTitle, runGeneral } from "../src/finds/general.ts";
 import { FindsRunner } from "../src/finds/runner.ts";
 import { MemoryFindsStore } from "../src/finds/store.ts";
 import type { PipelineCtx } from "../src/finds/pipeline.ts";
@@ -141,7 +141,7 @@ test("general pipeline: up to 5 results, each a page the search really returned;
   assert.deepEqual(card.reasons, [], "never taste chips on a looked-up fact");
   // the search is a real web search, the app sees started → created, both valid protocol events
   assert.deepEqual((seen.reqs[0] as { tools: unknown[] }).tools, [{ type: "web_search" }]);
-  assert.deepEqual(events.map((e) => e.type), ["find.started", "find.created"]);
+  assert.deepEqual(events.map((e) => e.type), ["find.started", "find.progress", "find.progress", "find.created"]);
   for (const e of events) assert.deepEqual(checkServerEvent(e), [], JSON.stringify(e));
   const started = events[0] as Extract<ServerEvent, { type: "find.started" }>;
   assert.equal(started.kind, "answer");
@@ -336,4 +336,112 @@ test("P0: the sheet card lists each result once (title — why, with its link) a
   assert.equal(card.steps.length, 1, "one summary line (the iPhone link layout always shows its Takeaways label)");
   assert.deepEqual(card.how, [], "the Mac shows how lines under 'Why these'");
   assert.deepEqual(card.why, []);
+});
+
+// ───────── r01 sheet (Chelsea approved 11/4): question title, stage lines, why, og:image per result ─────────
+
+test("r01: find.started title is a short summary of the question, never the generic 'Looking it up' for a real question", async () => {
+  assert.equal(questionTitle("What's the best KBBQ in Suwon?"), "Best KBBQ in Suwon");
+  assert.equal(questionTitle("Hey Jin, can you tell me what's the best kbbq in suwon?"), "Best KBBQ in Suwon");
+  assert.equal(questionTitle("Who won the World Series last night?"), "Who Won the World Series Last Night");
+  assert.equal(questionTitle("Look up when the Met opens on Sunday"), "When the Met Opens on Sunday");
+  assert.ok(questionTitle("How do I get a red wine stain out of a carpet and the rug too?").split(" ").length <= 8);
+  assert.equal(questionTitle("   "), "Looking it up");
+  const events: ServerEvent[] = [];
+  await runGeneral(ctxFor(fakeVendors("{}", []), events, "What's the best KBBQ in Suwon?"));
+  const started = events[0] as Extract<ServerEvent, { type: "find.started" }>;
+  assert.equal(started.title, "Best KBBQ in Suwon");
+  assert.equal(started.detail, "Searching the web");
+});
+
+test("r01: find.progress.detail goes out twice with the stage copy (pages read, then how many picked), before the card", async () => {
+  const json = JSON.stringify({ title: "Best ramen in Seoul", results: [
+    { title: "Time Out", why: "A roundup of 12 shops.", url: "https://www.timeout.com/seoul/restaurants/best-ramen-in-seoul" },
+    { title: "Eater map", why: "Local picks.", url: "https://www.eater.com/maps/best-ramen-seoul" },
+  ] });
+  const events: ServerEvent[] = [];
+  await runGeneral(ctxFor(fakeVendors(json, TRACE), events));
+  const progress = events.filter((e): e is Extract<ServerEvent, { type: "find.progress" }> => e.type === "find.progress").map((e) => e.detail);
+  assert.deepEqual(progress, ["Reading 6 pages", "Picking the best 2"]);
+  assert.ok(events.findIndex((e) => e.type === "find.created") > events.findLastIndex((e) => e.type === "find.progress"));
+});
+
+test("r01: sources[i].why carries the reason on its own (≤ 18 words); title keeps 'title — why' for old apps; steps kept", async () => {
+  const long = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty";
+  const json = JSON.stringify({ title: "Best ramen in Seoul", results: [
+    { title: "Time Out", why: "A roundup of 12 shops.", url: "https://www.timeout.com/seoul/restaurants/best-ramen-in-seoul" },
+    { title: "Eater map", why: long, url: "https://www.eater.com/maps/best-ramen-seoul" },
+    { title: "Michelin", why: "", url: "https://www.michelin.com/seoul/ramen" },
+  ] });
+  const events: ServerEvent[] = [];
+  const card = (await runGeneral(ctxFor(fakeVendors(json, TRACE), events))).card!;
+  assert.equal(card.sources[0].why, "A roundup of 12 shops.");
+  assert.equal(card.sources[0].title, "Time Out — A roundup of 12 shops.");
+  assert.ok(card.sources[1].why!.split(/\s+/).length <= 18);
+  assert.equal(card.sources[2].why, undefined, "no empty why");
+  assert.equal(card.sources[2].title, "Michelin");
+  assert.equal(card.steps.length, 1, "steps stay for apps that draw them");
+});
+
+function imageVendors(json: string, pages: Record<string, { image?: string; delayMs?: number }>): FindsVendors {
+  return {
+    ...fakeVendors(json, TRACE),
+    async pageFacts(url, signal) {
+      const p = pages[url];
+      if (!p) return null;
+      if (p.delayMs) await new Promise((r, j) => { const t = setTimeout(r, p.delayMs); signal?.addEventListener("abort", () => (clearTimeout(t), j(new Error("aborted")))); });
+      return { kind: "unknown", ...(p.image ? { image: p.image } : {}) };
+    },
+    async productImage(url) { return Buffer.from(`img:${url}`); },
+  };
+}
+
+test("r01: og:image per result (read in parallel, ≤ 1.5 s each) → find.image 'hero' for #1 and 'source-N' (0-based), stored like product photos", async () => {
+  const json = JSON.stringify({ title: "Best ramen in Seoul", results: [
+    { title: "Time Out", why: "Roundup.", url: "https://www.timeout.com/seoul/restaurants/best-ramen-in-seoul" },
+    { title: "Eater map", why: "Local picks.", url: "https://www.eater.com/maps/best-ramen-seoul" },
+    { title: "Michelin", why: "Bib Gourmand.", url: "https://www.michelin.com/seoul/ramen" },
+  ] });
+  const pages = {
+    "https://www.timeout.com/seoul/restaurants/best-ramen-in-seoul": { image: "https://media.timeout.com/a.jpg" },
+    "https://www.eater.com/maps/best-ramen-seoul": {},
+    "https://www.michelin.com/seoul/ramen": { image: "https://michelin.com/b.jpg", delayMs: GENERAL_IMAGE_MS + 1500 },
+  };
+  const events: ServerEvent[] = [];
+  const stored: string[] = [];
+  const ctx = { ...ctxFor(imageVendors(json, pages), events), putImage: async (slot: string, bytes: Buffer) => { stored.push(`${slot}=${bytes}`); return `https://img/${slot}`; } };
+  const t0 = Date.now();
+  const card = (await runGeneral(ctx)).card!;
+  assert.ok(Date.now() - t0 < GENERAL_IMAGE_MS * 2 + 800, "the slow page is cut off, not waited for");
+  assert.deepEqual(card.sources.map((s) => s.image), [
+    { slot: "source-0", status: "pending" }, { slot: "source-1", status: "pending" }, { slot: "source-2", status: "pending" },
+  ], "the card lands first with pending pictures");
+  const created = events.findIndex((e) => e.type === "find.created");
+  const imgs = events.filter((e): e is Extract<ServerEvent, { type: "find.image" }> => e.type === "find.image");
+  assert.ok(events.indexOf(imgs[0]) > created, "pictures follow the card");
+  const bySlot = Object.fromEntries(imgs.map((e) => [e.slot, e]));
+  assert.deepEqual(bySlot.hero, { type: "find.image", findId: "f1", slot: "hero", status: "ready", url: "https://img/hero" });
+  assert.deepEqual(bySlot["source-0"], { type: "find.image", findId: "f1", slot: "source-0", status: "ready", url: "https://img/source-0" });
+  assert.equal(bySlot["source-1"].status, "failed", "no og:image → failed (the app shows the initial tile)");
+  assert.equal(bySlot["source-2"].status, "failed", "past 1.5 s → failed");
+  assert.deepEqual(stored.sort(), ["hero=img:https://media.timeout.com/a.jpg", "source-0=img:https://media.timeout.com/a.jpg"]);
+  for (const e of events) assert.deepEqual(checkServerEvent(e), [], JSON.stringify(e));
+});
+
+test("r01: no page reader (vendors without pageFacts) → no pending pictures, no find.image", async () => {
+  const json = JSON.stringify({ title: "x", results: [{ title: "Time Out", why: "Roundup.", url: "https://www.timeout.com/seoul/restaurants/best-ramen-in-seoul" }] });
+  const events: ServerEvent[] = [];
+  const card = (await runGeneral(ctxFor(fakeVendors(json, TRACE), events))).card!;
+  assert.equal(card.sources[0].image, undefined);
+  assert.equal(events.filter((e) => e.type === "find.image").length, 0);
+});
+
+test("r01: the runner keeps a source-N picture on the stored card", async () => {
+  const card = { sources: [{ title: "a", url: "https://a.com", domain: "a.com", image: { slot: "source-0", status: "pending" } }] } as unknown as FindCard;
+  const img = { slot: "source-0", status: "ready", url: "https://img/source-0" } as const;
+  const { applySourceImage } = await import("../src/finds/general.ts");
+  applySourceImage(card, img);
+  assert.deepEqual(card.sources[0].image, img);
+  applySourceImage(card, { slot: "source-9", status: "ready", url: "u" });
+  assert.equal(card.sources.length, 1);
 });

@@ -1,4 +1,5 @@
 /** #341: greetings opened on "late-night ramen" 12/13 calls (eval 11/3) → rotate the opener's profile thing. */
+import type { TestContext } from "node:test";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { noteHook, openerBlock, pickOpenerHook, profileHooks } from "../src/convo/opener.ts";
@@ -6,6 +7,13 @@ import { forgetOpenerTopics, pickOpenerTopic, storedTopics, resetOpenerTopics } 
 import { Session, type ClientSink } from "../src/session/session.ts";
 import type { Config } from "../src/config.ts";
 import type { SparkRequest, SparkStreamEvent } from "../src/meta/spark.ts";
+
+/** these pin the pre-11/4 opener wording: the GENITA_COHERENT_PROMPT=0 rollback path */
+const LEGACY = " (GENITA_COHERENT_PROMPT=0)";
+function legacyOpener(t: TestContext): void {
+  process.env.GENITA_COHERENT_PROMPT = "0";
+  t.after(() => { delete process.env.GENITA_COHERENT_PROMPT; });
+}
 
 const FREE = [
   "How they talk: casual, witty; teasing is welcome.",
@@ -47,7 +55,8 @@ test("pickOpenerHook: 5 calls in a row open on ≥4 different things and never o
   assert.equal(pickOpenerHook(["only one"], ["only one"], 3), "only one", "one hook: still opens on it");
 });
 
-test("openerBlock names the hook and keeps the last call's off the first line", () => {
+test("openerBlock names the hook and keeps the last call's off the first line" + LEGACY, (t) => {
+  legacyOpener(t);
   const b = openerBlock({ hasProfile: true, sinceLastMs: 30 * 3_600_000, hasItem: false, hook: "K-pop (aespa)", lastHook: "late-night ramen" });
   assert.match(b, /"K-pop \(aespa\)"/);
   assert.match(b, /Don't open on "late-night ramen"/);
@@ -109,7 +118,8 @@ test("session (#341): consecutive calls of one account open on different profile
   assert.ok(new Set(picks).size >= 3, picks.join(" | ")); // every non-clothes hook (r3 11/4)
 });
 
-test("opener topics (Codex #352 round 2): a Forget anywhere voids the list; no safe hook → the companion's own thing, not 'one thing from the profile'", () => {
+test("opener topics (Codex #352 round 2): a Forget anywhere voids the list; no safe hook → the companion's own thing, not 'one thing from the profile'" + LEGACY, (t) => {
+  legacyOpener(t);
   assert.deepEqual(storedTopics({ revision: 2, opener_topics_rev: 1, opener_topics: ["Film photography"] }), []);
   assert.deepEqual(storedTopics({ revision: 2, opener_topics_rev: 2, opener_topics: ["Film photography"] }), ["Film photography"]);
   resetOpenerTopics();
@@ -132,3 +142,4 @@ test("#194 follow-up: the GK-1 ask turn's question is never dropped as intake", 
   const { guardSentence } = await import("../src/convo/guard.ts");
   assert.equal(guardSentence("What kind of music do you like for focus?", { camera: false, userText: "ok", askTurn: true }), null);
 });
+
