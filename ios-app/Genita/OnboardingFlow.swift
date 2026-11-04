@@ -117,10 +117,11 @@ extension AppState {
     func confirmCompanion(for request: OnboardingSessionGeneration.Snapshot? = nil) async {
         let launchRequest = launchAuthSnapshot
         let request = request ?? onboardingSnapshot()
+        let forgets = profileForgets   // before the read: a "Forget all of this" meanwhile makes its profile old (AU-92)
         guard let c = try? await onboarding.companion(), launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled,
               ownsOnboardingResponse(request) else { return }
         if c.imageId == setup.imageId { adoptServerCompanion(imageId: c.imageId); return }
-        await applyServerCompanion(c, launchRequest: launchRequest, request: request)
+        await applyServerCompanion(c, launchRequest: launchRequest, request: request, forgets: forgets)
     }
 
     func restoreCompanion(for request: OnboardingSessionGeneration.Snapshot? = nil) async {
@@ -129,10 +130,11 @@ extension AppState {
         let forgets = profileForgets   // a "Forget all of this" while this reads: its profile is old (Codex #583 r20)
         guard let c = try? await onboarding.companion(), launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled,
               ownsOnboardingResponse(request) else { return }
-        await applyServerCompanion(c, launchRequest: launchRequest, request: request)
+        await applyServerCompanion(c, launchRequest: launchRequest, request: request, forgets: forgets)
     }
 
-    private func applyServerCompanion(_ c: CompanionInfo, launchRequest: LaunchAuthSnapshot, request: OnboardingSessionGeneration.Snapshot) async {
+    /// `forgets` = `profileForgets` read by the caller before its await: a forget since then means the profile is old.
+    private func applyServerCompanion(_ c: CompanionInfo, launchRequest: LaunchAuthSnapshot, request: OnboardingSessionGeneration.Snapshot, forgets: Int) async {
         adoptServerCompanion(imageId: c.imageId)
         setup.companionName = c.name
         setup.imageId = c.imageId
