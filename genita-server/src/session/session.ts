@@ -294,16 +294,19 @@ const NOTES_OPENER_GAP_MS = 6 * 3_600_000;
 const NOTES_CALLBACK_MS = 10 * 60_000;
 /** hold cap: the longest the first sound waits on a held line (a pre-tool preamble) before a short beat */
 const HOLD_BEAT_MS = 1500;
-/** speech end → first sound cap (GENITA_HOLD_CAP_MS, 0 = off) */
+/** speech end → first sound cap (GENITA_HOLD_CAP_MS, 0 = off). Chelsea 11/4 picked B of the hold-cap A/B: 1.4 s, a short
+ * "mm" beat (was 2.2 s of silence) */
+export const HOLD_CAP_DEFAULT_MS = 1400;
 export function holdCapMs(env: NodeJS.ProcessEnv = process.env): number {
-  const n = Number(env.GENITA_HOLD_CAP_MS ?? 2200);
-  return Number.isFinite(n) && n >= 0 && n <= 10_000 ? n : 2200;
+  const n = Number(env.GENITA_HOLD_CAP_MS ?? HOLD_CAP_DEFAULT_MS);
+  return Number.isFinite(n) && n >= 0 && n <= 10_000 ? n : HOLD_CAP_DEFAULT_MS;
 }
 /**
  * Hold beats: audio only (never in captions, the reply text or history), short, and never the same one twice in a
  * row in a call — "Hmm" is 1 of 6 (QA item 16: replies opening with "Hmm" ≤ 1/6; Chelsea: no Hmm/Oh repeats).
  */
-export const HOLD_BEATS = ["<warm> Mm.", "<curious> Ooh.", "<warm> Yeah.", "<warm> Okay, so.", "<curious> Hmm.", "<warm> Mm-hm."];
+// Chelsea 11/4 (hold-cap B): the short "Mm. / Yeah. / Ooh." set only — no "Okay, so.", "Hmm.", "Mm-hm." (or "Aw")
+export const HOLD_BEATS = ["<warm> Mm.", "<curious> Ooh.", "<warm> Yeah."];
 /** a greeting / initiative sentence that is plainly a question (QA P3: it ended with "." 1/2) */
 const EXPLICIT_REMEMBER = /\b(?:remember|don'?t forget|keep in mind|note) (?:that|this|i|my|me)\b/i;
 /** the backchannel cue's echo in a transcript ("mm-hm", "mhm", "mm"), never a real word */
@@ -2651,7 +2654,8 @@ export class Session {
     let beatTimer: NodeJS.Timeout | null = null;
     let capTimer: NodeJS.Timeout | null = null;
     const beat = () => {
-        if (signal.aborted || this.reply !== reply || sentences.length) return;
+        // hold cap B (11/4): never a beat while they're talking again (a pause the ASR took for the end of the turn)
+        if (signal.aborted || this.reply !== reply || sentences.length || this.userTurnOpen()) return;
         const before = sentences.length;
         beating = true;
         // rotate (never the same twice in a row), and never the opening word of the last replies (QA P3, #423)
