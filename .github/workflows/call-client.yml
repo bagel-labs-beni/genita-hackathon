@@ -68,6 +68,7 @@ jobs:
             -only-testing:GenitaUITests/UpdateBannerUITests \
             -only-testing:GenitaUITests/OnboardingUITests \
             -only-testing:GenitaUITests/InsightReportUITests \
+            -only-testing:GenitaUITests/InsightHeaderUITests \
             -only-testing:GenitaUITests/QASamplePhotoUITests \
             -only-testing:GenitaUITests/CompanionKindsUITests \
             -skip-testing:GenitaUITests/OnboardingUITests/testV03MotionHuman \

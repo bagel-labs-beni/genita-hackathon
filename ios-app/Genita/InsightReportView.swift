@@ -50,6 +50,30 @@ enum InsightCopy {
         if t.lowercased().hasPrefix(prefix.lowercased()) { t = String(t.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces) }
         return t.prefix(1).uppercased() + t.dropFirst()
     }
+    /// The type name at full width: one line from 44 pt down to 26 pt; past that, two balanced lines (smaller than
+    /// 26 only if a half still doesn't fit). Never three.
+    static func fitTitle(_ text: String, width: CGFloat, max maxSize: CGFloat = 44, floor: CGFloat = 26) -> (text: String, size: CGFloat) {
+        func w(_ s: String, _ size: CGFloat) -> CGFloat {
+            (s as NSString).size(withAttributes: [.font: HISYSerifText.font(size), .kern: -0.35]).width
+        }
+        let avail = max(1, width - 2)
+        let one = w(text, maxSize)
+        if one <= avail { return (text, maxSize) }
+        let scaled = (maxSize * avail / one).rounded(.down)
+        if scaled >= floor { return (text, scaled) }
+        // two lines: the space that makes the longer half shortest
+        let words = text.split(separator: " ").map(String.init)
+        guard words.count > 1 else { return (text, max(12, scaled)) }
+        var best = (text, CGFloat.greatestFiniteMagnitude)
+        for i in 1..<words.count {
+            let a = words[..<i].joined(separator: " "), b = words[i...].joined(separator: " ")
+            let m = max(w(a, floor), w(b, floor))
+            if m < best.1 { best = (a + "\n" + b, m) }
+        }
+        let size = best.1 <= avail ? floor : (floor * avail / best.1).rounded(.down)
+        return (best.0, size)
+    }
+
     static func quote(_ e: InsightEvidence, ai: String?) -> String {
         e.source == "answer" ? "You picked “\(e.quote)”" : "“\(e.quote)”" + (e.source == "import" ? " · \(ai ?? "your reply")" : " · our call")
     }
@@ -209,22 +233,18 @@ struct InsightReportView: View {
         VStack(alignment: .leading, spacing: 0) {
             // no traits yet: "SO FAR" (YOU'RE + "You gave me a good start." read as "You're you gave me…")
             label(r.type == nil && r.observations.isEmpty ? "SO FAR" : "YOU’RE", blue: true)
-            HStack(alignment: .top, spacing: 12) {
-                Group {
-                    if let type = r.type {
-                        HISYTitle(text: type.name.hasSuffix(".") ? type.name : type.name + ".", size: 44, line: 48)
-                    } else {
-                        HISYTitle(text: InsightCopy.keepLast(r.headline), size: 34, line: 39)
-                    }
+            // Chelsea 11/4: no orb; the type name on ONE line at full width (serif shrinks from 44 to a 26 pt floor), two
+            // balanced lines only past the floor, never three. Shown at once: no delayed fade, so no blank band.
+            Group {
+                if let type = r.type {
+                    let fit = InsightCopy.fitTitle(type.name.hasSuffix(".") ? type.name : type.name + ".", width: width)
+                    HISYTitle(text: fit.text, size: fit.size, line: (fit.size * 48 / 44).rounded())
+                } else {
+                    HISYTitle(text: InsightCopy.keepLast(r.headline), size: 34, line: 39)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .opacity(appeared ? 1 : 0).offset(y: appeared || reduceMotion ? 0 : 12)
-                .animation(.easeOut(duration: 0.28).delay(0.2), value: appeared)
-                .accessibilityAddTraits(.isHeader)
-                // the orb art has a wide transparent margin: drawn 1.5× so the globe itself is ~92 pt
-                Image(resource: "reference-orb-round").resizable().scaledToFit().frame(width: 92, height: 92).scaleEffect(1.5)
-                    .scaleEffect(appeared || reduceMotion ? 1 : 0.85).accessibilityHidden(true)
             }
+            .frame(width: width, alignment: .leading)
+            .accessibilityAddTraits(.isHeader)
             .padding(.top, 8)
             if let type = r.type {
                 Text(InsightCopy.keepLast(type.line)).insightText(17, line: 24, color: InsightInk.body).padding(.top, 12)

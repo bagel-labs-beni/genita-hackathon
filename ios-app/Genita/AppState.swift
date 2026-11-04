@@ -508,7 +508,7 @@ extension AppState {
         // SUM insight report review (R1): GENITA_REVIEW_VARIANT=insight / insight-empty
         #if os(iOS)
         if reviewStage == .summary, variant.hasPrefix("insight") {
-            insightReport = InsightFixture.report(empty: variant == "insight-empty")
+            insightReport = InsightFixture.report(empty: variant == "insight-empty", longName: variant == "insight-long")
             setup.importAI = "ChatGPT"
             setup.name = "Summer"
         }
