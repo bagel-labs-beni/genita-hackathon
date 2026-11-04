@@ -8,6 +8,7 @@
 import { avoidRepeatedOpener, buildInstructions, dropRepeatedName, type PersonaCard } from "../prompt/persona.ts";
 import { memoryPrompt } from "../memory/call.ts";
 import { minorLine } from "./minorBoundary.ts";
+import { cameraOffHint } from "./cameraAsk.ts";
 import type { Memory } from "../memory/repository.ts";
 import type { InputMessage, SparkRequest } from "../meta/spark.ts";
 import { SentenceSplitter } from "../text/sentences.ts";
@@ -84,7 +85,8 @@ export const adapter = {
     }) ?? undefined;
     const minor = minorLine(userLines);
     const turnWithMinor = minor ? (turn ? turn.replace(/^This turn: /, `This turn: ${minor} `) : `This turn: ${minor}`) : turn;
-    const instructions = buildInstructions({ ...base, turn: turnWithMinor }) + memoryPrompt((s.memories ?? []).map(mem), false);
+    // scripted calls send no camera frames: the session's camera-off hint for a "do I look ok?" line
+    const instructions = buildInstructions({ ...base, turn: turnWithMinor, perceptionHint: userLines.some(realCrisisSignal) ? undefined : cameraOffHint(t.text, false) ?? undefined }) + memoryPrompt((s.memories ?? []).map(mem), false);
     return { instructions, input: [...msgs(ctx.history), { role: "user", content: t.text }], maxOutputTokens: 800, effort: "minimal" };
   },
 

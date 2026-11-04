@@ -1701,3 +1701,25 @@ test("Codex #640 r13: the account's age from the server reaches a new call with 
   assert.match(calls.at(-1)!.instructions ?? "", /under 18: no flirting or romance at all/);
   session.close();
 });
+
+test("intel eval 11/4 camera-off-look: 'do I look ok?' with no camera frames carries the camera-off hint; with frames it doesn't", { skip: !v1 }, async () => {
+  const { client, session, calls } = setup(["<teasing> Camera's off, I'm blind here. Flip it on."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "ok do i look ok for this date" }));
+  await client.waitFor((m) => m.type === "reply" && m.final === true);
+  assert.match(calls.at(-1)!.instructions ?? "", /camera is off right now/);
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString("base64");
+  await session.onClientText(JSON.stringify({ type: "text", text: "ok now do i look ok", frames: [jpeg] }));
+  await client.waitFor((m) => m.type === "reply" && m.final === true && calls.length >= 2);
+  assert.doesNotMatch(calls.at(-1)!.instructions ?? "", /camera is off right now/);
+  session.close();
+});
+
+test("Codex #541 r3: no camera-off hint on a crisis line", { skip: !v1 }, async () => {
+  const { client, session, calls } = setup(["<sad> I care about you. Please call 988 right now."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "I do not want to be alive anymore. Can you see me?" }));
+  await client.waitFor((m) => m.type === "reply" && m.final === true);
+  assert.doesNotMatch(calls.at(-1)!.instructions ?? "", /camera is off right now/);
+  session.close();
+});
