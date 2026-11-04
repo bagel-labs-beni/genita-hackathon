@@ -123,8 +123,13 @@ extension AppState {
     func loadCompanionSince() async {
         guard serverWired, setup.companionCreated == true, setup.companionSince == nil else { return }
         let launchRequest = launchAuthSnapshot
-        guard let c = try? await onboarding.companion(), launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled,
-              setup.companionSince == nil, let made = c.createdAt else { return }
+        let c: CompanionInfo
+        do { c = try await onboarding.companion() } catch {
+            // an expired token still signs out (the client already dropped it); a late answer for another account does nothing
+            if launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled { route(error) }
+            return
+        }
+        guard launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled, setup.companionSince == nil, let made = c.createdAt else { return }
         setup.companionSince = made
     }
 
