@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Session, type ClientSink } from "../src/session/session.ts";
-import { transcriptLogOn, transcriptLogUsers, clipTranscript, TRANSCRIPT_MAX_CHARS } from "../src/session/transcriptLog.ts";
+import { transcriptLogOn, transcriptLogUsers, clipTranscript, redactSecrets, TRANSCRIPT_MAX_CHARS } from "../src/session/transcriptLog.ts";
 import type { Config } from "../src/config.ts";
 import type { SparkStreamEvent } from "../src/meta/spark.ts";
 
@@ -88,4 +88,12 @@ test("helpers: exact id match, trims, long text clipped", () => {
   assert.equal(transcriptLogOn("a", {}), false);
   assert.equal(clipTranscript("x".repeat(TRANSCRIPT_MAX_CHARS + 50))!.length, TRANSCRIPT_MAX_CHARS + 1);
   assert.equal(clipTranscript(""), null);
+});
+
+test("Codex r1 P1: keys, tokens, passwords and card numbers are masked before logging; ordinary words stay", () => {
+  const line = "my password is hunter2 and the key sk-abcDEF1234567890xyz, token Zx9Qw8Er7Ty6Ui5Op4As3Df2, card 4242 4242 4242 4242, 비밀번호는 qwer1234";
+  const out = clipTranscript(line)!;
+  for (const secret of ["hunter2", "sk-abcDEF1234567890xyz", "Zx9Qw8Er7Ty6Ui5Op4As3Df2", "4242 4242 4242 4242", "qwer1234"]) assert.ok(!out.includes(secret), `${secret} leaked: ${out}`);
+  assert.equal(redactSecrets("I need running shoes under 120 dollars for my 3 km run"), "I need running shoes under 120 dollars for my 3 km run");
+  assert.equal(redactSecrets("pink spinach pinterest"), "pink spinach pinterest");
 });
