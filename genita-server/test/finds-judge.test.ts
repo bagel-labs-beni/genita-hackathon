@@ -137,3 +137,49 @@ test("judge: a newer turn stops the older judge; parse keeps only known kinds", 
   assert.deepEqual(parseJudge('{"kind":"none","query":"x","reason":"chat"}'), { kind: "none", reason: "chat" });
   r.close();
 });
+
+test("judge (Codex r1): a cancelled turn, a Forget, or a card the reply already put up → the late pick starts nothing", async () => {
+  const late = () => { let release: (r: JudgeResult) => void = () => {}; const p = new Promise<JudgeResult>((res) => (release = res)); return { p, release: (r: JudgeResult) => release(r) }; };
+  // barge-in: the turn's reply resolves null
+  let j = late();
+  let run = runnerWith(() => j.p, { timeoutMs: 500 });
+  run.r.onTurn({ ...turn("Any good spots for that around Hongdae?"), replyText: Promise.resolve(null) });
+  await settleJudge();
+  j.release({ kind: "general", reason: "late" });
+  await settleJudge();
+  assert.equal(run.events.length, 0, "cancelled turn");
+  run.r.close();
+  // Forget all of this
+  j = late();
+  run = runnerWith(() => j.p, { timeoutMs: 500 });
+  run.r.onTurn(turn("Any good spots for that around Hongdae?"));
+  run.r.forgetTaste();
+  j.release({ kind: "general", reason: "late" });
+  await settleJudge();
+  assert.equal(run.events.length, 0, "forgotten");
+  run.r.close();
+  // the reply's own web search landed first
+  j = late();
+  run = runnerWith(() => j.p, { timeoutMs: 500 });
+  run.r.onTurn(turn("Any good spots for that around Hongdae?"));
+  assert.ok(run.r.webAnswer({ utteranceId: 7, question: "q", said: "Try Menya.", searches: [{ query: "q", urls: ["https://www.timeout.com/x"] }] }));
+  j.release({ kind: "general", reason: "late" });
+  await settleJudge();
+  assert.equal(run.events.filter((e) => e.type === "find.started").length, 1, "one card per turn");
+  run.r.close();
+});
+
+test("judge (Codex r1): 'on the screen' sends the shared frame (and the card keeps it); screen only still allows recipe/outfit", async () => {
+  const SCREEN = "data:image/jpeg;base64,SCREEN";
+  const inputs: JudgeInput[] = [];
+  const { r, events } = runnerWith(async (i) => { inputs.push(i); return { kind: "product", query: "that lamp", reason: "buy" }; });
+  r.onTurn({ ...turn("Where could I get these on the screen?", [FRAME]), screen: SCREEN });
+  await settleJudge();
+  assert.equal(inputs[0].frame, SCREEN);
+  assert.equal(inputs[0].screen, true);
+  assert.ok(events.some((e) => e.type === "find.started" && e.kind === "product"));
+  r.close();
+  const { judgedIntent } = await import("../src/finds/runner.ts");
+  assert.deepEqual(judgedIntent({ kind: "recipe", reason: "x" }, { text: "x", frames: [], screen: SCREEN }), { kind: "recipe" });
+  assert.equal(judgedIntent({ kind: "outfit", reason: "x" }, { text: "x", frames: [] }), null);
+});

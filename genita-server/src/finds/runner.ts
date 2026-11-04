@@ -473,20 +473,30 @@ export class FindsRunner {
     if (assessLine(t.text) !== "open") return;
     const abort = new AbortController();
     this.judgeAbort = abort;
-    const frame = t.frames.at(-1) ?? t.screen;
+    // a barged-in / cancelled turn (its reply resolves null) starts nothing (Codex judge r1 P2)
+    void t.replyText.then((said) => { if (said === null) abort.abort(); }).catch(() => {});
+    // the picture is chosen from what they said ("on my screen" → the share), and kept for the card (Codex judge r1 P2)
+    const useScreen = !!t.screen && (!t.frames.length || SCREEN_WORDS.test(t.text));
+    const frame = useScreen ? t.screen : t.frames.at(-1);
+    const seen: TurnInput = useScreen ? { ...t, frames: [], screen: t.screen } : { ...t, screen: undefined };
     const judge = this.deps.judge ?? sparkJudge(this.deps.vendors);
     const t0 = this.hooks.now();
-    void judgeWithin(judge, { text: t.text, recent: (t.recent ?? []).slice(-4), ...(frame ? { frame, screen: !t.frames.length } : {}) }, this.deps.judgeTimeoutMs ?? JUDGE_TIMEOUT_MS, abort.signal).then((r) => {
+    void judgeWithin(judge, { text: t.text, recent: (t.recent ?? []).slice(-4), ...(frame ? { frame, screen: useScreen } : {}) }, this.deps.judgeTimeoutMs ?? JUDGE_TIMEOUT_MS, abort.signal).then((r) => {
       const ms = Math.round(this.hooks.now() - t0);
-      if (abort.signal.aborted || this.closed) return;
       if (this.judgeAbort === abort) this.judgeAbort = null;
-      const intent = judgedIntent(r, t);
-      this.hooks.log("finds.judge", { utteranceId: t.utteranceId, kind: r.kind, started: intent?.kind ?? null, reason: r.reason, ms });
-      if (!intent) return;
+      if (abort.signal.aborted || this.closed) {
+        this.hooks.log("finds.judge", { utteranceId: t.utteranceId, kind: r.kind, started: null, reason: "cancelled", ms });
+        return;
+      }
+      const intent = judgedIntent(r, seen);
+      // the reply's own web search already put a card up for this turn
+      const taken = this.judged.has(t.utteranceId);
+      this.hooks.log("finds.judge", { utteranceId: t.utteranceId, kind: r.kind, started: taken ? null : intent?.kind ?? null, reason: r.reason, ms });
+      if (!intent || taken) return;
       if (this.owner && this.deps.store.work.isDeleted(this.owner)) return;
       this.judged.add(t.utteranceId);
       const question = (intent.kind === "answer" || intent.kind === "product") && r.query ? r.query : t.text;
-      this.start(intent, { ...t, text: question }, false, true);
+      this.start(intent, { ...seen, text: question }, false, true);
     });
   }
 
@@ -525,7 +535,9 @@ export class FindsRunner {
    */
   webAnswer(o: { utteranceId: number; question: string; said: string; searches: WebSearch[] }): string | null {
     if (this.closed || this.purged || (this.owner && this.deps.store.work.isDeleted(this.owner))) return null;
+    // one sheet card per turn: whichever of the judge and the reply's own search came first (Codex judge r1 P2)
     if (this.judged.has(o.utteranceId)) return null;
+    this.judged.add(o.utteranceId);
     const findId = randomUUID();
     const card = webAnswerCard({ id: findId, question: o.question, said: o.said, searches: o.searches });
     if (!card) return null;
@@ -851,6 +863,9 @@ export class FindsRunner {
   private tasteForgottenIds = new Set<string>();
   forgetTaste(): void {
     this.tasteForgottenAt = new Date().toISOString();
+    // a judge still thinking was asked with the old conversation: it starts nothing (Codex judge r1 P1)
+    this.judgeAbort?.abort();
+    this.judgeAbort = null;
     this.lastOutfit = null; // its verdict may quote the forgotten taste (Codex r1 P1)
     for (const id of this.running.keys()) this.tasteForgottenIds.add(id);
     // a prefetch searched with the old taste: stopped and never reused (Codex #583 r9)
@@ -932,7 +947,7 @@ export function judgedIntent(r: JudgeResult, t: { text: string; frames: string[]
     case "general": return env.GENITA_WEB_SEARCH === "0" ? null : { kind: "answer" };
     case "product": return { kind: "product" };
     case "identify": return picture ? { kind: "identify" } : null;
-    case "recipe": case "outfit": return t.frames.length > 0 ? { kind: r.kind } : null;
+    case "recipe": case "outfit": return picture ? { kind: r.kind } : null;
     case "link": { const url = findUrl(t.text); return url ? { kind: "link", url } : null; }
     default: return null;
   }
