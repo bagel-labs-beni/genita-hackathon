@@ -173,6 +173,8 @@ struct ConversationView: View {
                                     .transition(.opacity)
                             }
                         } else {
+                        // live captions r01: above the face / camera stage, under the self view, rail and pill
+                        captionLayer(grid: grid, size: full.size, sheet: sheet, hidden: connecting || findsTabOpen || unclear)
                         ZStack(alignment: .topLeading) {
                             if !call.cameraOn {
                                 let selfScale: CGFloat = sheet == .half || sheet == .rising ? 0.5 : 1
@@ -518,6 +520,16 @@ struct ConversationView: View {
     }
     /// r03 `.rail`: half → up 440, peek/searching → up 122, full → hidden behind the sheet.
     private func railShift(_ s: SheetState) -> CGFloat { CameraBoxes.railShift(s) }
+
+    /// Live captions r01 (LiveCaptions.swift). Kill switch: app config flag `liveCaptions` (default on).
+    @ViewBuilder private func captionLayer(grid: CallHUDGrid, size: CGSize, sheet: SheetState, hidden: Bool) -> some View {
+        if appConfig.config.flag("liveCaptions", default: true) {
+            CallCaptionLayer(style: CaptionStyle(ink: CallInk.ink, onInk: CallInk.onInk, blue: CallInk.blueOnInk, font: { TypeStyle.body($0, $1) }),
+                             size: size, bottom: grid.captionBottom(sheetUp: CallHUDGrid.sheetUp(sheet)) + railShift(sheet),
+                             hidden: hidden || sheet == .half || sheet == .rising || sheet == .full,
+                             micOn: call.micOn, frame: { call.captionFrame() }, level: { call.inputLevel }, still: CallMotion.reviewStill)
+        }
+    }
 
     func dismissDenied() { media.denied = nil; call.dismissDenied() }
     func openAppSettings() {

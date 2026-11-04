@@ -65,6 +65,8 @@ struct MacConversationView: View {
                     InterpretOverlay(board: call.interpretBoard, level: { call.inputLevel }, onClose: { interpret.stop() }, onHold: { call.setHold($0) })
                         .frame(width: 390, height: 844)
                 } else if waitingCopy == nil {
+                    // live captions r01: same layer as the iPhone, bottom edge 16 above the rail (626), under the self view and rail
+                    captionLayer
                     if MacDesignV2.enabled {
                         // iPhone S09 HUD A (#530) on the Mac: a glass tile at the bottom left, 16 from the edge, its
                         // bottom on the control rail's bottom (724 + 82); camera on grows it 72×96 → 108×144
@@ -227,6 +229,14 @@ struct MacConversationView: View {
         }
     }
     // MARK: #118 / #121 call + sheet layout
+    /// Live captions r01 (LiveCaptions.swift): the iPhone's layer, bottom edge 16 above the rail VStack's top (724 − 82 → 626).
+    private var captionLayer: some View {
+        CallCaptionLayer(style: CaptionStyle(ink: MacSheetInk.ink, onInk: MacSheetInk.onInk, blue: Color(red: 84 / 255, green: 193 / 255, blue: 1),
+                                             font: { size, weight in .custom(weight == .medium ? "PretendardVariable-Medium" : "PretendardVariable-Regular", fixedSize: size) }),
+                         size: CGSize(width: 390, height: 844), bottom: 724 - 82 - 16 - railShift,
+                         hidden: call.link == .connecting || sheetCovers || menuOpen,
+                         micOn: call.micOn || reviewState == "caption", frame: { call.captionFrame() }, level: { call.inputLevel }, still: reviewState == "caption")
+    }
     private var sheetFull: Bool { call.finds.state == .full && linkOpened == nil && waitingCopy == nil }
     /// half / full: the sheet covers the self view and the controls (r03).
     /// half / full cover the self view and controls; MAC-LINK shows only the face, the line and its two buttons.

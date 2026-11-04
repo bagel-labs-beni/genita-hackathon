@@ -678,6 +678,24 @@ extension MacHandoff {
             }
             window.orderOut(nil)
         }
+        // live captions r01 (CAP-4 on the Mac window): a finished turn, no server
+        do {
+            surface = .active;sharingStopped=false
+            if let ready=try? ServerEvent.decode(#"{"type":"ready","protocol":1,"sessionId":"review-cap","mode":"chat","audio":{"in":"pcm_s16le_24000_mono","out":"pcm_s16le_24000_mono","frameHeaderBytes":8},"lip":{"requested":"none","active":"none"},"voiceId":"v","bargeIn":{"minMs":400,"minWords":2}}"#) {call.handle(ready)}
+            if let speaking=try? ServerEvent.decode(#"{"type":"state","state":"speaking"}"#) {call.handle(speaking)}
+            call.finds.reset()
+            call.reviewCaptions(.review(you:"Does the navy one go with my boots?",reply:"It does. Dark boots and navy look sharp together, and the wool keeps you warm"))
+            let host=NSHostingView(rootView:MacConversationView(reviewOverride:"caption").frame(width:390,height:844))
+            let window=NSWindow(contentRect:NSRect(x:0,y:0,width:390,height:844),styleMask:.borderless,backing:.buffered,defer:false)
+            window.contentView=host;window.orderFront(nil)
+            try? await Task.sleep(for:.seconds(1))
+            if let rep=host.bitmapImageRepForCachingDisplay(in:host.bounds) {
+                host.cacheDisplay(in:host.bounds,to:rep)
+                try? rep.representation(using:.png,properties:[:])?.write(to:dir.appendingPathComponent("CAP-mac-reply.png"))
+            }
+            window.orderOut(nil)
+            call.reviewCaptions(LiveCaptions())
+        }
         // MAC-2 / MAC-3 / MAC-4 home windows (420 wide, height follows the content) and MC-M (the menu over the call)
         call.companionName="Mina"
         do {

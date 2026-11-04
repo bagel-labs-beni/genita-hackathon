@@ -56,8 +56,11 @@ final class CallScreenUITests: XCTestCase {
         XCTAssertEqual(menu.minX, app.frame.width - moreRect.maxX, accuracy: 1, "one side margin")
         XCTAssertEqual(app.buttons["micToggle"].label, "Turn microphone off")
         XCTAssertTrue(waitCue("Jin is thinking"), "thinking"); capture("S09-thinking")
+        // live captions r01 CAP-3: the final transcript with its check (shot only: the recorded session runs on its own clock)
+        capture("CAP-3-heard")
         XCTAssertTrue(waitCue("Jin is talking"), "S09-S"); capture("S09-S-speaking")
-        XCTAssertTrue(waitCue("Stopped. Go ahead."), "S09-X"); capture("S09-X-interrupted")
+        Thread.sleep(forTimeInterval: 0.6); capture("CAP-4-reply")   // CAP-4: the reply's words at the playhead, the user's line dim
+        XCTAssertTrue(waitCue("Stopped. Go ahead."), "S09-X"); capture("S09-X-interrupted")   // CAP-X3: the reply frozen, dimmed
         XCTAssertTrue(waitCue("Listening", timeout: 15), "S09-X returns to Listening after the hold")
         XCTAssertTrue(waitCue("Jin is talking"), "second reply")
         XCTAssertTrue(waitCue("Couldn’t get an answer."), "S09-F"); capture("S09-F-answer-failed")
