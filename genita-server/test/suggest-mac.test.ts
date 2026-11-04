@@ -329,3 +329,21 @@ test("Codex #675 r1: a sentence that asks to move to the Mac is never dropped as
   assert.match(reply, /moving this call to your Mac/);
   s.close();
 });
+
+test("Codex #675 r2: emergency help and a move ask in other words are never dropped as an early pick", async () => {
+  const { EARLY_PICK } = await import("../src/session/session.ts");
+  assert.ok(EARLY_PICK.test("I'd say call 911 immediately."), "the pick regex alone would match");
+  const { deps, sink, events } = setup(() => true);
+  deps.spark = async function* (): AsyncGenerator<SparkStreamEvent> {
+    yield { type: "text", delta: "Your Mac is open. I'd say call 911 immediately. I'd say we move the call over there so I can see it all." };
+    yield { type: "done", responseId: "r", text: "", status: "completed" };
+  };
+  const s = new Session("p11", sink, deps);
+  await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  await s.onClientText(JSON.stringify({ type: "text", text: ASK }));
+  await waitFor(() => events.some((e) => e.type === "reply" && (e as { final?: boolean }).final === true));
+  const reply = String((events.filter((e) => e.type === "reply").at(-1) as { text?: string }).text);
+  assert.match(reply, /call 911/);
+  assert.match(reply, /move the call over there/);
+  s.close();
+});
