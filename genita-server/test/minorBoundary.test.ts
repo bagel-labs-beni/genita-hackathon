@@ -42,3 +42,8 @@ test("Codex #640 r8: adverbs and 'I just turned 15' count", () => {
 test("coordinator (d): numbers that aren't the user's own age never turn the line on", () => {
   for (const t of ["I'm 15 minutes late", "my 16-year-old son is driving me crazy", "back when I was 14 I loved this song", "I'm 17 points behind in this game", "I'm 12 hours into this shift", "we're 15 minutes out", "I was 16 when I got my first job"]) assert.equal(minorLine([t]), null, t);
 });
+
+test("Codex #640 r9: credits / 15,000 dollars are no age, a speaker label before a quote, 'my age is 15', 'aged 15'", () => {
+  for (const t of ["I'm 16 credits short of graduating", "I'm 15,000 dollars in debt", 'My 16-year-old son: "I\'m 16, so I can drive now".']) assert.equal(minorLine([t]), null, t);
+  for (const t of ["My age is 15", "I am aged 15"]) assert.ok(minorLine([t]), t);
+});
