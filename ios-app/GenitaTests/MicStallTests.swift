@@ -1,3 +1,4 @@
+import AVFoundation
 import XCTest
 @testable import Genita
 
@@ -33,5 +34,18 @@ final class MicStallTests: XCTestCase {
         XCTAssertEqual(MicStall.gap(afterHeals: 2), 6)
         XCTAssertEqual(MicStall.gap(afterHeals: 3), 12)
         XCTAssertEqual(MicStall.gap(afterHeals: 9), 30)
+    }
+
+    /// Mac 331 16:06:57: mic 48 kHz (9 ch under VP), speaker 44.1 kHz → AUVoiceProcessor -10875. The speaker leg runs at
+    /// the mic's rate so the VP unit's client-side input and output match.
+    func testVoiceProcessingOutputRunsAtTheMicRate() throws {
+        let mac = try XCTUnwrap(CallAudio.vpOutputFormat(micRate: 48_000, outputChannels: 2))
+        XCTAssertEqual(mac.sampleRate, 48_000)
+        XCTAssertEqual(mac.channelCount, 2)
+        let phone = try XCTUnwrap(CallAudio.vpOutputFormat(micRate: 24_000, outputChannels: 0))
+        XCTAssertEqual(phone.sampleRate, 24_000)
+        XCTAssertEqual(phone.channelCount, 1)
+        XCTAssertEqual(CallAudio.vpOutputFormat(micRate: 0, outputChannels: 2)?.sampleRate, nil, "no mic: the default wiring")
+        XCTAssertEqual(CallAudio.vpOutputFormat(micRate: 48_000, outputChannels: 9)?.channelCount, 2)
     }
 }
