@@ -297,6 +297,8 @@ const HOLD_BEAT_MS = 1500;
 /** speech end → first sound cap (GENITA_HOLD_CAP_MS, 0 = off). Chelsea 11/4 picked B of the hold-cap A/B: 1.4 s, a short
  * "mm" beat (was 2.2 s of silence) */
 export const HOLD_CAP_DEFAULT_MS = 1400;
+/** the least time a reply gets after its turn commits before the first-sound beat */
+const CAP_FLOOR_MS = 700;
 export function holdCapMs(env: NodeJS.ProcessEnv = process.env): number {
   const n = Number(env.GENITA_HOLD_CAP_MS ?? HOLD_CAP_DEFAULT_MS);
   return Number.isFinite(n) && n >= 0 && n <= 10_000 ? n : HOLD_CAP_DEFAULT_MS;
@@ -2680,7 +2682,9 @@ export class Session {
     const capMs = holdCapMs();
     if (capMs > 0 && this.v1 && !interpret && !self && !greeting && !cue && !ackTurn) {
       const since = m.speechEndAt !== undefined ? this.now() - m.speechEndAt : 0;
-      capTimer = setTimeout(() => { this.log("convo.first_sound_cap", { utteranceId, capMs }); beat(); }, Math.max(0, capMs - since));
+      // hold cap B (11/4): a turn the end-of-turn hold kept open past the cap still gives Spark CAP_FLOOR_MS before a
+      // beat — a short complete line ("I got the job") answered right after the hold gets no "Mm." on top
+      capTimer = setTimeout(() => { this.log("convo.first_sound_cap", { utteranceId, capMs }); beat(); }, Math.max(Math.min(CAP_FLOOR_MS, capMs), capMs - since));
       capTimer.unref?.();
     }
     const producer = (async () => {
