@@ -22,7 +22,7 @@ export type GuardContext = {
 
 const CLASSES: Array<[GuardClass, RegExp]> = [
   ["assistant", /\b(?:as an ai\b|(?:an? )?(?:ai )?language model|how can i (?:help|assist)|is there anything else|let me know if|great question|i'?m (?:just )?here to (?:help|chat|listen|assist))/i],
-  ["counselor", /\b(?:i'?m (?:always )?here for you|that (?:sounds|must be|must have been|feels) (?:really |so |super |pretty )?(?:tough|hard|rough|exhausting|difficult|frustrating|overwhelming|stressful)|it'?s (?:completely |totally |perfectly )?(?:okay|ok|normal|understandable|valid) to (?:feel|be)|i hear you\b|how (?:does|did) (?:that|it) make you feel|take (?:good )?care of yourself|self-care|be gentle with yourself|you'?re not alone|your feelings are valid|it'?s important to (?:remember|take|rest)|take your time|^\s*i'?m (?:still |right )?here(?: (?:for you|with you))?[.!]*\s*$)/i],
+  ["counselor", /\b(?:i'?m (?:always )?here for you|that (?:sounds|must be|must have been) (?:really |so |super )?(?:tough|hard|rough|exhausting|difficult|frustrating|overwhelming|stressful)|it'?s (?:completely |totally |perfectly )?(?:okay|ok|normal|understandable|valid) to (?:feel|be)|i hear you\b|how (?:does|did) (?:that|it) make you feel|take (?:good )?care of yourself|self-care|be gentle with yourself|you'?re not alone|your feelings are valid|it'?s important to (?:remember|take|rest)|take your time|^\s*i'?m (?:still |right )?here(?: (?:for you|with you))?[.!]*\s*$)/i],
   ["intake", /\bare you more (?:of )?(?:a |an |into )?[^.!?]{0,40}\bor\b|\b(?:what do you (?:like|enjoy|do for fun|want to talk about)|tell me (?:a (?:bit|little) |more )?about yourself|what'?s on your mind|what (?:would|do) you (?:like|want) to (?:talk|chat) about|what are your (?:hobbies|interests)|what should i call you|what kind of (?:\w+ )?(?:do you like|are you into)|^\s*are you (?:more |a |an )?[\w' -]{1,30} or (?:more )?[\w' -]{1,30}(?:\?| when| person| type| kind| about))/i],
   // a personality read ("You're totally someone who…", "You give Apple-store-polish energy"): the hackathon bans
   // personality analyzers and it reads as a label, not a friend (personalization lane, import v4 opener 11/3)
@@ -312,9 +312,9 @@ function energyLabel(s: string): boolean {
   return ENERGY_ABOUT_YOU.test(s) && /\byou\b/i.test(s) && !/\b(?:it|that|this|which|they|these|those|(?:the|that|this|its|your)\s+[\w'-]+)\s+(?:has|have|got|gives?|is|'s)\b/i.test(s) && !/\benergy\s+to\b/i.test(s);
 }
 
-/** tone 11/4 (#610): therapy filler said as a whole sentence on an ordinary sad line ("That sounds heavy.", "I'm right
+/** tone 11/4 (#610): therapy filler (Codex r4: "feels"/"pretty" only here, never inside the partial-match class) said as a whole sentence on an ordinary sad line ("That sounds heavy.", "I'm right
  * here with you.") — never when the sentence goes on to real content (Codex r3: "That sounds heavy, use a trolley…") */
-const FILLER_ONLY = /^(?:yeah,?\s+|oh,?\s+|aw,?\s+|ugh,?\s+)?(?:that (?:sounds|feels) (?:really |so |super |pretty )?(?:draining|heavy|like a lot|painful)|i'?m (?:right )?here with you|(?:that'?s|that is) (?:a lot|so much) to (?:carry|handle|deal with)(?: today| right now)?)[\s,.!…]*(?:summer)?[\s.!…]*$/i;
+const FILLER_ONLY = /^(?:yeah,?\s+|oh,?\s+|aw,?\s+|ugh,?\s+)?(?:that (?:sounds|feels) (?:really |so |super |pretty )?(?:draining|heavy|like a lot|painful|tough|hard|rough|exhausting|overwhelming)|i'?m (?:right )?here with you|(?:that'?s|that is) (?:a lot|so much) to (?:carry|handle|deal with)(?: today| right now)?)[\s,.!…]*(?:summer)?[\s.!…]*$/i;
 export function guardSentence(sentence: string, ctx: GuardContext): GuardClass | null {
   // emergency help and real crisis turns first (Codex #372 r2: "You can cut me off and call 911 right now")
   if (INTERRUPTION.test(sentence) && !EMERGENCY_HELP.test(sentence) && !realCrisisSignal(ctx.userText)) return "interruption";

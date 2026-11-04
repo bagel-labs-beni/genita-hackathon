@@ -1602,3 +1602,10 @@ test("Codex #610 r2: crisisInCall spares staying/help lines only — a salary sa
   assert.equal(guardSentence("I'm all you need, you don't need them.", { camera: false, userText: "My sister is here to help now, should I go talk to her?", crisisInCall: true }), "guilt");
   assert.equal(guardSentence("That sounds heavy, use a trolley instead of lifting it alone.", { camera: false, userText: "Can I carry this 40 kg box upstairs on my own?" }), null);
 });
+
+test("Codex #610 r4: 'That feels hard, use a trolley…' keeps the advice; 'That feels pretty hard.' alone is filler", async () => {
+  const { guardSentence } = await import("../src/convo/guard.ts");
+  const ctx = { camera: false, userText: "Can I carry a 40kg box upstairs alone?" } as any;
+  assert.equal(guardSentence("That feels hard, use a trolley instead of lifting it alone.", ctx), null);
+  assert.equal(guardSentence("That feels pretty hard.", { camera: false, userText: "work was rough today" } as any), "counselor");
+});
