@@ -675,10 +675,19 @@ export class Personalize {
     const keys = avoidKeys([{ text: target, forget: true }]);
     // the "not me" list's own words count too: a fact only stored in a correction ("I collect fountain pens.") is
     // still forgettable, and scrubRemoved then takes it off the list (Codex r4 P1)
-    const deniedLines = (card.insights?.denied ?? []).flatMap((d) => [d.claim, d.correction ?? ""]).filter(Boolean);
-    // …and the report's own traits (claim, receipts, chips, how I'll use it): a fact only the report holds (Codex r6 P1)
-    const reportLines = (card.insights?.observations ?? []).flatMap((o) => [o.claim, o.use_in_call, ...o.evidence.map((e) => e.quote), ...(o.chips ?? []).map((c) => c.label)]).filter(Boolean);
-    const lines = [...Object.values(card.sections ?? {}).flatMap((l) => (l as Array<{ text: string }>).map((f) => f.text)), ...deniedLines, ...reportLines];
+    // ...with the picks / items a "not me" stood on (Codex #581 r14: "forget about spicy" after a "not me" on Spicy)
+    const deniedLines = (card.insights?.denied ?? []).flatMap((d) => [d.claim, d.correction ?? "", ...(d.picks ?? []), ...(d.items ?? [])]).filter(Boolean);
+    // and what only the report says about them (an observation's claim, call line, quotes, chips): "forget leather
+    // accessories" must find it there too (Codex #581 r7)
+    const ins = card.insights;
+    const insightLines = ins ? [
+      ...ins.observations.flatMap((o) => [o.claim, o.use_in_call, ...o.evidence.map((e) => e.quote), ...(o.chips ?? []).map((c) => c.label)]),
+      // every report line scrubRemoved cleans: headline, usage, type, chain, strengths, watch-outs, mix, learning (Codex #581 r8)
+      ins.headline, ins.usage, ins.type?.name, ins.type?.line, ...(ins.type?.signature ?? []),
+      ins.chain?.you_are, ins.chain?.so_you, ins.chain?.so_ill,
+      ...ins.strengths.map((x) => x.text), ...ins.watchouts.flatMap((w) => [w.text, w.fix]), ...ins.mix.map((m) => m.evidence.quote), ...ins.learning.map((l) => l.label),
+    ].filter((x): x is string => !!x) : [];
+    const lines = [...Object.values(card.sections ?? {}).flatMap((l) => (l as Array<{ text: string }>).map((f) => f.text)), ...deniedLines, ...insightLines];
     const named = [...new Set(keys.flatMap((k) => k.keys).filter((stem) => lines.some((t) => keyWords(t).includes(stem))))];
     const words = [...new Set(lines.flatMap((t) => (t.match(/[\p{L}\p{N}-]{3,}/gu) ?? []).filter((w) => named.includes(w.toLowerCase().slice(0, 5)))))].map((w) => w.toLowerCase());
     const kept = words.join(" ").slice(0, 80);
