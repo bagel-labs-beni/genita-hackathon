@@ -287,26 +287,28 @@ struct ProfileChipView: View {
     }
 }
 
-/// The Listening dot breathes (card 1, 1.4 s). Still under Reduce Motion / UI tests.
+/// The Listening dot breathes (card 1, 1.4 s). Still under Reduce Motion / UI tests / flag `motionDetails` off (rollback).
 private struct CueDot: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
-        TimelineView(.animation(paused: reduceMotion || CallMotion.reviewStill)) { ctx in
-            let s = reduceMotion || CallMotion.reviewStill ? 1 : (1 - cos(ctx.date.timeIntervalSinceReferenceDate / MotionCall.breathSeconds * 2 * .pi)) / 2
+        let live = MotionDetails.live(reduceMotion: reduceMotion)
+        TimelineView(.animation(paused: !live)) { ctx in
+            let s = !live ? 1 : (1 - cos(ctx.date.timeIntervalSinceReferenceDate / MotionCall.breathSeconds * 2 * .pi)) / 2
             Circle().fill(CallInk.blueOnInk).frame(width: 8, height: 8).scaleEffect(0.8 + 0.35 * s).opacity(0.55 + 0.45 * s)
         }
     }
 }
 
-/// "is thinking": three dots in a wave (card 1, 1.2 s, 0.15 s apart), not a spinner. Still dots under Reduce Motion / UI tests.
+/// "is thinking": three dots in a wave (card 1, 1.2 s, 0.15 s apart), not a spinner. Still dots under Reduce Motion / UI tests / flag off.
 private struct CueThinkingDots: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
-        TimelineView(.animation(paused: reduceMotion || CallMotion.reviewStill)) { ctx in
+        let live = MotionDetails.live(reduceMotion: reduceMotion)
+        TimelineView(.animation(paused: !live)) { ctx in
             let t = ctx.date.timeIntervalSinceReferenceDate
             HStack(spacing: 3) {
                 ForEach(0..<3, id: \.self) { i in
-                    let lift = reduceMotion || CallMotion.reviewStill ? 0.5 : max(0, sin((t - Double(i) * MotionCall.waveStagger) / MotionCall.waveSeconds * 2 * .pi))
+                    let lift = !live ? 0.5 : max(0, sin((t - Double(i) * MotionCall.waveStagger) / MotionCall.waveSeconds * 2 * .pi))
                     Circle().fill(CallInk.onInk).frame(width: 4, height: 4).offset(y: -3 * lift).opacity(0.45 + 0.55 * lift)
                 }
             }.frame(width: 20, height: 20)
