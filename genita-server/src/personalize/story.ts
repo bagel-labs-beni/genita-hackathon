@@ -406,7 +406,8 @@ function lineEvidence(text: string, card: StyleCard, id: SparkStoryId, kind: "it
   if (kind === "tag") {
     const flat = (s: string) => ` ${s.toLowerCase().replace(/[^\p{L}\p{N} ]/gu, " ").replace(/\s+/g, " ").trim()} `;
     const t = flat(text);
-    return t.trim().length >= 3 && sources.some((f) => flat(f.text).includes(t)) ? weakest : null;
+    // short tags too ("AI", "F1"), as long as the card says them as a whole word (Codex P2)
+    return t.trim().length >= 1 && sources.some((f) => flat(f.text).includes(t)) ? weakest : null;
   }
   const anywhere = Object.values(card.sections ?? {}).flat().some((f) => [...keyWords((f as Finding).text)].some((w) => words.has(w)));
   return anywhere ? weakest : null;

@@ -551,4 +551,8 @@ test("D19 / AU-19: a story line or taste tag with no word in the card is dropped
   assert.deepEqual(talk.items.map((i) => i.text), ["You keep it warm and direct."]);
   const taste = cards.find((c) => c.id === "taste")!;
   assert.deepEqual(taste.tags!.map((t) => t.text), ["Hot pot", "Clean, minimal"]);
+  // short tags the card says as a whole word stay (Codex P2)
+  const short = toStyleCard({ sections: { tendencies: [], communication: [], response: [], help: [], support: [], interests: [f("AI")], likes: [f("Watch: F1."), f("Style: black clothes.")], boundaries: [], approach: [] }, rules: [], to_confirm: [] }, "import");
+  const s2 = toStory({ cards: [sc("taste", { headline: "Fast cars, black clothes.", tags: [tag("interest", "AI"), tag("watch", "F1"), tag("style", "Black")] })], topics: [] }, short).cards.find((c) => c.id === "taste")!;
+  assert.deepEqual(s2.tags!.map((t) => t.text), ["AI", "F1", "Black"]);
 });
