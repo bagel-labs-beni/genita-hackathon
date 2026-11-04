@@ -1,4 +1,5 @@
 import AVFoundation
+import AudioToolbox
 import os
 #if os(iOS)
 import UIKit
@@ -55,6 +56,8 @@ import UIKit
     /// Convo P1 #345: a soft listening cue ("mm-hm") played beside the reply queue — never a reply, never counted
     /// in `isPlaying`, never flushed by barge-in bookkeeping. Same engine, so it goes through echo cancellation.
     private var cuePlayer = AVAudioPlayerNode()
+    /// iPhone: the limiter between the reply player and the mixer (CallOutputLevel); nil on the Mac
+    private var outputStage: AVAudioUnitEffect?
     private let playFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Double(GenitaProtocol.sampleRate), channels: 1, interleaved: false)!
     private var engineHasMic = false
     private var pipeline: MicPipeline?
@@ -250,7 +253,8 @@ import UIKit
     private func buildEngine(withMic: Bool) {
         // AU-48: what is still to be heard survives the rebuild (the greeting goes on when the mic turns on)
         // the render clock runs ahead of the speaker by the output latency: only what reached the speaker was heard
-        let latency = AVAudioFramePosition((engine.outputNode.presentationLatency * playFormat.sampleRate).rounded())
+        // + the loudness stage's lookahead (Codex #702 P2): what is still inside the limiter was not heard either
+        let latency = AVAudioFramePosition(((engine.outputNode.presentationLatency + (outputStage?.latency ?? 0)) * playFormat.sampleRate).rounded())
         let carry = PlaybackCarry.remaining(scheduled, playedTo: nowSample().map { max(0, $0 - max(0, latency)) })
         let startOf = utteranceStart
         scheduled.removeAll()
@@ -290,17 +294,35 @@ import UIKit
                 engineHasMic = true
             }
         }
-        engine.attach(player)
-        engine.connect(player, to: engine.mainMixerNode, format: playFormat)
-        engine.attach(cuePlayer)
-        engine.connect(cuePlayer, to: engine.mainMixerNode, format: playFormat)
-        cuePlayer.volume = 0.6
+        outputStage = Self.connectPlayback(player: player, cue: cuePlayer, in: engine, format: playFormat)
         engine.prepare()
         if Self.mayStartAudio() {
             do { try engine.start(); play(player) } catch { log.error("engine start: \(error.localizedDescription, privacy: .public)") }
         }
         log.info("engine built mic=\(self.engineHasMic) aec=\(self.voiceProcessing)")
         resume(carry, startOf: startOf)
+    }
+
+    /// The reply player → (iPhone: the loudness stage) → main mixer; the cue goes straight to the mixer, quietly.
+    /// Returns the loudness stage, nil on the Mac (its path is unchanged).
+    @discardableResult static func connectPlayback(player: AVAudioPlayerNode, cue: AVAudioPlayerNode, in engine: AVAudioEngine,
+                                                   format: AVAudioFormat) -> AVAudioUnitEffect? {
+        engine.attach(player)
+        #if os(iOS)
+        let limiter = CallOutputLevel.makeLimiter()
+        engine.attach(limiter)
+        engine.connect(player, to: limiter, format: format)
+        engine.connect(limiter, to: engine.mainMixerNode, format: format)
+        CallOutputLevel.configure(limiter)
+        let stage: AVAudioUnitEffect? = limiter
+        #else
+        engine.connect(player, to: engine.mainMixerNode, format: format)
+        let stage: AVAudioUnitEffect? = nil
+        #endif
+        engine.attach(cue)
+        engine.connect(cue, to: engine.mainMixerNode, format: format)
+        cue.volume = 0.6
+        return stage
     }
 
     /// Schedules the carried buffers on the new player, the first one cut where the old player stopped, and keeps
@@ -403,6 +425,44 @@ import UIKit
         #endif
     }
 }
+
+#if os(iOS)
+/// TF 331 (CEO, iPhone): the companion was too quiet in a call. Measured 11/4 on the live voice (Seamless, speaker 72,
+/// post off): -16.5 to -19.9 LUFS, peaks -0.5 to -3.3 dBFS, so the server has no headroom left to turn it up. The loss
+/// is on the phone: voice processing (echo cancellation, `.voiceChat`) plays the far end at call level on the
+/// loudspeaker. So the reply goes through Apple's peak limiter with a pre-gain: those clips rendered through this graph
+/// went from -17.7 to -12.8 LUFS (+5 LU) with the sample peak held at 0 dBFS, no clipping. The device voice (DeviceVoice
+/// renders into `enqueue`) gets the same stage. The limiter sits before the output unit, so the echo canceller's
+/// reference already has the gain in it and still removes the companion's voice from the mic.
+enum CallOutputLevel {
+    /// dB added before the limiter (AUPeakLimiter pre-gain, range -40…40)
+    static let preGainDB: AudioUnitParameterValue = 8
+    static let attackSeconds: AudioUnitParameterValue = 0.005
+    static let decaySeconds: AudioUnitParameterValue = 0.05
+
+    static func makeLimiter() -> AVAudioUnitEffect {
+        AVAudioUnitEffect(audioComponentDescription: AudioComponentDescription(
+            componentType: kAudioUnitType_Effect, componentSubType: kAudioUnitSubType_PeakLimiter,
+            componentManufacturer: kAudioUnitManufacturer_Apple, componentFlags: 0, componentFlagsMask: 0))
+    }
+
+    static func configure(_ limiter: AVAudioUnitEffect) {
+        set(limiter, AudioUnitParameterID(kLimiterParam_PreGain), preGainDB)
+        set(limiter, AudioUnitParameterID(kLimiterParam_AttackTime), attackSeconds)
+        set(limiter, AudioUnitParameterID(kLimiterParam_DecayTime), decaySeconds)
+    }
+
+    static func value(_ limiter: AVAudioUnitEffect, _ id: AudioUnitParameterID) -> AudioUnitParameterValue {
+        var v: AudioUnitParameterValue = 0
+        AudioUnitGetParameter(limiter.audioUnit, id, AudioUnitScope(kAudioUnitScope_Global), 0, &v)
+        return v
+    }
+
+    private static func set(_ limiter: AVAudioUnitEffect, _ id: AudioUnitParameterID, _ v: AudioUnitParameterValue) {
+        AudioUnitSetParameter(limiter.audioUnit, id, AudioUnitScope(kAudioUnitScope_Global), 0, v, 0)
+    }
+}
+#endif
 
 /// Converts whatever the input node delivers (often 48 kHz float, sometimes several channels under voice
 /// processing) to 24 kHz mono s16 and cuts 80 ms frames. Runs on the audio thread only.
