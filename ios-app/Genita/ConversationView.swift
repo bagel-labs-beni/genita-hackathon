@@ -116,11 +116,13 @@ struct ConversationView: View {
                             .animation(.drawer, value: sheet)
                         // S09 wait stage (춘식이 11/4): the orb holds the face's place until the generated face is here,
                         // then steps back (300 ms) while the face clears (card 10). Same place and steps as the face.
-                        if !connecting && (waitingForFace || waitStageUp) {
+                        // out of the tree (not just transparent) while the face is the small window: the live orb
+                        // would keep drawing at 60 fps unseen (Codex P3); the small windows carry their own orb
+                        if !connecting && (waitingForFace || waitStageUp) && sheet != .full && !call.cameraOn {
                             CallWaitStage(size: full.size, leaving: !waitingForFace)
                                 .scaleEffect(faceScale(sheet), anchor: .topLeading).offset(faceOffset(sheet, top: top))
-                                .opacity(sheet == .full || call.cameraOn ? 0 : 1)
                                 .animation(.drawer, value: sheet)
+                                .transition(.opacity)
                         }
                         if waitingCopy != nil { handoffScrim.frame(width: full.size.width, height: full.size.height).allowsHitTesting(false) }
                         Button { withAnimation(.easeInOut(duration: 0.22)) { model.menuOpen.toggle() } } label: {
