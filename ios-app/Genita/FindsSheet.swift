@@ -687,8 +687,8 @@ struct FindCardPage: View {
     /// r02 recipe: the camera frame (fridge) or the dish photo (a named dish), the ingredient tiles (one scrolling row in
     /// the half sheet, a 4-column grid in the full one), then the numbered step cards.
     @ViewBuilder private var recipe: some View {
-        // a reopened card's half page is 396: 396 − 40 − 44 − 3 × 8 − 88 strip = 200 for title row + picture
-        let reopenedHeight = min(card.title.count <= 17 ? 196 : 130, titleRowHeight > 0 ? 200 - titleRowHeight : 196)
+        // a reopened card's half page is 396: 396 − 40 − 44 − 3 × 8 − 94 strip = 194 for title row + picture
+        let reopenedHeight = min(card.title.count <= 17 ? 196 : 130, titleRowHeight > 0 ? 194 - titleRowHeight : 196)
         let camHeight = full ? 196 : (entry.reopened ? (reopenedHeight >= 72 ? reopenedHeight : 0) : halfCameraHeight)
         if let cam = card.camera, camHeight > 0 {
             CameraFrame(frame: entry.frames.indices.contains(cam.frame) ? entry.frames[cam.frame] : nil, camera: cam, items: card.items, selected: finds.selectedItem,
@@ -715,15 +715,15 @@ struct FindCardPage: View {
         Text(text).font(TypeStyle.body(12, .medium)).foregroundStyle(CallInk.mute).padding(.top, 10)
     }
 
-    /// The half-sheet ingredient strip: 64 pt tile + 7 + one 17 pt name line.
-    static let stripHeight: CGFloat = 88
+    /// The half-sheet ingredient strip: 6 (room for the corner chip) + 64 pt tile + 7 + one 17 pt name line.
+    static let stripHeight: CGFloat = 94
 
     /// Half sheet (344 pt page, scrolling off): the picture gives way so the ingredient tiles show whole under a
-    /// two-line title. 344 − 40 top − 44 header − 3 × 8 spacing − 88 tile strip = 148 for title row + picture; 132 at
+    /// two-line title. 344 − 40 top − 44 header − 3 × 8 spacing − 94 tile strip = 142 for title row + picture; 132 at
     /// most (r03), 72 at least. With accessibility text sizes the title row alone can take the room (AX-L): then the
     /// half sheet drops the picture (it is in the full sheet) so the ingredient tiles stay whole.
     static func halfCameraHeight(titleRow: CGFloat) -> CGFloat {
-        let room = 148 - titleRow
+        let room = 344 - 40 - 44 - 3 * 8 - stripHeight - titleRow
         return room >= 72 ? min(132, room) : 0
     }
     private var halfCameraHeight: CGFloat { titleRowHeight > 0 ? Self.halfCameraHeight(titleRow: titleRowHeight) : 132 }
