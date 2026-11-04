@@ -120,7 +120,8 @@ enum CallStop: Equatable {
     private(set) var interruptedHold = false
     private(set) var answerFailed = false
     private(set) var lip: LipPlan?
-    /// `ready.tts`: who speaks the reply. `device` = `say` text spoken with the system voice (DeviceVoice).
+    /// `ready.tts`: who speaks the reply. `device` = `say` text, shown as captions only since 11/4 (CaptionOnlyVoice:
+    /// the app never speaks with the system voice).
     private(set) var tts: TtsMode = .server
     /// Set when the server ended the call for a reason reconnecting can't fix. The app routes on it
     /// (F1-L7 StartRouter: signIn → A02, consent → CS01).
@@ -272,8 +273,11 @@ enum CallStop: Equatable {
     @ObservationIgnored private var faceSetForPoster: FaceSet?
 
     convenience init() {
-        self.init(audio: CallAudio(), voice: DeviceVoice(), makeSocket: { CallSocket() })
+        self.init(audio: CallAudio(), voice: Self.makeVoice(), makeSocket: { CallSocket() })
     }
+
+    /// 11/4 (Chelsea, TF 341): never the system voice. `say` text is a caption only (CaptionOnlyVoice), not DeviceVoice.
+    static func makeVoice() -> any CallVoiceRendering { CaptionOnlyVoice() }
 
     init(audio: any CallAudioPlaying, voice: any CallVoiceRendering, makeSocket: @escaping () -> any CallConnection) {
         self.audio = audio

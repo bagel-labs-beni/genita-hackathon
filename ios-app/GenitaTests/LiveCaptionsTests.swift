@@ -132,16 +132,18 @@ final class LiveCaptionsTests: XCTestCase {
         XCTAssertEqual(g.you?.phase, .words)
     }
 
-    func testDeviceVoiceRevealsSentenceBySentence() {
+    /// 11/4 (TF 341): `say` is a caption only (never spoken): the text shows at once with no playhead, and a final
+    /// reply ends like a silent one (Codex #736 P1: it used to wait on a playhead that never comes).
+    func testSayIsCaptionOnlyShownAtOnceAndEnds() {
         var c = LiveCaptions()
         c.apply(delta(3, "Sure thing."), now: 0)
-        c.apply(delta(3, " Here it is."), now: 0)
         c.apply(ev(#"{"type":"say","utteranceId":3,"sentence":0,"text":"Sure thing.","emotion":"neutral","lang":"en-US"}"#), now: 0)
-        XCTAssertEqual(c.frame(now: 10, level: nil, playheadMs: 0).reply?.text, "Sure thing.")
-        // the second sentence hasn't been received for speaking yet: never shown ahead of it (Codex P2)
-        XCTAssertEqual(c.frame(now: 20, level: nil, playheadMs: 11 * 62 + 1).reply?.text, "Sure thing.")
-        c.apply(ev(#"{"type":"say","utteranceId":3,"sentence":1,"text":"Here it is.","emotion":"neutral","lang":"en-US"}"#), now: 30)
-        XCTAssertEqual(c.frame(now: 40, level: nil, playheadMs: 11 * 62 + 2).reply?.text, "Sure thing. Here it is.")
+        XCTAssertEqual(c.frame(now: 10, level: nil, playheadMs: nil).reply?.text, "Sure thing.")
+        c.apply(delta(3, " Here it is."), now: 20)
+        c.apply(ev(#"{"type":"say","utteranceId":3,"sentence":1,"text":"Here it is.","emotion":"neutral","lang":"en-US"}"#), now: 20)
+        XCTAssertEqual(c.frame(now: 30, level: nil, playheadMs: nil).reply?.text, "Sure thing. Here it is.")
+        c.apply(reply(3, "Sure thing. Here it is."), now: 40)
+        XCTAssertEqual(c.frame(now: 40 + LiveCaptions.noAudioMs + 1, level: nil, playheadMs: nil).reply?.text, "Sure thing. Here it is.")
     }
 
     func testHoldBeatAndSplitWordsMatchByText() {
