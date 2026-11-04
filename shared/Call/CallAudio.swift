@@ -69,6 +69,8 @@ import os
     private var observers: [NSObjectProtocol] = []
     /// DEMO P0 11/4: the mic's health check while it is on (see `MicStall`).
     private var micWatch: Timer?
+    /// the mic's sample rate under voice processing (0 = no mic)
+    private var micRate: Double = 0
     private var micOpenedAt: TimeInterval = 0
     private var lastMicHeal: TimeInterval = 0
     /// heals in a row that brought no buffer (backoff, Codex #705 P2)
@@ -146,7 +148,7 @@ import os
         guard queuedBuffers == 0, now - lastMicHeal >= MicStall.gap(afterHeals: micHeals) else { return }
         lastMicHeal = now
         micHeals += 1
-        log.error("mic: no input for \(MicStall.thresholdS, privacy: .public)s while on; resetting the session and rebuilding the engine")
+        log.error("mic: no input for \(MicStall.thresholdS, privacy: .public)s while on (running=\(self.engine.isRunning, privacy: .public), heal \(self.micHeals, privacy: .public)); resetting the session and rebuilding the engine")
         configureSession()
         buildEngine(withMic: true)
         if !engineHasMic { log.error("mic: rebuild found no input") }
@@ -290,12 +292,12 @@ import os
 
     /// Rebuilds the graph. With the mic, voice processing (AEC) is turned on first; if the platform refuses
     /// (some simulators), the mic still works without it and `voiceProcessing` says so.
-    private func buildEngine(withMic: Bool) {
+    private func buildEngine(withMic: Bool, retry: Bool = true, carried: ([PlaybackCarry.Entry<AVAudioPCMBuffer>], [Int: AVAudioFramePosition])? = nil) {
         // AU-48: what is still to be heard survives the rebuild (the greeting goes on when the mic turns on)
         // the render clock runs ahead of the speaker by the output latency: only what reached the speaker was heard
         let latency = AVAudioFramePosition((engine.outputNode.presentationLatency * playFormat.sampleRate).rounded())
-        let carry = PlaybackCarry.remaining(scheduled, playedTo: nowSample().map { max(0, $0 - max(0, latency)) })
-        let startOf = utteranceStart
+        let carry = carried?.0 ?? PlaybackCarry.remaining(scheduled, playedTo: nowSample().map { max(0, $0 - max(0, latency)) })
+        let startOf = carried?.1 ?? utteranceStart
         scheduled.removeAll()
         generation += 1
         if engineHasMic { engine.inputNode.removeTap(onBus: 0) }
@@ -310,6 +312,7 @@ import os
         queuedByUtterance.removeAll()
         engineHasMic = false
         voiceProcessing = false
+        micRate = 0
         pipeline = nil
         if withMic {
             let input = engine.inputNode
@@ -320,6 +323,7 @@ import os
                 log.error("voice processing unavailable: \(error.localizedDescription, privacy: .public)")
             }
             let format = input.outputFormat(forBus: 0)
+            micRate = format.sampleRate
             if format.sampleRate > 0, format.channelCount > 0 {
                 let pipeline = MicPipeline(input: format, meter: inputMeter)
                 pipeline.enabled = micOpen
@@ -338,9 +342,26 @@ import os
         engine.attach(cuePlayer)
         engine.connect(cuePlayer, to: engine.mainMixerNode, format: playFormat)
         cuePlayer.volume = 0.6
+        // DEMO P0 11/4 (Mac 331 log 16:06:57): with voice processing on, the VP unit refuses to initialize when its
+        // client-side input and output formats differ ("client-side input and output formats do not match",
+        // -10875: mic 48 kHz, speaker 44.1 kHz) — the engine never starts, the mic is dead and the pill still says
+        // Listening. The mixer → speaker leg now runs at the mic's sample rate; the output unit converts for the device.
+        if engineHasMic, voiceProcessing {
+            let out = Self.vpOutputFormat(micRate: micRate, outputChannels: engine.outputNode.inputFormat(forBus: 0).channelCount)
+            if let out { engine.connect(engine.mainMixerNode, to: engine.outputNode, format: out) }
+        }
         engine.prepare()
-        do { try engine.start(); player.play() } catch { log.error("engine start: \(error.localizedDescription, privacy: .public)") }
-        log.info("engine built mic=\(self.engineHasMic) aec=\(self.voiceProcessing)")
+        var started = false
+        do { try engine.start(); player.play(); started = true } catch {
+            log.error("engine start failed mic=\(withMic, privacy: .public) aec=\(self.voiceProcessing, privacy: .public) micRate=\(self.micRate, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
+        log.info("engine built mic=\(self.engineHasMic, privacy: .public) aec=\(self.voiceProcessing, privacy: .public) running=\(started, privacy: .public) micRate=\(self.micRate, privacy: .public) out=\(self.engine.outputNode.inputFormat(forBus: 0).sampleRate, privacy: .public)")
+        if !started, withMic, retry {
+            // the VP unit of the engine just dropped may still hold the device for a moment: one fresh try, with
+            // what is still to be heard carried into it (Codex #705 P1: never reported as played)
+            buildEngine(withMic: true, retry: false, carried: (carry, startOf))
+            return
+        }
         resume(carry, startOf: startOf)
     }
 
@@ -359,6 +380,13 @@ import os
             if !carry.isEmpty { log.info("engine rebuild kept \(carry.count) buffer(s) of playback") }
         }
         for id in completeUtterances { checkDone(id) }
+    }
+
+    /// DEMO P0 11/4: the mixer → speaker format under voice processing: the mic's sample rate (the VP unit needs its
+    /// client-side input and output at one rate), the speaker's channel count (1 or 2). nil = leave the default.
+    nonisolated static func vpOutputFormat(micRate: Double, outputChannels: AVAudioChannelCount) -> AVAudioFormat? {
+        guard micRate > 0 else { return nil }
+        return AVAudioFormat(standardFormatWithSampleRate: micRate, channels: min(2, max(1, outputChannels)))
     }
 
     private static func tail(of buffer: AVAudioPCMBuffer, from skip: AVAudioFramePosition) -> AVAudioPCMBuffer? {
