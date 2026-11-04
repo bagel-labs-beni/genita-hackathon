@@ -189,16 +189,16 @@ struct ConversationView: View {
                         if CallHUDGrid.showsFlip(cameraOn: call.cameraOn, canFlip: call.canFlipCamera, sheet: sheet) {
                             // build 10 (Chelsea mock DHhhUPYs): flip camera one step above the camera button while the camera is on — white like camera / mic on
                             Button { call.flipCamera() } label: { CallRailWhiteSymbol(symbol: "arrow.triangle.2.circlepath.camera") }
-                                .buttonStyle(PreviewControlStyle()).disabled(connecting).modifier(CallControlEntrance(shown: !connecting, index: 1))
+                                .buttonStyle(MotionPressStyle()).disabled(connecting).modifier(CallControlEntrance(shown: !connecting, index: 1))
                                 .accessibilityLabel("Flip camera").accessibilityIdentifier("railFlipCamera")
                                 .position(x: grid.railX, y: grid.railY(.flip, sheetUp: CallHUDGrid.sheetUp(sheet)) + railShift(sheet))
                                 .animation(.drawer, value: sheet)
                                 .transition(reduceMotion ? .opacity : .scale(scale: 0.6).combined(with: .opacity))
                         }
                         Button { cameraTapped() } label: { CallToggleGlass(icon: "glass-camera-icon", on: call.cameraOn) }
-                            .buttonStyle(PreviewControlStyle()).disabled(connecting).modifier(CallControlEntrance(shown: !connecting, index: 1)).accessibilityLabel(call.cameraOn ? "Turn camera off" : "Turn camera on").accessibilityIdentifier("cameraToggle").position(x: grid.railX, y: grid.railY(.camera, sheetUp: CallHUDGrid.sheetUp(sheet)) + railShift(sheet))
+                            .buttonStyle(MotionPressStyle()).disabled(connecting).modifier(CallControlEntrance(shown: !connecting, index: 1)).accessibilityLabel(call.cameraOn ? "Turn camera off" : "Turn camera on").accessibilityIdentifier("cameraToggle").position(x: grid.railX, y: grid.railY(.camera, sheetUp: CallHUDGrid.sheetUp(sheet)) + railShift(sheet))
                             .opacity(sheet == .full ? 0 : 1).accessibilityHidden(sheet == .full).animation(.drawer, value: sheet)
-                        // motion details card 2: pressed to 0.92, a light tap on toggle, a blue ring that follows the user's voice
+                        // motion details card 2: pressed to 0.94 (build 11), a light tap on toggle, a blue ring that follows the user's voice
                         Button { call.toggleMic() } label: {
                             CallToggleGlass(icon: "glass-mic-icon", on: call.micOn)
                                 .background { MotionVoiceRing(active: call.micOn && !connecting, diameter: CallHUDGrid.button, color: CallInk.blueOnInk, level: { call.inputLevel }) }

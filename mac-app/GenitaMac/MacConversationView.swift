@@ -85,7 +85,7 @@ struct MacConversationView: View {
                         Button { call.toggleCamera() } label: { MacGlassControl(icon: "glass-camera-icon", size: 46, slashed: !call.cameraOn) }.buttonStyle(MacUnchangedControlStyle())
                             .modifier(MacControlEntrance(shown: call.link != .connecting, index: 0))
                             .accessibilityLabel(call.cameraOn ? "Turn camera off" : "Turn camera on").accessibilityIdentifier("macCameraToggle")
-                        // motion details card 2: pressed to 0.92, a blue ring that follows the user's voice while the mic is on
+                        // motion details card 2: pressed to 0.94 (build 11), a blue ring that follows the user's voice while the mic is on
                         Button { call.toggleMic() } label: {
                             MacGlassControl(icon: "glass-mic-icon", size: 46, slashed: !call.micOn)
                                 .background { MotionVoiceRing(active: call.micOn && call.link == .live, diameter: 46, color: Color(red: 84 / 255, green: 193 / 255, blue: 1), level: { call.inputLevel }) }
