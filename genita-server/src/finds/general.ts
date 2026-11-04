@@ -14,6 +14,8 @@
  */
 import type { FindCard } from "../protocol.ts";
 import type { SparkStreamEvent } from "../meta/spark.ts";
+import { SentenceSplitter } from "../text/sentences.ts";
+import { isInterjectionOnly, isProcessLine, isToolNarration } from "../text/toolNarration.ts";
 import { realCrisisSignal } from "../convo/guard.ts";
 import { domainOf, lastJsonObject, str, strList } from "./parse.ts";
 import type { PipelineCtx, PipelineResult } from "./pipeline.ts";
@@ -257,56 +259,64 @@ export async function runGeneral(ctx: PipelineCtx): Promise<PipelineResult> {
 
 // ───────── the spoken side: one sentence ─────────
 
-/** a sentence ends at . ! ? … (plus a closing quote) before a space; "U.S." / "Dr." / "e.g." don't end one */
-const SENTENCE_END = /[.!?…]["'”’)\]]*\s/g;
-const ABBREV = /(?:\b(?:mr|mrs|ms|dr|st|vs|jr|sr|inc|ltd|no|approx|e\.g|i\.e|etc)|\b[A-Z](?:\.[A-Z])*)\.$/i;
 /** a word that is a link: never said */
-const LINKISH = /^(?:\(?https?:\/\/|\(?www\.)|^\S+\.(?:com|org|net|io|ai|co|gov|edu|kr|jp|uk)(?:\/\S*)?[),.]?$/i;
-const scrub = (t: string) => t.split(/(\s+)/).filter((w) => !LINKISH.test(w)).join("").replace(/ {2,}/g, " ");
+const LINKISH = /^(?:https?:\/\/|www\.)|^\S+\.(?:com|org|net|io|ai|co|gov|edu|kr|jp|uk|dev|app)(?:\/\S*)?[)"'”’.,!?]*$/i;
+function scrubWord(w: string): string {
+  // markdown "[official](https://…)" keeps its words, drops the link
+  const md = w.replace(/\]\([^)\s]*\)?/g, "").replace(/\[/g, "");
+  const core = md.replace(/^["'“‘(<]+/, "");
+  return LINKISH.test(core) ? "" : md;
+}
+const scrub = (t: string) => t.split(/(\s+)/).map((w) => (/^\s+$/.test(w) ? w : scrubWord(w))).join("").replace(/ {2,}/g, " ");
+/** a line the voice drops anyway ("I'll look that up.", "Hmm."): not the one sentence */
+const unsaid = (s: string) => isToolNarration(s) || isProcessLine(s) || isInterjectionOnly(s);
 
 /**
- * The reply as at most one sentence: whole words go out as they arrive (first audio is not held back), link-looking
- * words are dropped, and the stream ends with `done` after the first sentence.
+ * The reply as one sentence: whole words go out as they arrive (first audio is not held back), link-looking words
+ * are dropped, and nothing after the first sentence the voice would say is spoken. The stream is still read to its
+ * end so tool calls after the sentence (remember) still happen (Codex mix r1). Sentence ends come from the
+ * session's own SentenceSplitter ("Mt.", "U.S.", full-width marks).
  */
 export async function* firstSentenceOnly(src: AsyncIterable<SparkStreamEvent>): AsyncIterable<SparkStreamEvent> {
-  let buf = "";
+  const splitter = new SentenceSplitter({ firstClauseMaxChars: Number.POSITIVE_INFINITY });
+  let all = "";
+  let emitted = 0;
+  let cursor = 0;
+  let stopAt: number | null = null;
   let said = "";
-  const out = (t: string) => {
-    let clean = scrub(t);
-    if (/\s$/.test(said) || !said) clean = clean.replace(/^\s+/, "");
-    said += clean;
-    return clean;
+  const take = (upto: number): string => {
+    if (upto <= emitted) return "";
+    let t = scrub(all.slice(emitted, upto));
+    emitted = upto;
+    if (/\s$/.test(said) || !said) t = t.replace(/^\s+/, "");
+    said += t;
+    return t;
   };
   for await (const ev of src) {
     if (ev.type === "done") {
-      if (buf) { const t = out(buf); if (t) yield { type: "text", delta: t }; }
+      if (stopAt === null) {
+        const t = take(all.length);
+        if (t) yield { type: "text", delta: t };
+      }
       yield { ...ev, text: said };
       return;
     }
     if (ev.type !== "text") { yield ev; continue; }
-    buf += ev.delta;
-    SENTENCE_END.lastIndex = 0;
-    let m: RegExpExecArray | null;
-    let end = -1;
-    while ((m = SENTENCE_END.exec(buf))) {
-      const upto = buf.slice(0, m.index + 1);
-      if (ABBREV.test(upto.trimEnd()) && !/[!?…]/.test(m[0])) continue;
-      end = m.index + m[0].trimEnd().length;
-      break;
-    }
-    if (end >= 0) {
-      const t = out(buf.slice(0, end));
-      if (t) yield { type: "text", delta: t };
-      yield { type: "done", responseId: null, text: said, status: "completed" };
-      return;
+    if (stopAt !== null) continue;
+    all += ev.delta;
+    for (const sentence of splitter.push(ev.delta)) {
+      const at = all.indexOf(sentence, cursor);
+      const end = at >= 0 ? at + sentence.length : all.length;
+      cursor = end;
+      if (stopAt === null && !unsaid(sentence)) stopAt = end;
     }
     // whole words only, so a link is seen whole before anything of it is said
-    const cut = buf.search(/\s\S*$/);
-    if (cut > 0) {
-      const t = out(buf.slice(0, cut + 1));
-      buf = buf.slice(cut + 1);
-      if (t) yield { type: "text", delta: t };
-    }
+    const lastSpace = all.search(/\s\S*$/);
+    const t = take(stopAt ?? (lastSpace >= 0 ? lastSpace + 1 : emitted));
+    if (t) yield { type: "text", delta: t };
   }
-  if (buf) { const t = out(buf); if (t) yield { type: "text", delta: t }; }
+  if (stopAt === null) {
+    const t = take(all.length);
+    if (t) yield { type: "text", delta: t };
+  }
 }

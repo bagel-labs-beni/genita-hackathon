@@ -256,6 +256,26 @@ test("firstSentenceOnly: one sentence, words streamed as they come, no links, ab
   assert.equal(textOf(b).trim(), "The U.S. Open is in New York, see for tickets.");
   const c = await collect(firstSentenceOnly(chunks(["Not sure off the top of my head, pulling up a few sources"])));
   assert.equal(textOf(c).trim(), "Not sure off the top of my head, pulling up a few sources");
+  // Codex mix r1
+  const d = await collect(firstSentenceOnly(chunks(["Mt. Everest is the tallest ", "mountain in the world. It is in Nepal."])));
+  assert.equal(textOf(d).trim(), "Mt. Everest is the tallest mountain in the world.");
+  const e = await collect(firstSentenceOnly(chunks(["I'll look that up. ", "Paris is the capital of France. ", "It is lovely."])));
+  assert.match(textOf(e), /Paris is the capital of France\.$/, "a line the voice drops is not the one sentence");
+  assert.doesNotMatch(textOf(e), /lovely/);
+  const f = await collect(firstSentenceOnly(chunks(['See "https://example.com" or the [official site](https://example.dev) for details. More.'])));
+  assert.doesNotMatch(textOf(f), /https?:|example\./, textOf(f));
+  assert.match(textOf(f), /official site/);
+  // a tool call after the sentence still reaches the session
+  async function* withTool(): AsyncIterable<SparkStreamEvent> {
+    yield { type: "text", delta: "Got it, more words here. " };
+    yield { type: "text", delta: "And another sentence. " };
+    yield { type: "function_call", name: "remember", call_id: "c1", arguments: "{}" };
+    yield { type: "done", responseId: "r", text: "", status: "completed" };
+  }
+  const g = await collect(firstSentenceOnly(withTool()));
+  assert.ok(g.some((x) => x.type === "function_call"), "remember still runs");
+  assert.doesNotMatch(textOf(g), /another/);
+  assert.equal(g.at(-1)?.type, "done");
 });
 
 // ───────── in a call (mix): one sentence now, the sheet fills, then one line ─────────
