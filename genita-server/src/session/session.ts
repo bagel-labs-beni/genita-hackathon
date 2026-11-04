@@ -544,7 +544,8 @@ export class Session {
         stillListening: () => this.mode === "chat" && !this.interp && !this.watch && !this.reply && this.turn.phase === "listening" && this.userTurnOpen(),
         send: (kind) => void this.sendBackchannel(kind),
         // 11/4 18:5x: never while a find is being made, never right after the companion spoke
-        blocked: () => !!this.finds?.busy(),
+        // a speculative Spark run (it may be searching on a partial) counts too (Codex #733 P2)
+        blocked: () => !!this.finds?.busy() || !!this.spec,
         companionDoneAt: () => this.lastReplyDoneAt,
       })
     : null;
@@ -601,6 +602,8 @@ export class Session {
       } catch { /* no cue audio: the event still goes (the app plays nothing) */ }
     }
     if (this.closed || this.mode !== "chat" || this.reply || !this.userTurnOpen() || gen !== this.bcGen) return;
+    // the lookup took time: the held turn's end (the reply) may now be under 1.5 s away (Codex #733 P2)
+    if (this.backchannel && !this.backchannel.clearOfReply()) return;
     this.client.sendJson({ type: "backchannel", kind, ...(audio ? { audio } : {}) });
     // the app sends the uplink untouched; whatever of the cue survives echo cancellation is dropped from this turn
     this.cuedTurn = true;
@@ -2813,11 +2816,14 @@ export class Session {
     // 11/4 18:5x: a search keeping the answer waiting → one wait line SEARCH_WAIT_MS in (audio only, like a beat)
     let waitTimer: NodeJS.Timeout | null = null;
     let waitSaid = false;
+    let searching = false; // a web_search of this reply is running (started, not completed)
     const armWaitLine = () => {
       if (waitTimer || waitSaid || !this.v1 || interpret || self || greeting) return;
       waitTimer = setTimeout(() => {
-        if (signal.aborted || this.reply !== reply || waitSaid || this.userTurnOpen()) return;
-        if (sentences.some((x) => !x.beat && !x.drop)) return; // the answer already started
+        waitTimer = null;
+        if (signal.aborted || this.reply !== reply || waitSaid || !searching || this.userTurnOpen()) return;
+        // the answer already started, or a hold beat already covered the wait (never both, Codex #733 P2)
+        if (sentences.some((x) => !x.drop)) return;
         waitSaid = true;
         const before = sentences.length;
         beating = true;
@@ -2829,7 +2835,7 @@ export class Session {
     };
     const beat = () => {
         // hold cap B (11/4): never a beat while they're talking again (a pause the ASR took for the end of the turn)
-        if (signal.aborted || this.reply !== reply || sentences.length || this.userTurnOpen()) return;
+        if (signal.aborted || this.reply !== reply || sentences.length || waitSaid || this.userTurnOpen()) return;
         // Codex #664 r1: a real crisis line never gets a beat ahead of the help (no "Mm." before 988)
         // Codex #664 r2: a medical / danger emergency too ("I can't breathe. My chest feels tight.")
         if (realCrisisSignal(text) || mayBeSelfHarm(text) || NO_BEAT_EMERGENCY.test(text.replace(/[‘’]/g, "'"))) return;
@@ -2903,7 +2909,12 @@ export class Session {
                 pushSentences(splitter.push(ev.delta));
               } else if (ev.type === "tool") {
                 guarded.tool = true;
-                if (ev.name === "web_search" && ev.status !== "completed") armWaitLine();
+                if (ev.name === "web_search") {
+                  searching = ev.status !== "completed";
+                  if (searching) armWaitLine();
+                  // the search is done: only the answer is left to come, no "pulling that up" (Codex #733 P2)
+                  else if (waitTimer) { clearTimeout(waitTimer); waitTimer = null; }
+                }
                 if (!interpret) {
                   // A tool may follow a sentence with no trailing space, or an unfinished clause.
                   pushSentences(splitter.flush());

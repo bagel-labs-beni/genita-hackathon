@@ -2125,6 +2125,7 @@ test("search wait line: a search that keeps the answer waiting gets one 'Give me
   const { SEARCH_WAIT_LINE, SEARCH_WAIT_MS } = await import("../src/session/session.ts");
   assert.ok(SEARCH_WAIT_MS >= 1500 && SEARCH_WAIT_MS <= 2000, String(SEARCH_WAIT_MS));
   let searchMs = 3000;
+  let answerMs = 0;
   const client = new Client();
   const session = new Session("waitLine", client, {
     config, openAsr: () => { throw new Error("no asr"); },
@@ -2134,6 +2135,7 @@ test("search wait line: a search that keeps the answer waiting gets one 'Give me
       await new Promise((r) => setTimeout(r, searchMs));
       if (signal?.aborted) return;
       yield { type: "tool", name: "web_search", status: "completed" };
+      if (answerMs) await new Promise((r) => setTimeout(r, answerMs));
       yield { type: "text", delta: "<happy> It opens at nine tomorrow." };
       yield { type: "done", responseId: "r", text: "", status: "completed" };
     },
@@ -2156,5 +2158,11 @@ test("search wait line: a search that keeps the answer waiting gets one 'Give me
   await session.onClientText(JSON.stringify({ type: "text", text: "and on sunday" }));
   await client.waitFor((m) => m.type === "reply" && m.final === true, 8000);
   assert.equal(client.json.filter((m) => m.type === "say" && /pulling that up/i.test(String(m.text))).length, 0, "quick search: none");
+  // Codex #733 P2: the search is done at 600 ms and only the answer is slow (2 s more): no "pulling that up"
+  client.json.length = 0;
+  answerMs = 2000;
+  await session.onClientText(JSON.stringify({ type: "text", text: "and on monday" }));
+  await client.waitFor((m) => m.type === "reply" && m.final === true, 8000);
+  assert.equal(client.json.filter((m) => m.type === "say" && /pulling that up/i.test(String(m.text))).length, 0, "search finished: none");
   session.close();
 });

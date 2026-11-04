@@ -41,6 +41,8 @@ export class Backchannel {
   private total = 0;
   private lastFired = -Infinity;
   private words = 0;
+  /** when the end-of-turn hold of a held turn ends (the reply comes then); Infinity when no hold is running */
+  private holdEndsAt = Infinity;
   private readonly setT: (fn: () => void, ms: number) => unknown;
   private readonly clearT: (t: unknown) => void;
 
@@ -55,6 +57,7 @@ export class Backchannel {
   /** speech started: a new user turn, or (continuing) the user resumed a turn the end-of-turn hold kept open */
   start(continuing = false): void {
     this.stop();
+    this.holdEndsAt = Infinity;
     if (continuing) return;
     this.turnStart = this.d.now();
     this.fired = 0;
@@ -63,6 +66,7 @@ export class Backchannel {
 
   /** a cumulative partial transcript of the current turn */
   partial(text: string): void {
+    this.holdEndsAt = Infinity;
     this.words = text.trim() ? text.trim().split(/\s+/).length : 0;
     this.clear();
     const now = this.d.now();
@@ -95,8 +99,14 @@ export class Backchannel {
     const now = this.d.now();
     if (this.words < BACKCHANNEL.minWords || this.fired >= BACKCHANNEL.maxPerTurn) return;
     const due = Math.max(cueAfterMs, this.turnStart + BACKCHANNEL.notBeforeMs - now, this.lastFired + BACKCHANNEL.gapMs - now);
+    this.holdEndsAt = now + holdMs;
     if (due > holdMs - BACKCHANNEL.replyClearMs) return;
     this.arm(due);
+  }
+
+  /** still ≥ replyClearMs before a running hold ends (the session checks again right before the cue goes out) */
+  clearOfReply(): boolean {
+    return this.d.now() <= this.holdEndsAt - BACKCHANNEL.replyClearMs;
   }
 
   /** speech ended, the turn completed, or the session closed */

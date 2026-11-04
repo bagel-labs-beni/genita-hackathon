@@ -84,6 +84,15 @@ test("backchannel: never within 1.5 s of the reply starting (end-of-turn hold), 
   b.bc.held(words(14), 1050, 4000);
   b.advance(1050);
   assert.deepEqual(b.sent, ["mm"]);
+  // Codex #733 P2: the session checks again right before the cue goes out (after its voice lookup)
+  const e = rig();
+  e.bc.start(); e.advance(4000);
+  e.bc.held(words(14), 1050, 2700);
+  e.advance(1050);
+  assert.deepEqual(e.sent, ["mm"]);
+  assert.equal(e.bc.clearOfReply(), true, "1.65 s before the reply");
+  e.advance(300);
+  assert.equal(e.bc.clearOfReply(), false, "1.35 s before the reply: too close");
   // a find or a search is running: no cue
   let busy = true;
   const c = rig(() => true, { blocked: () => busy });
