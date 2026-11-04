@@ -1,4 +1,4 @@
-import { type CallStateRepository, type MemoryRepository, type Memory, type MemoryKind, type MemorySettings, memoryId } from "./repository.ts";
+import { type CallState, type CallStateRepository, type MemoryRepository, type Memory, type MemoryKind, type MemorySettings, memoryId } from "./repository.ts";
 import { cleanKeys, safeMemoryText, type Extractor, type KeyMaker, type Turn } from "./extract.ts";
 import { validSeen, type SeenCandidate, type SeenContext } from "./seen.ts";
 import { within } from "../util/within.ts";
@@ -222,13 +222,22 @@ export class MemoryService {
     }));
     return ranked;
   }
-  async forget(userId: string, id?: string): Promise<void> {
+  /**
+   * `relationship: true` (companion reset, AU-90): also when they last talked and the carried mood go, so the new
+   * companion meets them for the first time (no "back" opener, no mood from the old companion's calls).
+   */
+  async forget(userId: string, id?: string, opts: { relationship?: boolean } = {}): Promise<void> {
     await this.serial(userId, async () => {
       const items = (await this.repository.list(userId)).filter((m) => !id || m.id === id);
       // Session summaries are free text across many topics: any Forget (one item or all) drops them all,
       // the same rule as the handoff turn cache. First, so no call can load them after the notification.
       await this.summaryStore?.deleteSummaries(userId);
-      const s = await this.state.getState(userId); s.revision++; s.recent_openers = []; await this.state.putState(userId, s);
+      const s = await this.state.getState(userId); s.revision++; s.recent_openers = [];
+      if (opts.relationship) {
+        s.last_message_at = null; s.last_opener_day = null;
+        delete (s as CallState & { call_mood?: unknown }).call_mood;
+      }
+      await this.state.putState(userId, s);
       for (const fn of this.listeners.get(userId) ?? []) fn(s.revision);
       for (const m of items) if (m.image_ref) await this.options.deleteCrop?.(userId, m.image_ref);
       // Retain the row if blob deletion fails so a retry can find and erase it.
@@ -268,12 +277,20 @@ export class MemoryService {
       const s = await this.state.getState(userId);
       const now = this.now();
       const gap = (this.options.revisitGapHours ?? 6) * 3_600_000;
-      if (s.last_message_at === null || now - s.last_message_at < gap || s.last_opener_day === day(now)) return null;
+      // AU-43: the gap since the last memory opener is 6 h, not "a new UTC day" (a 10:00 and a 16:30 KST call shared one)
+      // an old state has only last_opener_day: that day still blocks until a timestamp exists
+      const lastOpener = s.last_opener_at ?? null;
+      if (s.last_message_at === null || now - s.last_message_at < gap) return null;
+      if (lastOpener !== null ? now - lastOpener < gap : s.last_opener_day === day(now)) return null;
       const eligible = (await this.repository.list(userId)).filter((m) => m.kind === "episode" && m.follow_up && m.source_session_id !== sessionId);
-      const seen = eligible.filter((m) => m.image_ref && now - m.updated_at >= 6 * 3_600_000);
-      const item = [...seen.length ? seen : eligible.filter((m) => !m.image_ref)].sort((a, b) => b.updated_at - a.updated_at)[0];
+      // AU-43: never-raised items first, then the one raised longest ago; one raised in the last day waits
+      // (Codex #585 P2: filter what may be raised again FIRST, then prefer a seen crop among those)
+      const fresh = (m: Memory) => m.last_used_at === null || now - m.last_used_at >= 24 * 3_600_000;
+      const seen = eligible.filter((m) => m.image_ref && now - m.updated_at >= 6 * 3_600_000 && fresh(m));
+      const item = [...seen.length ? seen : eligible.filter((m) => !m.image_ref && fresh(m))]
+        .sort((a, b) => (a.last_used_at ?? 0) - (b.last_used_at ?? 0) || b.updated_at - a.updated_at)[0];
       if (!item) return null;
-      s.last_opener_day = day(now); await this.state.putState(userId, s);
+      s.last_opener_day = day(now); s.last_opener_at = now; await this.state.putState(userId, s);
       item.last_used_at = now; await this.repository.put(userId, item);
       this.log("memory.recalled", { memory_id: item.id, age_s: Math.floor((now - item.created_at) / 1000) });
       return item;

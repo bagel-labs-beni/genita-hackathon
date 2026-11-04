@@ -18,10 +18,15 @@ import Foundation
     func playbackPositionMs(utteranceId: Int) -> Double?
     /// Convo P1 #345: a soft backchannel cue while the user talks (default: ignored)
     func playCue(pcm: Data)
+    /// Motion details: the user's voice and the reply's loudness 0…1 right now (default: silent)
+    var inputLevel: Float { get }
+    var outputLevel: Float { get }
 }
 
 extension CallAudioPlaying {
     func playCue(pcm: Data) {}
+    var inputLevel: Float { 0 }
+    var outputLevel: Float { 0 }
 }
 
 @MainActor protocol CallVoiceRendering: AnyObject {
@@ -41,7 +46,10 @@ protocol CallConnection: AnyObject, Sendable {
     func connect(url: URL, token: String?)
     func send(_ message: ClientMessage)
     func send(audio: Data)
+    /// Ends the call from the app side: `stop`, then a normal close (a hang-up).
     func close()
+    /// Closes without `stop`: the conversation goes on in a new session (handoff return).
+    func disconnect()
 }
 
 extension CallAudio: CallAudioPlaying {}

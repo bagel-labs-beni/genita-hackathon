@@ -50,16 +50,19 @@ final class MotionDemoFindsUITests: XCTestCase {
         pause(1.5)
     }
 
-    /// Card 5: ingredient chips press to 0.96 and spring back, colors change in 200 ms, one selection tick per tap;
-    /// the "?" kimchi chip turns ✓ with the replace effect (fixture: 6 s after the card).
+    /// Card 5 (+ MO-05): ingredient chips press to 0.96 and spring back, colors change in 200 ms, one selection tick
+    /// per tap. "+ Soy sauce" → tap → added to the list, the + turns ✓ (replace effect); tap again → back to +.
+    /// The "?" kimchi chip turns ✓ the same way (fixture: 11 s after the card).
     func testMotion5IngredientChip() throws {
         let app = launch(44)
         XCTAssertTrue(any(app, "findsSheet").waitForExistence(timeout: 20), "sheet")
         pause(1.5)
         let soy = app.buttons["chip-soy sauce"], egg = app.buttons["chip-egg"]
         XCTAssertTrue(soy.waitForExistence(timeout: 5), "soy sauce chip")
-        soy.tap(); pause()
-        if egg.exists { egg.tap(); pause() }
+        soy.tap(); pause() // + → ✓ (added)
+        soy.tap(); pause() // ✓ → + (off the list)
+        soy.tap(); pause() // + → ✓ again
+        if egg.exists { egg.tap(); pause(); egg.tap(); pause() } // select / let go (camera box)
         // bring the "?" chips into view before kimchi turns ✓
         egg.swipeLeft(); pause(3)
         let kimchi = app.buttons["chip-kimchi"]

@@ -6,7 +6,8 @@ import CoreText
 /// Device chrome is excluded. Fonts never scale with screen width; compact screens scroll.
 struct DesignColor: Decodable {
     var r: CGFloat; var g: CGFloat; var b: CGFloat; var a: CGFloat?
-    var ui: UIColor { UIColor(red: r, green: g, blue: b, alpha: a ?? 1) }
+    /// D1: every Figma #B7B7B7 text (card subtitles, SUM labels, D01 time, V04 voice lines) reads as #737373.
+    var ui: UIColor { Palette.isFigmaSecondary(r: r, g: g, b: b) ? Palette.secondaryUI : UIColor(red: r, green: g, blue: b, alpha: a ?? 1) }
     var color: Color { Color(uiColor: ui) }
 }
 struct DesignRun: Decodable { var start: Int; var end: Int; var color: DesignColor? }
@@ -32,6 +33,9 @@ struct DesignNode: Decodable, Identifiable {
         if let lineHeight { paragraph.minimumLineHeight = lineHeight; paragraph.maximumLineHeight = lineHeight }
         paragraph.alignment = align == "CENTER" ? .center : align == "RIGHT" ? .right : .left
         paragraph.lineBreakMode = .byWordWrapping
+        // live text (answers, names): no one-word last line ("…without / approval" → "…actions / without approval");
+        // Figma's own copy keeps its hand-set breaks
+        if text != nil { paragraph.lineBreakStrategy = .standard }
         var attributes: [NSAttributedString.Key:Any] = [.font:font, .foregroundColor:override ?? color?.ui ?? UIColor(white: 0.067, alpha: 1), .paragraphStyle:paragraph]
         // Zero tracking must leave the font's built-in kerning enabled.
         if let spacing = letterSpacing, spacing != 0 { attributes[.kern] = spacing }

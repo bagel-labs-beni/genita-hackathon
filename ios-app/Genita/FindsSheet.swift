@@ -14,6 +14,11 @@ enum FindsInk {
     static let skip = Color(red: 239 / 255, green: 239 / 255, blue: 239 / 255)
     static let boxLine = Color(red: 253 / 255, green: 253 / 255, blue: 253 / 255).opacity(0.82)
     static let white = Color.white
+    /// D4: product picture that didn't come — warm neutral, not grey
+    static let photoMissing = Color(red: 243 / 255, green: 241 / 255, blue: 237 / 255)
+    static let photoMissingGlyph = Color(red: 185 / 255, green: 178 / 255, blue: 166 / 255)
+    /// D4: "From your style and what you said · …" Regular 13/18 #6E6E73
+    static let sourceLine = Color(red: 110 / 255, green: 110 / 255, blue: 115 / 255)
 }
 
 /// D48 ③ reason chips under the card title: blue "Your style/taste: …" from the profile, grey "You said: …" from
@@ -80,7 +85,11 @@ struct FindPicture: View {
     }
     @ViewBuilder private var failed: some View {
         if let quietGlyph {
-            Image(systemName: quietGlyph).font(.system(size: 28, weight: .light)).foregroundStyle(CallInk.mute.opacity(0.7)).accessibilityHidden(true)
+            // D4: a shop with no readable picture is a warm neutral tile (#F3F1ED) with a 34 pt line glyph (#B9B2A6), not a grey "broken" box
+            ZStack {
+                FindsInk.photoMissing
+                Image(systemName: quietGlyph).font(.system(size: 34, weight: .light)).foregroundStyle(FindsInk.photoMissingGlyph)
+            }.accessibilityHidden(true)
         } else {
         VStack(spacing: 4) {
             if showFailText { Text("Picture didn’t load").font(TypeStyle.body(12)).foregroundStyle(CallInk.mute) }
@@ -329,7 +338,8 @@ struct FindsSheet: View {
             } else {
                 if finds.state == .full {
                     Button { call.toggleMic() } label: {
-                        Image(systemName: call.micOn ? "mic.fill" : "mic").font(.system(size: 18, weight: .medium)).foregroundStyle(CallInk.onInk).frame(width: 50, height: 50).background(CallInk.ink, in: Circle())
+                        Image(systemName: call.micOn ? "mic.fill" : "mic").font(.system(size: 22, weight: .medium))   // ~50 % of the 50 pt circle (18 pt read as shrunken, icon sweep 11/4)
+                            .foregroundStyle(CallInk.onInk).frame(width: 50, height: 50).background(CallInk.ink, in: Circle())
                     }.buttonStyle(PressScale(scale: 0.96)).accessibilityLabel(call.micOn ? "Mute" : "Unmute")
                 }
                 let reopened = finds.current?.reopened == true
@@ -575,19 +585,30 @@ struct FindCardPage: View {
     }
 
     private func chip(_ item: FindItem) -> some View {
-        let pressed = finds.selectedItem == item.id
-        let miss = item.tier == .buy
+        // MO-05: "+" = add it to the recipe's shopping list; ✓ only once it is added, a second tap takes it off.
+        // Rides the `motionDetails` flag: off → the old tap (select it, "Not on your camera").
+        let addable = item.tier == .buy && MotionDetails.enabled
+        let pressed = finds.selectedItem == item.id && !addable
+        let added = addable && finds.isAdded(item.id, in: entry.id)
+        let miss = item.tier == .buy && !added
         let icon = miss ? "plus" : item.tier == .maybe ? "questionmark" : "checkmark"
         let fg: Color = pressed ? CallInk.onInk : miss ? FindsInk.blueText : CallInk.ink
         let bg: Color = pressed ? CallInk.ink : miss ? FindsInk.blueSoft : FindsInk.white
         let border: Color = pressed ? CallInk.ink : miss ? FindsInk.blueSoft : FindsInk.line
         // motion card 5: background/colors 200 ms (.fade), press 0.96 on a spring, the icon swaps with the replace effect
-        return Button { chipTaps += 1; withAnimation(.fade) { finds.tapItem(item) } } label: {
+        return Button {
+            chipTaps += 1
+            withAnimation(.fade) { if addable { finds.toggleAdded(item.id, in: entry.id) } else { finds.tapItem(item) } }
+        } label: {
             HStack(spacing: 6) {
-                if item.tier == .checking { ProgressView().controlSize(.mini).tint(CallInk.mute) }
-                else { Image(systemName: icon).font(.system(size: 13, weight: .semibold)).foregroundStyle(pressed ? CallInk.onInk : miss ? FindsInk.blueText : CallInk.mute).findsSymbolReplace(icon) }
-                Text(item.name.capitalizedFirst).font(TypeStyle.body(14, .medium))
-                if item.optional == true { Text("optional").font(TypeStyle.body(12)) }
+                // one 16 pt box for every glyph, centered: + / ✓ / ? / spinner sit in the same spot and the text never shifts
+                Group {
+                    if item.tier == .checking { ProgressView().controlSize(.mini).tint(CallInk.mute) }
+                    else { Image(systemName: icon).font(.system(size: 13, weight: .semibold)).foregroundStyle(pressed ? CallInk.onInk : miss ? FindsInk.blueText : CallInk.mute).findsSymbolReplace(icon) }
+                }.frame(width: 16, height: 16, alignment: .center)
+                // one line, never cut: the chip grows instead (Chelsea 11/4)
+                Text(item.name.capitalizedFirst).font(TypeStyle.body(14, .medium)).lineLimit(1).fixedSize(horizontal: true, vertical: false)
+                if item.optional == true { Text("optional").font(TypeStyle.body(12)).lineLimit(1).fixedSize(horizontal: true, vertical: false) }
             }
             .foregroundStyle(fg).padding(.horizontal, 12).frame(height: 44)
             .background(bg, in: RoundedRectangle(cornerRadius: 12))
@@ -595,16 +616,17 @@ struct FindCardPage: View {
             .opacity(item.tier == .maybe && !pressed ? 0.55 : item.tier == .checking ? 0.5 : 1)
         }
         .buttonStyle(FindsChipPress())
-        .accessibilityLabel(chipLabel(item))
-        .accessibilityAddTraits(pressed ? .isSelected : [])
+        .accessibilityLabel(chipLabel(item, added: added))
+        .accessibilityHint(addable ? (added ? "Takes it off your list" : "Adds it to your list") : "")
+        .accessibilityAddTraits(pressed || added ? .isSelected : [])
         .accessibilityIdentifier("chip-\(item.name)")
     }
 
-    private func chipLabel(_ item: FindItem) -> String {
+    private func chipLabel(_ item: FindItem, added: Bool) -> String {
         switch item.tier {
         case .have: "\(item.name), on your camera"
         case .maybe: "\(item.name)? Not sure. Tap to confirm"
-        case .buy: "\(item.name), not on your camera\(item.optional == true ? ", optional" : "")"
+        case .buy: "\(item.name), not on your camera\(item.optional == true ? ", optional" : "")\(added ? ", added to your list" : "")"
         case .checking: "\(item.name), checking"
         }
     }
@@ -728,15 +750,16 @@ struct FindCardPage: View {
 
     private func productColumn(_ p: FindCard.Product) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            FindPicture(image: p.image, resolve: call.findsURL, showFailText: false, quietGlyph: "bag")
+            FindPicture(image: p.image, resolve: call.findsURL, showFailText: false, quietGlyph: "hanger")
                 .aspectRatio(1, contentMode: .fit).clipShape(RoundedRectangle(cornerRadius: 12))
                 .accessibilityLabel("Picture of \(p.name)")
             VStack(alignment: .leading, spacing: 4) {
                 Text(p.name).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.ink).lineLimit(2).multilineTextAlignment(.leading)
                 Text(p.store + " · " + (p.price ?? "Price on site")).font(TypeStyle.body(14)).foregroundStyle(CallInk.mute).lineLimit(1)
             }
-            if !p.taste.isEmpty { productChip(p.taste, fg: FindsInk.blueText, bg: FindsInk.blueSoft) }
-            if !p.situation.isEmpty { productChip(p.situation, fg: CallInk.ink, bg: FindsInk.skip) }
+            // D4: ✦ = your style, “ = what you said (no colour legend)
+            if !p.taste.isEmpty { productChip(p.taste, mark: ProductPicks.styleMark, fg: FindsInk.blueText, bg: FindsInk.blueSoft) }
+            if !p.situation.isEmpty { productChip(p.situation, mark: ProductPicks.saidMark, fg: CallInk.ink, bg: FindsInk.skip) }
             Button {
                 if !offline { withAnimation(.drawer) { finds.state = .full; finds.browser = FindCard.Source.make(title: p.name, url: p.url, domain: p.domain) } }
             } label: {
@@ -752,9 +775,15 @@ struct FindCardPage: View {
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func productChip(_ text: String, fg: Color, bg: Color) -> some View {
-        Text(text).font(TypeStyle.body(12, .medium)).foregroundStyle(fg).fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, 12).padding(.vertical, 4).background(bg, in: RoundedRectangle(cornerRadius: 12))
+    private func productChip(_ text: String, mark: String, fg: Color, bg: Color) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            Text(mark).font(TypeStyle.body(13, .medium)).accessibilityHidden(true)
+            Text(text).font(TypeStyle.body(12, .medium)).fixedSize(horizontal: false, vertical: true)
+        }
+        .foregroundStyle(fg)
+        .padding(.horizontal, 12).padding(.vertical, 4).background(bg, in: RoundedRectangle(cornerRadius: 12))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(mark == ProductPicks.styleMark ? "Your style: \(text)" : "You said: \(text)")
     }
 
     // MARK: shared sections
@@ -799,11 +828,29 @@ struct FindCardPage: View {
         }.padding(.top, 8)
     }
 
-    // r03 #19 "How I found this"
-    private var howSection: some View {
+    // r03 #19 "How I found this"; D4: a product card says it in one line instead of a colour legend
+    @ViewBuilder private var howSection: some View {
+        if card.kind == .product && card.evidence != nil {
+            // one line when it fits; else the sites on their own line (3x check: "…what you said ·" ended a line)
+            let parts = ProductPicks.sourceParts(card)
+            ViewThatFits(in: .horizontal) {
+                Text(ProductPicks.sourceLine(card)).lineLimit(1)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(parts.from)
+                    if let sites = parts.sites { Text(sites) }
+                }
+            }
+            .font(TypeStyle.body(13)).foregroundStyle(FindsInk.sourceLine)
+            .padding(.top, 8).accessibilityElement(children: .combine).accessibilityIdentifier("findHow")
+        } else {
+            howList
+        }
+    }
+    private var howList: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("How I found this").font(TypeStyle.body(12, .medium)).foregroundStyle(CallInk.mute)
-            ForEach(card.how, id: \.self) { line in
+            // D4: never the old colour legend (cards saved before the marks, or an older server)
+            ForEach(card.how.filter { !ProductPicks.isLegend($0) }, id: \.self) { line in
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     // PF-1b has no icons here: the lines use the full column (Figma 179:68)
                     if card.kind != .product {
@@ -993,8 +1040,8 @@ struct FindsToast: View {
     let finds: FindsModel
     var body: some View {
         HStack(spacing: 12) {
-            Text("In Finds").font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.onInk)
-            Button("Undo") { withAnimation(.drawer) { finds.undo() } }.font(TypeStyle.body(14, .medium)).underline().foregroundStyle(CallInk.onInk)
+            Text("In Finds").font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.onInk).lineLimit(1).fixedSize(horizontal: true, vertical: false)
+            Button("Undo") { withAnimation(.drawer) { finds.undo() } }.font(TypeStyle.body(14, .medium)).underline().foregroundStyle(CallInk.onInk).lineLimit(1).fixedSize(horizontal: true, vertical: false)
                 .padding(.horizontal, 8).frame(minHeight: 44).accessibilityIdentifier("findUndo")
         }
         .padding(.leading, 16).padding(.trailing, 8)

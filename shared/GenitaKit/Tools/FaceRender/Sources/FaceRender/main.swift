@@ -191,6 +191,8 @@ if ProcessInfo.processInfo.environment["FACE_V60_LADDERS"] == "0" { MotionV2.v60
 // CA-09 tuning (local renders only): the non-person sway share and its low-pass (s)
 if let v = ProcessInfo.processInfo.environment["FACE_SWAY_NONHUMAN"].flatMap(Double.init) { FaceRenderer.nonHumanSway = v }
 if let v = ProcessInfo.processInfo.environment["FACE_SWAY_SMOOTH"].flatMap(Double.init) { FaceRenderer.nonHumanSwaySmoothing = v }
+// FACE_MOUTH_INTERIOR=0 / 1: the 11/4 mouth inside off (build 6) / on, whatever the map says (before/after renders)
+if let v = ProcessInfo.processInfo.environment["FACE_MOUTH_INTERIOR"] { FaceRenderer.mouthInterior = v != "0" }
 let faceSet: FaceSet
 do { faceSet = try FaceSet(directory: URL(fileURLWithPath: o.face)) } catch { fail("face set: \(error)") }
 print("face set: \(faceSet.patches.count)/10 patches; notes: \(faceSet.notes.joined(separator: "; "))")

@@ -13,7 +13,7 @@ export const SPARK_MODEL = "muse-spark-1.3";
 
 export type ContentPart =
   | { type: "input_text"; text: string }
-  | { type: "input_image"; image_url: string }
+  | { type: "input_image"; image_url: string; detail?: "low" | "high" | "auto" }
   | { type: "input_file"; file_id: string };
 export type InputMessage =
   | { role: "user"; content: string | ContentPart[] }

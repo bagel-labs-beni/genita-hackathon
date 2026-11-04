@@ -25,6 +25,9 @@ import { domainOf, lastJsonObject, str } from "./parse.ts";
 import { userMessage, type FindsVendors, type OutputItem } from "./vendors.ts";
 import type { PageFacts } from "./fetchPage.ts";
 import type { PipelineCtx, PipelineResult } from "./pipeline.ts";
+import { askedColors, offColor } from "./productCache.ts";
+// one color rule for search, cache and warm-up (handover b9-6): it lives in productCache.ts
+export { askedColors, offColor };
 
 export const PRODUCT_COUNT = 2;
 /** PF-1 searching line: one line at 390 pt next to Stop (≈ 32 characters of Pretendard 16 medium) */
@@ -173,12 +176,50 @@ export function shortName(s: string): string {
   return cut.slice(0, cut.lastIndexOf(" ") > 20 ? cut.lastIndexOf(" ") : 48).replace(/[\s,;:–-]+$/, "") + "…";
 }
 
-/** Keep a product page: the page says product → yes; says list → no; can't tell → URL shape must not be a list. */
+const PLURAL_GOODS = "boots|shoes|sneakers|loafers|sandals|heels|flats|jackets|coats|blazers|dresses|shirts|tops|tees|sweaters|hoodies|pants|trousers|jeans|skirts|bags|totes|accessories|clothing";
+/** "/womens-brown-boots", "/mens-jackets", "/boots-dark-brown/": a category slug, not one item (AU-79). */
+const LIST_SLUG = new RegExp(`^(?:(?:womens?|mens?|women-s|men-s|kids|all|shop)-(?:[a-z]+-){0,3}(?:${PLURAL_GOODS})|(?:${PLURAL_GOODS})(?:-[a-z]+){0,3})$`, "i");
+/** A title only a results page has: "24 results", "Results for brown boots", "Shop all". */
+const LIST_TITLE_STRONG = /\b(?:\d+ (?:items|results|products|styles)|results for|shop all)\b/i;
+/** One title part that names a category: "Women's Boots", "Brown boots collection", "Boots". */
+const CATEGORY_PART = new RegExp(`^(?:(?:women|men|kid)'?s(?: [a-z]+){0,2} (?:${PLURAL_GOODS})|(?:[a-z]+ ){0,3}(?:collection|category)|(?:${PLURAL_GOODS})|shop (?:women|men))$`, "i");
+/**
+ * A title that is only a category (+ a short shop name): "Women's Boots | Shop", "Brown boots collection – Acme".
+ * "Women's Boots - Heritage Chelsea Boot" names one item in another part, so it is not (Codex AU-79 r1).
+ */
+function categoryTitle(title: string): boolean {
+  const parts = title.split(/\s+[|–—:-]\s+/).map((p) => p.trim()).filter(Boolean);
+  return parts.some((p) => CATEGORY_PART.test(p)) && parts.every((p) => CATEGORY_PART.test(p) || p.split(/\s+/).length <= 2);
+}
+
+/** A category / collection the URL slug or the page title gives away, when the markup can't say (AU-79). */
+export function looksLikeList(url: string, title?: string): boolean {
+  if (title && LIST_TITLE_STRONG.test(title)) return true;
+  // "/products/boots-dark-brown" is one product whatever its slug or a category word in its title says
+  if (urlShape(url) === "product") return false;
+  if (title && categoryTitle(title)) return true;
+  try {
+    const seg = new URL(url).pathname.replace(/\/+$/, "").split("/").pop() ?? "";
+    return LIST_SLUG.test(seg.replace(/\.html?$/i, ""));
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Keep a product page: the page says product → yes; says list → no; can't tell (unread, or no markers) → the URL
+ * shape must not be a list and neither the slug nor the title may read as a category (FD-02: category pages 0).
+ */
 export function isProductPage(url: string, facts: PageFacts | null): boolean {
   if (hardList(url)) return false;
   if (facts?.kind === "product") return true;
   if (facts?.kind === "list") return false;
-  return urlShape(url) !== "list";
+  if (urlShape(url) === "list") return false;
+  return !looksLikeList(url, facts?.title);
+}
+/** Pages that say "one product" (markup or URL) are taken before ones nothing could confirm. */
+function proven(url: string, facts: PageFacts | null): boolean {
+  return facts?.kind === "product" || urlShape(url) === "product";
 }
 
 const words = (s: string) => new Set(s.toLowerCase().match(/[a-z가-힣]{3,}/g) ?? []);
@@ -439,7 +480,8 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
   const raw = (Array.isArray(j?.items) ? (j!.items as ItemJson[]) : []).slice(0, 4);
   const seen = new Set<string>();
   const cands: { item: ItemJson; url: string; inTrace: boolean }[] = [];
-  const dropped: { notOpened: number; notProduct: number; offOccasion?: number } = { notOpened: 0, notProduct: 0 };
+  const dropped: { notOpened: number; notProduct: number; offOccasion?: number; offColor?: number } = { notOpened: 0, notProduct: 0 };
+  const colors = askedColors(ctx.question, ctx.previous);
   for (const item of raw) {
     const claimed = str(item?.url, 600);
     const hit = matchOpened(claimed, opened);
@@ -458,6 +500,13 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
     seen.add(k);
     cands.push({ item, url, inTrace: !!hit });
   }
+  // FD-02: a black boot for "dark brown boots" (prod 11/3 S5) only fills a slot no candidate in the asked color can,
+  // on every search, not only the prefetch; a brand like "Red Wing" can't sink a card (Codex r1: reorder, not drop)
+  const off = cands.filter((c) => offColor(str(c.item?.name, 200), colors));
+  if (off.length) {
+    dropped.offColor = off.length;
+    cands.sort((a, b) => Number(off.includes(a)) - Number(off.includes(b)));
+  }
   const styleLine = groundStyle(str(j?.style_line, 200), taste);
   const situationLine = str(j?.situation_line, 120);
   if (cands.length) {
@@ -472,7 +521,12 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
 
   const products: (FindProduct & { _image?: string })[] = [];
   let serverOpened = 0;
-  cands.forEach((p, i) => {
+  // proven product pages first, then pages nothing could confirm (a category page can't take a slot a product page had)
+  // the asked color first (AU-78), then proven product pages before unconfirmed ones (Codex #602 r2)
+  const rank = (i: number) => (offColor(str(cands[i].item?.name, 200), colors) ? 2 : 0) + (proven(cands[i].url, facts[i]) ? 0 : 1);
+  const order = cands.map((_, i) => i).sort((a, b) => rank(a) - rank(b));
+  order.forEach((i) => {
+    const p = cands[i];
     if (products.length >= PRODUCT_COUNT) return;
     const f = facts[i];
     // not in the trace: only a page we fetched ourselves and that says "one product" counts as opened

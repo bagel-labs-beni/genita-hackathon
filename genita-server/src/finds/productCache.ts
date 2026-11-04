@@ -168,11 +168,10 @@ export function cardFitsColors(card: FindCard, colors: string[]): boolean {
   const products = card.products ?? [];
   if (!products.length) return false;
   if (!colors.length) return true;
-  // the product's own name only: a taste chip ("Brown palette") never vouches for a "Black Boot" (Codex P1 #522)
-  return products.every((x) => {
-    const w = colorsOf(x.name);
-    return !w.length || w.some((c) => colors.includes(c));
-  });
+  // the product's own name only: a taste chip ("Brown palette") never vouches for a "Black Boot" (Codex P1 #522);
+  // shades count as their color, the same rule the search ranks by ("chocolate" fits "dark brown", handover b9-6)
+  const asked = colorFamilies(colors.join(" "));
+  return products.every((x) => !offColor(x.name, asked));
 }
 
 /** For tests. */
@@ -180,4 +179,53 @@ export function clearProductCache(): void {
   cache.clear();
   warming.clear();
   forgotten.clear();
+}
+
+/** Color words that are the same color to someone asking for it ("dark brown" → a chocolate or espresso boot). */
+const COLOR_FAMILY: Record<string, string> = {
+  brown: "brown", chocolate: "brown", espresso: "brown", mocha: "brown", cognac: "brown",
+  tan: "tan", camel: "tan", beige: "tan", sand: "tan", khaki: "tan", taupe: "tan", oatmeal: "tan", nude: "tan",
+  black: "black",
+  grey: "grey", gray: "grey", charcoal: "grey", stone: "grey",
+  white: "white", ivory: "white", cream: "white", bone: "white", ecru: "white",
+  navy: "blue", blue: "blue", indigo: "blue", denim: "blue", teal: "blue", turquoise: "blue",
+  red: "red", burgundy: "red", wine: "red", maroon: "red", oxblood: "red", cherry: "red", rust: "red",
+  green: "green", olive: "green", mint: "green",
+  pink: "pink", coral: "pink", purple: "purple", plum: "purple", lavender: "purple", lilac: "purple",
+  yellow: "yellow", mustard: "yellow", orange: "orange", silver: "silver", gold: "gold", copper: "gold", bronze: "gold",
+};
+export const colorFamilies = (text: string): Set<string> => new Set(colorsOf(text).map((c) => COLOR_FAMILY[c] ?? c));
+const GOODS = /^(?:boots?|shoes?|sneakers?|loafers?|sandals?|heels?|flats|mules|jackets?|coats?|blazers?|parkas?|dress(?:es)?|shirts?|overshirts?|tees?|t-shirts?|tops?|sweaters?|cardigans?|hoodies?|skirts?|pants|trousers|jeans|shorts|bags?|totes?|backpacks?|belts?|hats?|caps?|scarf|scarves|watch(?:es)?|wallets?|socks|gloves|ones?)$/;
+/**
+ * The color the thing to buy is asked in, in the order said: "dark brown boots", "black leather loafers", "another
+ * one in brown". Not a color they rule out ("no black ones") or one of what they own ("my brown trench", Codex r1).
+ */
+export function colorAsks(text: string): string[] {
+  const w = text.toLowerCase().match(/[a-z]+(?:-[a-z]+)?/g) ?? [];
+  const out: string[] = [];
+  w.forEach((x, i) => {
+    if (!colorsOf(x).length) return;
+    const before = w.slice(Math.max(0, i - 3), i);
+    if (before.some((b) => /^(no|not|without|except|than|my|your|his|her|their|our)$/.test(b))) return;
+    const after = w.slice(i + 1, i + 4);
+    const names = after.some((a) => GOODS.test(a)) || w.slice(Math.max(0, i - 2), i).some((b) => /^(in|colou?r)$/.test(b));
+    if (names) out.push(x);
+  });
+  return out;
+}
+/** The color asked for: this turn's, else the latest one in the search it refines ("black…", "in brown instead" → brown). */
+export function askedColors(question: string, previous?: string): Set<string> {
+  const now = colorAsks(question);
+  if (now.length) return colorFamilies(now.join(" "));
+  const before = colorAsks(previous ?? "");
+  return before.length ? colorFamilies(before[before.length - 1]) : new Set();
+}
+/**
+ * FD-02 "color request match 100%" (AU-78): a product whose own name names only other colors than the one asked
+ * for ("Black Chelsea Boot" for "dark brown boots"). A name with no color word is not off-color.
+ */
+export function offColor(name: string, asked: Set<string>): boolean {
+  if (!asked.size) return false;
+  const has = colorFamilies(name);
+  return has.size > 0 && ![...has].some((c) => asked.has(c));
 }
