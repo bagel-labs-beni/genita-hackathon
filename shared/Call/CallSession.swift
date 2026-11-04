@@ -948,7 +948,7 @@ enum CallStop: Equatable {
                 if sessionId != nil { finds.interrupted() }
                 // A new session counts utterances from the start: ids of the old one mean nothing now.
                 faceIdBase = faceIdMax + 1
-                cancelled = []; routed = []; seqToUtterance = [:]; faceAudio = [:]; facePending = []; faceDeviceMs = [:]
+                cancelled = []; routed = []; seqToUtterance = [:]; faceAudio = [:]; facePending = []; faceDeviceMs = [:]; faceWall = [:]; faceWallEnd = 0
             }
             start?.greetAfterMs = nil   // D21: only the very first connect waits; a reconnect doesn't greet again
             sessionId = r.sessionId
@@ -1018,6 +1018,7 @@ enum CallStop: Equatable {
             }
         case let .utteranceCancelled(c):
             cancelled.insert(c.utteranceId)
+            faceWall[c.utteranceId] = nil
             face?.cancel(utteranceId: faceId(c.utteranceId))
             faceAudio = faceAudio.filter { $0.value.utteranceId != c.utteranceId }
             facePending.removeAll { $0.utterance == c.utteranceId }
@@ -1120,6 +1121,7 @@ enum CallStop: Equatable {
             let pcm = AudioFrameHeader.payload(of: data)
             feedFace(utterance) { $0.handle(audio: e, pcm: pcm) }
         }
+        noteFaceWall(utterance, bytes: data.count - GenitaProtocol.frameHeaderBytes)
         #if DEBUG
         if let playbackSink { playbackSink(AudioFrameHeader.payload(of: data), utterance); return }
         #endif
@@ -1287,7 +1289,7 @@ enum CallStop: Equatable {
             guard let self, let driver else { return nil }
             self.flushFacePending()
             guard let id = driver.currentUtteranceId else { return nil }
-            return self.audio.playbackPositionMs(utteranceId: id - self.faceIdBase)
+            return self.faceClockMs(utterance: id - self.faceIdBase)
         }
         face = driver
         if faceOnScreen && faceAnimates { driver.start() }
@@ -1399,6 +1401,49 @@ enum CallStop: Equatable {
         faceAudio = [:]
         facePending = []
         faceDeviceMs = [:]
+        faceWall = [:]; faceWallEnd = 0
+    }
+
+    // MARK: face clock fallback (DEMO P0 11/4)
+
+    /// When each reply's audio should be heard by the wall clock: its first chunk starts when it arrives or when the
+    /// reply before it ends, whichever is later. Server utterance id → (start, ms received), system uptime seconds.
+    @ObservationIgnored private var faceWall: [Int: (start: TimeInterval, ms: Double)] = [:]
+    @ObservationIgnored private var faceWallEnd: TimeInterval = 0
+    @ObservationIgnored private var faceClockFellBack = false
+    /// the wall clock trails the chunk's arrival by about the player's output latency
+    static let faceWallLatencyMs = 60.0
+
+    private func noteFaceWall(_ utterance: Int, bytes: Int) {
+        guard bytes > 0 else { return }
+        let now = ProcessInfo.processInfo.systemUptime, ms = PCM.durationMs(bytes: bytes)
+        if var e = faceWall[utterance] {
+            e.ms += ms; faceWall[utterance] = e
+            faceWallEnd = max(faceWallEnd, e.start + e.ms / 1000)
+        } else {
+            let start = max(now, faceWallEnd)
+            faceWall[utterance] = (start, ms)
+            faceWallEnd = start + ms / 1000
+            if faceWall.count > 16 { faceWall = faceWall.filter { $0.key >= utterance - 4 } }
+        }
+    }
+
+    /// The face's clock for a reply: the player's playhead; when the player has none for audio that is playing (TF 331
+    /// 16:00: the engine graph broke on a reconfiguration and the face froze while the voice went on), the wall clock
+    /// of that reply's audio, so the mouth, the expressions and the speech sway still move with it.
+    func faceClockMs(utterance: Int, now: TimeInterval = ProcessInfo.processInfo.systemUptime) -> Double? {
+        let player = audio.playbackPositionMs(utteranceId: utterance)
+        guard let e = faceWall[utterance] else { return player }
+        let wall = (now - e.start) * 1000 - Self.faceWallLatencyMs
+        // the player's own clock wins whenever it has one that agrees the reply has started (or not yet, by both)
+        if let player, player >= 0 || wall < 1000 { return player }
+        guard wall >= 0, wall <= e.ms + 1000 else { return player }
+        if !faceClockFellBack {
+            faceClockFellBack = true
+            let head = player.map { String(Int($0)) } ?? "nil"
+            log.error("FACE_CLOCK player playhead \(head, privacy: .public) while audio plays; face follows the wall clock")
+        }
+        return wall
     }
 
     /// The id the face driver sees for a server utterance id (grows across sessions).

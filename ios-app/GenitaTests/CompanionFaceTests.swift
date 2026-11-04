@@ -63,6 +63,31 @@ import XCTest
         XCTAssertEqual(face.timeline.sample(atMs: 900).openness, 0, "after the received audio there is no sound")
     }
 
+    /// DEMO P0 (11/4 16:00, TF 331): the voice played but the face froze. The face's clock was only the player node's
+    /// playhead, and the playhead was nil once the engine graph broke (Mac log: AUVoiceProcessor -10875 on a
+    /// reconfiguration). Now the face follows the wall clock of the reply's audio, so the mouth, the expressions
+    /// and the sway move with the voice.
+    func testTheFaceKeepsAClockWhenThePlayerHasNone() throws {
+        let (call, face, _) = try callWithFace()   // the test player never plays: its playhead is always nil
+        call.handle(#"{"type":"reply.delta","utteranceId":7,"text":"Oh wow, that looks great"}"#)
+        call.handle(audio(7, seq: 3, durationMs: 2000))
+        let t0 = ProcessInfo.processInfo.systemUptime
+        call.handle(binary: frame(seq: 3, pcm(ms: 2000)))
+        XCTAssertEqual(face.currentUtteranceId, 7)
+        let lat = CallController.faceWallLatencyMs
+        XCTAssertEqual(try XCTUnwrap(call.faceClockMs(utterance: 7, now: t0 + 0.5)), 500 - lat, accuracy: 30, "half a second in")
+        XCTAssertEqual(try XCTUnwrap(call.faceClockMs(utterance: 7, now: t0 + 1.5)), 1500 - lat, accuracy: 30)
+        XCTAssertNil(call.faceClockMs(utterance: 7, now: t0 + 4), "long after the reply: no clock (the mouth rests)")
+        XCTAssertGreaterThan(face.timeline.sample(atMs: 500 - lat).openness, 0.1, "the mouth is open at that clock")
+        Thread.sleep(forTimeInterval: 0.25)
+        XCTAssertNotNil(face.playbackClock(), "the driver gets a clock while the reply plays (it had none before)")
+
+        // the next reply queues behind this one on the wall clock too
+        call.handle(audio(8, seq: 4, durationMs: 400))
+        call.handle(binary: frame(seq: 4, pcm(ms: 400)))
+        XCTAssertEqual(try XCTUnwrap(call.faceClockMs(utterance: 8, now: t0 + 2.2)), 200 - lat, accuracy: 30)
+    }
+
     func testWordTimingsInTheAudioEventShapeTheMouth() throws {
         let (call, face, _) = try callWithFace()
         call.handle(audio(8, seq: 1, words: #"[{"w":"mama","s":0,"e":400}]"#))
