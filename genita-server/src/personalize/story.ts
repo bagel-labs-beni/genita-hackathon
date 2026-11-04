@@ -398,18 +398,30 @@ function lineEvidence(text: string, card: StyleCard, id: SparkStoryId): Evidence
   return facts.length ? facts.reduce((w, f) => (RANK[f.label] < RANK[w] ? (f.label as Evidence) : w), facts[0].label as Evidence) : null;
 }
 
-const STOP = new Set(["a", "an", "the", "and", "or", "but", "to", "of", "in", "on", "for", "with", "you", "your", "you're", "it", "is", "are", "be", "by", "not", "so", "that", "this", "at", "as", "i", "me", "my", "what", "when", "how", "like", "more", "than"]);
+// filler an item wraps around the headline ("You want it …"); "not", "at", "when" etc. are left out on purpose:
+// a condition, an exception or a negation is something new (Codex P2)
+const STOP = new Set(["a", "an", "the", "and", "or", "to", "of", "you", "your", "you're", "it", "is", "are", "be", "so", "that", "this", "i", "me", "my", "like", "want", "prefer", "need", "love", "really", "always"]);
 const contentWords = (s: string) =>
   s.toLowerCase().replace(/[’']/g, "'").split(/[^\p{L}\p{N}']+/u).filter((w) => w.length > 1 && !STOP.has(w)).map((w) => w.replace(/(ing|ed|es|s)$/, ""));
 
-/** An item that says the headline again: most of the headline's content words are in it and it adds at most a few. */
+/** An item that only says the headline again: most of the headline's words are in it and it adds none of its own. */
 export function restatesHeadline(headline: string, text: string): boolean {
   const head = [...new Set(contentWords(headline))];
   if (head.length < 2) return false;
   const body = new Set(contentWords(text));
   const shared = head.filter((w) => body.has(w)).length;
   const extra = [...body].filter((w) => !head.includes(w)).length;
-  return shared / head.length >= 0.75 && extra <= 2;
+  return shared / head.length >= 0.75 && extra === 0;
+}
+
+/** Cards already saved before the rule (or Spark slipping): restating items are dropped on read; a card that would be
+ *  left with none keeps what it has (Codex P2). */
+export function withoutRestatements(cards: StoryCard[]): StoryCard[] {
+  return cards.map((c) => {
+    if (!c.items?.length || !c.headline) return c;
+    const items = c.items.filter((i) => !restatesHeadline(c.headline, i.text));
+    return items.length && items.length < c.items.length ? { ...c, items } : c;
+  });
 }
 
 function sparkCard(id: SparkStoryId, r: RawCard, card: StyleCard, best: Evidence): StoryCard | null {

@@ -16,7 +16,7 @@ import { sparkJson } from "../meta/spark.ts";
 import { backgroundJson } from "../meta/sparkOpen.ts";
 import { isDislike, looksLikeInjection, redactSensitive, styleProfileText, type DisplayRow, type Finding, type StyleCard } from "../prep/importProfile.ts";
 import type { PrepStore } from "../prep/store.ts";
-import { EYEBROWS, SOURCES, SPARK_STORY_IDS, STORY_IDS, buildStoryRequest, cardTexts, interimCard, optimisticCard, toStory, type SparkStoryId, type Story, type StoryCard, type StoryId, type UnknownItem } from "./story.ts";
+import { EYEBROWS, SOURCES, SPARK_STORY_IDS, STORY_IDS, buildStoryRequest, cardTexts, interimCard, optimisticCard, toStory, withoutRestatements, type SparkStoryId, type Story, type StoryCard, type StoryId, type UnknownItem } from "./story.ts";
 import { PROFILE_FIELDS, mergeUpdates, type AppliedUpdate, type ProfileField, type ProfileUpdate } from "./merge.ts";
 import { askLine, beginCall } from "./unknowns.ts";
 import { FORGET, buildCorrectionRequest, mightBeCorrection, toAnswer, toCorrectionUpdates } from "./corrections.ts";
@@ -322,7 +322,7 @@ export class Personalize {
 
   /** The cards to show now: the stored ones, with `unknowns` rebuilt from the latest card. */
   private static current(card: StyleCard, hidePending = true): StoryCard[] {
-    const cards = Personalize.withoutRemoved(toStory(null, card, card.story?.version === 2 ? card.story.cards : undefined, card.story?.version === 2 ? ["unknowns"] : undefined).cards, card);
+    const cards = withoutRestatements(Personalize.withoutRemoved(toStory(null, card, card.story?.version === 2 ? card.story.cards : undefined, card.story?.version === 2 ? ["unknowns"] : undefined).cards, card));
     if (!hidePending) return cards;
     // an answer saved but not merged yet: its topic is already gone from the list (Codex P2)
     const answering = new Set((card.pendingCorrections ?? []).filter((p) => p.cardId === "unknowns" && p.text).map((p) => p.items[0]).filter(Boolean));
