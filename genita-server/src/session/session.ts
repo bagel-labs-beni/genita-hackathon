@@ -281,8 +281,10 @@ export const CRISIS_NUMBER_LINE = "<sad> You can call or text 988 any time in th
 export function crisisFollowUp(said: string[]): string | null {
   // Codex r10: main's rule only (no help pointer at all → the help line); the number comes from the prompt's "988 in the
   // US" (sweep: the model said it 20/20), so no new forced path versus main
-  return said.some((x) => HELP_POINTER.test(x)) ? null : CRISIS_HELP_LINE;
+  return said.some((x) => HELP_POINTER.test(x.replace(/[‘’ʼ]/g, "'").replace(SAID_I_CANT, " "))) ? null : CRISIS_HELP_LINE;
 }
+/** Codex r13: "No, I can't call a crisis line for you." names a line but points nowhere; that clause earns no pass */
+const SAID_I_CANT = /\b(?:(?:no|nope|sorry),?\s*)?i\s*(?:can't|cannot|can not|won't|couldn't|am not able to|'m not able to|am unable to|'m unable to|don't have)\b[^,.;!?]*/gi;
 /**
  * The follow-up for this turn: on a real signal (detector) the full rule above; otherwise, when the user's words come
  * near harm AND the model itself pointed to help (it judged it a crisis), just the number if it left one out. A

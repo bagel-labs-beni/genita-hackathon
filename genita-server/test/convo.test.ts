@@ -1644,3 +1644,10 @@ test("Codex r11: a help-line sentence is protected before every filter (camera o
 test("Codex r12: a help-line sentence survives the AI-denial rewrite too", () => {
   assert.equal(guardSentence("No, I can't call 988 for you, but you can call or text it right now.", { camera: false, userText: "Are you an AI? Can you call a crisis line for me? I'm going to hang myself tonight." }), null);
 });
+
+test("Codex #545 r13: 'No, I can't call a crisis line for you.' is no help pointer; a real one after it still is", async () => {
+  const { crisisFollowUp, crisisFollowUpFor, CRISIS_HELP_LINE } = await import("../src/session/session.ts");
+  assert.equal(crisisFollowUpFor("Are you an AI? Can you call a crisis line for me? I want to kill myself.", ["No, I can't call a crisis line for you."]), CRISIS_HELP_LINE);
+  assert.equal(crisisFollowUp(["I can't call 988 for you, but please call 988 right now."]), null);
+  assert.equal(crisisFollowUp(["If you can't stay safe, call 988 right now."]), null);
+});
