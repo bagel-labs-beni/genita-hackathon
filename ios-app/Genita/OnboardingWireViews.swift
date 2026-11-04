@@ -367,6 +367,8 @@ struct CompanionNameView: View {
 private enum SkipInk {
     static let blue = Color(red: 0xd7 / 255, green: 0xf1 / 255, blue: 1)
     static let blueText = Color(red: 0, green: 0x63 / 255, blue: 0x9f / 255)
+    /// SY-03: selected card title + subtitle, shared with D01 / P1 (#0C4F74, 8.3:1 on #D7F1FF)
+    static let selectedText = Color(red: 0x0C / 255, green: 0x4F / 255, blue: 0x74 / 255)
     static let line = Color(white: 0xe3 / 255)
     static let mute = Color(white: 0x73 / 255)
     static let skipped = Color(white: 0xef / 255)
@@ -520,8 +522,8 @@ struct SkipImportView: View {
                     Button { toggle(r.0) } label: {
                         HStack(spacing: 0) {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(r.0).font(TypeStyle.body(18, .semibold)).foregroundStyle(on ? SkipInk.blueText : CallInk.ink).frame(height: 22)
-                                Text(r.1).font(TypeStyle.body(13, .medium)).foregroundStyle(on ? SkipInk.blueText : SkipInk.mute).frame(height: 16)
+                                Text(r.0).font(TypeStyle.body(18, .semibold)).foregroundStyle(on ? SkipInk.selectedText : CallInk.ink).frame(height: 22)
+                                Text(r.1).font(TypeStyle.body(13, .medium)).foregroundStyle(on ? SkipInk.selectedText : SkipInk.mute).frame(height: 16)
                             }
                             Spacer(minLength: 0)
                             if on { SkipBadge(size: 26).padding(.trailing, 2) }
