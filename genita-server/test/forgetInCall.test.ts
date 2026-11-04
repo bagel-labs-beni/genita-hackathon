@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { forgetInCall, isAnaphoricForget, isCorrection, isRememberRequest, pointedLine } from "../src/convo/forgetInCall.ts";
+import { forgetInCall, forgetKeyText, isAnaphoricForget, isCorrection, isRememberRequest, pointedLine } from "../src/convo/forgetInCall.ts";
 
 const u = (text: string) => ({ role: "user" as const, text });
 const a = (text: string) => ({ role: "assistant" as const, text });
@@ -142,4 +142,31 @@ test("Codex #547 r10: fumes + 'leave the room' survive a forget; one shared word
     { role: "user" as const, text: "How much memory should I get for it?" },
   ];
   assert.equal(forgetInCall(w, [{ text: "need talk boss work", forget: true }]).length, 3);
+});
+
+test("Codex #547 r11: 'I don't remember that.' is no forget; 'I need help' → forget does not take 'I need a laptop'", () => {
+  const a = [
+    { role: "user" as const, text: "My interview is tomorrow" },
+    { role: "assistant" as const, text: "Nice, what role?" },
+    { role: "user" as const, text: "I don't remember that." },
+    { role: "assistant" as const, text: "No stress." },
+    { role: "user" as const, text: "What should I prepare?" },
+  ];
+  assert.equal(isAnaphoricForget("I don't remember that."), false);
+  assert.equal(forgetInCall(a).length, 5);
+  const b = [
+    { role: "user" as const, text: "I need help" },
+    { role: "user" as const, text: "Forget I said that" },
+    { role: "user" as const, text: "I need a laptop for college" },
+    { role: "assistant" as const, text: "For college, you need a MacBook Air." },
+    { role: "user" as const, text: "How much memory should I get for it?" },
+  ];
+  const out = forgetInCall(b).map((x) => x.text);
+  assert.ok(out.includes("I need a laptop for college"));
+  assert.ok(out.includes("For college, you need a MacBook Air."));
+});
+
+test("Codex #547 r11: 'I need help' leaves no loose key to forget by", () => {
+  assert.equal(forgetKeyText("I need help"), "");
+  assert.equal(forgetKeyText("I just got dumped by Alex"), "dumped by alex");
 });

@@ -15,8 +15,12 @@ import { realCrisisSignal } from "./guard.ts";
 const EMERGENCY_USER = /\b(?:swallowed|ingested|drank|took|overdosed|choking|can'?t breathe|bleeding|unconscious|passed out|poisoned)\b[^.!?]{0,40}\b(?:bleach|poison|pills?|tablets?|medicine|meds|detergent|antifreeze|cleaner|chemicals?|blood|breathe|all)\b|\b(?:overdos(?:e|ed|ing)|poison control|can'?t breathe|cannot breathe|can barely breathe|not breathing|choking|unconscious|passed out|seizure|heart attack|chest (?:pain|hurts)|stroke|asthma(?: attack)?|allergic reaction|anaphyla\w*|epipen|swelling up|throat (?:is )?closing|hit my head|concussion|fainted|drowning|carbon monoxide|gas leak|smell(?:s|ing)? gas|fumes|on fire|caught fire)\b|\bmixed\b[^.!?]{0,30}\b(?:bleach|ammonia|chemicals?|cleaners?)\b|\b(?:punched|hit|beat|beats|choked|chokes|hurt|kicked|slapped|threatened|threatening|attacked|raped|assaulted|grabbed|stalking|following)\s+me\b|\b(?:knife|gun|weapon)\b/i;
 // Codex #547 r8: police / a safe place too (guard.ts EMERGENCY_HELP's words)
 const HELP_REPLY = /\b(?:911|988|112|999|poison control|emergency|ambulance|crisis (?:text )?line|hotline|call for help|police|cops|somewhere safe|(?:a )?safe place|get to safety|domestic violence|leave the (?:room|house|area|building)|get (?:some )?fresh air|get out (?:now|of there|right now)|evacuate|urgent care|the er\b|epipen|inhaler)\b/i;
-/** Codex #547 r8: "Don't forget that I need a vegetarian option." asks to KEEP it */
-export function isRememberRequest(text: string): boolean { return /\b(?:don'?t|do not|never|please don'?t|dont)\s+(?:ever\s+)?forget\b/i.test(text.replace(/[’‘]/g, "'")); }
+/** Codex #547 r8: "Don't forget that I need a vegetarian option." asks to KEEP it; r11: "I don't remember that." is a
+ * statement about their own memory, not a request */
+export function isRememberRequest(text: string): boolean {
+  const t = text.replace(/[’‘]/g, "'");
+  return /\b(?:don'?t|do not|never|please don'?t|dont)\s+(?:ever\s+)?forget\b/i.test(t) || /\b(?:i|we)\s+(?:really\s+|honestly\s+|just\s+)?(?:don'?t|do not|dont|can'?t|cannot|didn'?t)\s+(?:even\s+)?remember\b/i.test(t);
+}
 /** a user line that is never forgotten mid-call (with the reply after it): safety first */
 export function safetyTurn(user: string, reply?: string): boolean {
   return realCrisisSignal(user) || EMERGENCY_USER.test(user.replace(/[’‘]/g, "'")) || (!!reply && HELP_REPLY.test(reply));
@@ -49,10 +53,11 @@ export function isCorrection(text: string): boolean {
 export function isAnaphoricForget(text: string): boolean {
   const t = text.replace(/[’‘]/g, "'");
   const m = POINT_BACK.exec(t);
-  return !!m && tailOk(t.slice(m.index + m[0].length)) && !NOT_A_REQUEST.test(t.slice(0, m.index));
+  return !!m && tailOk(t.slice(m.index + m[0].length)) && !NOT_A_REQUEST.test(t.slice(0, m.index)) && !isRememberRequest(t);
 }
 
-const COMMON = new Set("i i'm im me my we you your the a an and or but so to of in on at for with about that this it is was be been am are like love prefer want wanted think really just kinda pretty very always never before after today tonight yesterday tomorrow".split(" "));
+// Codex #547 r11: generic verbs/nouns too ("I need help" must not take "I need a laptop" with it)
+const COMMON = new Set("i i'm im me my we you your the a an and or but so to of in on at for with about that this it is was be been am are like love prefer want wanted think really just kinda pretty very always never before after today tonight yesterday tomorrow need needs needed help get got make go going have has had know feel feeling say said tell told talk work thing things stuff good bad some much more time can can't do don't did".split(" "));
 /** Codex #547 P1: the forgotten line as its distinctive words (a loose match), so a summarized memory ("Likes jasmine tea.") goes too */
 export function forgetKeyText(line: string): string {
   return line.toLowerCase().replace(/[^a-z0-9' ]+/g, " ").split(/\s+/).filter((w) => w && !COMMON.has(w)).join(" ");
