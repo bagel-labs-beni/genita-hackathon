@@ -1406,7 +1406,7 @@ final class FlowMorph: @unchecked Sendable {
         }
         // 11/4 (p6 regression in #539): near the mouth's corners the opaque teeth layer drew the key's own inside where a
         // prep mask leaked past the corner (grey spots on the cheek; v44 had whitened them). People with the mouth-inside
-        // fix: the teeth layer fades out from 0.6 to 0.82 of the closed mouth's half-width — the corners show the
+        // fix: the teeth layer fades out from 0.45 to 0.7 of the closed mouth's half-width — the corners show the
         // cross-blended keys (their own lips / inside) instead.
         let cornerFade: (cx: Float, hw: Float)? = interiorOn ? rigMouth.map { (Float($0.midX), max(1, Float($0.width / 2))) } : nil
         for y in 0..<h {
@@ -1502,7 +1502,7 @@ final class FlowMorph: @unchecked Sendable {
                         }
                         al = min(1, al * tl.s)
                         if let cf = cornerFade {
-                            let u = min(1, max(0, (abs(px - cf.cx) / cf.hw - 0.6) / 0.22))
+                            let u = min(1, max(0, (abs(px - cf.cx) / cf.hw - 0.45) / 0.25))
                             al *= 1 - u * u * (3 - 2 * u)
                         }
                         if al > 0.002 {
