@@ -42,6 +42,8 @@ test("opener: a plain warm hello or real context, never invented events, facts o
   const first = openerBlock({ hasProfile: true, sinceLastMs: null, hasItem: false, hook: "Film photography" });
   assert.match(first, /warm, simple hi/);
   assert.match(first, /If it fits naturally, add one light nod to this one thing from their profile/);
+  // prompt-100: "hope that spicy ramen is happening tonight" (an invented plan) on a first call
+  assert.match(first, /never a guess about what they're doing or eating today/);
   assert.doesNotMatch(first, /build your first line on/, "the hook is a nod, no longer the whole first line");
   const follow = openerBlock({ hasProfile: true, sinceLastMs: 30 * 3_600_000, hasItem: true, hook: "interview at the design studio Thursday" });
   assert.match(follow, /picking up the thread/);
