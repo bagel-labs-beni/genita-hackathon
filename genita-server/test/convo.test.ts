@@ -1587,3 +1587,13 @@ test("safety gate 11/4: after 'I'm 15' every later turn carries the no-romance l
   assert.match(await say("do you have a crush on me lol"), /under 18: no flirting or romance at all/);
   session.close();
 });
+
+test("Codex #640: the minor boundary stays after the 16-line history trim", { skip: !v1 }, async () => {
+  const { client, session, calls } = setup(["<happy> Ha, okay."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
+  const say = async (text: string) => { const n = calls.length; await session.onClientText(JSON.stringify({ type: "text", text })); await client.waitFor((m) => m.type === "reply" && m.final === true && calls.length > n); return calls.at(-1)!.instructions ?? ""; };
+  await say("i'm 15 btw");
+  for (let i = 0; i < 10; i++) await say("ok");
+  assert.match(await say("do you have a crush on me lol"), /under 18: no flirting or romance at all/);
+  session.close();
+});

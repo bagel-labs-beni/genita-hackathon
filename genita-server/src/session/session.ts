@@ -53,7 +53,7 @@ import type { CallStart, VoiceUpdate } from "../personalize/service.ts";
 import type { CallTurn } from "../personalize/extract.ts";
 import { ASK_TURNS, replyAsks } from "../personalize/unknowns.ts";
 import { mightBeCorrection } from "../personalize/corrections.ts";
-import { minorLine } from "../convo/minorBoundary.ts";
+import { MINOR_LINE, minorLine } from "../convo/minorBoundary.ts";
 import { avoidKeys, forgetTarget, isForgetRequest, scrubHistory, type Removed } from "../personalize/forgotten.ts";
 import { isForgetRequest as isMemoryForgetRequest } from "../memory/extract.ts";
 import { localTimeLine } from "../personalize/knows.ts";
@@ -740,6 +740,7 @@ export class Session {
       this.recentReplies = this.history.filter((h) => h.role === "assistant").map((h) => h.text).slice(-3);
       // the whole claimed history, not just the kept 16 (Codex #502 P1 r5)
       if (claimedCrisis(msg.history)) this.crisisInCall = true;
+      if (claimedMinor(msg.history)) this.minorInCall = true;
     }
     const startMode: Mode = msg.mode === "interpret" ? "interpret" : "chat";
     // the mic ASR opened during start listens in the start mode's languages (no English-only stream to replace)
@@ -816,6 +817,7 @@ export class Session {
           // a crisis anywhere in the handed-over turns stays with the call: server turns carry the flag (server.ts);
           // a client-claimed history is read whole, not just the kept 16 (Codex #502 P1 r4/r5)
           if (server?.length ? seed.some((h) => h.role === "user" && realCrisisSignal(h.text)) : claimedCrisis(msg.history)) this.crisisInCall = true;
+          if (server?.length ? !!minorLine(seed.filter((h) => h.role === "user").map((h) => h.text)) : claimedMinor(msg.history)) this.minorInCall = true;
           // a handoff is the same conversation: one thread, one summary (iPhone and Mac write the same row)
           this.memoryCall?.continueThread(server?.length ? this.deps.priorThread?.(revision) ?? null : null, this.history);
           this.recentReplies = [...this.recentReplies, ...this.history.filter((h) => h.role === "assistant").map((h) => h.text)].slice(-3);
@@ -1565,7 +1567,7 @@ export class Session {
     }
     // safety gate 11/4: once they said they're a minor in this call, no romance at all (rides the This-turn line)
     if (!turn.greeting && userText) {
-      const minor = minorLine([...this.history.filter((h) => h.role === "user").map((h) => h.text), userText]);
+      const minor = this.minorInCall ? MINOR_LINE : minorLine([...this.history.filter((h) => h.role === "user").map((h) => h.text), userText]);
       // first in the line: the This-turn block is cut at 400 chars, the safety part must never be the cut part
       if (minor) turnLine = turnLine ? turnLine.replace(/^This turn: /, `This turn: ${minor} `) : `This turn: ${minor}`;
     }
@@ -1658,6 +1660,8 @@ export class Session {
   /** a real crisis line came up anywhere in this call: sticky (the 16-line history trim never clears it) and handed to
    * the next device with the turns (server.ts), like forgetAsked. No take nudge after it (Codex #502 P1 r1–r3) */
   crisisInCall = false;
+  /** Codex #640: they said they're under 18 somewhere in this call (never stored, never leaves the call) */
+  private minorInCall = false;
   /** the user hung up (`stop`), as opposed to a dropped socket or a move to the other device */
   endedByUser = false;
 
@@ -1666,6 +1670,8 @@ export class Session {
     // either detector: #442's (personalize, drives the do-not-mention scrub) or memory's broader one (#443)
     if (role === "user" && (isForgetRequest(text) || isMemoryForgetRequest(text))) this.forgetAsked = true;
     if (role === "user" && realCrisisSignal(text)) this.crisisInCall = true;
+    // Codex #640: kept for the whole call (the 16-line history trim would drop the "I'm 15" line)
+    if (role === "user" && !this.minorInCall && minorLine([...this.history.filter((h) => h.role === "user").map((h) => h.text), text])) this.minorInCall = true;
     this.history.push({ role, text });
     if (this.history.length > MAX_HISTORY) this.history.splice(0, this.history.length - MAX_HISTORY);
     this.deps.onHistoryChange?.(role);
@@ -2730,6 +2736,12 @@ export class Session {
 
 /** `start.history` from the app: role + text only, capped. */
 /** a real crisis line anywhere in a claimed start.history (the whole list, before the 16-line trim; Codex #502 P1 r5) */
+/** Codex #640: a handed-over history (up to 200 lines) that says they're a minor keeps the boundary */
+function claimedMinor(v: unknown): boolean {
+  if (!Array.isArray(v)) return false;
+  const lines = v.slice(-200).filter((h) => (h as Record<string, unknown>)?.role === "user" && typeof (h as Record<string, unknown>).text === "string").map((h) => String((h as Record<string, unknown>).text).slice(0, 1000));
+  return !!minorLine(lines);
+}
 function claimedCrisis(v: unknown): boolean {
   if (!Array.isArray(v)) return false;
   return v.slice(-200).some((h) => {
