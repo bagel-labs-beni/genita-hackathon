@@ -110,3 +110,14 @@ test("S5 cap (Codex #722): a category page alone never wins at the soft cap; the
   const r = await hedgedSearch(v, "p", 2, new AbortController().signal, [], { softMs: 40 });
   assert.equal(JSON.parse(r!.text).items.length, 2, "waited for the lane with product pages");
 });
+
+test("S5 hard cap (QA 11/4 #726: 26 s cards): past it one fitting page is shown instead of waiting for the stragglers", async () => {
+  let calls = 0;
+  const v: FindsVendors = {
+    async spark() { calls++; if (calls === 1) { await sleep(10); return lane(1); } return new Promise(() => {}); },
+    async *sparkStream() {}, sam: async () => [], image: async () => Buffer.from([]),
+  };
+  const t0 = performance.now();
+  const r = await hedgedSearch(v, "p", 2, new AbortController().signal, [], { softMs: 30, hardMs: 90 });
+  assert.ok(r && performance.now() - t0 < 500);
+});

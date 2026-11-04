@@ -566,7 +566,16 @@ export function productSoftMs(env: NodeJS.ProcessEnv = process.env): number {
   return Number.isFinite(n) && n >= 1000 && n <= 60_000 ? n : 10_000;
 }
 
-export async function hedgedSearch(vendors: FindsVendors, prompt: string, n: number, signal: AbortSignal, images: string[] = [], opts: { background?: boolean; softMs?: number; keep?: (name: string) => boolean } = {}): Promise<SearchResult | null> {
+/**
+ * QA 11/4 (#726 on live vendors): waiting for a second page that fits the pick took the card to ~26 s. Past this, one
+ * fitting page is shown (topped up if another lane has more). GENITA_PRODUCT_HARD_MS, default 16 s; 35000 = always wait.
+ */
+export function productHardMs(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number(env.GENITA_PRODUCT_HARD_MS);
+  return Number.isFinite(n) && n >= 2000 && n <= 60_000 ? n : 16_000;
+}
+
+export async function hedgedSearch(vendors: FindsVendors, prompt: string, n: number, signal: AbortSignal, images: string[] = [], opts: { background?: boolean; softMs?: number; hardMs?: number; keep?: (name: string) => boolean } = {}): Promise<SearchResult | null> {
   // up to 6 lanes (the S5 prefetch asks for 5; a normal search for GENITA_PRODUCT_HEDGE, default 3); the first one
   // waits for a search slot, the others run only if one is free right now
   // a free slot is taken synchronously (the calls start in this tick); only a full server waits
@@ -582,6 +591,7 @@ export async function hedgedSearch(vendors: FindsVendors, prompt: string, n: num
   const done: SearchResult[] = [];
   try {
     let soft: ReturnType<typeof setTimeout> | null = null;
+    let hard: ReturnType<typeof setTimeout> | null = null;
     return await new Promise<SearchResult | null>((resolve) => {
       let left = runs.length;
       let pastSoft = false;
@@ -596,12 +606,14 @@ export async function hedgedSearch(vendors: FindsVendors, prompt: string, n: num
       };
       // past the soft cap: two showable product pages across the lanes are enough (the winner is topped up from the
       // others, QA 11/4: one-link cards 2/6); one page alone keeps waiting for the rest
+      let pastHard = false;
       const enough = () => {
-        if (unionShowable(done, opts.keep) < PRODUCT_COUNT) return;
+        if (unionShowable(done, opts.keep) < (pastHard ? 1 : PRODUCT_COUNT)) return;
         const b = [...done].sort((x, y) => showableUrls(y, opts.keep).length - showableUrls(x, opts.keep).length)[0];
         resolve(mergeLanes(b, done));
       };
       if (opts.softMs && runs.length > 1) soft = setTimeout(() => { pastSoft = true; enough(); }, opts.softMs);
+      if (opts.hardMs) hard = setTimeout(() => { pastSoft = true; pastHard = true; enough(); }, opts.hardMs);
       for (const a of runs) {
         withTimeout(vendors.spark({ input: userMessage(prompt, images), tools: [{ type: "web_search" }], effort: "minimal", maxOutputTokens: 3000 }, AbortSignal.any([a.signal, signal])), SEARCH_TIMEOUT_MS, signal).then((r) => {
           if (r) {
@@ -612,7 +624,7 @@ export async function hedgedSearch(vendors: FindsVendors, prompt: string, n: num
           finish();
         });
       }
-    }).finally(() => { if (soft) clearTimeout(soft); });
+    }).finally(() => { if (soft) clearTimeout(soft); if (hard) clearTimeout(hard); });
   } finally {
     stopAll();
     signal.removeEventListener("abort", stopAll);
@@ -652,7 +664,7 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
   const keep = pick ? (name: string) => !contradictsPick(name, pick) : undefined;
   const prompt = productPrompt({ pick: pick ?? undefined, question: ctx.question, recent: ctx.recent ?? [], taste, previous: ctx.previous, city: cityOf(ctx.timeZone), region: ctx.region ?? "US", today, seeing: look.length > 0, screen: ctx.screen === true && look.length > 0, oneSearch: process.env.GENITA_PRODUCT_ONE_SEARCH !== "0", department });
 
-  const res = await hedgedSearch(vendors, prompt, ctx.hedge ?? 2, ctx.signal, look, { background: ctx.background, ...(ctx.background ? {} : { softMs: productSoftMs() }), ...(keep ? { keep } : {}) });
+  const res = await hedgedSearch(vendors, prompt, ctx.hedge ?? 2, ctx.signal, look, { background: ctx.background, ...(ctx.background ? {} : { softMs: productSoftMs(), hardMs: productHardMs() }), ...(keep ? { keep } : {}) });
   timings.searchMs = ms();
   if (ctx.signal.aborted) return { card: null, timings };
   let j = res ? lastJsonObject<ProductJson>(res.text) : null;
