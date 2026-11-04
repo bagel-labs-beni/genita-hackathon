@@ -106,12 +106,32 @@ public struct CompanionInfo: Decodable, Equatable, Sendable {
     public var prep: PrepProgress?
     /// the ready-made judge companion (PR #178 seeds it on first judge sign-in); the app labels it "Demo companion"
     public var demo: Bool?
+    /// when the companion was made (ISO-8601, server `companionView.createdAt`); Settings shows "Together N days" (D99)
+    public var createdAt: String?
     /// ready-made realtime `start` fields (persona card, imported profile) once the setup answers are saved
     public var session: Session?
     public struct Session: Decodable, Equatable, Sendable {
         public struct User: Decodable, Equatable, Sendable { public var profile: String? }
         public var persona: ClientMessage.Persona?
         public var user: User?
+    }
+}
+
+/// D99: Settings C1 "Together 12 days". Calendar days since the companion was made; day 0 and 1 read "Met today".
+/// nil (no date, unparseable, or a clock set before it) shows nothing rather than a made-up number.
+public enum CompanionTogether {
+    public static func label(createdAt: String?, now: Date = Date(), calendar: Calendar = .current) -> String? {
+        guard let createdAt, let made = parse(createdAt) else { return nil }
+        let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: made), to: calendar.startOfDay(for: now)).day ?? -1
+        if days < 0 { return nil }
+        return days <= 1 ? "Met today" : "Together \(days) days"
+    }
+    private static func parse(_ s: String) -> Date? {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let d = f.date(from: s) { return d }
+        f.formatOptions = [.withInternetDateTime]
+        return f.date(from: s)
     }
 }
 

@@ -77,11 +77,13 @@ struct SavedSetup: Codable {
     var accountId: String?
     /// The judge account's ready-made companion (server `demo: true`), labelled "Demo companion"
     var companionDemo: Bool?
+    /// ISO date the companion was made (`GET /v1/companion` createdAt), for Settings "Together N days" (D99)
+    var companionSince: String?
     /// AU-92 fail closed: "Forget all of this" was asked but the server hasn't confirmed it yet — the local copy is
     /// already gone and the request is sent again (on launch, and on the next try)
     var forgetPending: Bool?
     enum CodingKeys: String, CodingKey { case stage, name, response, depth, voice, answers, boundaries, presence, presenceCardIDs, hasOnboarded,
-        companionName, imageId, imageType, styleRows, styleProfile, stylePartial, companionCreated, voiceId, voiceName, deviceVoice, skipInterests, skipReplies, skipAvoid, skipLikes, skipSent, skipOwner, firstCallPending, serverPersona, accountId, companionDemo, importAI, forgetPending }
+        companionName, imageId, imageType, styleRows, styleProfile, stylePartial, companionCreated, voiceId, voiceName, deviceVoice, skipInterests, skipReplies, skipAvoid, skipLikes, skipSent, skipOwner, firstCallPending, serverPersona, accountId, companionDemo, companionSince, importAI, forgetPending }
 
 }
 /// A launch response belongs to the token and authentication lifetime that requested it.
@@ -456,7 +458,7 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
         var s = setup
         s.companionName = nil; s.imageId = nil; s.imageType = nil; s.imageData = nil
         s.companionCreated = nil; s.voice = nil; s.voiceId = nil; s.voiceName = nil
-        s.serverPersona = nil; s.companionDemo = nil; s.firstCallPending = nil
+        s.serverPersona = nil; s.companionDemo = nil; s.companionSince = nil; s.firstCallPending = nil
         s.answers = [:]; s.boundaries = []; s.presence = []; s.presenceCardIDs = nil
         s.hasOnboarded = false
         s.stage = .image
