@@ -31,6 +31,14 @@ final class MacCallPlanTests: XCTestCase {
         XCTAssertEqual(plan.start.persona.name, "Max")
     }
 
+    func testRenamedPlanCarriesTheNewNameInNameAndPersona() throws {
+        // D53: companion.named updates the cached plan, so the next start doesn't bring the old name back
+        let plan = try XCTUnwrap(companion(full)).renamed(" Max ")
+        XCTAssertEqual(plan.name, "Max")
+        XCTAssertEqual(plan.start.persona.name, "Max")
+        XCTAssertEqual(try XCTUnwrap(companion(full)).renamed("  ").name, "Mina")
+    }
+
     func testCompanionWithoutPersonaStillCallsByItsName() throws {
         let plan = try XCTUnwrap(companion(#"{"id":"c1","type":"animal","name":"Bori","voiceId":"v2","prep":{"status":"running","sceneUrl":null},"persona":null,"session":null}"#))
         XCTAssertEqual(plan.start.persona.name, "Bori")

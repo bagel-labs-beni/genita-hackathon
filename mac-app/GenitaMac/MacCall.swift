@@ -164,6 +164,7 @@ import Observation
         else if let accountID { useHandoffAccount(accountID) }
         guard let plan else { return }
         call.companionName = plan.name
+        call.onCompanionNamed = { [weak self] name in self?.companionRenamed(name) }
         loadFace(plan, token: token, generation: gen)
         // same presence: the animated face set is ready before the conversation moves here (no still on arrival)
         // keepTrying (face plan item 3): a face set still being made is fetched off screen as soon as it is
@@ -332,7 +333,22 @@ import Observation
         call.end()
     }
 
+    /// D53: a rename by voice is saved on the server; this Mac's plan follows it.
+    private func companionRenamed(_ name: String) {
+        guard case let .ready(plan) = account else { return }
+        let next = plan.renamed(name)
+        if next != plan { account = .ready(next) }
+        call.companionName = next.name
+    }
+
+    /// D53: the cached plan starts at once; the server swaps in the stored companion name on `start` and says so
+    /// (`companion.named` → `companionRenamed`), so a rename from the iPhone is never overwritten by this cache.
     private func startCall() {
+        guard wantsCall, case .ready = account else { return }
+        beginCall()
+    }
+
+    private func beginCall() {
         guard case let .ready(plan) = account else { return }
         guard !screenAwayNow else { return }   // back(locked:) starts it once the Mac is unlocked
         call.companionName = plan.name

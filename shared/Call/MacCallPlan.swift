@@ -40,6 +40,17 @@ struct CompanionCallPlan: Equatable {
         self.faceURL = (scene?.isEmpty ?? true) ? nil : scene
     }
 
+    /// The server renamed the companion in a call (`companion.named`): the plan follows, so the next start
+    /// carries the stored name, not the one this Mac fetched earlier (D53).
+    func renamed(_ newName: String) -> CompanionCallPlan {
+        let clean = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return self }
+        var copy = self
+        copy.name = clean
+        copy.start.persona.name = clean
+        return copy
+    }
+
     /// `sceneUrl` on the server's host when it's a path.
     func faceURL(base: URL) -> URL? {
         guard let faceURL else { return nil }
