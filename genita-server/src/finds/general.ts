@@ -51,7 +51,7 @@ export function asrRestart(text: string): string {
 export const GENERAL_HEDGE = "Not sure off the top of my head, pulling up a few sources.";
 /** rides the turn's reply instructions (session.ts) when the sheet is searching */
 export const GENERAL_REPLY_LINE =
-  "Web results for this question are about to appear on their screen. Answer right now in ONE short sentence (under 20 words) from what you already know. No links, no site names, no lists, and don't say you're searching or looking it up. If you don't know, or it changes often (news, scores, prices, hours), make that one sentence a natural hedge, like \"Not sure off the top of my head, pulling up a few sources.\"";
+  "Web results for this question are about to appear on their screen. Answer right now in ONE short sentence (under 20 words) from what you already know. No links, no site names, no lists, and don't say you're searching or looking it up. Give your real answer, like a name, a fact or your pick (only names you're sure exist; numbers in digits, like 1889) (prompt-100, prod 23:30: \"Best ramen places in Seoul\" got only a hedge). Only for live facts you can't know (today's news, scores, prices, open hours) make it a natural hedge, like \"Not sure off the top of my head, pulling up a few sources.\"";
 export const GENERAL_MAX_RESULTS = 5;
 export const GENERAL_TIMEOUT_MS = 25_000;
 /** r01: each result's og:image read (and its bytes) is cut off after this; a slow page never holds the sheet */

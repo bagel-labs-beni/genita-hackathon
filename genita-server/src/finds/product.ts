@@ -298,7 +298,9 @@ export function tasteLines(likes: string[] | undefined, profile: string | undefi
   for (const l of likes ?? []) if (l.trim()) out.push(l.trim().slice(0, 160));
   if (profile) {
     for (const raw of profile.split("\n")) {
-      const m = raw.match(/^-\s*(Support|Thinking|Interests|Likes(?: & dislikes)?)\s*:\s*(.+)$/i);
+      // "Taste:" is what styleProfileText calls likes & dislikes (prep/importProfile.ts PROFILE_NAMES): it was missing, so
+      // the import's and the call's learned taste never reached the product search (prompt-100 No-AI audit)
+      const m = raw.match(/^-\s*(Support|Thinking|Interests|Taste|Likes(?: & dislikes)?)\s*:\s*(.+)$/i);
       if (m && !out.includes(m[2].trim())) out.push(m[2].trim().slice(0, 160));
     }
   }

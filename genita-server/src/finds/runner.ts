@@ -5,6 +5,7 @@
  * "맞아?" answers, and gives the session one line of context about the card
  * on screen so "Ask about this" follow-ups make sense.
  */
+import { STYLE_SEARCH_HINT, styleReasonOn } from "../convo/styleReason.ts";
 import { webAnswerCard, type WebSearch } from "./webAnswer.ts";
 import { applySourceImage, assessLine, generalLayout, rowPictures, runGeneral } from "./general.ts";
 import { JUDGE_TIMEOUT_MS, judgeEnabled, judgeWithin, sparkJudge, type Judge, type JudgeResult } from "./judge.ts";
@@ -135,7 +136,9 @@ const COLOR = /^(black|white|grey|gray|navy|blue|red|green|pink|purple|yellow|or
 /** "Still hunting for the right pair, one sec." (shoes) / "…the right jacket…" */
 export function stillHunting(label: string): string {
   const l = label.toLowerCase();
-  const thing = /shoe|sneaker|boot|loafer|sandal|heel/.test(l) ? "pair" : l === "things" ? "one" : l.replace(/s$/, "");
+  // prod 23:30 "the right dres": "dress" / "glasses" keep their s; "dresses" → "dress", "watches" → "watch"
+  const one = (w: string) => (/(?:ss|us|is)$/.test(w) ? w : /(?:sses|xes|ches|shes)$/.test(w) ? w.slice(0, -2) : w.replace(/s$/, ""));
+  const thing = /shoe|sneaker|boot|loafer|sandal|heel/.test(l) ? "pair" : l === "things" ? "one" : one(l);
   return `Still hunting for the right ${thing}, one sec.`;
 }
 
@@ -361,7 +364,7 @@ export class FindsRunner {
     if (choice === false) { this.hooks.log("finds.choice_unclear", {}); return null; }
     if (followUp) {
       this.lastOutfit = null;
-      t = { ...t, text: `Find what you offered to find for the look they just picked (shoes or accessories that go with it). What you told them: "${outfit!.said.slice(0, 300)}". They answered: "${t.text.slice(0, 100)}".${choice ? ` You picked ${choice} out loud: find ${choice} ones only, never the other option.` : ""}` };
+      t = { ...t, text: `Find what you offered to find for the look they just picked (shoes or accessories that go with it). What you told them: "${outfit!.said.slice(0, 300)}". They answered: "${t.text.slice(0, 100)}".${choice ? ` You picked ${choice} out loud: find ${choice} ones only, never the other option.` : ""}${styleReasonOn() ? ` ${STYLE_SEARCH_HINT}` : ""}` };
     }
     // Chelsea 11/4 D: while the Mac shares its screen, a question takes the shared frame (fresher than the camera,
     // ≤1 s old), unless it's about them or what they hold; "on my screen" / "this video" always mean the share

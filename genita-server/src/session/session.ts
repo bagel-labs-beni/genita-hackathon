@@ -74,6 +74,8 @@ import { Backchannel } from "../convo/backchannel.ts";
 import { EOT, eotTuning, joinSegments, judgeEndOfTurn, type EotKind, type EotVerdict } from "../convo/endOfTurn.ts";
 import { noFinallyTone, noInventedOpener, noRepeatGreeting, noUnpromptedGoodbye } from "../convo/greetOnce.ts";
 import { FACE_RETRY_LINE, isFaceTurn, noPolicyTalk } from "../convo/faceTalk.ts";
+import { isStyleTurn, styleFollowLine, styleLine, styleReasonOn } from "../convo/styleReason.ts";
+import { isGoesWithFollowUp } from "../finds/intent.ts";
 import { addressUser, thirdPersonCouldBeUser, fallbackLine, guardSentence, neverSpoken, NO_FRAME_RETRY_LINE, NO_ANSWER_LINE, LOST_LINE, UPSTREAM_RETRY_MS, realCrisisSignal, mayBeSelfHarm, nameAsYou, type GuardClass } from "../convo/guard.ts";
 import { isInterjectionOnly } from "../text/toolNarration.ts";
 import { daySeed, openerBlock, openerKind, profileHooks } from "../convo/opener.ts";
@@ -462,7 +464,8 @@ export async function* mustNameMac(src: AsyncIterable<SparkStreamEvent>, line: s
 const WATCH_ASK_FALLBACK = "<happy> Ooh, okay. Let's watch.";
 const GREET_PROMPT = "The call just connected. Greet the user.";
 /** the call came back after a drop (same device, or the other device after a gap): no full greeting, one short line */
-export const RECONNECT_LINE = "Sorry, we got cut off — where were we?";
+// prompt-100 (Chelsea: no "we got cut off" line; prod 23:39 still said it on a real reconnect): a warm pick-up instead
+export const RECONNECT_LINE = "Okay, I'm here. Where were we?";
 /**
  * Greeting option (a), Chelsea 11/4 (GENITA_GREET_OPENER=0 turns it off): the call's first words are
  * said at once from the user's name ("Hey, Summer!"); Spark's greeting continues right after it (first sound ~0.4 s
@@ -713,6 +716,11 @@ export class Session {
   private callStartedAt: string | null = null;
   /** profile lines the user removed (personalize): kept out of memory, notes and handed-off turns */
   private removedLines: Removed[] = [];
+  /** prompt-100 style: the once-per-call coloring question went out; when the last style verdict was asked for */
+  private styleAsked = false;
+  private lastStyleAt: number | null = null;
+  private styleSaid: string[] = [];
+  private styleTurnPending = false;
   /** resolves when the running correction check ends (a "forget that …" waits for it instead of being skipped) */
   private correctionDone: Promise<void> = Promise.resolve();
   /** this call was counted as a new call by personalize (not a handoff) */
@@ -792,7 +800,7 @@ export class Session {
     // the call's own turns go too, like a memory Forget — not left to the memory subscription, which a failed memory
     // start may not have (Codex #583 r22)
     this.dropSpeculation(); this.dispatch({ type: "client_barge_in" });
-    this.history = []; this.recentReplies = []; this.memories = []; this.greeting = null;
+    this.history = []; this.recentReplies = []; this.memories = []; this.greeting = null; this.styleAsked = false; this.lastStyleAt = null; this.styleSaid = []; this.styleTurnPending = false;
     this.user = { ...this.user, profile: undefined };
     this.taste = [];
     this.ask = null;
@@ -1072,7 +1080,7 @@ export class Session {
         this.dropHeld(); this.asrEpoch++; this.bcGen++; this.backchannel?.stop(); this.cuedTurn = false;
         if (this.segmentOpen) { this.dropLateFinal = true; this.segmentOpen = false; }
         this.dropSpeculation(); this.dispatch({ type: "client_barge_in" });
-        this.history = []; this.recentReplies = []; this.memories = []; this.greeting = null;
+        this.history = []; this.recentReplies = []; this.memories = []; this.greeting = null; this.styleAsked = false; this.lastStyleAt = null; this.styleSaid = []; this.styleTurnPending = false;
         this.handedPast = false; // Codex #536 r2: after a Forget the other device's turns are gone as a past too
         this.historyRevision = revision;
         // #341: what greetings opened on goes too (Codex #352)
@@ -2272,6 +2280,8 @@ export class Session {
     if (this.history.length > MAX_HISTORY) this.history.splice(0, this.history.length - MAX_HISTORY);
     this.deps.onHistoryChange?.(role);
     if (role === "assistant") this.recentReplies = [...this.recentReplies, text].slice(-3);
+    // prompt-100 style: only earlier style verdicts count as used reasons (chit-chat about black isn't a verdict, No-AI eval)
+    if (role === "assistant" && this.styleTurnPending) { this.styleSaid = [...this.styleSaid, text].slice(-4); this.styleTurnPending = false; }
   }
 
   /** Pure apart from consuming pending camera frames. */
@@ -2334,7 +2344,32 @@ export class Session {
     const suggestMac = !this.macSuggested && isOutfitAsk(text, afterProduct) && this.deps.macNearby?.() === true;
     // scene 5: an outfit pick on camera offers the next search ("Want me to find dark brown boots for it?")
     const outfitPick = !suggestMac && camera.length > 0 && !!this.finds && classifyTurn(text, true, afterProduct)?.kind === "outfit";
-    const instructions = suggestMac ? `${base}\n${SUGGEST_MAC_LINE}\n` : outfitPick ? `${base}\n${OUTFIT_OFFER_LINE}\n` : base;
+    // prompt-100 style (Chelsea 11/4): a style call on camera gives one personal reason, rotates it, asks coloring once;
+    // "find me some" right after keeps that reason and says it once (GENITA_STYLE_REASON=0 = off)
+    let style = "";
+    if (styleReasonOn() && !suggestMac && !interpret && !greeting && !turn.cue) {
+      const follow = this.lastStyleAt !== null && this.now() - this.lastStyleAt < 120_000 && (isGoesWithFollowUp(text) || /\b(?:find|show|get) (?:me )?(?:some |a pair of |a )?[a-z]+(?: [a-z]+)? (?:for|to go with|that go with) (?:it|this|that|them)\b/i.test(text));
+      // only a verdict that survives this call's forgets is quoted (Codex r9 P1); a forgotten one is not followed up
+      if (follow) {
+        const kept = forgetInCall(this.history, this.removedLines);
+        const last = kept.filter((h) => h.role === "assistant").at(-1);
+        const lastAll = this.history.filter((h) => h.role === "assistant").at(-1);
+        style = last && last === lastAll ? styleFollowLine(last.text) : "";
+        this.lastStyleAt = null;
+      }
+      else if (camera.length > 0 && (outfitPick || isStyleTurn(text))) {
+        // the earlier verdicts of this call, minus what was forgotten
+        const kept = new Set(forgetInCall(this.history, this.removedLines).filter((h) => h.role === "assistant").map((h) => h.text));
+        const said = this.styleSaid.filter((t) => kept.has(t));
+        const s = styleLine({ profile: this.user?.profile, memories: this.memories, said, askedColoring: this.styleAsked });
+        this.styleTurnPending = true;
+        if (s.asks) this.styleAsked = true;
+        style = s.line;
+        this.lastStyleAt = this.now();
+      }
+    }
+    const withStyle = style ? `${base}\n${style}\n` : base;
+    const instructions = suggestMac ? `${base}\n${SUGGEST_MAC_LINE}\n` : outfitPick ? `${withStyle}\n${OUTFIT_OFFER_LINE}\n` : withStyle;
     // said once, on the next reply the user asked for (not a greeting or an initiative turn)
     if (!greeting && !turn.cue) this.shorterLine = null;
     let finalInstructions = watch ? `${instructions}\n${watch.instructions}\n` : instructions;

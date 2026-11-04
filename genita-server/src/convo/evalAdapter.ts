@@ -74,7 +74,7 @@ export const adapter = {
   request(ctx: Ctx): SparkRequest | null {
     const s = ctx.scenario;
     const t = ctx.turn;
-    const base = { persona: s.persona, user: s.user, memories: undefined, mode: "chat" as const, language: "English", style: "v1" as const, cameraAttached: !!ctx.camera };
+    const base = { persona: s.persona, user: s.user, memories: undefined, mode: "chat" as const, language: "English", style: "v1" as const, cameraAttached: !!ctx.camera, onScreen: (s as { onScreen?: string }).onScreen };
     if (t.kind === "greet") {
       const o = { hasProfile: !!s.user.profile, sinceLastMs: s.callNumber <= 1 ? null : (s.gapHours ?? 24) * H, hasItem: !!s.opening };
       const kind = openerKind(o);

@@ -135,8 +135,8 @@ export function normalizeEnglish(text: string): string {
   t = t.replace(/(\d+)\s?°\s?([CF])\b/g, (_, d, u) => `${numberToWords(+d)} degrees ${u === "C" ? "Celsius" : "Fahrenheit"}`);
   // ordinals 1st 2nd 23rd
   t = t.replace(/\b(\d+)(st|nd|rd|th)\b/gi, (_, d) => ordinal(+d));
-  // years 1990–2099 standing alone
-  t = t.replace(/\b(19\d{2}|20\d{2})\b(?!\s*(?:dollars|percent|won))/g, (_, y) => yearToWords(+y));
+  // years 1100–2099 standing alone ("1889" → "eighteen eighty-nine", prompt-100: it used to be "one thousand eight hundred…")
+  t = t.replace(/\b(1[1-9]\d{2}|20\d{2})\b(?!\s*(?:dollars|percent|won))/g, (_, y) => yearToWords(+y));
   // plain numbers (with thousands separators / decimals)
   t = t.replace(/\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b|\b\d+(?:\.\d+)?\b/g, (d) => numberToWords(Number(d.replace(/,/g, ""))));
   return tidy(t.replace(/\b([AP])\.M\.\./g, "$1.M."));
