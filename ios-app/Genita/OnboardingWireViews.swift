@@ -355,9 +355,24 @@ struct CompanionNameView: View {
     }
 
     @ViewBuilder private var avatar: some View {
-        // after V02 the upload isn't drawn (Chelsea 11/4): the generated scene, else the neutral circle
+        // after V02 the upload isn't drawn (Chelsea 11/4): the generated scene, else the V02 polished picture that
+        // passed (both in companionFaceData), else the veiled orb — never a grey circle (TF 331: it read as broken)
         if let data = model.companionFaceData, let image = UIImage(data: data) { Image(uiImage: image).resizable().scaledToFill() }
-        else { Color(white: 0.9) }
+        else { VeiledOrbAvatar() }
+    }
+}
+
+/// NM01 avatar while the face is being made (as #668): the call's wait-stage ground and orb, a little veiled.
+private struct VeiledOrbAvatar: View {
+    var body: some View {
+        ZStack {
+            RadialGradient(colors: [Color(red: 0x1A / 255, green: 0x1C / 255, blue: 0x20 / 255), Color(red: 0x0B / 255, green: 0x0B / 255, blue: 0x0B / 255)],
+                           center: UnitPoint(x: 0.5, y: 0.45), startRadius: 0, endRadius: 48)
+            // orb.png's orb is 250 of its 674 pt: a 52 pt orb in the 72 pt circle
+            Image(resource: "orb").resizable().scaledToFit().frame(width: 52 * 674 / 250, height: 52 * 674 / 250)
+                .blur(radius: 1.5).opacity(0.85)
+        }
+        .accessibilityElement().accessibilityLabel("Their face is being made").accessibilityIdentifier("nameAvatarOrb")
     }
 }
 

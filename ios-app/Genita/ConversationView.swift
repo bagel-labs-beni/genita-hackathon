@@ -419,7 +419,8 @@ struct ConversationView: View {
                 #endif
             }
         }
-        .onDisappear { if !connecting { call.end(); keepScreenAwake(false) } }
+        .onDisappear { if !connecting { call.end(); keepScreenAwake(false) }; model.callFindsListOpen = false }
+        .onChange(of: findsTabOpen, initial: true) { _, open in if !connecting { model.callFindsListOpen = open } }
         .onAppear { if !connecting { keepScreenAwake(scenePhase == .active) } }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
