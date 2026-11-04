@@ -254,6 +254,19 @@ export class Personalize {
     await this.update(userId, (c) => (c.growth ? { card: { ...c, growth: { calls: 0, asked: [] } }, out: true } : null));
   }
 
+  /** An empty N1–N3 card for R1 when the user has no card at all (Chelsea 11/4): in the lock, only if there is still
+   * none and no "Forget all of this" since `since` — an import or forget that landed first always wins. */
+  async createStyleIfMissing(userId: string, card: StyleCard, since: number): Promise<boolean> {
+    let made = false;
+    await this.serial(userId, async () => {
+      if (since !== this.generation(userId)) return;
+      if (await this.store.getStyle(userId)) return;
+      await this.store.putStyle(userId, { ...card, importedAt: this.now().toISOString() });
+      made = true;
+    });
+    return made;
+  }
+
   /** Replace the user's style (import, N1–N3) under the same lock as every other write.
    *  → the card's importedAt (the SUM insight report of this import is saved only onto this card)
    *  `signal`: checked again inside the lock, right before the write — a cancelled import that waited for the lock
