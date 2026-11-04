@@ -62,6 +62,12 @@ const EXTERNAL =
 const LOCATION = /\b(?:seoul|suwon|gangnam|hongdae|itaewon|busan|incheon|jeju|tokyo|osaka|new york|nyc|london|paris|san francisco)\b/i;
 /** a fact about a role of a thing, any casing ("who is the ceo of nintendo?") */
 const ROLE_Q = /^(?:who|what)(?:'s| is| was| are| were)? (?:the )?(?:ceo|president|founder|owner|capital|population|prime minister|mayor|leader|director|author|singer|members?|head|chairman) of \w+/;
+/** "where is the eiffel tower" / "who is taylor swift" / "what is the louvre": a thing, not the conversation */
+// a name of 2+ words ("the eiffel tower", "taylor swift"): "what's good?" / "what's the vibe?" are chat (Codex r3)
+const THING_Q = /^(?:where|who|what|when)(?:'s| is| was| are| were) (?:the |a |an )?([a-z][\w'-]+(?: [a-z][\w'-]+){1,3})\s*[?.!]*$/;
+const CHAT_WORD = /^(?:vibe|deal|story|thing|things|tea|plan|step|move|idea|point|problem|matter|news|next|last|first|up|new|going|happening|wrong|good|best|better)$/;
+/** "에펠탑은 어디에 있어?": a named thing before 어디 (not "어디까지 얘기했지?" / "행복은 어디서 오는 걸까?", Codex r3) */
+const WHERE_THING_KO = /[가-힣A-Za-z]{2,}(?:은|는|이|가)\s*어디(?:에|야|있)/;
 const ROLE_KO = /CEO|ceo|대표|사장|회장|대통령|수도|인구|창업자|감독|작가|가수/;
 const CAPITAL_PLACE = /\b(?:in|near|around)\s+(?:the\s+)?[A-Z][\w'-]+/;
 /** a named real-world thing: a capitalised word that doesn't start the sentence (Nintendo, Eiffel Tower, World Series) */
@@ -162,7 +168,7 @@ export function assessLine(text: string, env: NodeJS.ProcessEnv = process.env): 
   if (YOU.test(t) && !searchVerb) return "spoken";
   if (SELF_STATE.test(t)) return "spoken";
   // "recommend … for me" is advice, unless the ask is a plain outside fact ("a dinner place near Gangnam for me", Codex r1)
-  const outside = (REC.test(t) && EXTERNAL.test(t) && (CAPITAL_PLACE.test(country) || LOCATION.test(t))) || (TOPIC.test(t) && !/\b(?:i|my|me)\b(?! ?(?:near|nearby))/.test(t.replace(/\bfor me\b/, "")));
+  const outside = (REC.test(t) && EXTERNAL.test(t)) || (TOPIC.test(t) && !/\b(?:i|my|me)\b(?! ?(?:near|nearby))/.test(t.replace(/\bfor me\b/, "")));
   if (SELF.test(t.replace(BENIGN_ME, "")) && !HOWTO.test(t) && !searchVerb && !outside) return "spoken";
   if (PERSONAL_KO.test(t) && !searchVerb) return "spoken";
   const n = words(t);
@@ -176,25 +182,29 @@ export function assessLine(text: string, env: NodeJS.ProcessEnv = process.env): 
   // "black or white?" / "which is better, A or B?" with nothing external, factual or named: an opinion (P0 11/4)
   if (CHOICE.test(t) && !place && !named && !TOPIC.test(t) && !EXTERNAL.test(t)) return "spoken";
   const fact = t.match(SHORT_FACT);
+  const thing = t.match(THING_Q);
   const search =
     (TOPIC.test(t) && question && n >= 3) ||
     (external && (question || n >= 3)) ||
     // a who/what/where question about a named real-world thing ("who's the CEO of Nintendo", "where is the Eiffel Tower")
     (WH.test(t) && n >= 4 && (named || place)) ||
     ROLE_Q.test(t) ||
+    // "where is the eiffel tower?" in any casing: a fact about a thing (Codex r2/r3)
+    (!!thing && !thing[1].split(" ").some((w) => CONTEXT_WORD.test(w) || CHAT_WORD.test(w))) ||
     // a how-to for a concrete task ("how do I get a red wine stain out of a carpet")
     (HOWTO.test(t) && n >= 6) ||
     (!!fact && !CONTEXT_WORD.test(fact[1].replace(/[.-]+$/, ""))) ||
     (TOPIC_KO.test(t) && n >= 2 && KO_ASK.test(t)) ||
     (REC_KO.test(t) && EXTERNAL_KO.test(t) && n >= 2 && KO_ASK.test(t)) ||
-    (WH_KO.test(t) && n >= 3 && KO_ASK.test(t) && (EXTERNAL_KO.test(t) || ROLE_KO.test(country)));
+    (WH_KO.test(t) && n >= 3 && KO_ASK.test(t) && (EXTERNAL_KO.test(t) || ROLE_KO.test(country) || WHERE_THING_KO.test(t)));
   if (search) return webOn ? "search" : "open";
   // a short "what is next?" needs the conversation, not a card
   const last = t.replace(/[?.!\s]+$/, "").split(/\s+/).at(-1) ?? "";
   if (WH.test(t) && n <= 3 && CONTEXT_WORD.test(last)) return "spoken";
   // "send me the links" on its own: the runner's product follow-up, never a judged card
   if (LINKS_ASK.test(full)) return "spoken";
-  if (/[가-힣]/.test(t)) return KO_ASK.test(t) ? "open" : "spoken";
+  // a Korean wh-question that isn't a search ("어디까지 얘기했지?") needs the conversation: spoken, like the English one
+  if (/[가-힣]/.test(t)) return KO_ASK.test(t) && !WH_KO.test(t) && !/어디|뭐야|왜/.test(t) ? "open" : "spoken";
   // a who/what/how question with nothing external or named is an opinion / chat question: spoken (P0 11/4 narrowing)
   if (WH.test(t)) return "spoken";
   return ASKS.test(t) && n >= 2 ? "open" : "spoken";

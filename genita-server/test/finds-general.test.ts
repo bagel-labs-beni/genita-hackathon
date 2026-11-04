@@ -36,6 +36,12 @@ test("general: chit-chat, feelings, things in view and crisis lines stay spoken"
   }
 });
 
+test("general (Codex r1): cooking with the camera stays a recipe even with 'near' / 'place' in it", () => {
+  assert.deepEqual(classifyTurn("What can I make with ingredients near their expiration date?", true), { kind: "recipe" });
+  assert.deepEqual(classifyTurn("How should I place ingredients in a bowl for dinner?", true), { kind: "recipe" });
+  assert.deepEqual(classifyTurn("How do I make restaurant-style pasta with these ingredients?", true), { kind: "recipe" });
+});
+
 test("general: the demo lines keep their own cards", () => {
   assert.deepEqual(classifyTurn("Hey Jin, what can I make with these ingredients?", true), { kind: "recipe" });
   assert.equal(classifyTurn("Hey Jin, what can I make with these ingredients?", false), null, "no camera: nothing to cook from, no search");

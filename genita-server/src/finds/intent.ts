@@ -126,7 +126,8 @@ function cardIntent(text: string, hasFrames: boolean, afterProduct = false): Int
   // "what should I wear to dinner?" names a meal but asks about clothes (AU-60)
   if (clothes && (!cook || ON_ME.test(text))) return { kind: "outfit" };
   // "a dinner place near Gangnam" is a place to look up, not the fridge (P0 11/4)
-  if (cook && !/\b(?:restaurants?|(?:dinner|lunch|brunch|breakfast) (?:places?|spots?)|places? to eat|spots? to eat)\b|\b(?:near|in|around) [A-Z]/.test(text)) return { kind: "recipe" };
+  // only a restaurant *search* ("restaurants near…", "a dinner place near Gangnam"): "restaurant-style pasta with these" is cooking (Codex r2)
+  if (cook && !/\brestaurants? (?:near|in|around)\b|\b(?:dinner|lunch|brunch|breakfast) (?:places?|spots?)\b|\bplaces? to eat\b|\bspots? to eat\b|\b(?:near|around) [A-Z]|\bin [A-Z][a-z]+\b/.test(text)) return { kind: "recipe" };
   if (isIdentifyAsk(text)) return { kind: "identify" };
   return null;
 }
