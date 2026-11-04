@@ -174,18 +174,21 @@ We also wired Muse Spark Open on Baseten for background jobs; it was not availab
 
 ## What we built on top of the models
 
-Calling a model is easy. Making it feel like a person on a video call, on two devices, is the product.
+**A model gives you an answer. A companion needs timing, a face, memory, eyes and manners.** Almost all of our ten days went into that layer: the experience engineering between the Meta models and the person on the call. Every row below is code in this repository, and the numbers come from production logs or evals against the real Muse Spark.
 
-- **A real-time turn-taking engine.** Speculative replies, sentence streaming to the voice, barge-in that ignores "yeah" and echo. Median **2.7 s** from the end of your sentence to the companion's first sound, on production logs.
-- **iPhone → Mac with one conversation.** The server owns who is talking with an ownership epoch. A move closes the iPhone's sound before the Mac may play, so two devices never talk at once. Pair once with six digits, then move with one tap. Bluetooth proximity is built in behind a remote switch.
-- **A Mac app built for watching together.** Window sharing with ScreenCaptureKit, frames sent only when the picture changes, the video's audio on its own transcription, and (from build 16) a quiet automatic restart when macOS interrupts the capture. Auto-updates with Sparkle.
-- **Cards that never show a blank tile or a fake link.** Each picture tries the page's own image, then an image search, then a Muse Image illustration where that is honest. If none works, the slot is left out.
-- **Taste you can trace.** "Their simple cuts match the understated style you prefer" points back to something you said, and the profile shapes the next search.
-- **A talking face with a quality gate.** Same-scene edits, SAM-checked drift, an optical-flow mouth on the voice's timing.
-- **Speaks first, politely.** Only after 8 s of mutual silence, at least 60 s apart, at most 3 times per call, and it stops after two unanswered tries.
-- **Guardrails for a companion people talk to every day.** No counselor tone, no romance if a user says they are a minor, health, religion, politics, sexuality and finances never stored, daily caps per account.
-
----
+| The experience | A raw model call gives you | What we engineered | Measured |
+| --- | --- | --- | --- |
+| **Talks like a call, not a chatbot** | A full reply after you finish, read out at the end | Speculative replies from the partial transcript, each sentence voiced the moment it is written, barge-in that only counts 400 ms of real speech so "yeah" and echo don't cut it off | **2.7 s** median from your last word to its first sound; the voice adds about **0.2 s** |
+| **Answers what you just said** | Replies that drift to whatever is in the profile, invented openers | A conversation prompt we rebuilt and bake-off tested: the first sentence answers your last line; no unprompted topics, times or meals; no fake "you're back" lines; a guard on repeated greetings | Off-topic replies **15 → 7** per 94 turns, invented openers **2 → 0**, repeated greetings **21 → 2** per ~600 turns |
+| **A face from one photo** | One image | 20 Muse Image edits from the same scene (expressions, visemes, mouth keys), a SAM 3.1 gate that rejects any edit where the face moved > 3 % or resized > 6 %, an optical-flow mouth driven by the voice's own timing | A person, a pet or a drawing talks, with no video model |
+| **Knows you, and keeps learning** | A text box that forgets you | Import from the AI you already use, plus taste learned from plain conversation; corrections rewrite the profile; every style reason is tied to a line you actually said, and it asks once, lightly, when it doesn't know | Taste quoted in **6/6** style calls; No-AI users asked once and the learned fact used **6/6** |
+| **Answers you can act on, and trust** | Text with links that may not exist | Cards built from web search and page reading; a shop link survives only if the page was really opened; pictures fall back from the page, to image search, to a Muse Image illustration (never for products or real places), else the slot is left out | Product names invented before the card: **0/16** |
+| **Sees with you** | A description of an image | The nouns of its own answer go to SAM 3.1 on the latest frame and come back as outlines that fade when the phone moves | Outlines on what it names, in the same turn |
+| **Interprets face to face** | Translation of one line | Speaker by language, a correction pass that never delays the line, follows a mid-conversation language switch, asks once when unsure | First translated text **1.29 s** (KO→EN) / **1.46 s** (KO→JA) median; switch followed **8/8** |
+| **One conversation, two devices** | Two separate sessions | Server-owned conversation with an ownership epoch; the iPhone's sound closes before the Mac may play; pair once with six digits | Never two devices talking at once |
+| **Watches a video with you** | Screenshots on request | Mac window share that sends frames only when the picture changes, the video's audio on its own diarized transcription, a running story memo, quiet restart if macOS interrupts the capture, a gate so the video's voices aren't taken as yours | "Who's that?" answered about the scene |
+| **Friendly, not needy** | Talks whenever prompted | Speaks first only after 8 s of mutual silence, at least 60 s apart, at most 3 times per call, stops after two unanswered tries | |
+| **Safe by default** | Whatever the model says | Drops counselor-like or intake-form lines before they are voiced, no romance if a user says they are a minor, never stores health, religion, politics, sexuality or finances, daily caps per account | |
 
 ## Built during the hackathon
 
