@@ -41,7 +41,7 @@ test("ignored twice → quieter: two flat replies in a row lower the energy; one
 });
 
 test("hint carries pacing; 'Never mirror my mood' stays steady instead of matching", () => {
-  assert.match(moodLine(moodFrom(["ugh today was so bad"]))!, /quieter, matching theirs: short, soft sentences with a comma pause/);
+  assert.match(moodLine(moodFrom(["ugh today was so bad"]))!, /quieter, matching theirs, and you're on their side: react to exactly what happened/);
   assert.match(moodLine(moodFrom(["I got the job!!"]))!, /upbeat and playful: a quick, bright burst/);
   const steady = { backstory: "A close companion. Never mirror the user's mood; stay steady when they are down or upset." };
   assert.ok(holdsSteady(steady));
