@@ -77,6 +77,9 @@ import ARKit
         ownership.onChange = { [weak self] old,new in self?.ownerChanged(from:old,to:new) }
         link.onMessage = { [weak self] in self?.receive($0) }
         server.onEffect = { [weak self] in self?.serverEffect($0) }
+        // GATE-A: the gated call socket also hears the server's owner, so a stale local "it's mine" (presence down,
+        // fresh install) turns into R1 + Continue here instead of a silent call
+        CallController.shared.onServerOwnership = { [weak self] in self?.serverEffect(.apply($0)) }
         server.onConnect = { [weak self] in
             guard let self,self.accountScope.accountID != nil else{return}
             self.server.send(["type":"hello","owner":self.ownership.state.owner.serverName,"epoch":self.ownership.state.epoch,"active":self.sceneActive])

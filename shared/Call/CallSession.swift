@@ -55,6 +55,16 @@ struct CallEndpoint {
     /// The deployed server (AWS CloudFront → EC2, deploy/aws). Local runs set GENITA_SERVER_URL.
     static let defaultURL = "wss://d72kt0jfmscyj.cloudfront.net/v1/session"
 
+    /// MV-01 GATE-A: `/v1/session?device=&owner=&epoch=` — the server plays audio (and hears the mic) only on the owner.
+    static func gated(_ url: URL, device: ConversationDevice, owner: ConversationDevice, epoch: Int) -> URL {
+        guard var c = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
+        var items = (c.queryItems ?? []).filter { !["device", "owner", "epoch"].contains($0.name) }
+        items += [URLQueryItem(name: "device", value: device.serverName), URLQueryItem(name: "owner", value: owner.serverName),
+                  URLQueryItem(name: "epoch", value: String(max(0, epoch)))]
+        c.queryItems = items
+        return c.url ?? url
+    }
+
     static func current(environment: [String: String] = ProcessInfo.processInfo.environment, defaults: UserDefaults = .standard) -> CallEndpoint {
         let raw = environment["GENITA_SERVER_URL"] ?? defaults.string(forKey: "genita.server.url") ?? defaultURL
         let token = userToken() ?? environment["GENITA_SESSION_TOKEN"] ?? defaults.string(forKey: "genita.session.token")
@@ -140,6 +150,8 @@ enum CallStop: Equatable {
     @ObservationIgnored var onCompanionNamed: ((String) -> Void)?
     /// A recovered authenticated call is also an opportunity to retry missing handoff identity.
     @ObservationIgnored var onConnected: (() -> Void)?
+    /// GATE-A: the server's `ownership` on the call socket (a gated call hears every change of owner).
+    @ObservationIgnored var onServerOwnership: ((OwnershipClaim) -> Void)?
     @ObservationIgnored var routeInterpretAudio: ((Data, InterpretBoard.Route, Int) -> Void)?
     @ObservationIgnored var flushRoutedAudio: (() -> Void)?
     @ObservationIgnored private var routed: Set<Int> = []
@@ -460,6 +472,14 @@ enum CallStop: Equatable {
         }
     }
 
+    /// `{"type":"ownership","owner":"iphone"|"mac","epoch":N}` from the call socket; nil for anything else (or a release).
+    nonisolated static func serverOwnership(_ text: String) -> OwnershipClaim? {
+        guard text.contains("\"ownership\""), let data = text.data(using: .utf8),
+              let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any], o["type"] as? String == "ownership",
+              let owner = ConversationDevice(serverName: o["owner"] as? String), let epoch = o["epoch"] as? Int, epoch > 0 else { return nil }
+        return OwnershipClaim(owner: owner, epoch: epoch)
+    }
+
     /// GATE-A (AU-82): the companion is heard only on the device that holds the conversation. Audio and `say` lines
     /// that reach this iPhone after the conversation moved to the Mac (the rest of a reply, a search card's line)
     /// are dropped here. The Mac closes its call when the conversation leaves it. Nothing plays while a call is
@@ -474,6 +494,22 @@ enum CallStop: Equatable {
     }
 
     // MARK: user actions
+
+    /// This app's device and its view of who holds the conversation (the handoff coordinator's state).
+    nonisolated static var gateDevice: ConversationDevice {
+        #if os(iOS)
+        .phone
+        #else
+        .mac
+        #endif
+    }
+    private var gateOwnership: ConversationOwnership {
+        #if os(iOS)
+        PhoneHandoff.shared.ownership.state
+        #else
+        MacHandoff.shared.ownership.state
+        #endif
+    }
 
     private var ownsConversation: Bool {
         #if os(iOS)
@@ -752,7 +788,10 @@ enum CallStop: Equatable {
             self.lost(closure)
         }
         let endpoint = fixedEndpoint ?? .current()
-        socket.connect(url: endpoint.url, token: endpoint.token)
+        // MV-01 GATE-A: the call opts into the server's audio gate as this device, with its own last known owner
+        // (the server applies a newer one, like presence `hello`, so a stale server owner never strands the call)
+        let known = gateOwnership
+        socket.connect(url: CallEndpoint.gated(endpoint.url, device: Self.gateDevice, owner: known.owner, epoch: known.epoch), token: endpoint.token)
     }
 
     private func lost(_ closure: CallSocket.Closure) {
@@ -800,6 +839,7 @@ enum CallStop: Equatable {
     // MARK: server events
 
     func handle(_ text: String) {
+        if let claim = Self.serverOwnership(text) { onServerOwnership?(claim) }
         guard let event = try? ServerEvent.decode(text) else {
             log.error("undecodable event: \(text.prefix(120), privacy: .public)")
             return

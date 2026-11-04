@@ -24,7 +24,8 @@ type Msg = Record<string, unknown>;
 type LogFn = (event: string, data: Record<string, unknown>) => void;
 export type Trigger = "button" | "touch" | "continue" | "start" | "sync" | "move" | "proximity";
 
-type Conn = { device: HandoffDevice; send: (m: Msg) => void; active: boolean };
+/** seenAt: when the socket opened or last became active — `move.request` goes to the most recent one (MV-01) */
+type Conn = { device: HandoffDevice; send: (m: Msg) => void; active: boolean; seenAt: number };
 type Call = { device: HandoffDevice; stop: () => void; send: (m: Msg) => void };
 type UserState = {
   id: string;
@@ -57,6 +58,8 @@ export type PresenceHandle = {
 
 export type CallHandle = {
   mayPlay(): boolean;
+  /** ms until this device may play when it already owns the conversation but the handover lease runs (else 0) */
+  leaseLeftMs?(): number;
   /** the call's `start` was handled: a conversation nobody holds goes to this device */
   started(): Promise<void>;
   close(): void;
@@ -97,7 +100,7 @@ export class HandoffHub {
 
   connect(userId: string, opts: { device: HandoffDevice; send: (m: Msg) => void }): PresenceHandle {
     const u = this.user(userId);
-    const conn: Conn = { device: opts.device, send: opts.send, active: true };
+    const conn: Conn = { device: opts.device, send: opts.send, active: true, seenAt: this.now() };
     // the other device's state now, once: its presence, or a call already running on it (Codex P2 on #480: a Mac that
     // joined mid-call said "Not in a call right now" when the iPhone's presence socket wasn't open, and said it twice
     // per extra socket otherwise)
@@ -129,11 +132,14 @@ export class HandoffHub {
           return;
         }
         this.log("handoff.preparing", { from: conn.device, to, trigger: "button" });
-        for (const t of targets) if (t.active) t.send({ type: "move.request", from: conn.device });
+        // MV-01: one target answers — the most recently active one (two Macs on one account must not both take it)
+        const target = targets.filter((c) => c.active).reduce((a, b) => (b.seenAt >= a.seenAt ? b : a));
+        target.send({ type: "move.request", from: conn.device });
       },
       setActive: (active) => {
         if (conn.active === active) return;
         conn.active = active;
+        if (active) conn.seenAt = this.now();
         if (!active && conn.device === "iphone") this.proximityRevoke(u, conn);
         this.peerChanged(u, conn.device);
       },
@@ -148,14 +154,21 @@ export class HandoffHub {
     };
   }
 
-  attachCall(userId: string, device: HandoffDevice, opts: { stop: () => void; send: (m: Msg) => void }): CallHandle {
+  /**
+   * `known`: the device's own last known (owner, epoch), from the call URL (`?owner=&epoch=`). The start applies it like
+   * presence `hello` does — a newer claim made while the server didn't hear it (presence down) wins, an older one
+   * changes nothing — so a call that opts into the gate is never left silent by a stale server owner.
+   */
+  attachCall(userId: string, device: HandoffDevice, opts: { stop: () => void; send: (m: Msg) => void; known?: { owner: HandoffDevice; epoch: number } | null }): CallHandle {
     const u = this.user(userId);
     const call: Call = { device, stop: opts.stop, send: opts.send };
     u.calls.add(call);
     void this.load(u).catch(() => {});
     return {
       mayPlay: () => u.switching === 0 && u.record?.owner === device && Date.now() >= u.leaseUntil,
+      leaseLeftMs: () => (u.record?.owner === device ? Math.max(0, u.leaseUntil - Date.now()) : 0),
       started: async () => {
+        if (opts.known) await this.claimFor(userId, opts.known.owner, opts.known.epoch, "sync", null);
         // Checked again inside the serial section: a claim that lands first wins, the start doesn't steal.
         const out = await this.claimFor(userId, device, null, "start", null, true);
         if (!out.changed) call.send(this.ownershipEvent(out.state, null, "current"));

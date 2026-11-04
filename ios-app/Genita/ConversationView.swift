@@ -91,8 +91,10 @@ struct ConversationView: View {
                 let waitingPill: String? = !connecting && waitingForFace && model.callPrepIndicator == nil ? CallCueView.waitingLine(name: call.companionName, rowWidth: grid.rowPillWidth) : nil
                 // HUD r01 A: which line the status pill is on, so the prep line, the chip and camera labels stack around it
                 let moveShown = moveLine && !findsTabOpen && !interpreting && !unclear
+                // D73 (TR-01 NET): interpreting hides the call cue, except S09-R — a blip must show while the bars wait
+                let cueShown = !findsTabOpen && !connecting && (!interpreting || call.link == .reconnecting) && !unclear
                 let statusWidth = moveShown ? CallCueView.pillWidth(text: HandoffMoveStatusLine.text(moving: handoff.moving))
-                    : !findsTabOpen && !connecting && !interpreting && !unclear ? CallCueView.width(cue: call.cue, name: call.companionName, findsText: findsPill, rowWidth: grid.rowPillWidth, waitingText: waitingPill) : nil
+                    : cueShown ? CallCueView.width(cue: call.cue, name: call.companionName, findsText: findsPill, rowWidth: grid.rowPillWidth, waitingText: waitingPill) : nil
                 let status = Self.statusLine(width: statusWidth, rowWidth: grid.rowPillWidth)
                 ZStack(alignment: .topLeading) {
                     ZStack(alignment: .topLeading) {
@@ -214,7 +216,7 @@ struct ConversationView: View {
                         if moveLine && !findsTabOpen && !interpreting && !unclear {
                             // MV-1 / MV-E take the call's status line slot
                             HandoffMoveStatusLine().position(x: grid.pillCenter.x, y: grid.statusY(status))
-                        } else if !findsTabOpen && !connecting && !interpreting && !unclear {
+                        } else if cueShown {
                             CallCueView(cue: call.cue, name: call.companionName, findsText: findsPill, waitingText: waitingPill, retry: call.retryAnswer, openSettings: openAppSettings, rowWidth: grid.rowPillWidth, level: { call.outputLevel })
                                 .frame(width: sheet == .full ? 250 : full.size.width - 2 * CallHUDGrid.margin, alignment: sheet == .full ? .leading : .center)
                                 // HUD r01 A: on the menu row (same centre line) when it fits between the menu button and its

@@ -100,7 +100,7 @@ struct PresenceEndpoint: Equatable {
     var url: URL
     var token: String?
     static func current(device: ConversationDevice, environment: [String: String] = ProcessInfo.processInfo.environment, defaults: UserDefaults = .standard) -> PresenceEndpoint? {
-        let raw = environment["GENITA_PRESENCE_URL"] ?? defaults.string(forKey: "genita.presence.url") ?? environment["GENITA_SERVER_URL"] ?? defaults.string(forKey: "genita.server.url") ?? "ws://127.0.0.1:8787/v1/session"
+        let raw = environment["GENITA_PRESENCE_URL"] ?? defaults.string(forKey: "genita.presence.url") ?? environment["GENITA_SERVER_URL"] ?? defaults.string(forKey: "genita.server.url") ?? CallEndpoint.defaultURL  // a fresh install talks to the deployed server, like the call (#289 F5)
         guard var c = URLComponents(string: raw), let scheme = c.scheme, ["ws", "wss"].contains(scheme) else { return nil }
         if c.path.hasSuffix("/v1/session") { c.path = String(c.path.dropLast("/v1/session".count)) + "/v1/presence" }
         else if !c.path.hasSuffix("/v1/presence") { c.path = (c.path.hasSuffix("/") ? String(c.path.dropLast()) : c.path) + "/v1/presence" }

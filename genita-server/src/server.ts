@@ -58,7 +58,7 @@ import { HandoffHub } from "./handoff/hub.ts";
 import { MemoryOwnershipStore, PgOwnershipStore } from "./handoff/store.ts";
 import { forgetOpenerTopics } from "./convo/openerTopics.ts";
 import { safetyTurn } from "./convo/forgetInCall.ts";
-import { attachPresence, deviceFor, gatedCallDevice, gateCall, handleHandoffHttp, handoffHttpPaths } from "./handoff/routes.ts";
+import { attachPresence, callClaim, deviceFor, gatedCallDevice, gateCall, handleHandoffHttp, handoffHttpPaths } from "./handoff/routes.ts";
 import { createAppConfigSource, handleAppConfig, isAppConfigRoute } from "./appconfig/appConfig.ts";
 
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
@@ -366,7 +366,7 @@ export async function startServer(
             return;
           }
           if (!who.consented) return ws.close(4403, "consent_required");
-          attach(ws, who, gatedCallDevice(who.device, url), who.kind === "dev" && !accounts && !req.headers["x-genita-user"] ? null : who.userId, deviceFor(who.device, url));
+          attach(ws, who, gatedCallDevice(who.device, url), who.kind === "dev" && !accounts && !req.headers["x-genita-user"] ? null : who.userId, deviceFor(who.device, url), callClaim(url));
         });
       },
       () => reject(500, "Internal Server Error"),
@@ -545,7 +545,7 @@ export async function startServer(
     });
   }
 
-  function attach(ws: WebSocket, who: Principal, device: ReturnType<typeof gatedCallDevice>, turnUserId: string | null, here: ReturnType<typeof deviceFor>) {
+  function attach(ws: WebSocket, who: Principal, device: ReturnType<typeof gatedCallDevice>, turnUserId: string | null, here: ReturnType<typeof deviceFor>, known: ReturnType<typeof callClaim> = null) {
     const id = randomUUID();
     // the device this call is on (a gated call names it; else the principal's)
     const callDevice = device ?? who.device;
@@ -557,7 +557,7 @@ export async function startServer(
     // F6-L7: a call that names its device plays only while that device owns the conversation.
     // Calls without a device (older builds, smoke) are not gated.
     const ref: { session?: Session } = {};
-    const gated = device ? gateCall(handoff, who.userId, device, raw, () => ref.session?.stopForHandoff()) : null;
+    const gated = device ? gateCall(handoff, who.userId, device, raw, () => ref.session?.stopForHandoff(), known) : null;
     const sink = gated?.sink ?? raw;
     // F2-L26: a rename said in the call is saved to this user's own companion (no-op without one)
     const rename = deps.renameCompanion ?? ((userId: string, name: string) => renameCompanion(prep.deps.store, userId, name));

@@ -120,6 +120,7 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
         let fanout=OwnershipFanout([link,server]);self.fanout=fanout
         ownership.transport=fanout
         server.onEffect = { [weak self] in self?.serverEffect($0) }
+        CallController.shared.onServerOwnership = { [weak self] in self?.serverEffect(.apply($0)) }  // GATE-A, as on the iPhone
         server.onConnect = { [weak self] in
             guard let self,self.accountScope.accountID != nil else{return}
             self.server.send(["type":"hello","owner":self.ownership.state.owner.serverName,"epoch":self.ownership.state.epoch,"active":true])
