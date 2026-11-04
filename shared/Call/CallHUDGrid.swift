@@ -33,10 +33,11 @@ struct CallHUDGrid: Equatable {
     /// `flip` (build 10, Chelsea): a fourth glass button one step above the camera, only while the camera is on and can
     /// flip (`showsFlip`). Same 44 pt, same 12 pt gap.
     enum RailButton: Int, CaseIterable { case flip = 3, camera = 2, mic = 1, more = 0 }
-    /// The rail's flip button shows while the camera is on and can flip, and the Finds sheet is not half up or more
-    /// (there the rail rises 440 and a fourth button would reach the top row on small screens; More keeps Flip camera).
+    /// The rail's flip button shows while the camera is on and can flip, and the Finds sheet is down (idle / dismissed).
+    /// With any sheet up the rail rises: half reaches the top row on small screens, and peek pushed SE captions over the
+    /// companion window (Codex P2). More keeps Flip camera there.
     static func showsFlip(cameraOn: Bool, canFlip: Bool, sheet: SheetState) -> Bool {
-        cameraOn && canFlip && sheet != .half && sheet != .rising && sheet != .full
+        cameraOn && canFlip && !sheetUp(sheet)
     }
     /// The rail's top button: flip when it shows, else camera.
     static func railTop(flip: Bool) -> RailButton { flip ? .flip : .camera }
