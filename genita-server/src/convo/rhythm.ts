@@ -71,6 +71,8 @@ export function moodLine(m: Mood, o: { steady?: boolean } = {}): string | null {
 }
 
 export type TurnHintInput = {
+  /** the user's line before this one (a "one more" is a new bit only right after a joke ask) */
+  prevUser?: string;
   /** this call's number for the account (1 = first call); undefined = unknown */
   callNumber?: number;
   /** the last reply as stored (tags included) */
@@ -117,9 +119,10 @@ export function cueRhythm(block: string, source: InitiativeSource, recentReplies
 
 // #509 humor quirk (b10 intel humor-ask 1/5: "Sir Beeps-a-lot", fridge and phone-battery bits): an asked-for laugh is
 // about them, from their profile, with a punchline — and "one more" is a new bit, not the same lane again
-const JOKE_ASK = /\b(?:make me laugh|tell me (?:a |something )?(?:joke|funny)|say something funny|something (?:that'?ll|to) make me laugh|cheer me up|roast me|one more joke|another joke)\b/i;
+const JOKE_ASK = /(?<!\b(?:don'?t|do not|dont|never|no need to|stop)\s+(?:try to\s+)?)\b(?:make me laugh|tell me (?:a |something )?(?:joke|funny)|say something funny|something (?:that'?ll|to) make me laugh|cheer me up|roast me|one more joke|another joke)\b/i;
 // "lmao ok one more" (they laughed and want another), never "one more question"
-const AGAIN = /\b(?:one more|another one|again)\b(?!\s+(?:question|thing|sec|second|minute|time|step|try))/i;
+// Codex #660 r1: only right after a joke ask ("lol explain that again", "lol I got fired again" are not)
+const AGAIN = /\b(?:one more|another one)\b(?!\s+(?:question|thing|sec|second|minute|time|step|try))/i;
 export const JOKE_LINE = "They want a laugh: one short bit with a real punchline about their own world (a taste or habit from their profile), not a nickname for an object.";
 export const JOKE_AGAIN_LINE = "They want another: a new bit on a different thing of theirs, with a punchline.";
 export function turnHints(t: TurnHintInput): string | null {
@@ -135,7 +138,7 @@ export function turnHints(t: TurnHintInput): string | null {
   // #342: three replies with no take of its own → ask for one (ownTakes.ts)
   const take = ownTakeLine(t.recentReplies, user, t.crisisInCall);
   if (take) out.push(take);
-  const again = !crisis && !!last && laughed(user) && AGAIN.test(user);
+  const again = !crisis && !!last && laughed(user) && AGAIN.test(user) && !said(BAD_NEWS, user) && !!t.prevUser && JOKE_ASK.test(t.prevUser);
   const jokeAsk = !crisis && (JOKE_ASK.test(user) || again);
   if (jokeAsk) out.push(again ? JOKE_AGAIN_LINE : JOKE_LINE);
   else if (last && !crisis && laughed(user) && !said(BAD_NEWS, user)) out.push("Your last line landed (they laughed): stay in that lane.");

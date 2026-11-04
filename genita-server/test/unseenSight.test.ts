@@ -11,3 +11,8 @@ test("b10 gate: nothing seen → a sight word about the thing becomes a hearing 
   assert.equal(unseenToHeard("I'm looking forward to it.", false), "I'm looking forward to it.");
   assert.equal(unseenToHeard("That looks dangerously good.", true), "That looks dangerously good.");
 });
+
+test("Codex #660 r1: 'that look' (the noun) stays", () => {
+  assert.equal(unseenToHeard("I love that look with sneakers.", false), "I love that look with sneakers.");
+  assert.equal(unseenToHeard("These look amazing.", false), "These sound amazing.");
+});

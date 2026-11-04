@@ -93,6 +93,7 @@ export const adapter = {
     // P1 "This turn:" line, as session.v1Extras builds it (closeness, question rhythm, mood, landed, recall)
     const userLines = [...ctx.history.filter((h) => h.role === "user").map((h) => h.text), t.text];
     const turn = turnHints({
+      prevUser: ctx.history.filter((h) => h.role === "user").at(-1)?.text,
       callNumber: s.callNumber,
       lastReply: ctx.history.filter((h) => h.role === "assistant").at(-1)?.text,
       userText: t.text,

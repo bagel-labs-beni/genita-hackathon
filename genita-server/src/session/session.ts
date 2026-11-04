@@ -228,7 +228,7 @@ type Reply = {
 /** server clock (ms) for the latency breakdown; logged with turn.answered as `stages` */
 type TurnMetrics = { speechEndAt?: number; completeAt?: number; lastPartialAt?: number; specStartAt?: number };
 /** lang = the language the reply is written in (interpretation: the target) */
-type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null; images: string[]; lang: string; suggestMac?: boolean };
+type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null; images: string[]; lang: string; suggestMac?: boolean; /** any camera or shared-screen frame went with this request */ seen?: boolean };
 /** firstTextAt: when the speculative stream's first text arrived (it is buffered until the final transcript) */
 type Speculation = { norm: string; abort: AbortController; built: Built; stream: Eager<SparkStreamEvent>; memoryRetry: MemoryRetryState; confirm: () => void; at: number; firstTextAt?: number };
 
@@ -1915,6 +1915,7 @@ export class Session {
     this.subscribePerception();
     if (!turn.greeting && !turn.cue && userText) {
       turnLine = turnHints({
+        prevUser: (() => { const u = this.history.filter((h) => h.role === "user").map((h) => h.text); if (u.at(-1) === userText) u.pop(); return u.at(-1); })(),
         callNumber: this.callNumber,
         lastReply: this.recentReplies.at(-1),
         userText,
@@ -2122,6 +2123,7 @@ export class Session {
       detected: null,
       // Finds get the camera frames only, never the shared screen
       images: camera,
+      seen: images.length > 0,
       lang: this.language,
       suggestMac,
       req: {
@@ -2504,7 +2506,8 @@ export class Session {
         }
         // b10 gate 11/4: nothing seen this turn → "That looks good" is said as "That sounds good" (convo/unseenSight.ts)
         if (this.v1 && tts && !interpret && !self) {
-          const heard = unseenToHeard(tts, guardCtx.camera);
+          // Codex #660 r1: a shared screen counts as seen ("That looks bright red." about the car on screen)
+          const heard = unseenToHeard(tts, guardCtx.camera || !!built?.seen);
           if (heard !== tts) { tts = heard; this.log("convo.unseen_to_heard", { utteranceId }); }
         }
         // CV-01 (eval v2 11/4): no past in this call → no habit "again" / "like usual", no claimed earlier talk (convo/pastGuard.ts)
