@@ -8,11 +8,12 @@
 import { webAnswerCard, type WebSearch } from "./webAnswer.ts";
 import { assessLine, runGeneral } from "./general.ts";
 import { JUDGE_TIMEOUT_MS, judgeEnabled, judgeWithin, sparkJudge, type Judge, type JudgeResult } from "./judge.ts";
+import type { Intent } from "./intent.ts";
+import { findUrl } from "./parse.ts";
 import { reasonChips, tasteLines, type TasteLine } from "../personalize/reasons.ts";
 import { randomUUID } from "node:crypto";
 import type { FindCard, FindKind, ServerEvent } from "../protocol.ts";
-import { classifyTurn, isBareAccept, isGoesWithFollowUp, isLinksAsk, isProductAsk, refersToScreen, type Intent } from "./intent.ts";
-import { findUrl } from "./parse.ts";
+import { classifyTurn, isBareAccept, isGoesWithFollowUp, isLinksAsk, isProductAsk, refersToScreen } from "./intent.ts";
 import { PRODUCT_COUNT, SEARCH_TITLE, guessLabel, runProduct, shortLabel } from "./product.ts";
 import { confirmItem, FRIDGE_UNCLEAR, IDENTIFY_UNSURE, runIdentify, runLink, runOutfit, runRecipe, type PipelineCtx, type PipelineResult } from "./pipeline.ts";
 import { cacheGet, cacheKey, cachePut, cardFitsColors, cardIsKind, categoryOf, claimWarm, colorAsks, colorPhrases, colorsOf, plainAsk, releaseWarm, type CachedProducts } from "./productCache.ts";
@@ -454,56 +455,10 @@ export class FindsRunner {
       }, this.deps.stillSearchingMs ?? 12_000); // S5 latency (lead 11/4): the visible wait is ~12 s, then one line
       void done.finally(() => clearTimeout(timer));
     }
-    // a judged turn already answered out loud: no fixed line, and an outfit card stays silent too
-    const ack = judged ? undefined : ACK[intent.kind];
-    if (ack) this.acked.add(findId);
+    if (ACK[intent.kind]) this.acked.add(findId);
     // an outfit pick is answered out loud by the turn itself: its card only shows it (demo S4, one verdict)
     else if (intent.kind === "outfit") this.answered.set(findId, t.replyText);
-    return { findId, kind: intent.kind, ...(ack ? { ack } : {}) };
-  }
-
-  /** the judge of the latest turn (a newer turn stops it) */
-  private judgeAbort: AbortController | null = null;
-  /** turns a judged card answered: the reply's own web search adds no second sheet card */
-  private readonly judged = new Set<number>();
-
-  /**
-   * Chelsea 11/4: an "open" line (assessLine) with nothing in its words goes to the find judge beside the spoken reply.
-   * A pick other than none starts the same pipeline as a keyword intent, with find.started at once.
-   */
-  private startJudge(t: TurnInput): void {
-    if (!judgeEnabled() || t.unclear) return;
-    if (assessLine(t.text) !== "open") return;
-    const abort = new AbortController();
-    this.judgeAbort = abort;
-    // a barged-in / cancelled turn (its reply resolves null) starts nothing (Codex judge r1 P2)
-    void t.replyText.then((said) => { if (said === null) abort.abort(); }).catch(() => {});
-    // cut off while it played (the reply text was already final): the turn's own signal (Codex judge r2 P2)
-    if (t.signal?.aborted) return;
-    t.signal?.addEventListener("abort", () => abort.abort(), { once: true });
-    // the picture is chosen from what they said ("on my screen" → the share), and kept for the card (Codex judge r1 P2)
-    const useScreen = !!t.screen && (!t.frames.length || SCREEN_WORDS.test(t.text));
-    const frame = useScreen ? t.screen : t.frames.at(-1);
-    const seen: TurnInput = useScreen ? { ...t, frames: [], screen: t.screen } : { ...t, screen: undefined };
-    const judge = this.deps.judge ?? sparkJudge(this.deps.vendors);
-    const t0 = this.hooks.now();
-    void judgeWithin(judge, { text: t.text, recent: (t.recent ?? []).slice(-4), ...(frame ? { frame, screen: useScreen } : {}) }, this.deps.judgeTimeoutMs ?? JUDGE_TIMEOUT_MS, abort.signal).then((r) => {
-      const ms = Math.round(this.hooks.now() - t0);
-      if (this.judgeAbort === abort) this.judgeAbort = null;
-      if (abort.signal.aborted || this.closed) {
-        this.hooks.log("finds.judge", { utteranceId: t.utteranceId, kind: r.kind, started: null, reason: "cancelled", ms });
-        return;
-      }
-      const intent = judgedIntent(r, seen);
-      // the reply's own web search already put a card up for this turn
-      const taken = this.judged.has(t.utteranceId);
-      this.hooks.log("finds.judge", { utteranceId: t.utteranceId, kind: r.kind, started: taken ? null : intent?.kind ?? null, reason: r.reason, ms });
-      if (!intent || taken) return;
-      if (this.owner && this.deps.store.work.isDeleted(this.owner)) return;
-      this.judged.add(t.utteranceId);
-      const question = (intent.kind === "answer" || intent.kind === "product") && r.query ? r.query : t.text;
-      this.start(intent, { ...seen, text: question }, false, true);
-    });
+    return { findId, kind: intent.kind, ...(ACK[intent.kind] ? { ack: ACK[intent.kind] } : {}) };
   }
 
   /**
@@ -553,6 +508,52 @@ export class FindsRunner {
     this.onEvent({ type: "find.created", findId, card });
     this.hooks.log("find.done", { findId, kind: "answer", ok: true, sources: card.sources.length });
     return findId;
+  }
+
+  /** the judge of the latest turn (a newer turn stops it) */
+  private judgeAbort: AbortController | null = null;
+  /** turns a judged card answered: the reply's own web search adds no second sheet card */
+  private readonly judged = new Set<number>();
+
+  /**
+   * Chelsea 11/4: an "open" line (assessLine) with nothing in its words goes to the find judge beside the spoken reply.
+   * A pick other than none starts the same pipeline as a keyword intent, with find.started at once.
+   */
+  private startJudge(t: TurnInput): void {
+    if (!judgeEnabled() || t.unclear) return;
+    if (assessLine(t.text) !== "open") return;
+    const abort = new AbortController();
+    this.judgeAbort = abort;
+    // a barged-in / cancelled turn (its reply resolves null) starts nothing (Codex judge r1 P2)
+    void t.replyText.then((said) => { if (said === null) abort.abort(); }).catch(() => {});
+    // cut off while it played (the reply text was already final): the turn's own signal (Codex judge r2 P2)
+    if (t.signal?.aborted) return;
+    t.signal?.addEventListener("abort", () => abort.abort(), { once: true });
+    // the picture is chosen from what they said ("on my screen" → the share), and kept for the card (Codex judge r1 P2)
+    const useScreen = !!t.screen && (!t.frames.length || SCREEN_WORDS.test(t.text));
+    const frame = useScreen ? t.screen : t.frames.at(-1);
+    const seen: TurnInput = useScreen ? { ...t, frames: [], screen: t.screen } : { ...t, screen: undefined };
+    const judge = this.deps.judge ?? sparkJudge(this.deps.vendors);
+    const t0 = this.hooks.now();
+    void judgeWithin(judge, { text: t.text, recent: (t.recent ?? []).slice(-4), ...(frame ? { frame, screen: useScreen } : {}) }, this.deps.judgeTimeoutMs ?? JUDGE_TIMEOUT_MS, abort.signal).then((r) => {
+      const ms = Math.round(this.hooks.now() - t0);
+      if (this.judgeAbort === abort) this.judgeAbort = null;
+      if (abort.signal.aborted || this.closed) {
+        this.hooks.log("finds.judge", { utteranceId: t.utteranceId, kind: r.kind, started: null, reason: "cancelled", ms });
+        return;
+      }
+      const intent = judgedIntent(r, seen);
+      // the reply's own web search already put a card up for this turn
+      const taken = this.judged.has(t.utteranceId);
+      this.hooks.log("finds.judge", { utteranceId: t.utteranceId, kind: r.kind, started: taken ? null : intent?.kind ?? null, reason: r.reason, ms });
+      if (!intent || taken) return;
+      if (this.owner && this.deps.store.work.isDeleted(this.owner)) return;
+      this.judged.add(t.utteranceId);
+      const question = (intent.kind === "answer" || intent.kind === "product") && r.query ? r.query : t.text;
+      // a judged turn already answered out loud: its fixed line (ack) is dropped, so a failure isn't said either
+      const started = this.start(intent, { ...seen, text: question }, false, true);
+      this.acked.delete(started.findId);
+    });
   }
 
   /** Waits for every running pipeline (tests, e2e script). */
