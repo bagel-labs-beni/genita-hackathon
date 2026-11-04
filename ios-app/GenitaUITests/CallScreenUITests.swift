@@ -101,7 +101,9 @@ final class CallScreenUITests: XCTestCase {
     /// instead of running "{name} is thinking" into the menu button.
     /// S09 wait stage (춘식이 11/4): until the face is here the orb holds its place on the radial ground and the pill
     /// says "Getting Jin ready"; on arrival the orb steps back and the pill turns to the live cue.
-    /// GENITA_WAIT_STAGE=6 holds the wait for 6 s on this unwired build (its fixture still would otherwise be there at once).
+    /// GENITA_WAIT_STAGE=12 holds the wait for 12 s on this unwired build (its fixture still would otherwise be there at
+    /// once). Review still: the PNG orb at rest, so the app goes idle for the queries (the live orb and the breathing
+    /// never let it — run 41760520646 missed the whole 6 s hold); the arrival is then Reduce Motion's 250 ms crossfade.
     func testWaitStageThenArrival() throws {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting"]
@@ -110,7 +112,8 @@ final class CallScreenUITests: XCTestCase {
             "GENITA_SERVER_URL": "ws://127.0.0.1:8788/v1/session",
             "GENITA_FIXTURE_SCRIPT": "none",
             "GENITA_CALL_AUTOMIC": "1",
-            "GENITA_WAIT_STAGE": "6",
+            "GENITA_WAIT_STAGE": "12",
+            "GENITA_REVIEW_STILL": "1",
             "GENITA_FACE_SET_DIR": URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
                 .appending(path: "shared/GenitaKit/Tests/GenitaKitTests/Fixtures/face-animal").path,
         ]
@@ -123,12 +126,11 @@ final class CallScreenUITests: XCTestCase {
         XCTAssertTrue(stage.waitForExistence(timeout: 10), "the wait stage holds the face's place")
         XCTAssertTrue(cue.waitForExistence(timeout: 5))
         XCTAssertEqual(cue.label, "Getting Jin ready")
-        Thread.sleep(forTimeInterval: 1.2) // mid-breath
         capture("S09-wait-stage")
         // arrival: the orb steps back (300 ms) and the face clears (520 ms)
-        let end = Date().addingTimeInterval(15)
+        let end = Date().addingTimeInterval(20)
         while Date() < end, stage.exists, (stage.value as? String) != "leaving" { Thread.sleep(forTimeInterval: 0.02) }
-        Thread.sleep(forTimeInterval: 0.12)
+        Thread.sleep(forTimeInterval: 0.1)
         capture("S09-wait-arriving")
         XCTAssertTrue(stage.waitForNonExistence(timeout: 3), "the orb is gone after its step back")
         Thread.sleep(forTimeInterval: 0.5)
