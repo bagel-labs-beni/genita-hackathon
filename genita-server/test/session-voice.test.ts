@@ -1,8 +1,8 @@
 /**
  * Server voice from the Meta voice service (D3, Seamless on Modal): audio + timing frames as
  * in server TTS mode, the voice is a Seamless speaker per companion kind, sentences carry their
- * language (interpretation: kor/eng), and a failing voice service hands the rest of the reply to
- * the app's own voice (`say`).
+ * language (interpretation: kor/eng). A failing voice service gets one retry, then captions only (11/4); the old
+ * hand-off to the app's own voice (`say`) only with GENITA_VOICE_DEVICE_FALLBACK=1.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -13,6 +13,7 @@ import { checkServerEvent } from "../src/protocol.ts";
 import type { AsrEvent } from "../src/meta/transcribe.ts";
 import type { SparkStreamEvent } from "../src/meta/spark.ts";
 import type { TtsChunk } from "../src/tts/types.ts";
+import { HOLD_LINE, RECOVER_LINE } from "../src/tts/seamless.ts";
 
 const config: Config = {
   metaKey: "x",
@@ -79,17 +80,17 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const persona = { name: "Companion", kind: "animal", traits: ["warm"] };
 const voice = { url: "https://v", token: "t", speakers: { human: 3, animal: 5, character: 9 }, speed: 1, timeoutMs: 500, model: "seamless" as const };
 
-type TtsReq = { voiceId: string; text: string; lang?: string; signal?: AbortSignal };
+type TtsReq = { voiceId: string; text: string; lang?: string; signal?: AbortSignal; force?: boolean; cachedOnly?: boolean; waitMs?: number };
 
 type Timing = NonNullable<TtsChunk["timing"]>;
 
-function setup(opts: { sparkText?: string; failAt?: number; chunkDelayMs?: number; timing?: (text: string) => Timing | null; timingDelayMs?: number; companionVoiceId?: () => Promise<string | null | undefined> } = {}) {
+function setup(opts: { deviceFallback?: boolean; failCalls?: number[]; cached?: string[]; sparkText?: string; failAt?: number; chunkDelayMs?: number; timing?: (text: string) => Timing | null; timingDelayMs?: number; companionVoiceId?: () => Promise<string | null | undefined> } = {}) {
   const asr = new FakeAsr();
   const client = new FakeClient();
   const calls: TtsReq[] = [];
   const prefetched: number[] = [];
   const session = new Session("v1", client, {
-    config: { ...config, serverTts: true, voice },
+    config: { ...config, serverTts: true, voice: opts.deviceFallback ? { ...voice, deviceFallback: true } : voice },
     openAsr: () => asr,
     async *spark(_req, { signal }): AsyncGenerator<SparkStreamEvent> {
       const text = opts.sparkText ?? "<happy> Oh wow, you're back! How was it?";
@@ -101,8 +102,16 @@ function setup(opts: { sparkText?: string; failAt?: number; chunkDelayMs?: numbe
       yield { type: "done", responseId: "r1", text, status: "completed" };
     },
     async *tts(req): AsyncGenerator<TtsChunk> {
-      const i = calls.push(req) - 1;
+      calls.push(req);
+      if ((req as { cachedOnly?: boolean }).cachedOnly) {
+        // the cold-GPU lines: only what the test says is cached (or kept on disk)
+        if (!opts.cached?.includes(req.text)) throw new Error("voice: not_cached");
+        yield { audio: Buffer.alloc(4800), alignment: null, model: "seamless-m4t-v2" };
+        return;
+      }
+      const i = calls.filter((c) => !(c as { cachedOnly?: boolean }).cachedOnly).length - 1; // live service calls only
       if (opts.failAt !== undefined && i >= opts.failAt) throw new Error("voice 503: down");
+      if (opts.failCalls?.includes(i)) throw new Error("voice network: voice_timeout");
       await sleep(opts.chunkDelayMs ?? 1);
       if (req.signal?.aborted) return;
       yield { audio: Buffer.alloc(4800), alignment: { chars: [...req.text], startsSec: [...req.text].map((_, k) => k * 0.02), endsSec: [...req.text].map((_, k) => k * 0.02 + 0.02) }, model: "seamless-m4t-v2" };
@@ -166,8 +175,8 @@ test("voice service: Korean (interpretation) sentences carry ko-KR so the servic
   session.close();
 });
 
-test("voice service down mid-reply: tts_unavailable once, the rest goes to the app as say, nothing lost", async () => {
-  const { client, session, calls } = setup({ failAt: 1 });
+test("voice service down mid-reply (GENITA_VOICE_DEVICE_FALLBACK=1): tts_unavailable once, the rest goes to the app as say, nothing lost", async () => {
+  const { client, session, calls } = setup({ failAt: 1, deviceFallback: true });
   await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
   await session.onClientText(JSON.stringify({ type: "text", text: "back" }));
   const reply = await client.waitFor((m) => m.type === "reply");
@@ -180,14 +189,125 @@ test("voice service down mid-reply: tts_unavailable once, the rest goes to the a
   session.close();
 });
 
-test("voice service down from the start: every sentence becomes say, first_audio fires on the first", async () => {
-  const { client, session } = setup({ failAt: 0 });
+test("voice service down from the start (GENITA_VOICE_DEVICE_FALLBACK=1): every sentence becomes say, first_audio fires on the first", async () => {
+  const { client, session } = setup({ failAt: 0, deviceFallback: true });
   await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
   await session.onClientText(JSON.stringify({ type: "text", text: "back" }));
   await client.waitFor((m) => m.type === "reply");
   assert.deepEqual(client.of("say").map((s) => s.text), ["Oh wow,", "you're back!", "How was it?"]);
   assert.ok(client.json.some((m) => m.type === "state" && m.state === "speaking"));
   assert.equal(client.of("turn.metrics")[0].ttsModel, "device");
+  session.close();
+});
+
+// 11/4 (Chelsea, build 7: "왜 여자 + 기계식"): the phone's system voice never stands in for the companion by default
+test("voice identity: a clause the voice service fails is retried once in the same voice (force), no say", async () => {
+  const { client, session, calls } = setup({ failCalls: [0] });
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "back" }));
+  const reply = await client.waitFor((m) => m.type === "reply");
+  assert.equal(reply.text, "Oh wow, you're back! How was it?");
+  assert.equal(client.of("say").length, 0, "no system voice");
+  assert.equal(client.of("error").length, 0, "the retry voiced it");
+  const live = calls.filter((c) => !c.cachedOnly);
+  assert.equal(live[0].text, live[1].text, "the failed clause is asked again");
+  assert.equal(live[1].force, true, "the retry asks even while the service is parked as down");
+  assert.deepEqual(calls.filter((c) => c.cachedOnly).map((c) => c.text), [HOLD_LINE], "the hold line was tried (not cached here: no sound)");
+  assert.ok(calls.every((c) => c.voiceId === "seamless:5"), "every clause in the companion's speaker");
+  assert.equal(client.of("audio").length, 3, "all three clauses voiced");
+  assert.equal(client.of("turn.metrics")[0].ttsModel, "seamless-m4t-v2");
+  session.close();
+});
+
+test("voice identity: voice service down for the whole reply → hold line, two retries (the last waits for a cold GPU), then the recovery line, same voice, never say", async () => {
+  const { client, session, calls } = setup({ failCalls: [0, 1, 2], cached: [HOLD_LINE, RECOVER_LINE] });
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "back" }));
+  const reply = await client.waitFor((m) => m.type === "reply", 6000);
+  assert.equal(reply.text, "Oh wow, you're back! How was it?", "the reply's words still go to the history");
+  assert.equal(client.of("say").length, 0, "no system voice");
+  assert.deepEqual(calls.map((c) => (c.cachedOnly ? c.text : "live")), ["live", HOLD_LINE, "live", "live", RECOVER_LINE]);
+  assert.deepEqual([calls[2].force, calls[3].force], [true, true]);
+  assert.equal(calls[2].waitMs, undefined, "first retry: the live budget");
+  assert.ok((calls[3].waitMs ?? 0) >= 30_000, "last retry waits for a cold container");
+  assert.ok(calls.every((c) => c.voiceId === calls[0].voiceId), "same speaker on every clip");
+  assert.equal(client.of("audio").length, 2, "hold line + recovery line are heard");
+  assert.equal(client.of("error").length, 0);
+  session.close();
+});
+
+test("voice identity (handover b9-6): cold GPU on the first reply → 'One sec.' at once, then the reply itself once the GPU answers; never 0 frames", async () => {
+  const { client, session, calls } = setup({ failCalls: [0, 1], cached: [HOLD_LINE, RECOVER_LINE] });
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "back" }));
+  const reply = await client.waitFor((m) => m.type === "reply", 6000);
+  assert.equal(reply.text, "Oh wow, you're back! How was it?");
+  assert.equal(calls[1].text, HOLD_LINE, "the hold line goes out right after the first miss");
+  assert.ok((calls[3].waitMs ?? 0) >= 30_000);
+  assert.equal(client.of("audio").length, 4, "hold line + the reply's three clauses");
+  assert.ok(calls.every((c) => c.text !== RECOVER_LINE), "the reply was heard: no recovery line");
+  assert.equal(client.of("say").length, 0);
+  assert.equal(client.of("error").length, 0);
+  session.close();
+});
+
+test("voice identity (Codex P1): after the hold line and a GPU wait, the reply stays 'speaking' while its own audio plays", async () => {
+  const { client, session } = setup({ failCalls: [0, 1], cached: [HOLD_LINE, RECOVER_LINE] });
+  const at = new Map<Record<string, unknown>, number>();
+  const send = client.sendJson.bind(client);
+  client.sendJson = (m) => { at.set(m, Date.now()); send(m); };
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "back" }));
+  await client.waitFor((m) => m.type === "reply", 6000);
+  const audio = client.of("audio");
+  assert.equal(audio.length, 4, "hold line + three clauses");
+  const firstReplyAudio = at.get(audio[1])!;
+  const done = await client.waitFor((m) => m.type === "state" && m.state === "listening" && (at.get(m) ?? 0) > firstReplyAudio, 3000);
+  // three 100 ms clauses start playing when they arrive (the player sat idle during the wait): not before ~300 ms
+  assert.ok(at.get(done)! - firstReplyAudio >= 250, `listening ${at.get(done)! - firstReplyAudio} ms after the reply's audio started`);
+  session.close();
+});
+
+test("voice identity (Codex P1 r2): the recovery line after a hold and a wait keeps the reply 'speaking' while it plays", async () => {
+  const { client, session } = setup({ failCalls: [0, 1, 2], cached: [HOLD_LINE, RECOVER_LINE] });
+  const at = new Map<Record<string, unknown>, number>();
+  const send = client.sendJson.bind(client);
+  client.sendJson = (m) => { at.set(m, Date.now()); send(m); };
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "back" }));
+  await client.waitFor((m) => m.type === "reply", 6000);
+  const audio = client.of("audio");
+  assert.equal(audio.length, 2, "hold line + recovery line");
+  const recoverAt = at.get(audio[1])!;
+  const done = await client.waitFor((m) => m.type === "state" && m.state === "listening" && (at.get(m) ?? 0) > recoverAt, 3000);
+  assert.ok(at.get(done)! - recoverAt >= 80, `listening ${at.get(done)! - recoverAt} ms after the 100 ms recovery line started`);
+  session.close();
+});
+
+test("voice identity: nothing cached and the voice service down → no sound, tts_unavailable once, never say", async () => {
+  const { client, session, calls } = setup({ failAt: 0 });
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "back" }));
+  const reply = await client.waitFor((m) => m.type === "reply", 6000);
+  assert.equal(reply.text, "Oh wow, you're back! How was it?");
+  assert.equal(client.of("say").length, 0);
+  assert.equal(client.of("audio").length, 0);
+  assert.equal(calls.length, 5, "clause + hold try + 2 retries + recovery try");
+  assert.equal(client.of("error").filter((e) => e.code === "tts_unavailable").length, 1);
+  assert.notEqual(client.of("turn.metrics")[0].ttsModel, "device");
+  session.close();
+});
+
+test("voice identity: a failure after part of the reply was heard: retries only (no hold, no recovery line), never say", async () => {
+  const { client, session, calls } = setup({ failAt: 1, cached: [HOLD_LINE, RECOVER_LINE] });
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "back" }));
+  await client.waitFor((m) => m.type === "reply", 6000);
+  assert.equal(client.of("audio").length, 1, "first clause voiced");
+  assert.equal(client.of("say").length, 0);
+  assert.equal(calls.length, 4, "clause 2 failed (prefetched) + 2 retries; clause 3 not asked");
+  assert.ok(calls.every((c) => !c.cachedOnly));
+  assert.ok((calls[3].waitMs ?? 0) === 0 || calls[3].waitMs === undefined, "the cold wait is only for a reply nothing of which was heard");
   session.close();
 });
 
@@ -230,11 +350,11 @@ test("voice service: when the opener guard drops a whole first clause ('Oh,'), t
   session.close();
 });
 
-test("voice service fails mid-sentence: the unspoken words of that sentence go to say", async () => {
+test("voice service fails mid-sentence (GENITA_VOICE_DEVICE_FALLBACK=1): the unspoken words of that sentence go to say", async () => {
   const asr = new FakeAsr();
   const client = new FakeClient();
   const session = new Session("v2", client, {
-    config: { ...config, serverTts: true, voice },
+    config: { ...config, serverTts: true, voice: { ...voice, deviceFallback: true } },
     openAsr: () => asr,
     async *spark(): AsyncGenerator<SparkStreamEvent> {
       yield { type: "text", delta: "<happy> We should totally get noodles tonight. Okay?" };
@@ -258,7 +378,7 @@ test("voice service fails mid-sentence: the unspoken words of that sentence go t
 function midFail(text: string, voiced: string | null) {
   const client = new FakeClient();
   const session = new Session("v3", client, {
-    config: { ...config, serverTts: true, voice },
+    config: { ...config, serverTts: true, voice: { ...voice, deviceFallback: true } },
     openAsr: () => new FakeAsr(),
     async *spark(): AsyncGenerator<SparkStreamEvent> {
       yield { type: "text", delta: text };
@@ -273,7 +393,7 @@ function midFail(text: string, voiced: string | null) {
   return { client, session };
 }
 
-test("mid-sentence failure counts voiced words in the spoken form ('$123' = 4 words), so nothing is lost", async () => {
+test("(GENITA_VOICE_DEVICE_FALLBACK=1) mid-sentence failure counts voiced words in the spoken form ('$123' = 4 words), so nothing is lost", async () => {
   const { client, session } = midFail("<neutral> Pay $123 now and leave.", "Pay one hundred twenty-three dollars ");
   await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
   await session.onClientText(JSON.stringify({ type: "text", text: "x" }));
@@ -282,7 +402,7 @@ test("mid-sentence failure counts voiced words in the spoken form ('$123' = 4 wo
   session.close();
 });
 
-test("mid-sentence failure without timing (MMS backup) says the whole sentence again rather than drop it", async () => {
+test("(GENITA_VOICE_DEVICE_FALLBACK=1) mid-sentence failure without timing (MMS backup) says the whole sentence again rather than drop it", async () => {
   const { client, session } = midFail("<neutral> We should get noodles tonight.", null);
   await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
   await session.onClientText(JSON.stringify({ type: "text", text: "x" }));

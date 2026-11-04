@@ -79,6 +79,10 @@ export class MemoryCall {
   private clearOf<T extends { text: string }>(items: T[]): T[] {
     return this.avoid.length ? items.filter((m) => !mentionsAvoided(m.text, this.avoid)) : items;
   }
+  /** AU-44 / Codex #585 P1: the notes as the prompt sees them (do-not-mention lines filtered) — the opener picks from these */
+  visibleSummaries(): CallSummary[] { return this.clearSummaries(this.summaries); }
+  /** Codex #585 P2: the session's 6 h rule for a notes follow-up greeting (false = greet without "pick up a thread") */
+  notesOpener = true;
   private clearSummaries(items: CallSummary[]): CallSummary[] {
     // a note about the forgetting itself ("asked to forget the leather thing") never reaches the next call either
     const ok = (l: string) => !/\bforg[eo]t|\b(?:drop|delete|remove|erase)(?:d)? (?:it|that|this)\b/i.test(l) && !mentionsAvoided(l, this.avoid);
@@ -283,7 +287,7 @@ export class MemoryCall {
       const pinned = this.clearOf(this.pinned);
       const pinnedIds = new Set(pinned.map((m) => m.id));
       const extra = this.clearOf(items).filter((m) => !pinnedIds.has(m.id));
-      next = { ...req, instructions: (req.instructions ?? "") + pinnedPrompt(pinned) + notes + memoryPrompt(extra, opening !== undefined, !!notes), tools: [...req.tools ?? [], ...replyMemoryTools()] };
+      next = { ...req, instructions: (req.instructions ?? "") + pinnedPrompt(pinned) + notes + memoryPrompt(extra, opening !== undefined, !!notes && this.notesOpener), tools: [...req.tools ?? [], ...replyMemoryTools()] };
     }
     for (let round = 0; round < 4; round++) {
       if (signal.aborted) return;

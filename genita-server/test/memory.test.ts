@@ -354,3 +354,20 @@ test("Codex #423 recheck P1: a failed saveNow is retried even when the reply nev
   await new Promise((r) => setTimeout(r, 80));
   assert.equal(batches.flat().filter((u) => /Biscuit/.test(u)).length, 2, JSON.stringify(batches));
 });
+
+test("AU-43: the memory opener waits 6 h since the last one (not a UTC day) and rotates: never-raised items first, one raised in the last day waits", async () => {
+  const { service, advance } = setup();
+  await service.noteMessage("a");
+  await service.remember("a", "I bought dark brown shoes.", "episode", "old");
+  advance(1000);
+  await service.remember("a", "I started a pottery class.", "episode", "old");
+  advance(7 * 3_600_000);
+  const first = await service.opening("a", "s1"); assert.ok(first);
+  advance(3 * 3_600_000); await service.noteMessage("a"); advance(6 * 3_600_000 + 1000);
+  // 6 h+ after the first opener, possibly the same UTC day: a second opener, and the other item
+  const second = await service.opening("a", "s2"); assert.ok(second, "6 h later, not blocked by the UTC day");
+  assert.notEqual(second!.id, first!.id, "rotates to the item not raised yet");
+  advance(1000); await service.noteMessage("a"); advance(6 * 3_600_000 + 1000);
+  const third = await service.opening("a", "s3");
+  assert.ok(!third || (third.id !== second!.id), "the one raised in the last day waits");
+});

@@ -171,3 +171,40 @@ export function mailSenderFromEnv(env: NodeJS.ProcessEnv, log: Log, o: { loopbac
   }
   return null;
 }
+
+/** RP-1 (D37) feedback mail: what was reported and where. The user's note and the reported text stay in the stored
+ *  report (users/<id>/reports/…, erased with the account); the mail names that file. */
+export type ReportMail = { at: string; userId: string; device: string; reason: string; surface: string; hasNote: boolean; key: string };
+export type ReportMailer = { kind: string; send(r: ReportMail): Promise<void> };
+
+/** Resend to GENITA_REPORT_TO when RESEND_API_KEY + GENITA_MAIL_FROM + GENITA_REPORT_TO are set, else null (AU-10). */
+export function reportMailerFromEnv(env: NodeJS.ProcessEnv, log: Log, fetchImpl: typeof fetch = fetch): ReportMailer | null {
+  const key = env.RESEND_API_KEY?.trim();
+  const from = env.GENITA_MAIL_FROM?.trim();
+  const to = normalizeEmail(env.GENITA_REPORT_TO);
+  if (!key || !from) return null;
+  if (!to) {
+    log("report.mail_off", { reason: env.GENITA_REPORT_TO ? "GENITA_REPORT_TO invalid" : "GENITA_REPORT_TO unset" });
+    return null;
+  }
+  return {
+    kind: "resend",
+    async send(r) {
+      const text = [
+        `Reason: ${r.reason}`,
+        `Where: ${r.surface} (${r.device})`,
+        `When: ${r.at}`,
+        `Account: ${r.userId}`,
+        `Note written: ${r.hasNote ? "yes" : "no"}`,
+        `Stored report: ${r.key}`,
+      ].join("\n");
+      const res = await fetchImpl("https://api.resend.com/emails", {
+        method: "POST",
+        headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+        body: JSON.stringify({ from, to: [to], subject: `Genita report: ${r.reason} (${r.surface})`, text }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!res.ok) throw new Error(`resend_${res.status}`);
+    },
+  };
+}

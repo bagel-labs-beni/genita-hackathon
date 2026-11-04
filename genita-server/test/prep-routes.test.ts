@@ -225,12 +225,18 @@ test("POST /v1/import/skip: N1–N3 → style card, no vendor call, readable via
     return { status: r.status, json: (await r.json()) as Record<string, any> };
   };
 
-  for (const bad of [{ interests: "Design" }, { interests: Array(9).fill("a") }, { avoid: ["x".repeat(61)] }, { replies: "nope" }, {}]) {
+  for (const bad of [{ interests: "Design" }, { interests: Array(9).fill("a") }, { avoid: ["x".repeat(61)] }, { replies: "nope" }]) {
     const r = await call("POST", "/v1/import/skip", bad);
     assert.equal(r.status, 400, JSON.stringify(bad));
     assert.equal(r.json.error, "bad_skip");
   }
   assert.equal((await call("GET", "/v1/import")).json.status, "none"); // nothing stored by bad calls
+  // AU-14 (SK-01 N3-0): nothing picked on N1–N3 is not an error — an empty skip card, every row still to learn
+  const none = await call("POST", "/v1/import/skip", { interests: [], avoid: [], replies: null, n3: { clothes: { like: [], no: [] }, food: { like: [], no: [] }, chats: { like: [], no: [] } } }, "u-empty");
+  assert.equal(none.status, 200, JSON.stringify(none.json));
+  assert.equal(none.json.style.itemCount, 0);
+  assert.ok(none.json.style.toConfirm.length > 0);
+  assert.equal((await call("POST", "/v1/import/skip", {}, "u-empty2")).status, 200, "an empty body = nothing picked");
 
   const ok = await call("POST", "/v1/import/skip", { interests: ["Design", "Food"], replies: "Talk it out", avoid: ["Unasked advice"] });
   assert.equal(ok.status, 200);

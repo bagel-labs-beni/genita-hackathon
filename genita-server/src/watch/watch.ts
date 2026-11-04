@@ -17,7 +17,7 @@ import type { SparkRequest, SparkStreamEvent } from "../meta/spark.ts";
 import type { AsrEvent } from "../meta/transcribe.ts";
 import type { WatchServerEvent } from "../protocol.ts";
 import { buildMemoRequest, buildQuestionContext, buildQuickRequest, cleanTitle, earlyVerdict, parseMemoVerdict, parseQuick, type DialogueLine, type MemoEntry, type MemoVerdict, type QuestionContext } from "./memo.ts";
-import { echoNow, isVideoEcho, pickFrames, REACT_MIN_GAP_MS, reactionAllowed, reactionScript, speakerChipEnabled, SPEAKER_SILENCE_MS } from "./rules.ts";
+import { echoNow, isVideoEcho, pickFrames, REACT_MAX_STALE_MS, REACT_MIN_GAP_MS, reactionAllowed, reactionScript, speakerChipEnabled, SPEAKER_SILENCE_MS } from "./rules.ts";
 
 export interface WatchAsr {
   on(ev: "event", fn: (e: AsrEvent) => void): unknown;
@@ -82,6 +82,11 @@ const SEEN_KEEP_MS = 60_000;
 /** a share that comes back this soon with the same window (and title) is a reconnect, not a new video */
 const RECONNECT_KEEP_MS = 15_000;
 const MAX_SEEN = 6;
+/** AU-66 (11/4): after the share stops, turns hear "you were just watching…" this long, then nothing */
+const AFTER_STOP_KEEP_MS = 90_000;
+/** a frame this different from the last (most of the screen changed: another product or page in a shop that keeps
+ *  its title) opens a new page for the one-comment rule (Codex #542 P2) */
+const PAGE_NEW_MOTION = 0.3;
 /** one moment seen by both the quick look and a memo (or two quick looks) within this window counts once */
 const SEEN_SAME_MS = 4_000;
 const SEEN_TWIN_MS = 1_000;
@@ -109,6 +114,11 @@ const MEMO_EVERY_MS = 2_000;
 const MEMO_AFTER_LINE_MS = 1_200;
 /** a reaction held back by the video's dialogue or by the conversation waits for a pause, until it is stale */
 const HOLD_WHY = new Set(["dialogue", "conversation", "turn"]);
+/** a page comment is about something that stays on screen: it also waits out the share's first seconds */
+const HOLD_WHY_PAGE = new Set([...HOLD_WHY, "just_started"]);
+/** frames in the last 3 s that mean the screen is a playing video (≈2 fps sustained), not a page being read: a
+ *  YouTube window is a web page too, and its video is watched for moments, not commented on as a page */
+const PAGE_BUSY_FRAMES = 6;
 /** the timeline memo sees a short motion sequence: 5 frames ~0.6 s apart (≈2.4 s), not stills seconds apart */
 const MEMO_FRAMES = 4;
 /** memo Spark lanes raced per memo (GENITA_WATCH_MEMO_LANES, default 2) */
@@ -128,11 +138,14 @@ const QUICK_MIN_GAP_MS = 700;
  *  32×18 luma, so a spike alone misses them */
 const QUICK_EVERY_MS = 1_000;
 /** quick looks in flight at once: a second spike (the trick right after a cut) doesn't wait for the first */
-const QUICK_CONCURRENCY = 2;
+/** 11/4: 3 (GENITA_WATCH_QUICKS, was 2). A look takes ~4 s and ~5 % time out at 6 s holding a slot: with 2, the
+ *  watch-sim dunk (0.5 s at the rim) fell between looks 2/5 times */
+const QUICK_CONCURRENCY = Math.max(1, Math.round(Number(process.env.GENITA_WATCH_QUICKS ?? 3)) || 3);
 /** a sound counts as dialogue for the reaction gate once it has a word ("Stop!" counts). Wordless crowd noise
  *  and cheers don't; a stray transcribed word over a crowd is left to the model's talkOver */
 const words = (s: string) => s.split(/\s+/).filter((w) => /\p{L}/u.test(w)).length;
-/** 2 frames (~0.3–0.9 s apart, the newest last): enough for the motion, fewer images = a faster call (11/3 15:30) */
+/** 2 frames (~0.3–0.9 s apart, the newest last): enough for the motion, fewer images = a faster call (11/3 15:30).
+ *  11/4: 4 frames spread over the stretch since the last look missed the dunk more (1/5 vs 5/5 offline, more timeouts) */
 const QUICK_FRAMES = 2;
 /** a quick look picks its moment from this far back (its verdict can take ~4–5 s) */
 const QUICK_LOOKBACK_MS = 3_000;
@@ -212,8 +225,16 @@ export class WatchController {
   private lastQuickAt = -Infinity;
   /** the newest frame the last quick look saw: the next one picks from what came after */
   private lastLookedAt = -Infinity;
+  /** a look that failed (Spark timeout): its frames get the next look, even past the 3 s lookback (Codex #542 r2 P2) */
+  private retryLook: { frames: Frame[]; spikeAt: number } | null = null;
+  /** bumped when the page changes (new share/title/source, or most of the screen changed): a page comment from a
+   *  memo that started on the old page is dropped (Codex #542 r2 P2) */
+  private pageGen = 0;
   private motionAware = false;
   private protectedSpoken = false;
+  /** this page (share / window / title) already got its one comment (lead's call 11/4) */
+  private pageSpoken = false;
+  private stoppedAt: number | null = null;
   private protectedPending = false;
   private protectedSince = 0;
   /** a funny moment waiting for the video's line (or the conversation) to pause */
@@ -316,6 +337,8 @@ export class WatchController {
   private resetClip(why: string): void {
     // results of looks started on the old video must not land in the new one (Codex #445 P2)
     this.clipGen++;
+    this.pageSpoken = false;
+    this.pageGen++;
     for (const m of this.memosInFlight) m.abort();
     this.memosInFlight.clear();
     for (const q of this.quickInFlight) q.abort();
@@ -338,6 +361,7 @@ export class WatchController {
 
   private start(source: string | null): void {
     if (!this.sharing) {
+      this.stoppedAt = null;
       const last = this.lastShare;
       const reconnect = last !== null && this.deps.now() - last.at <= RECONNECT_KEEP_MS && last.source === source
         && (last.title === null || this.title === null || last.title === this.title);
@@ -408,6 +432,7 @@ export class WatchController {
     this.frames = []; // never kept past the share
     this.seen = this.seen.map((m) => ({ ...m, frame: null }));
     this.lastShare = { source: this.source, title: this.title, at: this.deps.now() };
+    this.stoppedAt = this.deps.now();
     this.title = null;
     this.dialogueActive = false;
     this.openLine = "";
@@ -435,6 +460,7 @@ export class WatchController {
     this.stats.frames++;
     if (!blank) {
       if (motion !== null) this.motionAware = true;
+      if (motion !== null && motion >= PAGE_NEW_MOTION) { this.pageSpoken = false; this.pageGen++; if (this.held?.v.page) this.held = null; }
       if (motion !== null && motion >= MOTION_SPIKE) {
         this.salientAt = now;
         this.quickSpikeAt ??= now; // the first pending spike; the quick look takes the newest frames anyway
@@ -590,6 +616,7 @@ export class WatchController {
     const salient = this.salientAt !== null && this.salientAt > since;
     const lines = this.lines.filter((l) => l.at > since);
     const memoSeq = this.speechSeq;
+    const memoPageGen = this.pageGen;
     // how fresh the moment is = its newest frame or line, not when this memo started (Codex P2: a memo started late
     // after a long talk must not react to a scene from 20 s ago)
     const contentAt = Math.max(fresh.at(-1)?.at ?? this.frames.at(-1)?.at ?? at, lines.at(-1)?.at ?? -Infinity);
@@ -616,8 +643,9 @@ export class WatchController {
         if (gen !== this.clipGen) return;
         early = true;
         this.log("watch.memo.early", { ms: Math.round(this.deps.now() - at), moment: e.moment });
-        this.noteMoment(e.moment, e.reaction, contentAt, frames.at(-1) ?? null);
-        this.tryReact({ memo: "", moment: e.moment, reaction: e.reaction, speakers: [], talkOver: e.talkOver, talkOverSeq: memoSeq }, contentAt);
+        if (!e.page) this.noteMoment(e.moment, e.reaction, contentAt, frames.at(-1) ?? null);
+        // a page stays on screen: its comment is as fresh as this verdict
+        this.tryReact({ memo: "", moment: e.moment, reaction: e.reaction, speakers: [], talkOver: e.talkOver, talkOverSeq: memoSeq, page: e.page, pageGen: memoPageGen }, e.page ? this.deps.now() : contentAt);
       });
     } catch (err) {
       if (!abort.signal.aborted) this.log("watch.memo.error", { message: String(err).slice(0, 200) });
@@ -642,20 +670,20 @@ export class WatchController {
       this.memo = this.memo.filter((e) => now - e.at <= MEMO_KEEP_MS).slice(-MAX_MEMO);
     }
     for (const s of v.speakers) if (s.label && !this.names.has(s.label)) this.names.set(s.label, s.name);
-    this.log("watch.memo", { ms, memo: v.memo.slice(0, 160), moment: v.moment, reaction: v.reaction, frames: frames.length, lines: lines.length, salient, protectedVideo: v.protectedVideo === true });
+    this.log("watch.memo", { ms, memo: v.memo.slice(0, 160), moment: v.moment, reaction: v.reaction, frames: frames.length, lines: lines.length, salient, protectedVideo: v.protectedVideo === true, page: v.page === true });
     if (v.protectedVideo) {
       this.speakProtected();
       return v;
     }
     this.protectedPending = false; // a clear picture now: an older "protected" no longer applies
     if (v.moment !== "none" && !early) {
-      this.noteMoment(v.moment, v.reaction, contentAt, frames.at(-1) ?? null);
-      this.tryReact({ ...v, talkOverSeq: memoSeq }, contentAt);
+      if (!v.page) this.noteMoment(v.moment, v.reaction, contentAt, frames.at(-1) ?? null);
+      this.tryReact({ ...v, talkOverSeq: memoSeq, pageGen: memoPageGen }, v.page ? now : contentAt);
     }
     return v;
   }
 
-  private async memoRace(req: SparkRequest, signal: AbortSignal, onEarly?: (e: { moment: Exclude<MemoVerdict["moment"], "none">; reaction: string; talkOver: boolean }) => void): Promise<string> {
+  private async memoRace(req: SparkRequest, signal: AbortSignal, onEarly?: (e: { moment: Exclude<MemoVerdict["moment"], "none">; reaction: string; talkOver: boolean; page: boolean }) => void): Promise<string> {
     let earlyDone = false;
     const lanes = Math.max(1, this.deps.memoLanes ?? MEMO_LANES);
     const kids = Array.from({ length: lanes }, () => new AbortController());
@@ -710,7 +738,15 @@ export class WatchController {
     const at = this.deps.now();
     const gen = this.clipGen;
     this.lastQuickAt = at;
-    const picked = quickFrames(this.frames, spikeAt, this.lastLookedAt);
+    // a failed look's frames first, while its moment can still be reacted to
+    const retry = this.retryLook && at - this.retryLook.spikeAt <= REACT_MAX_STALE_MS - 3_000 ? this.retryLook : null;
+    this.retryLook = null;
+    const picked = retry ? retry.frames : quickFrames(this.frames, spikeAt, this.lastLookedAt);
+    if (retry) spikeAt = retry.spikeAt;
+    // eval: how old the look's frames are when it starts, and what it was for (a pending spike or the cadence)
+    const ages = picked.map((f) => Math.round(at - f.at));
+    const forSpike = spikeAt < (this.frames.at(-1)?.at ?? at) - 50;
+    const lookedBefore = this.lastLookedAt;
     this.lastLookedAt = picked.at(-1)?.at ?? this.lastLookedAt;
     const frames = picked.map((f) => f.url);
     const seq = this.speechSeq;
@@ -724,14 +760,24 @@ export class WatchController {
         else if (ev.type === "done" && !raw) raw = ev.text;
       }
     } catch (err) {
-      if (!abort.signal.aborted) this.log("watch.quick.error", { message: String(err).slice(0, 200) });
+      if (!abort.signal.aborted) {
+        this.log("watch.quick.error", { message: String(err).slice(0, 200) });
+        // 11/4: a look that timed out saw nothing: the next look picks from its frames again
+        // (min: two looks failing in a row both get their frames back, Codex #542 P2; a frame seen twice costs a look,
+        // a moment said twice can't happen: the 25 s gap and the seen list)
+        if (gen === this.clipGen) {
+          this.lastLookedAt = Math.min(this.lastLookedAt, lookedBefore);
+          // only the first retry: a look that fails twice is let go
+          if (!retry && picked.length) this.retryLook = { frames: picked, spikeAt };
+        }
+      }
       return;
     } finally {
       this.quickInFlight.delete(abort);
     }
     if (abort.signal.aborted || !this.sharing || gen !== this.clipGen) return;
     const q = parseQuick(raw);
-    this.log("watch.quick", { ms: Math.round(this.deps.now() - at), rememberOnly, react: !!q, moment: q?.moment ?? "none", line: q?.line ?? "", talkOver: q?.talkOver ?? null, frames: frames.length });
+    this.log("watch.quick", { ms: Math.round(this.deps.now() - at), rememberOnly, react: !!q, moment: q?.moment ?? "none", line: q?.line ?? "", talkOver: q?.talkOver ?? null, frames: frames.length, ages, forSpike });
     if (q) {
       this.noteMoment(q.moment, q.line, spikeAt, frames.at(-1) ?? null);
       if (!rememberOnly) this.tryReact({ memo: "", moment: q.moment, reaction: q.line, speakers: [], talkOver: q.talkOver, talkOverSeq: seq }, spikeAt, false, "quick");
@@ -752,8 +798,30 @@ export class WatchController {
 
   private tryReact(v: MemoVerdict, verdictAt: number, retry = false, via: "memo" | "quick" = "memo"): void {
     if (this.deps.reactions === false) return;
+    // a comment on a page that is no longer on screen
+    if (v.page && v.pageGen !== undefined && v.pageGen !== this.pageGen) {
+      if (this.held?.v === v) this.held = null;
+      return;
+    }
+    // one comment per page: scrolling the same page, or the next memo of it, says nothing more
+    if (v.page && this.pageSpoken) {
+      if (!retry) this.log("watch.react.blocked", { why: "page_seen", moment: v.moment, reaction: v.reaction, held: false });
+      return;
+    }
     const script = reactionScript(v.moment, v.reaction);
     if (!script) return;
+    if (v.page) {
+      const now = this.deps.now();
+      if (now - verdictAt > REACT_MAX_STALE_MS) {
+        if (this.held?.v === v) this.held = null;
+        return;
+      }
+      if (this.frames.filter((f) => now - f.at <= 3_000).length >= PAGE_BUSY_FRAMES) {
+        if (!retry) this.log("watch.react.held", { why: "video", moment: v.moment, reaction: v.reaction });
+        if (!this.held || this.held.at <= verdictAt) this.held = { v, at: verdictAt };
+        return;
+      }
+    }
     // an older moment (a slower memo finishing late) never replaces or clears a newer one that is waiting
     if (!retry && this.held && verdictAt < this.held.at) return;
     const gate = reactionAllowed({
@@ -772,7 +840,7 @@ export class WatchController {
     });
     if (!gate.ok) {
       // the video is mid-line or someone is talking: hold it and try again on each tick until it is stale
-      if (HOLD_WHY.has(gate.why)) {
+      if ((v.page ? HOLD_WHY_PAGE : HOLD_WHY).has(gate.why)) {
         if (!this.held) this.log("watch.react.held", { why: gate.why, moment: v.moment, reaction: v.reaction });
         this.held = { v, at: verdictAt };
         return;
@@ -791,6 +859,7 @@ export class WatchController {
     this.held = null;
     const now = this.deps.now();
     this.lastReactionAt = now;
+    if (v.page) this.pageSpoken = true;
     this.stats.reactions++;
     if (v.moment !== "none") this.sink?.send({ type: "reaction", utteranceId, moment: v.moment });
     this.log("watch.react", {
@@ -803,6 +872,7 @@ export class WatchController {
       afterLineMs: this.lastDialogueEndAt === null ? null : Math.round(now - this.lastDialogueEndAt),
       lineOpen: this.dialogueActive && words(this.openLine) >= 1,
       talkOver: v.talkOver === true,
+      page: v.page === true,
     });
   }
 
@@ -811,7 +881,10 @@ export class WatchController {
   /** Watch context for the user's question, or null when nothing has been watched. */
   questionContext(): QuestionContext | null {
     const now = this.deps.now();
-    if (!this.sharing && !this.memo.length && !this.seen.some((m) => now - m.at <= SEEN_KEEP_MS)) return null;
+    // AU-66: a stopped share is "just watched" for 90 s, then the call is about something else
+    if (!this.sharing && (this.stoppedAt === null || now - this.stoppedAt > AFTER_STOP_KEEP_MS)) return null;
+    const memo = this.memo.filter((e) => now - e.at <= MEMO_KEEP_MS);
+    if (!this.sharing && !memo.length && !this.seen.some((m) => now - m.at <= SEEN_KEEP_MS)) return null;
     const frames = this.sharing ? pickFrames(this.frames, QUESTION_FRAMES, QUESTION_FRAME_SPACING_MS).map((f) => f.url) : [];
     const seen = this.seen.filter((m) => now - m.at <= SEEN_KEEP_MS);
     // "did you see that dunk?" a few seconds later: the newest moment's own frame, when the "now" frames have moved on
@@ -823,7 +896,8 @@ export class WatchController {
       momentFrame,
       source: this.source,
       title: this.title,
-      memo: this.memo,
+      memo,
+      stoppedAgoSec: this.sharing || this.stoppedAt === null ? null : Math.round((now - this.stoppedAt) / 1000),
       lines: this.sharing ? this.lines.filter((l) => now - l.at <= QUESTION_LINES_MS).slice(-12) : this.lines.slice(-6),
       names: this.names,
       frames,

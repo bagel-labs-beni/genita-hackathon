@@ -1577,3 +1577,68 @@ test("Codex #502 P1 r6: after a crisis line, later turns of the call get no gidd
   assert.doesNotMatch(last, /giddy|Your mood right now is (?:upbeat|playful)|stay in that lane|own take/);
   session.close();
 });
+
+test("AU-40: '85k' / '$85K' said back after a salary line is caught (the digit form is bounded by digits, not \\b)", async () => {
+  const { echoesSensitiveNumber } = await import("../src/convo/guard.ts");
+  const u = "What's my salary again? I told you 85k";
+  for (const s of ["You told me 85k.", "$85K, right?", "Yep, 85k!", "eighty five K, flex"]) assert.ok(echoesSensitiveNumber(s, u), s);
+  for (const s of ["You owe me 185 bucks.", "That 8.5 was wild."]) assert.ok(!echoesSensitiveNumber(s, u), s);
+});
+
+test("AU-41: tease, tease, ok, yeah → the low-key mood (two flat replies end the tease's lift)", async () => {
+  const { moodFrom, moodLine } = await import("../src/convo/rhythm.ts");
+  const lines = ["nice try, you're such a nerd", "yeah right, says the AI", "ok", "yeah"];
+  assert.match(moodLine(moodFrom(lines)) ?? "", /low-key/);
+  const b = { valence: 0.15, energy: 0.2 };
+  assert.match(moodLine(moodFrom(lines, b, b)) ?? "", /low-key/);
+});
+
+test("AU-45: a greeting whose opener went out never gets 'lost you, say that again' when Spark comes back empty", { skip: !v1 }, async () => {
+  const client = new Client();
+  const session = new Session("au45", client, {
+    config, openAsr: () => { throw new Error("no asr"); }, greetOpener: true,
+    async *spark(): AsyncGenerator<SparkStreamEvent> { yield { type: "done", responseId: "r", text: "", status: "completed" }; },
+    async *tts() {},
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", user: { name: "Summer" }, greetAfterMs: 0 }));
+  const reply = await client.waitFor((m) => m.type === "reply" && m.final === true, 8000);
+  assert.match(String(reply.text), /^(?:Hey|Hi|Oh hey|Hey hey), Summer!$/);
+  assert.doesNotMatch(String(reply.text), /lost you|say that again/i);
+  assert.ok(!client.json.some((m) => m.type === "error"), "no error card under a greeting that was said");
+  session.close();
+});
+
+test("AU-44: notes make a follow-up greeting only after 6 h (or right after a hang-up), and it names one open thread", { skip: !v1 }, async () => {
+  const { session } = setup(["<happy> Hey."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999, user: { name: "Summer", profile: "Into: ramen." } }));
+  const s = session as unknown as { memoryCall: unknown; lastMessageAt: number | null; v1Extras(t: unknown): { opener?: string } };
+  const note = { thread_id: "t", created_at: 0, updated_at: 0, turns: 4, topics: ["shoes"], mood: null, open_threads: ["dark brown shoes for the trench"], promises: ["help pick a pottery glaze"], asks: [] };
+  s.memoryCall = { summaries: [note], visibleSummaries: () => [note], lastCall: null, close() {} };
+  s.lastMessageAt = Date.now() - 2 * 3_600_000;
+  assert.doesNotMatch(s.v1Extras({ greeting: { item: null } }).opener ?? "", /picking up the thread/, "2 h later: no notes follow-up");
+  s.lastMessageAt = Date.now() - 7 * 3_600_000;
+  const late = s.v1Extras({ greeting: { item: null } }).opener ?? "";
+  assert.match(late, /picking up the thread[^\n]*"(?:dark brown shoes for the trench|help pick a pottery glaze)"/, "7 h later: one named thread");
+  s.memoryCall = { summaries: [note], visibleSummaries: () => [note], lastCall: { lines: [{ role: "user", text: "remind me" }], threadId: "t", covered: 1 }, close() {} };
+  s.lastMessageAt = Date.now() - 60_000;
+  assert.match(s.v1Extras({ greeting: { item: null } }).opener ?? "", /picking up the thread/, "right after a hang-up: still picks it back up");
+  s.memoryCall = null;
+  session.close();
+});
+
+test("Codex #585 r2: 'You said,85.' is still a number said back; a forgotten last opener topic is never named", async () => {
+  const { echoesSensitiveNumber } = await import("../src/convo/guard.ts");
+  assert.ok(echoesSensitiveNumber("You said,85.", "My salary is 85k"));
+  assert.ok(!echoesSensitiveNumber("That's 1.85 miles.", "My salary is 85k"));
+});
+
+test("Codex #585 r2 P1: the last opener topic the user asked to forget is not named as 'don't open on…'", { skip: !v1 }, async () => {
+  const { session } = setup(["<happy> Hey."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999, user: { name: "Summer", profile: "Into: ramen, aespa." } }));
+  const s = session as unknown as { openerRecent: string[]; removedLines: unknown[]; lastMessageAt: number | null; v1Extras(t: unknown): { opener?: string } };
+  s.openerRecent = ["pottery glaze"]; s.lastMessageAt = Date.now() - 30 * 3_600_000;
+  assert.match(s.v1Extras({ greeting: { item: null } }).opener ?? "", /pottery glaze/, "control: named while not forgotten");
+  s.openerRecent = ["pottery glaze"]; s.removedLines = [{ text: "pottery glaze", forget: true }];
+  assert.doesNotMatch(s.v1Extras({ greeting: { item: null } }).opener ?? "", /pottery/);
+  session.close();
+});

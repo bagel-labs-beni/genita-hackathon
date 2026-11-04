@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
 /**
  * HTTP + WebSocket entry.
  *   GET  /healthz          → {ok:true, sessions, spark_open, spark_open_provider, spark_open_model}
@@ -30,9 +32,14 @@ import { META_BASE, metaHeaders } from "./meta/http.ts";
 import { setLlmLog, sparkOpenStatus, startSparkOpenProbe } from "./meta/sparkOpen.ts";
 import { installKeepAlive, makePrewarm } from "./util/keepalive.ts";
 import { createSeamless } from "./tts/seamless.ts";
+import { fileClips } from "./tts/clips.ts";
+import { DEFAULT_VOICES } from "./prep/voices.ts";
+const CURATED_SPEAKERS = DEFAULT_VOICES.map((v) => Number(v.id)).filter((n) => Number.isInteger(n));
 import { createVoiceSeats } from "./tts/capacity.ts";
 import { createPrep } from "./prep/index.ts";
-import { demoTemplateWanted, startDemoTemplate } from "./prep/demoTemplate.ts";
+import { demoTemplateWanted, readDemoPointer, startDemoTemplate } from "./prep/demoTemplate.ts";
+import { DEMO_TEMPLATE_SUB } from "./prep/demo.ts";
+import { createCompanionReset, guardDemoSeed } from "./prep/reset.ts";
 import { likesFromStyle } from "./finds/setup.ts";
 import { renameCompanion } from "./prep/naming.ts";
 import { createAccounts, type AccountsService, type Principal } from "./auth/index.ts";
@@ -66,7 +73,7 @@ async function* serverTtsOff(): AsyncGenerator<never> {
 }
 
 export function defaultDeps(config: Config, log: LogFn): SessionDeps {
-  const voice = config.voice ? createSeamless(config.voice, { log }) : null;
+  const voice = config.voice ? createSeamless(config.voice, { log, clips: fileClips(join(process.env.GENITA_DATA_DIR || join(homedir(), ".genita-data"), "voice-clips")) }) : null;
   return {
     config,
     ...createMemory(config.metaKey, log),
@@ -74,6 +81,8 @@ export function defaultDeps(config: Config, log: LogFn): SessionDeps {
     spark: (req, opts) => sparkStream(config.metaKey, req, opts),
     tts: voice ? (req) => voice.speak(req) : serverTtsOff,
     voicePrefetch: voice ? (speaker) => voice.prefetch(speaker) : undefined,
+    // main.ts at boot: render (or load) the cold-GPU lines for the curated speakers, so the first call after a deploy has them
+    voiceWarm: voice ? () => { for (const spk of new Set([...CURATED_SPEAKERS, ...Object.values(config.voice!.speakers)])) voice.prefetch(spk); } : undefined,
     greetOpener: greetOpenerOn(),
     // one socket per hedged Spark lane, one to the voice service (kept open by installKeepAlive)
     prewarm: makePrewarm({ metaUrl: META_BASE + "/models", metaHeaders: metaHeaders(config.metaKey, false), lanes: config.sparkHedge, voiceUrl: config.voice ? config.voice.url + "/healthz" : undefined }),
@@ -125,6 +134,8 @@ export async function startServer(
   const touches = new Map<string, () => void>();
   const sessionUsers = new Map<string, string>(); // ws session id → users.id
   const prep = createPrep(config, log, env, accounts?.prepStore); // onboarding prep routes (src/prep/routes.ts)
+  // the judge demo copy at sign-in is a companion create: it takes the same lock as POST /v1/companion (Codex #514 P2)
+  if (accounts?.seedDemo) accounts.seedDemo = guardDemoSeed(accounts.seedDemo, prep.runner, log);
   // D41: the judge demo template ("Jin") is built by the server itself, in the background after the accounts
   // DB is migrated (007); idempotent, version-stamped, failures only logged (src/prep/demoTemplate.ts)
   const demoTemplate = accounts && demoTemplateWanted(env, accounts.db.kind)
@@ -154,6 +165,8 @@ export async function startServer(
       for (const [id, u] of sessionUsers) if (u === userId) sessions.get(id)?.close(4401, "account_deleted");
       await findsDeleted;
       await prep.runner.forgetUser(userId);
+      // SUM insight report: the kept paste (memory only) goes, and a write still running lands nowhere
+      prep.deps.insights?.forget(userId);
       await deps.memory?.forget(userId);
       await deps.finds?.store.removeOwner(ownerKey(userId));
       // S5 product cache: this account's cards and warm-ups (in memory, keyed by the account)
@@ -163,6 +176,31 @@ export async function startServer(
       throw err;
     }
   };
+  // 11/4 "Make a new companion" (src/prep/reset.ts): the companion goes, the account stays. Same stop as DELETE /me
+  // (prep / top-up / reflow drained by the runner); then live calls close 4410 and call memory is forgotten.
+  const companionReset = createCompanionReset({
+    store: prep.deps.store, runner: prep.runner, log, blobs: accounts?.blobs ?? null,
+    isProtected: async (userId) => {
+      if (!accounts) return false;
+      const u = await accounts.accounts.getUser(userId);
+      if (u?.provider === "dev" && u.providerSub.startsWith(DEMO_TEMPLATE_SUB)) return true;
+      return (await readDemoPointer(accounts.blobs).catch(() => null))?.userId === userId;
+    },
+    afterErase: async (userId) => {
+      // after the rows: an app re-reading /me on 4410 already sees no companion
+      for (const [id, u] of sessionUsers) if (u === userId) sessions.get(id)?.close(4410, "companion_reset");
+      dropLastTurns(userId);
+      forgetOpenerTopics(userId);
+      // after the close: its revision bump refuses a late extraction or turn cache from that call; the new companion
+      // never met them (AU-90): when they last talked and the carried mood go too
+      await deps.memory?.forget(userId, undefined, { relationship: true });
+      // ...and it is call 1 with them again (first-call nod and question), what Genita knows about them stays (AU-90)
+      // in the profile's per-user lock: a personalize save under way can't write the old count back (Codex AU-90)
+      const personalize = deps.personalize ?? prep.deps.personalize;
+      if (personalize && "resetGrowth" in personalize) await (personalize as { resetGrowth(u: string): Promise<void> }).resetGrowth(userId);
+      else { const style = await prep.deps.store.getStyle(userId); if (style?.growth) await prep.deps.store.putStyle(userId, { ...style, growth: { calls: 0, asked: [] } }); }
+    },
+  });
   // F6-L7: who holds the sound. conversations.active_device/epoch with accounts, memory without.
   // proximity handoff moves a conversation only while the account has a live call socket
   const handoff = new HandoffHub(accounts ? new PgOwnershipStore(accounts.db) : new MemoryOwnershipStore(), log, {
@@ -223,6 +261,12 @@ export async function startServer(
     }
     if (accounts?.routes.handles(url.pathname)) return accounts.routes.handle(req, res, await principal(req, url));
     if (!accounts && (url.pathname === "/me" || url.pathname.startsWith("/me/") || url.pathname.startsWith("/auth/"))) return json(res, 503, { error: "accounts_disabled" });
+    if (companionReset.handles(url.pathname)) {
+      const who = await principal(req, url);
+      if (!who) return json(res, 401, { error: "unauthorized" });
+      if (!who.consented) return json(res, 403, { error: "consent_required" });
+      return companionReset.handle(req, res, who.userId);
+    }
     if (prep.routes.handles(req)) {
       const who = await principal(req, url);
       if (!who) return json(res, 401, { error: "unauthorized" });
@@ -346,6 +390,8 @@ export async function startServer(
     return c;
   }
   const sessionGens = new Map<string, number>();
+  /** a seeded call that opens later than this after the last one dropped is a reconnect (it says RECONNECT_LINE) */
+  const RECONNECT_GAP_MS = 10_000;
   function priorTurns(userId: string, self: string, revision: number, device: string): HistoryItem[] | null {
     // this call joins the conversation now (a slow first memory read can make it join after a later socket)
     sessionGens.set(self, ++nextGen);
@@ -359,6 +405,10 @@ export async function startServer(
     let bestProgress = cached?.progress ?? zero;
     // the winner was a call the user hung up on this same device (cached, or stopped with its socket still closing)
     let hungUpHere = !!(best && cached?.hungUp && cached.device === device);
+    // where the winning turns came from and how long ago: a drop coming back gets the reconnect line
+    let fromDevice = cached?.device ?? null;
+    let gapMs = cached ? Date.now() - cached.at : 0;
+    let hungUp = !!cached?.hungUp;
     let forgetAsked = !!cached?.forgetAsked;
     let crisisInCall = !!cached?.crisisInCall;
     let bestGen = cached?.gen ?? 0;
@@ -375,6 +425,7 @@ export async function startServer(
         // on this same device is a return visit, exactly like its cached copy will be.
         best = t; thread = session.threadInfo(); bestProgress = p; bestGen = g;
         hungUpHere = session.isClosed && session.endedByUser && sessionDevices.get(sid) === device;
+        fromDevice = sessionDevices.get(sid) ?? null; gapMs = 0; hungUp = session.isClosed && session.endedByUser;
         forgetAsked = session.forgetAsked;
         crisisInCall = session.crisisInCall;
       }
@@ -394,6 +445,14 @@ export async function startServer(
     if (best) {
       // the conversation carries its forget request with it to the next device (Codex 11/3 #447 r3)
       if (forgetAsked) { const me = sessions.get(self); if (me) me.forgetAsked = true; }
+      // same device (a dropped call: a hang-up there never seeds) or a drop on the other device longer than
+      // RECONNECT_GAP_MS ago: "Sorry, we got cut off — where were we?". A move to the other device (live, within the
+      // gap, or after hanging up there) goes on silently: that's the handoff.
+      if (fromDevice === device || (!hungUp && gapMs > RECONNECT_GAP_MS)) {
+        const me = sessions.get(self);
+        if (me) me.reconnected = true;
+        log("history.reconnect", { session: self, sameDevice: fromDevice === device, gapMs: Math.round(gapMs) });
+      }
       progress.set(self, bestProgress); // inherit the snapshot's order; seeding is not a new turn
       handedThread.set(self, thread);
       return best;
@@ -469,16 +528,26 @@ export async function startServer(
     // F2-L26: a rename said in the call is saved to this user's own companion (no-op without one)
     const rename = deps.renameCompanion ?? ((userId: string, name: string) => renameCompanion(prep.deps.store, userId, name));
     // Same presence (11/3): this account's saved companion voice, on the iPhone and the Mac alike
-    const companionVoiceId = () => prep.deps.store.getCompanion(who.userId).then((c) => c?.voiceId ?? null);
+    // one store read for both (AU-53: the stored name wins over the app's cached persona name)
+    let companion: ReturnType<typeof prep.deps.store.getCompanion> | undefined;
+    const storedCompanion = () => (companion ??= prep.deps.store.getCompanion(who.userId));
+    const companionVoiceId = () => storedCompanion().then((c) => c?.voiceId ?? null);
+    const companionName = () => storedCompanion().then((c) => c?.name ?? null);
     // Demo S4: an iPhone call may suggest moving to this account's open Mac app
     const macNearby = here === "iphone" ? () => handoff.isPresent(who.userId, "mac") : undefined;
     // lane 개인화: the stored profile, first-call asks, voice corrections and post-call growth for this account
     // D41: judge demo accounts get a per-code daily turn cap (auth/judge.ts), on top of the D46 ops caps
     const turnGate = who.judge && accounts ? accounts.judgeTurns.gate(who.judge) : undefined;
-    const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, turnGate, renameCompanion: rename, companionVoiceId,
+    const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, turnGate, renameCompanion: rename, companionVoiceId, companionName,
       priorTurns: (revision) => priorTurns(who.userId, id, revision, callDevice), priorThread: () => priorThread(id), lastCall: () => lastCall(id),
       personalize: deps.personalize ?? prep.deps.personalize, macNearby,
       continuesCall: () => continuesOtherDevice(who.userId, id, callDevice),
+      // the reconnect line waits for the start claim and a switch's lease (src/handoff/hub.ts mayPlay), at most 2 s
+      untilPlayable: gated ? () => new Promise<boolean>((resolve) => {
+        const t0 = Date.now();
+        const tick = () => (gated.call.mayPlay() ? resolve(true) : Date.now() - t0 > 2000 ? resolve(false) : void setTimeout(tick, 50).unref?.());
+        tick();
+      }) : undefined,
       onHistoryChange: (role) => {
         const p = progress.get(id) ?? zero;
         progress.set(id, role === "user" ? { turn: ++nextTurn, update: 0 } : { turn: p.turn, update: p.update + 1 });

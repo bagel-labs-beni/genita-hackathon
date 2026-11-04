@@ -10,7 +10,7 @@ import { loadConfig } from "../src/config.ts";
 import { openDb } from "../src/db/index.ts";
 import { createAccounts } from "../src/auth/index.ts";
 import { startServer } from "../src/server.ts";
-import { Session, type SessionDeps, type ClientSink } from "../src/session/session.ts";
+import { Session, RECONNECT_LINE, type SessionDeps, type ClientSink } from "../src/session/session.ts";
 import type { ServerEvent } from "../src/protocol.ts";
 import type { SparkRequest } from "../src/meta/spark.ts";
 import { InMemoryMemoryRepository, mergeSummary } from "../src/memory/repository.ts";
@@ -384,7 +384,70 @@ test("server (Codex 11/3): a Mac → iPhone move that ends the Mac call with sto
   phone.ws.send(JSON.stringify({ type: "text", text: "Still with me on the phone?" }));
   await waitFor(() => requests.some((r) => /Still with me on the phone/.test(JSON.stringify(r.input))));
   assert.match(JSON.stringify(requests.find((r) => /Still with me on the phone/.test(JSON.stringify(r.input)))!.input), /navy jacket, size medium/);
+  assert.ok(!logs.includes("call.reconnect_line"), "a move to the other device goes on silently");
   phone.ws.close();
+});
+
+/** WT-06 follow-up (11/4): a dropped call that comes back is met with one short line, not silence */
+async function dropAndReturn(t: import("node:test").TestContext, o: { from: string; to: string; hangUp?: boolean; gapMs?: number }) {
+  const { memory, deps } = setup(fakeSummarizer().fn);
+  const logs: string[] = [];
+  const server = await startServer({ ...config, sessionToken: "test-token" }, (e) => { logs.push(e); }, { ...deps, log: (e) => { logs.push(e); } }, {}, null);
+  t.after(() => new Promise<void>((r) => server.close(() => r())));
+  const addr = server.address(); assert.ok(addr && typeof addr === "object");
+  const headers = { authorization: "Bearer test-token", "x-genita-user": "acct-a" };
+  const open = (device: string) => new Promise<{ ws: WebSocket; lines: string[]; ready: () => boolean }>((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${addr.port}/v1/session?device=${device}`, { headers });
+    const lines: string[] = []; let ok = false;
+    ws.on("message", (d, bin) => { if (bin) return; const m = JSON.parse(String(d)); if (m.type === "reply") lines.push(String(m.text ?? "")); if (m.type === "ready") ok = true; });
+    ws.once("open", () => resolve({ ws, lines, ready: () => ok })); ws.once("error", reject);
+  });
+  const first = await open(o.from);
+  first.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  await waitFor(() => first.lines.length >= 1);
+  first.ws.send(JSON.stringify({ type: "text", text: "The navy jacket, size medium." }));
+  await waitFor(() => first.lines.length >= 2);
+  if (o.hangUp) first.ws.send(JSON.stringify({ type: "stop" }));
+  first.ws.close(); // no stop: the network dropped
+  await waitFor(() => logs.includes("session.close"));
+  await waitFor(() => logs.includes("history.cached"));
+  await memory.drain();
+  // the time the user was away (the server reads Date.now)
+  if (o.gapMs) { const real = Date.now; const gap = o.gapMs; Date.now = () => real() + gap; t.after(() => { Date.now = real; }); }
+  // the app on the other device takes the conversation when its call starts (like Move / Call here)
+  if (o.to !== o.from) {
+    const claim = await fetch(`http://127.0.0.1:${addr.port}/v1/handoff/claim`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ device: o.to, trigger: "button" }) });
+    assert.equal(claim.status, 200);
+  }
+  const back = await open(o.to);
+  back.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  await waitFor(back.ready);
+  await new Promise((r) => setTimeout(r, 700)); // the switch's 250 ms lease, then the line
+  back.ws.close();
+  return { logs, lines: back.lines };
+}
+
+test("reconnect: the same device coming back after a drop says the short line (seeded, no full greeting)", { timeout: 20_000 }, async (t) => {
+  const { logs, lines } = await dropAndReturn(t, { from: "iphone", to: "iphone" });
+  assert.ok(logs.includes("history.seeded"), "the conversation goes on");
+  assert.ok(logs.includes("call.reconnect_line"));
+  assert.deepEqual(lines, [RECONNECT_LINE]);
+});
+
+test("reconnect: the other device more than 10 s after a drop says the short line", { timeout: 20_000 }, async (t) => {
+  const { logs, lines } = await dropAndReturn(t, { from: "mac", to: "iphone", gapMs: 11_000 });
+  assert.ok(logs.includes("history.seeded"));
+  assert.deepEqual(lines, [RECONNECT_LINE]);
+});
+
+test("reconnect: the other device within 10 s of a drop, or after hanging up there, goes on silently (a move)", { timeout: 30_000 }, async (t) => {
+  const quick = await dropAndReturn(t, { from: "mac", to: "iphone" });
+  assert.ok(quick.logs.includes("history.seeded"));
+  assert.ok(!quick.logs.includes("call.reconnect_line"));
+  assert.deepEqual(quick.lines, []);
+  const hungUp = await dropAndReturn(t, { from: "mac", to: "iphone", hangUp: true, gapMs: 11_000 });
+  assert.ok(hungUp.logs.includes("history.seeded"));
+  assert.ok(!hungUp.logs.includes("call.reconnect_line"));
 });
 
 test("server (Codex 11/3): the Mac's stop arriving BEFORE the iPhone's claim still hands over; a stale iPhone copy never replaces the Mac's fuller one", { timeout: 20_000 }, async (t) => {
@@ -865,4 +928,87 @@ test("Codex #502 P1 r5: with memory on, a client-claimed handoff history of 20 k
   const before = n; ws.send(JSON.stringify({ type: "text", text: "Yes, I have the pills beside me" })); await waitFor(() => n > before);
   assert.doesNotMatch(requests.map((r) => r.instructions ?? "").join("\n"), /own take/);
   ws.terminate();
+});
+
+test("AU-42: a Mac start without a name uses the name the account's iPhone sent (greeting + name guards work on the Mac)", { timeout: 30_000 }, async (t) => {
+  const never: Summarizer = () => new Promise(() => {});
+  const { deps, requests } = setup(never);
+  const logs: string[] = [];
+  const server = await startServer({ ...config, sessionToken: "test-token" }, (e) => { logs.push(e); }, { ...deps, log: (e) => { logs.push(e); } }, {}, null);
+  t.after(() => new Promise<void>((r) => server.close(() => r())));
+  const addr = server.address(); assert.ok(addr && typeof addr === "object");
+  const headers = { authorization: "Bearer test-token", "x-genita-user": "acct-au42" };
+  const sockets: WebSocket[] = [];
+  const open = (device: string) => new Promise<{ ws: WebSocket; replies: () => number }>((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${addr.port}/v1/session?device=${device}`, { headers });
+    sockets.push(ws); let n = 0;
+    ws.on("message", (d, bin) => { if (bin) return; const m = JSON.parse(String(d)); if (m.type === "reply") n++; });
+    ws.once("open", () => resolve({ ws, replies: () => n })); ws.once("error", reject);
+  });
+  const phone = await open("iphone");
+  phone.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false, user: { name: "Summer" } }));
+  await waitFor(() => phone.replies() >= 1);
+  phone.ws.send(JSON.stringify({ type: "stop" })); await waitFor(() => logs.includes("session.close"));
+  requests.length = 0;
+  const mac = await open("mac");
+  mac.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  // (right after the iPhone call the Mac may continue it without a greeting: ask something instead)
+  await pause(); const n = mac.replies(); mac.ws.send(JSON.stringify({ type: "text", text: "what should I eat" }));
+  try {
+    await waitFor(() => mac.replies() > n);
+    assert.match(requests.at(-1)!.instructions ?? "", /The user's name is Summer/);
+  } finally { for (const w of sockets) w.terminate(); }
+});
+
+test("CA-14 × Forget (#585 Codex P1): a turn held open at the Forget is dropped — never answered, never saved after it", async () => {
+  const { memory, deps, requests } = setup();
+  const asr = deps.openAsr([]) as unknown as EventEmitter;
+  const c = client();
+  const seen: string[] = [];
+  const sink0 = c.sink.sendJson;
+  c.sink.sendJson = (e) => { seen.push(String((e as { type: string }).type) + ((e as { state?: string }).state ? ":" + (e as { state?: string }).state : "")); sink0(e); };
+  const s = new Session("call-held", c.sink, deps);
+  await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" } }));
+  await waitFor(c.ready);
+  // the greeting plays out first (talking over it would be a barge-in, not a turn)
+  await waitFor(() => seen.includes("reply") && seen.lastIndexOf("state:listening") > seen.indexOf("reply"), 8000);
+  const before = requests.length;
+  asr.emit("event", { type: "speechStart", turnId: 0 });
+  asr.emit("event", { type: "speechEnd", turnId: 0 });
+  asr.emit("event", { type: "speechComplete", turnId: 0, text: "My ex Daniel lives on Maple Street and" }); // held
+  await new Promise((r) => setTimeout(r, 50));
+  await memory.forget("acct-a");
+  await new Promise((r) => setTimeout(r, 2600)); // past the 2.0 s hold
+  assert.equal(requests.length, before, "the held line never reached Spark");
+  assert.doesNotMatch(JSON.stringify(requests), /Maple Street/);
+  s.close(); await memory.drain();
+  assert.doesNotMatch(JSON.stringify(await memory.list("acct-a")), /Maple Street/);
+});
+
+test("CA-14 × Forget (Codex P1 r2): the user resumed the held turn when the Forget came — its late final is not answered or saved", async () => {
+  const { memory, deps, requests } = setup();
+  const asr = deps.openAsr([]) as unknown as EventEmitter;
+  const c = client();
+  const seen: string[] = [];
+  const sink0 = c.sink.sendJson;
+  c.sink.sendJson = (e) => { seen.push(String((e as { type: string }).type) + ((e as { state?: string }).state ? ":" + (e as { state?: string }).state : "")); sink0(e); };
+  const s = new Session("call-held-2", c.sink, deps);
+  await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" } }));
+  await waitFor(c.ready);
+  await waitFor(() => seen.includes("reply") && seen.lastIndexOf("state:listening") > seen.indexOf("reply"), 8000);
+  const before = requests.length;
+  asr.emit("event", { type: "speechStart", turnId: 0 });
+  asr.emit("event", { type: "speechEnd", turnId: 0 });
+  asr.emit("event", { type: "speechComplete", turnId: 0, text: "So my ex Daniel and" }); // held
+  await new Promise((r) => setTimeout(r, 50));
+  asr.emit("event", { type: "speechStart", turnId: 1 });
+  asr.emit("event", { type: "partial", text: "I like jasmine tea" });
+  await memory.forget("acct-a");
+  asr.emit("event", { type: "speechEnd", turnId: 1 });
+  asr.emit("event", { type: "speechComplete", turnId: 1, text: "I like jasmine tea." });
+  await new Promise((r) => setTimeout(r, 2600));
+  assert.equal(requests.length, before);
+  assert.doesNotMatch(JSON.stringify(requests), /jasmine|Daniel/);
+  s.close(); await memory.drain();
+  assert.doesNotMatch(JSON.stringify(await memory.list("acct-a")), /jasmine|Daniel/);
 });
