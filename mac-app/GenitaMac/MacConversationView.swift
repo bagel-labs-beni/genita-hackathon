@@ -324,7 +324,7 @@ struct MacConversationView: View {
             UnevenRoundedRectangle(topLeadingRadius: 30, topTrailingRadius: 30).fill(Color(white: 254.0 / 255)).frame(width: 390, height: 551).shadow(color: .black.opacity(0.04), radius: 12.95)
             Capsule().fill(Color(white: 219.0 / 255)).frame(width: 47, height: 5).position(x: 195.5, y: 14.5)
             Text("Allow screen sharing.").font(.custom("KMUTTF-SungkokSemiSerif", size: 28)).foregroundStyle(ink).position(x: 179, y: 69)
-            Text("Turn on Genita in System Settings ›\nScreen Recording. Already on? Quit and\nreopen Genita. You can keep talking.").font(font(16)).foregroundStyle(ink).fixedSize(horizontal: true, vertical: true).frame(width: 320, alignment: .leading).position(x: 201, y: 131)
+            Text("Allow Genita to record your screen in\nSystem Settings, then try sharing again.\nYou can keep talking without sharing.").font(font(16)).foregroundStyle(ink).fixedSize(horizontal: true, vertical: true).frame(width: 320, alignment: .leading).position(x: 201, y: 131)
             MacV2Button(label: "Open Settings", id: "macSharePermissionOpen") { sharing.openSettings() }.frame(width: 313).position(x: 194.5, y: 251)
             Button { sharing.permissionRequired = false } label: { Text("Not now").font(font(15, medium: true)).foregroundStyle(ink).frame(width: 313, height: 36).contentShape(Rectangle()) }.buttonStyle(.plain).position(x: 194.5, y: 307).accessibilityLabel("Not now").accessibilityIdentifier("macSharePermissionNotNow")
         }.frame(width: 390, height: 366, alignment: .topLeading).position(x: 195, y: 661).accessibilityIdentifier("macSharePermission")
