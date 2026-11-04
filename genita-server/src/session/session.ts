@@ -604,6 +604,8 @@ export class Session {
     if (this.closed || this.mode !== "chat" || this.reply || !this.userTurnOpen() || gen !== this.bcGen) return;
     // the lookup took time: the held turn's end (the reply) may now be under 1.5 s away (Codex #733 P2)
     if (this.backchannel && !this.backchannel.clearOfReply()) return;
+    // a speculative run or a find may have started during the lookup (Codex #733 r2 P2)
+    if (this.spec || this.finds?.busy()) return;
     this.client.sendJson({ type: "backchannel", kind, ...(audio ? { audio } : {}) });
     // the app sends the uplink untouched; whatever of the cue survives echo cancellation is dropped from this turn
     this.cuedTurn = true;
