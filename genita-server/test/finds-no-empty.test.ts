@@ -5,6 +5,7 @@
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { runProduct, type ProductCtx } from "../src/finds/product.ts";
+import { readPageFacts } from "../src/finds/fetchPage.ts";
 import { runNamedRecipe } from "../src/finds/namedRecipe.ts";
 import { rowPictures } from "../src/finds/general.ts";
 import { applyFindImage } from "../src/finds/runner.ts";
@@ -50,7 +51,7 @@ const ITEMS = [
   { name: "Wool field jacket", url: P3, store: "Shop Three", price: "$120", taste: "Clean lines", situation: "Warm enough" },
 ];
 
-function productRun(o: { p2Image?: boolean; p3Image?: boolean } = {}) {
+function productRun(o: { p2Image?: boolean; p3Image?: boolean; p2Facts?: Record<string, unknown> } = {}) {
   let generated = 0;
   const v: FindsVendors = {
     async spark(req) {
@@ -63,7 +64,7 @@ function productRun(o: { p2Image?: boolean; p3Image?: boolean } = {}) {
     async image() { generated++; return Buffer.from("generated"); },
     async pageFacts(url) {
       if (url === P1) return { kind: "product", image: "https://cdn.example.com/1.jpg" };
-      if (url === P2) return { kind: "product", ...(o.p2Image ? { image: "https://cdn.example.com/2.jpg" } : {}) };
+      if (url === P2) return o.p2Facts ? (o.p2Facts as never) : { kind: "product", price: "$40", ...(o.p2Image ? { image: "https://cdn.example.com/2.jpg" } : {}) };
       if (url === P3) return { kind: "product", ...(o.p3Image === false ? {} : { image: "https://cdn.example.com/3.jpg" }) };
       return null;
     },
@@ -119,6 +120,27 @@ test("product: no spare with a picture either → the slot is omitted (failed + 
   assert.equal(r.card!.products![1].url, P2, "the product stays; only its picture box goes");
   assert.equal(run.generated(), 0);
   wireClean(run.events);
+});
+
+test("product page that can't be bought (Target 'Item not available', OutOfStock, sold out) or has no price and no picture → never on the card; the next verified product takes its place", async () => {
+  // the page reader flags it from the HTML: JSON-LD availability, the page text, the title
+  const ld = (a: string) => `<script type="application/ld+json">{"@type":"Product","name":"Black Midi Slip Dress","offers":{"price":"30","priceCurrency":"USD","availability":"${a}"}}</script>`;
+  assert.equal(readPageFacts(`<html><head><meta property="og:type" content="product"></head><body><h2>Item not available</h2></body></html>`, P2).unavailable, true);
+  assert.equal(readPageFacts(`<html><head>${ld("https://schema.org/OutOfStock")}</head></html>`, P2).unavailable, true);
+  assert.equal(readPageFacts(`<html><head>${ld("Discontinued")}</head></html>`, P2).unavailable, true);
+  assert.equal(readPageFacts(`<html><head><title>Sold out - Black Midi Slip Dress</title></head></html>`, P2).unavailable, true);
+  const ok = readPageFacts(`<html><head>${ld("https://schema.org/InStock")}</head><body><p>Size XS sold out</p></body></html>`, P2);
+  assert.equal(ok.unavailable, undefined, "a good page with one size sold out stays");
+  assert.equal(ok.price, "$30");
+  process.env.GENITA_FIND_WEB_IMAGES = "0";
+  for (const p2Facts of [{ kind: "product", price: "$30", image: "https://cdn.example.com/2.jpg", unavailable: true }, { kind: "product" }]) {
+    const run = productRun({ p2Facts });
+    const r = await runProduct(run.ctx);
+    const created = run.events.find((e) => e.type === "find.created") as Extract<ServerEvent, { type: "find.created" }>;
+    assert.deepEqual(created.card.products!.map((p) => p.url), [P1, P3], JSON.stringify(p2Facts));
+    assert.deepEqual(r.card!.products!.map((p) => [p.url, p.image?.status]), [[P1, "ready"], [P3, "ready"]]);
+    wireClean(run.events);
+  }
 });
 
 test("product (GENITA_FIND_IMAGE_GATE=0): as before — no swap, no omit", async () => {

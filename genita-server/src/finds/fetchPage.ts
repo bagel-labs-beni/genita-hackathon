@@ -164,7 +164,35 @@ export type PageFacts = {
   /** visual everything: the first content picture in the page body (an <img> with alt text or a large size, never a
    *  logo / icon / svg / gif), for pages with no og:image */
   inPageImage?: string;
+  /** no empty pictures: the page says the item can't be bought (offers availability OutOfStock / Discontinued /
+   *  SoldOut, or "Item not available" / "no longer available" / "sold out" in its title, heading or text) */
+  unavailable?: true;
 };
+
+const SOLD_OUT_LD = /(?:OutOfStock|Discontinued|SoldOut)\b/i;
+/** strong: one of these anywhere in the page text means this item is gone */
+const GONE_TEXT = /\b(?:item (?:is )?(?:not|no longer|currently not) available|no longer available|this (?:item|product) is (?:currently )?unavailable|(?:item|product) unavailable|currently unavailable)\b/i;
+/** weaker (a size can be sold out on a good page): only in the title, the first heading or the description */
+const GONE_HEAD = /\b(?:out of stock|sold out|unavailable|not available|no longer available|discontinued)\b/i;
+
+/** Pure: the page says this item can't be bought. */
+export function pageUnavailable(html: string, nodes: Array<Record<string, unknown>>): boolean {
+  for (const n of nodes) {
+    const offers = n.offers;
+    for (const o of [offers].flat()) {
+      const a = o && typeof o === "object" ? (o as Record<string, unknown>).availability : undefined;
+      if (typeof a === "string" && SOLD_OUT_LD.test(a)) return true;
+    }
+  }
+  const avail = meta(html, "product:availability") ?? meta(html, "og:availability");
+  if (avail && /\b(?:oos|out of stock|discontinued|sold out|unavailable)\b/i.test(avail)) return true;
+  const title = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? "";
+  const h1 = html.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i)?.[1]?.replace(/<[^>]+>/g, " ") ?? "";
+  const head = [title, h1, meta(html, "og:title") ?? "", meta(html, "description") ?? "", meta(html, "og:description") ?? ""].map(decodeEntities).join(" \n ");
+  if (GONE_HEAD.test(head)) return true;
+  const text = decodeEntities(html.replace(/<(script|style|noscript)\b[\s\S]*?<\/\1>/gi, " ").replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ");
+  return GONE_TEXT.test(text);
+}
 
 const IMG_JUNK = /(?:logo|favicon|sprite|icon|badge|avatar|placeholder|spacer|blank|pixel|tracking|ads?[/_-]|banner|button)/i;
 /** Pure: the first <img> in the page that looks like a picture of the thing (alt text or ≥ 200 px, a raster file). */
@@ -265,6 +293,7 @@ export function readPageFacts(html: string, base: string): PageFacts {
     formatPrice(metaPrice, meta(html, "product:price:currency") ?? meta(html, "og:price:currency")) ??
     (offer ? formatPrice(offer.price ?? offer.lowPrice, offer.priceCurrency) : undefined);
   if (!facts.image) facts.inPageImage = firstContentImage(html, abs);
+  if (pageUnavailable(html, nodes)) facts.unavailable = true;
   if (facts.title) facts.title = decodeEntities(facts.title).replace(/\s+/g, " ").trim().slice(0, 120);
   return facts;
 }
