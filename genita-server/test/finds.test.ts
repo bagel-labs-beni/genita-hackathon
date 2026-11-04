@@ -635,6 +635,14 @@ test("P1-7: the outfit taste line comes only from what Genita remembers; none â†
   const imp = await card("Clean minimal vibe you love", { profile: "- Taste: Clean, minimal clothes in black and camel." });
   assert.equal(imp.subtitle, "Clean minimal vibe you love");
   assert.equal(imp.evidence?.style, "Clean minimal vibe you love");
+  // Codex r1: the opposite of a remembered dislike never stands on it; a negative line on the dislike does
+  const flip = await card("You love loud logos", { profile: "- Taste: Clean, minimal clothes.\n- Taste: Dislikes loud logos." });
+  assert.equal(flip.subtitle, "");
+  const keep = await card("No loud logos, like you said", { profile: "- Taste: Clean, minimal clothes.\n- Taste: Dislikes loud logos." });
+  assert.equal(keep.subtitle, "No loud logos, like you said");
+  // Codex r1: a short colour word counts ("red")
+  const red = await card("Red is your go-to", { memories: ["Prefers red."] });
+  assert.equal(red.subtitle, "Red is your go-to");
   // an occasion with no taste: the situation stays, the style is empty (no "From your style")
   const sit = await card("", {}, "Which one for the Halloween party tonight?");
   assert.equal(sit.subtitle, "");

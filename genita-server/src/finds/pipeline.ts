@@ -507,17 +507,27 @@ export function outfitSituation(model: unknown, question: string, pick?: string)
 }
 
 /** words a taste line uses whatever it stands on ("…you love", "just your style") */
-const TASTE_FILLER = new Set(["your", "you", "you're", "love", "loves", "like", "likes", "just", "keep", "keeps", "vibe", "style", "which", "mentioned", "said", "told", "that", "this", "with", "from", "what", "look", "looks", "always", "perfect", "matches", "match", "fits", "goes", "very", "really", "into", "suits", "suit", "feel", "feels", "want", "wear"]);
-const tasteWords = (s: string) => (s.toLowerCase().match(/[a-z가-힣]{4,}/g) ?? []).filter((w) => !TASTE_FILLER.has(w)).map((w) => w.slice(0, 5));
+const TASTE_FILLER = new Set(["your", "you", "you're", "love", "loves", "like", "likes", "just", "keep", "keeps", "vibe", "style", "which", "mentioned", "said", "told", "that", "this", "with", "from", "what", "look", "looks", "always", "perfect", "matches", "match", "fits", "goes", "very", "really", "into", "suits", "suit", "feel", "feels", "want", "wear", "the", "and", "for", "but", "are", "its", "all", "too", "one", "new", "out", "got", "get", "own", "way", "now", "how", "who", "far", "more", "most", "less", "prefers", "prefer", "favorite", "favourite", "dislikes", "dislike", "avoids", "avoid", "hates", "hate", "never", "not", "without", "skip", "free", "doesn", "does", "can't", "stand", "taste", "tastes"]);
+const tasteWords = (s: string) => (s.toLowerCase().match(/[a-z가-힣']{3,}/g) ?? []).filter((w) => !TASTE_FILLER.has(w)).map((w) => w.slice(0, 5));
+/** a clause that says what they don't want ("Dislikes loud logos", "no neon", "never wears prints") */
+const NEGATIVE = /\b(?:dislikes?|avoids?|hates?|not into|no|never|doesn't|does not|can't stand|without|skips?|free of)\b/i;
 /**
  * P1-7: the outfit card's taste line, only when it stands on something Genita remembers (a memory or the
- * imported profile) — a content word in common. Nothing remembered, or nothing in common → "" (the card leaves
+ * imported profile) — a content word in common with a remembered clause of the same polarity ("You love loud
+ * logos" never stands on "Dislikes loud logos"). Nothing remembered, or nothing in common → "" (the card leaves
  * the line out; the runner falls back to the imported preference when there is one). Never a made-up taste.
  */
 export function outfitTaste(model: unknown, remembered: string[]): string {
   const line = str(model, 90);
   if (!line || !remembered.length) return "";
-  const known = new Set(remembered.flatMap(tasteWords));
+  const negative = NEGATIVE.test(line);
+  const known = new Set<string>();
+  for (const text of remembered) {
+    for (const raw of text.split(/[\n.;]+|,\s*(?:but|and)\s+|\s+but\s+/i)) {
+      const clause = raw.replace(/^\s*-?\s*[A-Za-z &]{1,24}:\s*/, "");
+      if (NEGATIVE.test(clause) === negative) for (const w of tasteWords(clause)) known.add(w);
+    }
+  }
   return tasteWords(line).some((w) => known.has(w)) ? line : "";
 }
 
