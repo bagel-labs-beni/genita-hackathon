@@ -53,6 +53,8 @@ import os
     /// Convo P1 #345: a soft listening cue ("mm-hm") played beside the reply queue — never a reply, never counted
     /// in `isPlaying`, never flushed by barge-in bookkeeping. Same engine, so it goes through echo cancellation.
     private var cuePlayer = AVAudioPlayerNode()
+    /// iPhone: the limiter between the reply player and the mixer (CallOutputLevel); nil on the Mac
+    private var outputStage: AVAudioUnitEffect?
     private let playFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Double(GenitaProtocol.sampleRate), channels: 1, interleaved: false)!
     private var engineHasMic = false
     private var pipeline: MicPipeline?
@@ -246,7 +248,8 @@ import os
     private func buildEngine(withMic: Bool) {
         // AU-48: what is still to be heard survives the rebuild (the greeting goes on when the mic turns on)
         // the render clock runs ahead of the speaker by the output latency: only what reached the speaker was heard
-        let latency = AVAudioFramePosition((engine.outputNode.presentationLatency * playFormat.sampleRate).rounded())
+        // + the loudness stage's lookahead (Codex #702 P2): what is still inside the limiter was not heard either
+        let latency = AVAudioFramePosition(((engine.outputNode.presentationLatency + (outputStage?.latency ?? 0)) * playFormat.sampleRate).rounded())
         let carry = PlaybackCarry.remaining(scheduled, playedTo: nowSample().map { max(0, $0 - max(0, latency)) })
         let startOf = utteranceStart
         scheduled.removeAll()
@@ -286,7 +289,7 @@ import os
                 engineHasMic = true
             }
         }
-        Self.connectPlayback(player: player, cue: cuePlayer, in: engine, format: playFormat)
+        outputStage = Self.connectPlayback(player: player, cue: cuePlayer, in: engine, format: playFormat)
         engine.prepare()
         do { try engine.start(); player.play() } catch { log.error("engine start: \(error.localizedDescription, privacy: .public)") }
         log.info("engine built mic=\(self.engineHasMic) aec=\(self.voiceProcessing)")
