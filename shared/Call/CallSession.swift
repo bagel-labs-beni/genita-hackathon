@@ -1,5 +1,6 @@
 import AVFoundation
 import Combine
+import CoreImage
 import Foundation
 import Observation
 import os
@@ -704,6 +705,46 @@ enum CallStop: Equatable {
         return url.count > 10 && url.count <= 2000 ? url : nil
     }
 
+    /// D63: while a batch of masks is on screen, compare the live camera with the frame they were found on, 4 times a
+    /// second (`CameraMotion` v2: blurred 32 × 18 thumbnail, best small shift, 2 hits in a row to hide, 2 settled to
+    /// show). Hand shake keeps them; a real move fades them until the picture lines up again. Ends with the batch,
+    /// a new look, a flip or the camera going off. #676's hold decides when they go for good.
+    @ObservationIgnored private var boxMotionTask: Task<Void, Never>?
+    /// the batch the running watch belongs to: more items on the same frame keep it (and its hide) going
+    @ObservationIgnored private var boxMotionKey: (findId: String, frame: Int, epoch: Int)?
+    @ObservationIgnored private let motionContext = CIContext(options: [.cacheIntermediates: false])
+    private func watchBoxMotion(_ b: ServerEvent.ObserveBoxes) {
+        guard CameraMotion.enabled else { return }
+        // only a batch the preview actually took (a late one from before a flip is ignored and keeps the watch)
+        guard cameraOn, finds.boxes.findId == b.findId, let entry = finds.entries.first(where: { $0.id == b.findId }),
+              entry.frames.indices.contains(b.frame) else { return }
+        let boxes = finds.boxes
+        let findId = b.findId, frame = b.frame, epoch = boxes.epoch
+        if let k = boxMotionKey, k.findId == findId, k.frame == frame, k.epoch == epoch, boxMotionTask != nil { return }
+        boxMotionTask?.cancel()
+        boxMotionKey = (findId, frame, epoch)
+        let jpeg = entry.frames[frame]
+        let context = motionContext
+        boxMotionTask = Task { [weak self] in
+            // image work off the main actor (Codex r1): the blur, the render and the shift search
+            let analysed = await Task.detached(priority: .utility, operation: { CameraMotion.thumb(jpeg: jpeg, context: context) }).value
+            var detector = CameraMotion.Detector()
+            while !Task.isCancelled, let analysed {
+                guard let self, self.cameraOn, boxes.findId == findId, boxes.epoch == epoch else { break }
+                if boxes.visible, let image = self.camera.latestImage() {
+                    let m = await Task.detached(priority: .utility) { CameraMotion.thumb(image, context: context).map { CameraMotion.match(analysed, $0) } }.value
+                    // the batch may have changed while it was measured
+                    guard !Task.isCancelled, boxes.findId == findId, boxes.epoch == epoch else { break }
+                    if let m { boxes.setMisaligned(detector.feed(m)) }
+                }
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+            // the watch ended (new look, flip, camera off): never leave a batch hidden by a stale reading
+            if !Task.isCancelled, boxes.findId == findId { boxes.setMisaligned(false) }
+            if let self, let k = self.boxMotionKey, k.findId == findId, k.frame == frame, k.epoch == epoch { self.boxMotionTask = nil; self.boxMotionKey = nil }
+        }
+    }
+
     /// IC-4 Look again: drop the card, take a fresh frame, ask the same words again (frames go with the next turn).
     func lookAgain() {
         let question = finds.lookAgain() ?? lastUserText
@@ -1000,6 +1041,7 @@ enum CallStop: Equatable {
             lip = l.lip
         case .findStarted, .findProgress, .findItems, .observeBoxes, .findCreated, .findImage, .findFailed:
             finds.apply(event)
+            if case let .observeBoxes(b) = event { watchBoxMotion(b) }
         case let .replyDelta(d):
             // Text shapes the mouth until (or unless) the audio brings word timings.
             if !cancelled.contains(d.utteranceId), !routed.contains(d.utteranceId) {
