@@ -89,7 +89,8 @@ import Foundation
         do {
             let me: GenitaMe = try await get("/me", token: token)
             accountID = me.user.id
-            userName = me.user.displayName
+            // dev/judge rows carry placeholder names ("Judge"): never sent as the user's name
+            userName = me.user.provider == "dev" ? nil : me.user.displayName
             if gen == generation { accountLabel = me.user.email ?? me.user.displayName ?? (me.user.provider == "apple" ? "Apple ID" : me.user.provider.capitalized) }
             if !me.consented {
                 next = .needsConsent
@@ -300,7 +301,8 @@ import Foundation
                gen == generation, case let .ready(old) = account, old != fresh {
                 account = .ready(fresh)
             }
-            guard gen == generation, case .ready = account else { return }
+            // the conversation may have moved away while the lookup ran (conversationLeft → wantsCall false)
+            guard gen == generation, wantsCall, case .ready = account else { return }
             beginCall()
         }
     }
