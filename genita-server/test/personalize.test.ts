@@ -341,7 +341,7 @@ test("Codex #1: a late call analysis can't undo a correction saved after the cal
 
 test("Codex #5: a line that only echoes a suggestion is not shown, and evidence follows the line it echoes", () => {
   const card = rawCard({ communication: [f("Warm, direct and informal.")], response: [f("Long, detailed answers.", "suggested"), f("Quick replies in the morning.", "observed")] });
-  const { cards } = toStory({ cards: [sc("talk", { headline: "Warm and direct.", items: [{ text: "You like long, detailed answers.", evidence: "explicit" }, { text: "You want it warm and direct.", evidence: "explicit" }, { text: "Mornings, you want quick replies.", evidence: "explicit" }] })], topics: [] }, card);
+  const { cards } = toStory({ cards: [sc("talk", { headline: "Warm, and straight to it.", items: [{ text: "You like long, detailed answers.", evidence: "explicit" }, { text: "You want it warm and direct.", evidence: "explicit" }, { text: "Mornings, you want quick replies.", evidence: "explicit" }] })], topics: [] }, card);
   const talk = cards.find((c) => c.id === "talk")!;
   assert.deepEqual(talk.items.map((i) => [i.text, i.evidence]), [["You want it warm and direct.", "explicit"], ["Mornings, you want quick replies.", "observed"]]);
 });
@@ -555,4 +555,11 @@ test("D19 / AU-19: a story line or taste tag with no word in the card is dropped
   const short = toStyleCard({ sections: { tendencies: [], communication: [], response: [], help: [], support: [], interests: [f("AI")], likes: [f("Watch: F1."), f("Style: black clothes.")], boundaries: [], approach: [] }, rules: [], to_confirm: [] }, "import");
   const s2 = toStory({ cards: [sc("taste", { headline: "Fast cars, black clothes.", tags: [tag("interest", "AI"), tag("watch", "F1"), tag("style", "Black")] })], topics: [] }, short).cards.find((c) => c.id === "taste")!;
   assert.deepEqual(s2.tags!.map((t) => t.text), ["AI", "F1", "Black"]);
+});
+
+test("TF 331: a story line that repeats its card's headline is left out", async () => {
+  const { toStory } = await import("../src/personalize/story.ts");
+  const card = toStyleCard({ sections: { tendencies: [f("Decides fast once options are side by side."), f("Talks big decisions through out loud.")], communication: [], response: [], help: [], support: [], interests: [], likes: [], boundaries: [], approach: [] }, rules: [], to_confirm: [] }, "import");
+  const { cards } = toStory({ cards: [sc("think", { headline: "You decide fast comparing options.", items: [{ text: "You decide fast once options are side by side.", evidence: "explicit" }, { text: "You talk big decisions through out loud.", evidence: "explicit" }] })], topics: [] }, card);
+  assert.deepEqual(cards.find((c) => c.id === "think")!.items.map((i) => i.text), ["You talk big decisions through out loud."]);
 });

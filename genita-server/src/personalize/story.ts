@@ -426,6 +426,9 @@ function sparkCard(id: SparkStoryId, r: RawCard, card: StyleCard, best: Evidence
       })
       // Genita talks in English: no "casual Korean" promise on a card (QA 11/3 P2)
       .filter((i): i is StoryItem => !!i.text && !!i.evidence && !storyTextProblem(i.text) && !isLanguagePreference(i.text))
+      // a line that only says the headline again ("You decide fast comparing options." / "…once options are side by
+      // side.") adds nothing (TF 331, 3× check): two of its key words already in the headline
+      .filter((i) => { const hw = keyWords(headline); return [...keyWords(i.text)].filter((w) => hw.has(w)).length < 2; })
       .slice(0, id === "lines" ? 4 : 2);
     if (!items.length) return null;
     sc.items = items;
