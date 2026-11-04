@@ -130,6 +130,9 @@ enum CallStop: Equatable {
     /// The server and token this call uses (also for /v1/watch and Finds REST).
     var currentEndpoint: CallEndpoint { fixedEndpoint ?? .current() }
     private(set) var emotion: String?
+    /// The companion is speaking (server `speaking` on → off, a cancel or a barge-in ends it): the call screen moves
+    /// the still while there is no live face yet (DEMO P0 11/4, Chelsea: the face moves whenever she speaks).
+    private(set) var companionSpeaking = false
     /// Web lookups this call (More → Finds). The F10 sheet lists them.
     private(set) var findsCount = 0
     /// Client-side latency per answered turn: ASR end of speech → reply audio playing.
@@ -345,6 +348,7 @@ enum CallStop: Equatable {
     private func flushPlayback() {
         voice.cancel()
         audio.flush()
+        faceWall = [:]; faceWallEnd = 0   // Codex r2 P2: the next reply's wall clock starts now, not after the flushed audio
     }
 
     // MARK: lifecycle
@@ -1022,6 +1026,7 @@ enum CallStop: Equatable {
             }
         case let .utteranceCancelled(c):
             cancelled.insert(c.utteranceId)
+            companionSpeaking = false
             faceWall[c.utteranceId] = nil
             face?.cancel(utteranceId: faceId(c.utteranceId))
             faceAudio = faceAudio.filter { $0.value.utteranceId != c.utteranceId }
@@ -1035,6 +1040,7 @@ enum CallStop: Equatable {
             log.info("cancelled utterance=\(c.utteranceId) reason=\(c.reason.rawValue, privacy: .public)")
         case let .speaking(s):
             if s.on { emotion = s.emotion }
+            companionSpeaking = s.on && !cancelled.contains(s.utteranceId)
             if !cancelled.contains(s.utteranceId) { var e = s; e.utteranceId = faceId(s.utteranceId); feedFace(s.utteranceId) { $0.handle(speaking: e) } }
         case let .turnMetrics(m):
             log.info("turn.metrics utterance=\(m.utteranceId) server speechEnd→firstAudio=\(m.speechEndToFirstAudioMs ?? -1)ms firstToken=\(m.replyStartToFirstTokenMs ?? -1)ms audio=\(m.audioMs)ms speculative=\(m.speculative ?? "-", privacy: .public)")
@@ -1119,13 +1125,13 @@ enum CallStop: Equatable {
             routeInterpretAudio(AudioFrameHeader.payload(of: data), route, utterance)
             return
         }
+        noteFaceWall(utterance, bytes: data.count - GenitaProtocol.frameHeaderBytes)
         // The face moves with what plays on this speaker; its clock is the same player's playhead.
         if let timing, timing.utteranceId == utterance {
             var e = timing; e.utteranceId = faceId(utterance)
             let pcm = AudioFrameHeader.payload(of: data)
             feedFace(utterance) { $0.handle(audio: e, pcm: pcm) }
         }
-        noteFaceWall(utterance, bytes: data.count - GenitaProtocol.frameHeaderBytes)
         #if DEBUG
         if let playbackSink { playbackSink(AudioFrameHeader.payload(of: data), utterance); return }
         #endif
@@ -1401,6 +1407,7 @@ enum CallStop: Equatable {
 
     /// Barge-in, background, socket loss, hang-up: the mouth rests now and nothing queued for it stays.
     private func restFace() {
+        companionSpeaking = false
         face?.cancel()
         faceAudio = [:]
         facePending = []
@@ -1489,8 +1496,9 @@ enum CallStop: Equatable {
     /// hasn't started yet.
     private func stillHearing(before utterance: Int) -> Bool {
         guard let current = faceUtterance, utterance > current,
-              let heard = audio.playbackPositionMs(utteranceId: current), heard >= 0 else { return false }
-        if let next = audio.playbackPositionMs(utteranceId: utterance), next >= 0 { return false }
+              let heard = faceClockMs(utterance: current), heard >= 0 else { return false }
+        // Codex r2 P2: the same clock the face draws with (the wall clock when the player has no playhead)
+        if let next = faceClockMs(utterance: utterance), next >= 0 { return false }
         return true
     }
 
