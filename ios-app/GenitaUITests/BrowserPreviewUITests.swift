@@ -80,5 +80,17 @@ final class BrowserPreviewUITests: XCTestCase {
         jump(app, "settings")
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 20), "Settings sheet")
         shot(app, "10-settings")
+        // M02 r01 C: About you and How {name} shows up open as pages
+        let aboutYou = app.buttons["settingsAboutYou"]
+        XCTAssertTrue(aboutYou.waitForExistence(timeout: 5), "About you row")
+        aboutYou.tap()
+        XCTAssertTrue(app.navigationBars["About you"].waitForExistence(timeout: 5), "About you page")
+        XCTAssertFalse(app.staticTexts["Not enough information yet."].exists, "unknowns are one Still learning block, not repeated lines")
+        shot(app, "10b-about-you")
+        app.navigationBars["About you"].buttons.firstMatch.tap()
+        let showsUp = app.buttons["settingsShowsUp"]
+        XCTAssertTrue(showsUp.waitForExistence(timeout: 5), "How … shows up row")
+        showsUp.tap()
+        Thread.sleep(forTimeInterval: 0.6); shot(app, "10c-shows-up")
     }
 }
