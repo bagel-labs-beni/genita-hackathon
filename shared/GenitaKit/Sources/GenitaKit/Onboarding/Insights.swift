@@ -135,7 +135,7 @@ public struct InsightShare: Codable, Hashable, Sendable {
     public var lines: [String]
     public func title(name: String) -> String {
         let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        return title.replacingOccurrences(of: "{name}", with: n.isEmpty ? "You" : n)
+        return title.replacingOccurrences(of: "{name}", with: n.isEmpty ? "You" : n.firstLetterUppercased)
     }
 }
 
@@ -228,4 +228,9 @@ extension OnboardingClient {
         let safe = id.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? id
         return try await auth.send("POST", "/v1/profile/insights/\(safe)/verdict", json: body, timeout: 15)
     }
+}
+
+extension String {
+    /// "summer" -> "Summer", "mary-jane" -> "Mary-jane": the first letter up, the rest as typed.
+    public var firstLetterUppercased: String { prefix(1).uppercased() + dropFirst() }
 }

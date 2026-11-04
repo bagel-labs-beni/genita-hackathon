@@ -50,6 +50,12 @@ struct SettingsView: View {
     private var voiceName: String {
         model.setup.voiceName ?? CuratedVoices.name(model.setup.voiceId) ?? "Default"
     }
+    /// "1.0 (14)": CFBundleShortVersionString and CFBundleVersion (build).
+    static func versionText(_ info: [String: Any]? = Bundle.main.infoDictionary) -> String {
+        let v = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let b = info?["CFBundleVersion"] as? String
+        return b.map { "\(v) (\($0))" } ?? v
+    }
     var body: some View {
         NavigationStack {
             SettingsPage {
@@ -89,6 +95,9 @@ struct SettingsView: View {
                         Button { confirmDelete = true } label: { SettingsRowLabel(title: working ? "Deleting…" : "Delete account", tint: SettingsInk.danger) }
                             .buttonStyle(SettingsRowStyle()).disabled(working || resetting).accessibilityIdentifier("deleteAccount")
                     }
+                }
+                SettingsGroup(header: "About") {
+                    SettingsRowLabel(title: "Version", value: Self.versionText()).accessibilityElement(children: .combine).accessibilityIdentifier("settingsVersion")
                 }
                 HStack(spacing: 6) {
                     Link("Privacy Policy", destination: URL(string: "https://bagel-labs-beni.github.io/genita-legal/privacy/")!)
