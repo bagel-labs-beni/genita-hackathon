@@ -175,6 +175,7 @@ export function storyInstructions(only?: SparkStoryId[]): string {
     ...ids.map((id) => CARD_GUIDE[id]),
     "headline: at most 8 words, ends with a period. items: each text is 1-2 short sentences to the user as \"you\" (e.g. \"You like a friendly tone, but you want the answer up front. Long replies lose you.\"), restating what the profile says in plain words, with the evidence of the lines behind it: explicit (they said it), observed (a repeated pattern), memory (a memory summary). A [Suggested] line is not a fact about them: never write it as one.",
     "Genita talks in English: never mention which language the user speaks or wants, in any card. A line marked \"(direction only)\" is a lean, not a fact: say it as one (\"You seem to lean toward …\") and never as their stated taste.",
+    "The items never restate the headline: the headline is the gist in a few words, each item adds what it doesn't say (a detail, an example, when it shows). Don't reuse the headline's wording in an item.",
     "promise: one short sentence starting \"So I'll\" for think and talk; \"\" for the others. evidence: the strongest evidence behind the card.",
     "Never name a personality type or trait label, never diagnose, never praise or flatter, never guess beyond the profile. If the profile has nothing for a card, return it with headline \"\", items [], tags [], help [].",
     "topics: for each still-to-confirm item, {item: copied exactly, topic: what to learn in 3-6 words (\"How chatty calls should be\"), sub: a short either/or question (\"Quiet company, or lots of talk?\")}.",
@@ -397,6 +398,20 @@ function lineEvidence(text: string, card: StyleCard, id: SparkStoryId): Evidence
   return facts.length ? facts.reduce((w, f) => (RANK[f.label] < RANK[w] ? (f.label as Evidence) : w), facts[0].label as Evidence) : null;
 }
 
+const STOP = new Set(["a", "an", "the", "and", "or", "but", "to", "of", "in", "on", "for", "with", "you", "your", "you're", "it", "is", "are", "be", "by", "not", "so", "that", "this", "at", "as", "i", "me", "my", "what", "when", "how", "like", "more", "than"]);
+const contentWords = (s: string) =>
+  s.toLowerCase().replace(/[’']/g, "'").split(/[^\p{L}\p{N}']+/u).filter((w) => w.length > 1 && !STOP.has(w)).map((w) => w.replace(/(ing|ed|es|s)$/, ""));
+
+/** An item that says the headline again: most of the headline's content words are in it and it adds at most a few. */
+export function restatesHeadline(headline: string, text: string): boolean {
+  const head = [...new Set(contentWords(headline))];
+  if (head.length < 2) return false;
+  const body = new Set(contentWords(text));
+  const shared = head.filter((w) => body.has(w)).length;
+  const extra = [...body].filter((w) => !head.includes(w)).length;
+  return shared / head.length >= 0.75 && extra <= 2;
+}
+
 function sparkCard(id: SparkStoryId, r: RawCard, card: StyleCard, best: Evidence): StoryCard | null {
   const headline = FIXED_HEADLINE[id] ?? headlineOf(r.headline);
   if (!headline) return null;
@@ -410,6 +425,8 @@ function sparkCard(id: SparkStoryId, r: RawCard, card: StyleCard, best: Evidence
       })
       // Genita talks in English: no "casual Korean" promise on a card (QA 11/3 P2)
       .filter((i): i is StoryItem => !!i.text && !!i.evidence && !storyTextProblem(i.text) && !isLanguagePreference(i.text))
+      // TF 331: card 1's body said its title again; an item that only restates the headline adds nothing
+      .filter((i) => !restatesHeadline(headline, i.text))
       .slice(0, id === "lines" ? 4 : 2);
     if (!items.length) return null;
     sc.items = items;

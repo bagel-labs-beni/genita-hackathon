@@ -341,7 +341,7 @@ test("Codex #1: a late call analysis can't undo a correction saved after the cal
 
 test("Codex #5: a line that only echoes a suggestion is not shown, and evidence follows the line it echoes", () => {
   const card = rawCard({ communication: [f("Warm, direct and informal.")], response: [f("Long, detailed answers.", "suggested"), f("Quick replies in the morning.", "observed")] });
-  const { cards } = toStory({ cards: [sc("talk", { headline: "Warm and direct.", items: [{ text: "You like long, detailed answers.", evidence: "explicit" }, { text: "You want it warm and direct.", evidence: "explicit" }, { text: "Mornings, you want quick replies.", evidence: "explicit" }] })], topics: [] }, card);
+  const { cards } = toStory({ cards: [sc("talk", { headline: "Friendly, no fluff.", items: [{ text: "You like long, detailed answers.", evidence: "explicit" }, { text: "You want it warm and direct.", evidence: "explicit" }, { text: "Mornings, you want quick replies.", evidence: "explicit" }] })], topics: [] }, card);
   const talk = cards.find((c) => c.id === "talk")!;
   assert.deepEqual(talk.items.map((i) => [i.text, i.evidence]), [["You want it warm and direct.", "explicit"], ["Mornings, you want quick replies.", "observed"]]);
 });
