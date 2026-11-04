@@ -523,7 +523,12 @@ export function outfitTaste(model: unknown, remembered: string[]): string {
   const negative = NEGATIVE.test(line);
   const known = new Set<string>();
   for (const text of remembered) {
-    for (const raw of text.split(/[\n.;]+|,\s*(?:but|and)\s+|\s+but\s+/i)) {
+    // only what the user confirmed: a profile's forgotten ("Never bring these up…"), suggested and manner sections
+    // are not tastes to stand on (Codex r2)
+    const cut = text.search(/^(?:Never bring|Suggestions|Rules|Also|Leans|How they come across)\b/m);
+    const kept = cut >= 0 ? text.slice(0, cut) : text;
+    // clauses end at a sentence or "but"; "Dislikes loud logos, and neon colors" stays one dislike (Codex r2)
+    for (const raw of kept.split(/[\n.;]+|\s+but\s+/i)) {
       const clause = raw.replace(/^\s*-?\s*[A-Za-z &]{1,24}:\s*/, "");
       if (NEGATIVE.test(clause) === negative) for (const w of tasteWords(clause)) known.add(w);
     }

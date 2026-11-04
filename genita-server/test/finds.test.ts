@@ -640,6 +640,13 @@ test("P1-7: the outfit taste line comes only from what Genita remembers; none â†
   assert.equal(flip.subtitle, "");
   const keep = await card("No loud logos, like you said", { profile: "- Taste: Clean, minimal clothes.\n- Taste: Dislikes loud logos." });
   assert.equal(keep.subtitle, "No loud logos, like you said");
+  // Codex r2: a dislike listed with "and" stays a dislike; forgotten and suggested profile lines are not grounds
+  const listed = await card("You love neon colors", { memories: ["Dislikes loud logos, and neon colors."] });
+  assert.equal(listed.subtitle, "");
+  const gone = await card("Neon outfits you love", { profile: "- Taste: Clean, minimal clothes.\nNever bring these up, and never say you were asked to forget or drop them; talk as if you never knew them:\n- Loves neon outfits.\nSuggestions (not confirmed by the user):\n- Leans toward sequins." });
+  assert.equal(gone.subtitle, "");
+  const sugg = await card("Sequins suit you", { profile: "- Taste: Clean, minimal clothes.\nSuggestions (not confirmed by the user):\n- Leans toward sequins." });
+  assert.equal(sugg.subtitle, "");
   // Codex r1: a short colour word counts ("red")
   const red = await card("Red is your go-to", { memories: ["Prefers red."] });
   assert.equal(red.subtitle, "Red is your go-to");
