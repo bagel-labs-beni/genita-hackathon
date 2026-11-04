@@ -378,7 +378,8 @@ export class FindsRunner {
       const pre = prev || cached || (camera && !followUp) ? null : this.takePrefetch(t.text, now);
       if (pre) this.lastProduct = { label: pre.label, question: `${pre.question} — ${t.text}`, at: now };
       run = cached ? (c) => this.replayCache(cached, c, t) : pre ? (c) => this.replayPrefetch(pre, c, t) : async (c) => {
-        const r = await runProduct({ ...c, likes: await likes, recent: t.recent ?? [], previous: prev?.question, region: this.deps.shopRegion, hedge: this.deps.productHedge });
+        // S5 latency: find.started goes out before the likes are awaited (the sheet shows in this tick)
+        const r = await runProduct({ ...c, likesLater: likes, recent: t.recent ?? [], previous: prev?.question, region: this.deps.shopRegion, hedge: this.deps.productHedge });
         if (r.label && this.lastProduct) this.lastProduct.label = r.label;
         return r;
       };
@@ -430,7 +431,7 @@ export class FindsRunner {
       const timer = setTimeout(() => {
         if (abort.signal.aborted || this.closed || this.landed.has(findId)) return;
         this.hooks.announce(stillHunting(label));
-      }, this.deps.stillSearchingMs ?? 30_000);
+      }, this.deps.stillSearchingMs ?? 12_000); // S5 latency (lead 11/4): the visible wait is ~12 s, then one line
       void done.finally(() => clearTimeout(timer));
     }
     if (ACK[intent.kind]) this.acked.add(findId);
