@@ -91,4 +91,6 @@ test("demo S5 return visit: 'what shoes did you find for me earlier?' gets this 
   for (const t of ["What do you find relaxing?", "What did you find funny about that movie?"]) assert.equal(runner.foundBefore(t), undefined, t);
   for (const t of ["What things did you find funny about that movie?", "Why are my Finds not loading?"]) assert.equal(runner.foundBefore(t), undefined, t);
   assert.ok(runner.foundBefore("which boots did you pick?"));
+  // Codex #675 r4 P2: an opinion ask ("do you find") is not about earlier finds
+  assert.equal(runner.foundBefore("What shoes do you find comfortable for long walks?"), undefined);
 });

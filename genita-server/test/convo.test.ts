@@ -2077,3 +2077,11 @@ test("Codex #664 r3 P2: the same hold beat never plays twice in a row, even when
   for (let i = 1; i < beatsSaid.length; i++) assert.notEqual(beatsSaid[i], beatsSaid[i - 1], beatsSaid.join(","));
   session.close();
 });
+
+test("Codex #675 r4 P2: 'skin tone needs evening out' is a verdict; a website color ask gets no color exception", async () => {
+  const { guardSentence } = await import("../src/convo/guard.ts");
+  assert.equal(guardSentence("Your skin tone needs evening out, so wear the black dress.", { camera: true, userText: "Which outfit should I wear?" }), "appearance");
+  assert.equal(guardSentence("Your skin tone's awful, so wear the black dress.", { camera: true, userText: "Which outfit should I wear?" }), "appearance");
+  assert.equal(guardSentence("Your warm skin tone works well with black.", { camera: true, userText: "Which color works better for my website, black or white?" }), "appearance");
+  assert.equal(guardSentence("With your warm skin tone, the black one with dark brown shoes works.", { camera: true, userText: "Which color looks better on me, black or white?" }), null);
+});
