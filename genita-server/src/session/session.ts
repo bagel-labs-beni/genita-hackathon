@@ -45,7 +45,7 @@ import { MEMORY_START_BUDGET_MS, within, type MemoryRetryState, type ThreadState
 import type { Memory } from "../memory/repository.ts";
 import type { CompanionFaceResolver } from "../memory/photos.ts";
 import { FindsRunner, type FindsDeps } from "../finds/runner.ts";
-import { isOutfitAsk, isProductAsk } from "../finds/intent.ts";
+import { classifyTurn, isOutfitAsk, isProductAsk } from "../finds/intent.ts";
 import { inhalePcmBase64 } from "../watch/breath.ts";
 import { WatchController, type WatchSink } from "../watch/watch.ts";
 import { PerceptionController } from "../perception/controller.ts";
@@ -199,6 +199,9 @@ const TTS_RETRY_MS = [400, 1500];
 const COLD_WAIT_MS = 40_000;
 
 /** Demo S4: said once per call, on the first outfit ask while the Mac app is open. */
+/** Demo scene 5: the outfit verdict ends with a short offer, so a "yes" next has something to attach to. */
+export const OUTFIT_OFFER_LINE =
+  "After your pick, end with one short offer to find something that goes with it, naming it with its color, like \"Want me to find dark brown boots for it?\" (under 10 words).";
 export const SUGGEST_MAC_LINE =
   "The user's Mac is open and its bigger camera can see their whole outfit. Before giving outfit advice, warmly ask them to move this call to their Mac (Move to Mac in the menu) so you can see the whole outfit. Keep it to one or two short sentences.";
 
@@ -236,7 +239,7 @@ type Reply = {
 /** server clock (ms) for the latency breakdown; logged with turn.answered as `stages` */
 type TurnMetrics = { speechEndAt?: number; completeAt?: number; lastPartialAt?: number; specStartAt?: number };
 /** lang = the language the reply is written in (interpretation: the target) */
-type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null; images: string[]; lang: string; suggestMac?: boolean; /** any camera or shared-screen frame went with this request */ seen?: boolean };
+type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null; images: string[]; lang: string; suggestMac?: boolean; /** the shared screen right now (watch together), for Finds (Chelsea 11/4 D) */ screen?: string; /** any camera or shared-screen frame went with this request */ seen?: boolean };
 /** firstTextAt: when the speculative stream's first text arrived (it is buffered until the final transcript) */
 type Speculation = { norm: string; abort: AbortController; built: Built; stream: Eager<SparkStreamEvent>; memoryRetry: MemoryRetryState; confirm: () => void; at: number; firstTextAt?: number };
 
@@ -2210,7 +2213,9 @@ export class Session {
     const recent = this.history.slice(-6).map((h) => `${h.role === "user" ? "User" : "You"}: ${h.text}`);
     const afterProduct = this.finds ? this.finds.afterProduct(recent) : recent.some((l) => l.startsWith("User: ") && isProductAsk(l.slice(6)));
     const suggestMac = !this.macSuggested && isOutfitAsk(text, afterProduct) && this.deps.macNearby?.() === true;
-    const instructions = suggestMac ? `${base}\n${SUGGEST_MAC_LINE}\n` : base;
+    // scene 5: an outfit pick on camera offers the next search ("Want me to find dark brown boots for it?")
+    const outfitPick = !suggestMac && camera.length > 0 && !!this.finds && classifyTurn(text, true, afterProduct)?.kind === "outfit";
+    const instructions = suggestMac ? `${base}\n${SUGGEST_MAC_LINE}\n` : outfitPick ? `${base}\n${OUTFIT_OFFER_LINE}\n` : base;
     // said once, on the next reply the user asked for (not a greeting or an initiative turn)
     if (!greeting && !turn.cue) this.shorterLine = null;
     let finalInstructions = watch ? `${instructions}\n${watch.instructions}\n` : instructions;
@@ -2221,8 +2226,9 @@ export class Session {
     return {
       interpret,
       detected: null,
-      // Finds get the camera frames only, never the shared screen
+      // Finds get the camera frames; the shared screen goes separately (the runner picks one, Chelsea 11/4 D)
       images: camera,
+      ...(watch?.images.length ? { screen: watch.images[watch.images.length - 1] } : {}),
       seen: images.length > 0,
       lang: this.language,
       suggestMac,
@@ -2462,7 +2468,7 @@ export class Session {
       const said = new Promise<string | null>((r) => (resolveSaid = r));
       // history already holds this turn (remember above): the lines before it
       const recent = this.history.slice(-7, -1).map((h) => `${h.role === "user" ? "User" : "You"}: ${h.text}`);
-      const started = this.finds.onTurn({ text, frames: built.images, utteranceId, replyText: said, recent, unclear: built.images.length > 0 && this.framesUnclear });
+      const started = this.finds.onTurn({ text, frames: built.images, ...(built.screen ? { screen: built.screen } : {}), utteranceId, replyText: said, recent, unclear: built.images.length > 0 && this.framesUnclear });
       cardTurn = !!started;
       signal.addEventListener("abort", () => resolveSaid(null), { once: true });
       if (started?.ack) {

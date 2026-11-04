@@ -58,7 +58,39 @@ export function isOutfitAsk(text: string, afterProduct = false): boolean {
   return WEAR.test(text) || (GARMENT.test(text) && !COOK.test(text));
 }
 
-export type Intent = { kind: FindKind; url?: string } | null;
+/** "identify" (CEO demo 11/4): outline the thing in view and name it — no card, no sheet */
+export type Intent = { kind: FindKind | "identify"; url?: string } | null;
+
+/** "What's this?" / "이게 뭐야" about a thing held up to the camera (not a song, a smell or what a word means). */
+const IDENTIFY =
+  /\b(?:what(?:'s|’s| is) (?:this|that|it)\b|what (?:am i|i'm|i am) holding|what do you call (?:this|that)|(?:do you |can you tell me )?know what (?:this|that) is|tell me what (?:this|that) is)|(?:이게|이거|이건|저게|저거|저건)\s*(?:뭐|무엇|뭔)/i;
+const NOT_VISUAL = /\b(?:about|mean|means|meaning|song|sound|noise|smell|music|movie|show|video|episode|word|called|for|supposed)\b/i;
+export function isIdentifyAsk(text: string): boolean {
+  return IDENTIFY.test(text) && !NOT_VISUAL.test(text) && text.trim().split(/\s+/).length <= 10;
+}
+
+/** B: a product ask that points at something on the shared screen ("that jacket", "the coat he's wearing"). */
+const DEICTIC = /\b(?:that|those|these|this|same)\b(?!\s+(?:weekend|week|summer|winter|fall|autumn|spring|year|month|time|evening|morning|afternoon|season|trip)\b)|\b(?:on (?:the )?screen|in (?:the|this) (?:video|show|clip|movie|scene))\b|\b(?:he|she|they)(?:'s|’s| is| are|'re) wearing\b|\b(?:his|her|their) (?:jacket|coat|outfit|shoes|dress|shirt|top|bag|hat|sweater|jeans|pants|boots|sneakers)\b/i;
+export function refersToScreen(text: string): boolean {
+  return DEICTIC.test(text);
+}
+
+/**
+ * C (demo scene 5): a short "yes" to the outfit verdict's offer ("Want me to find a pair?"), or a goes-with ask
+ * ("find me some", "what shoes would go with it"). The runner only takes it right after an outfit verdict.
+ */
+const ACCEPT = /^(?:(?:oh |ok(?:ay)? |um+ |hmm+ )?(?:yes|yeah|yep|yup|sure|please|ok(?:ay)?|definitely|absolutely|of course|go ahead|go for it|do it|let'?s do it|let'?s see|sounds good|why not)\b[\s,.!]*(?:please|go for it|do it|go ahead|let'?s do it|let'?s see|sure|thanks|thank you)?[\s,.!]*(?:find (?:me )?(?:some|a pair|one|them)|show me(?: some)?)?[\s,.!?]*)$/i;
+const GOES_WITH_ASK = /\b(?:find (?:me )?(?:some|a pair|one|a couple)|show me (?:some|a few|a pair)|what (?:shoes|accessories|bag|bags|boots|jewelry|else)?\s*(?:would|could|will|might)? ?go(?:es)? with (?:it|this|that|them)|something (?:that )?(?:goes|would go) with (?:it|this|that))\b/i;
+/** a bare "yes / sure / go for it": only counts right after the companion offered to find something */
+export function isBareAccept(text: string): boolean {
+  const t = text.trim();
+  return t.split(/\s+/).length <= 9 && ACCEPT.test(t) && !GOES_WITH_ASK.test(t);
+}
+export function isGoesWithFollowUp(text: string): boolean {
+  const t = text.trim();
+  if (t.split(/\s+/).length > 9) return false;
+  return ACCEPT.test(t) || GOES_WITH_ASK.test(t);
+}
 
 /** Choosing between what they hold: "which jacket", "this or that", "looks better on me" (CW-02, AU-61). */
 const COMPARE =
@@ -87,5 +119,6 @@ export function classifyTurn(text: string, hasFrames: boolean, afterProduct = fa
   // "what should I wear to dinner?" names a meal but asks about clothes (AU-60)
   if (clothes && (!cook || ON_ME.test(text))) return { kind: "outfit" };
   if (cook) return { kind: "recipe" };
+  if (isIdentifyAsk(text)) return { kind: "identify" };
   return null;
 }

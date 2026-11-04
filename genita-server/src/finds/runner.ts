@@ -9,9 +9,9 @@ import { webAnswerCard, type WebSearch } from "./webAnswer.ts";
 import { reasonChips, tasteLines, type TasteLine } from "../personalize/reasons.ts";
 import { randomUUID } from "node:crypto";
 import type { FindCard, FindKind, ServerEvent } from "../protocol.ts";
-import { classifyTurn, isLinksAsk, isProductAsk } from "./intent.ts";
+import { classifyTurn, isBareAccept, isGoesWithFollowUp, isLinksAsk, isProductAsk, refersToScreen } from "./intent.ts";
 import { PRODUCT_COUNT, SEARCH_TITLE, guessLabel, runProduct, shortLabel } from "./product.ts";
-import { confirmItem, FRIDGE_UNCLEAR, runLink, runOutfit, runRecipe, type PipelineCtx, type PipelineResult } from "./pipeline.ts";
+import { confirmItem, FRIDGE_UNCLEAR, IDENTIFY_UNSURE, runIdentify, runLink, runOutfit, runRecipe, type PipelineCtx, type PipelineResult } from "./pipeline.ts";
 import { cacheGet, cacheKey, cachePut, cardFitsColors, cardIsKind, categoryOf, claimWarm, colorAsks, colorPhrases, colorsOf, plainAsk, releaseWarm, type CachedProducts } from "./productCache.ts";
 import { ownerKey, type FindsStore } from "./store.ts";
 import type { FindsVendors } from "./vendors.ts";
@@ -136,9 +136,20 @@ export type TurnInput = {
   recent?: string[];
   /** D59: the app judged these frames too dark or too blurry to see anything */
   unclear?: boolean;
+  /** Chelsea 11/4 D: the Mac's shared screen right now (watch together), when a share is on */
+  screen?: string;
 };
 
-export type TurnStarted = { findId: string; kind: FindKind; ack?: string };
+export type TurnStarted = { findId: string; kind: FindKind | "identify"; ack?: string };
+
+/** "What's this?": a reaction while it looks (the name comes after the checks, like the fridge) */
+export const IDENTIFY_ACK = "Ooh, let me look.";
+/** the line says it's about the share ("on my screen", "this video") */
+const SCREEN_WORDS = /\b(?:on (?:my|the) screen|(?:this|the|in the) (?:video|clip|show|movie|scene)|on the share|screen share)\b/i;
+/** the line says it's about them / the camera, not the share */
+const CAMERA_WORDS = /\b(?:camera|on me|i'?m wearing|i am wearing|i have on|my outfit|i'?m holding|in my hand|my hand)\b|입고|들고/i;
+/** the companion's last line offered to find something ("Want me to find a pair?") */
+const OFFER = /\b(?:want me to|should i|shall i|i can|i could|let me|how about i)\b[^.?!]{0,60}\b(?:find|look|pull|search|grab|show|hunt)\b/i;
 
 export type RunnerHooks = {
   emit: (e: ServerEvent) => void;
@@ -166,6 +177,8 @@ export class FindsRunner {
   private timeZone: string | undefined;
   private likes: Promise<string[] | undefined> = Promise.resolve(undefined);
   private lastProduct: { label: string; question: string; at: number } | null = null;
+  /** demo scene 5: the outfit verdict just said in this call (what a "yes" to its offer means) */
+  private lastOutfit: { said: string; at: number } | null = null;
   private readonly cards = new Map<string, FindCard>();
   private readonly running = new Map<string, Running>();
   private focusId: string | null = null;
@@ -259,15 +272,34 @@ export class FindsRunner {
   }
 
   /** Starts a card pipeline if the turn asks for one. Returns the find (and what to say first) or null. */
-  onTurn(t: TurnInput): TurnStarted | null {
+  onTurn(input: TurnInput): TurnStarted | null {
     if (this.closed || (this.owner && this.deps.store.work.isDeleted(this.owner))) return null;
+    let t = input;
     const afterProduct = this.afterProduct(t.recent);
     // demo S4→S5: a bare "send me the links" while the outfit's shoes are being searched already takes that search
     // (only a links ask: "does this jacket match my style?" stays an outfit question, Codex P2)
     const prefetchLive = !!this.prefetched && this.hooks.now() - this.prefetched.at < PREFETCH_WINDOW_MS;
-    const intent = classifyTurn(t.text, t.frames.length > 0, afterProduct) ?? (prefetchLive && isLinksAsk(t.text) ? { kind: "product" as const } : null);
-    if (!intent) return null;
+    // demo scene 5: right after the outfit verdict, "yes" to its offer / "find me some" / "what shoes go with it" is the
+    // search for what it suggested (with the camera and her taste), not another outfit pick
+    const outfit = this.lastOutfit && this.hooks.now() - this.lastOutfit.at < PREFETCH_WINDOW_MS ? this.lastOutfit : null;
+    const lastLine = [...(t.recent ?? [])].reverse().find((l) => l.startsWith("You: ")) ?? "";
+    const followUp = !!outfit && isGoesWithFollowUp(t.text) && (!isBareAccept(t.text) || OFFER.test(lastLine));
+    if (followUp) {
+      this.lastOutfit = null;
+      t = { ...t, text: `Find what you offered to find for the look they just picked (shoes or accessories that go with it). What you told them: "${outfit!.said.slice(0, 300)}". They answered: "${t.text.slice(0, 100)}".` };
+    }
+    // Chelsea 11/4 D: while the Mac shares its screen, a question takes the shared frame (fresher than the camera,
+    // ≤1 s old), unless it's about them or what they hold; "on my screen" / "this video" always mean the share
+    const intent0 = followUp ? { kind: "product" as const } : classifyTurn(t.text, t.frames.length > 0 || !!t.screen, afterProduct) ?? (prefetchLive && isLinksAsk(t.text) ? { kind: "product" as const } : null);
+    if (!intent0) return null;
+    const intent = intent0;
+    const useScreen = !!t.screen && !followUp && (
+      !t.frames.length || SCREEN_WORDS.test(t.text) || (intent.kind === "product" && refersToScreen(t.text) && !CAMERA_WORDS.test(t.text))
+      || (intent.kind !== "outfit" && !CAMERA_WORDS.test(t.text))
+    );
+    if (useScreen) t = { ...t, frames: [t.screen!], unclear: false };
     const findId = randomUUID();
+    if (intent.kind === "identify") return this.startIdentify(findId, t, useScreen);
     if (intent.kind === "recipe" && t.unclear) {
       // D59 · CW-01 DARK: the app saw nothing but dark / blur — no "let me see" that IC-4 then takes back: the honest
       // line is the turn's whole answer, the IC-4 card shows at once, and nothing is guessed from the picture
@@ -283,6 +315,7 @@ export class FindsRunner {
       kind: intent.kind,
       question: t.text,
       frames: t.frames,
+      screen: useScreen,
       url: intent.url,
       memories: this.memories,
       profile: this.profile,
@@ -322,8 +355,9 @@ export class FindsRunner {
       // demo S5 (lead 11/4 P0): an ask with the camera on gets a fresh look at what's in view — never a saved card
       // or a text-only prefetch (3/3 replayed "from earlier" without looking)
       const camera = t.frames.length > 0;
-      const cached = prev || camera || this.deps.productCache !== true ? null : this.cacheFor(t.text);
-      const pre = prev || cached || camera ? null : this.takePrefetch(t.text, now);
+      const cached = prev || camera || followUp || this.deps.productCache !== true ? null : this.cacheFor(t.text);
+      // scene 5: a "yes" to the verdict's offer may take the search started with that verdict (same moment, same frames)
+      const pre = prev || cached || (camera && !followUp) ? null : this.takePrefetch(t.text, now);
       if (pre) this.lastProduct = { label: pre.label, question: `${pre.question} — ${t.text}`, at: now };
       run = cached ? (c) => this.replayCache(cached, c, t) : pre ? (c) => this.replayPrefetch(pre, c, t) : async (c) => {
         const r = await runProduct({ ...c, likes: await likes, recent: t.recent ?? [], previous: prev?.question, region: this.deps.shopRegion, hedge: this.deps.productHedge });
@@ -337,12 +371,14 @@ export class FindsRunner {
       // made from the taste of this moment: after a "Forget all of this" it never starts a search (Codex #583 r10)
       const turnAt = new Date().toISOString();
       const forgotSince = () => this.tasteForgottenAt !== null && turnAt <= this.tasteForgottenAt;
+      const turn = t;
       void t.replyText.then((said) => {
-        if (said && !abort.signal.aborted && !forgotSince()) { prefetching = true; this.startPrefetch(null, said, t); }
+        if (said) this.lastOutfit = { said, at: this.hooks.now() };
+        if (said && !abort.signal.aborted && !forgotSince()) { prefetching = true; this.startPrefetch(null, said, turn); }
       }).catch(() => {});
       run = async (c) => {
         const r = await runOutfit(c);
-        if (r.card && !prefetching && !c.signal.aborted && !forgotSince()) this.startPrefetch(r.card, r.card.say ?? null, t);
+        if (r.card && !prefetching && !c.signal.aborted && !forgotSince()) this.startPrefetch(r.card, r.card.say ?? null, turn);
         return r;
       };
     } else run = intent.kind === "recipe" ? runRecipe : runLink;
@@ -382,6 +418,34 @@ export class FindsRunner {
     // an outfit pick is answered out loud by the turn itself: its card only shows it (demo S4, one verdict)
     else if (intent.kind === "outfit") this.answered.set(findId, t.replyText);
     return { findId, kind: intent.kind, ...(ACK[intent.kind] ? { ack: ACK[intent.kind] } : {}) };
+  }
+
+  /**
+   * "What's this?" (CEO demo 11/4): outline the thing on the camera frame and name it once checked — no card, no
+   * sheet. On a shared screen (the Mac draws no boxes over it) the answer lands in the sheet instead.
+   */
+  private startIdentify(findId: string, t: TurnInput, screen: boolean): TurnStarted {
+    if (t.unclear && !screen) return { findId, kind: "identify", ack: IDENTIFY_UNSURE };
+    const abort = new AbortController();
+    const ctx: PipelineCtx = {
+      findId, utteranceId: t.utteranceId, kind: "answer", question: t.text, frames: t.frames, screen, memories: this.memories, profile: this.profile, userName: this.userName,
+      replyText: t.replyText, timeZone: this.timeZone, vendors: this.deps.vendors, emit: (e) => this.onEvent(e), signal: abort.signal, now: this.hooks.now,
+      log: this.hooks.log, images: false, putImage: async () => { throw new Error("no pictures"); },
+      speak: (text) => {
+        const card = this.cards.get(findId);
+        if (card) void this.persist(card);
+        if (!this.closed) this.hooks.announce(text);
+      },
+    };
+    const done = runIdentify(ctx).catch((err) => {
+      if (!abort.signal.aborted) this.hooks.log("find.error", { findId, kind: "identify", message: String(err).slice(0, 200) });
+      return { card: null, timings: {} } as PipelineResult;
+    }).then((r) => {
+      this.hooks.log("find.done", { findId, kind: "identify", ok: true, screen, ...r.timings });
+      return r;
+    }).finally(() => this.running.delete(findId));
+    this.running.set(findId, { abort, done });
+    return { findId, kind: "identify", ack: IDENTIFY_ACK };
   }
 
   /**
