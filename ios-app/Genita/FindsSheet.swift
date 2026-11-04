@@ -272,7 +272,9 @@ struct FindsSheet: View {
     private var reopenedHalf: Bool { finds.state == .half && finds.current?.reopened == true }
 
     var body: some View {
-        let visible = reopenedHalf ? Self.reopenedHeight : finds.state.height
+        // a failed search has no skeleton rows: the peek height holds its title, reason and Retry / Close (b16)
+        let failedSearch = finds.state == .searching && finds.current?.failed != nil
+        let visible = reopenedHalf ? Self.reopenedHeight : failedSearch ? SheetState.peek.height : finds.state.height
         ZStack(alignment: .top) {
             UnevenRoundedRectangle(topLeadingRadius: 30, topTrailingRadius: 30).fill(CallInk.sheet)
                 .shadow(color: CallInk.ink.opacity(0.18), radius: 16, y: -8)
@@ -313,8 +315,8 @@ struct FindsSheet: View {
             .accessibilityIdentifier("findsGrab")
     }
 
-    // MARK: Finds r01 ① searching (328): the question as the title, a stage line that moves on every 2 s,
-    // three shimmering rows where the results will land, Stop as a 36 pt outlined pill.
+    // MARK: Finds r01 ① searching (298, b16): the question as the title, a stage line that moves on every 2 s,
+    // two shimmering rows where the results will land, Stop as a 36 pt outlined pill. The sheet ends 20 pt under them.
 
     private var searchLayer: some View {
         let f = finds.current
@@ -349,7 +351,7 @@ struct FindsSheet: View {
             }.frame(minHeight: 52)
             if f?.failed == nil {
                 VStack(spacing: 14) {
-                    ForEach(0..<3, id: \.self) { i in SkeletonRow(widths: i == 2 ? (0.60, 0.82, 0.40) : (0.78, 0.94, 0.40), paused: hidden) }
+                    ForEach(0..<2, id: \.self) { i in SkeletonRow(widths: i == 1 ? (0.60, 0.82, 0.40) : (0.78, 0.94, 0.40), paused: hidden) }
                 }.padding(.top, 18).accessibilityHidden(true)
             }
         }
@@ -408,7 +410,7 @@ struct FindsSheet: View {
     private var mainLayer: some View {
         let full = finds.state == .full
         // r01 foot: pinned to the VISIBLE bottom: button top = visible − (safe bottom 34 + 8) − 50. While rising
-        // (328) it is placed for half (468), so it sits under the visible part and comes up with the sheet.
+        // (298) it is placed for half (468), so it sits under the visible part and comes up with the sheet.
         let visible: CGFloat = full ? 728 : reopenedHalf ? Self.reopenedHeight : 468
         let buttonTop = visible - (34 + 8) - 50
         // pages end where the foot's 12 pt white bar starts; the 28 pt fade above it lies over the page

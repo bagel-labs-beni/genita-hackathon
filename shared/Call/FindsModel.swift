@@ -3,7 +3,7 @@ import Observation
 
 /// F10-U-SHEET · The result sheet's state during a call (r03 board, direction A, 19 states).
 /// Platform-neutral: the iPhone sheet draws it, the Mac can later. Rules from the r03 state map:
-///   searching 328 (Finds r01: question title + stage line + 3 skeleton rows) → rising 328 → half 468 → full 728
+///   searching 298 (Finds r01, tightened b16: question title + stage line + 2 skeleton rows) → rising 298 → half 468 → full 728
 ///   · peek 148 · dismissed 0 (+Undo) · browser.
 ///   Face tap or the user starting to talk = collapse to peek (not while a finger is on the sheet or reading full).
 ///   X, or swiping down from peek = dismissed (it stays in Finds, Undo restores). A new result never takes the
@@ -15,8 +15,9 @@ enum SheetState: String, CaseIterable, Sendable {
     var height: CGFloat {
         switch self {
         case .idle, .dismissed: 0
-        // Finds r01: searching is no longer a 148 strip; it holds the question, the stage line and skeleton rows
-        case .searching, .rising: 328
+        // Finds r01: searching holds the question, the stage line and skeleton rows. Sized to that content (Chelsea 11/4
+        // 21:49, no empty band under the rows): 32 top + 52 header + 18 + 2 × 64 rows + 14 + 20 bottom + 34 home indicator
+        case .searching, .rising: 298
         case .peek: 148
         case .half: 468
         case .full: 728

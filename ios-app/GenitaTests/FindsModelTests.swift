@@ -14,6 +14,16 @@ import XCTest
     }
     private func created(_ id: String) -> ServerEvent { .findCreated(.init(findId: id, card: card(id))) }
 
+    /// b16 (Chelsea 11/4 21:49): the searching sheet is sized to its content, no empty band under the skeleton rows:
+    /// 32 top + 52 header + 18 + 2 × 64 rows + 14 between + 20 bottom + 34 home indicator.
+    func testSearchingSheetFitsItsContent() {
+        let content: CGFloat = 32 + 52 + 18 + 64 + 14 + 64
+        let bottom: CGFloat = 20 + 34
+        XCTAssertEqual(SheetState.searching.height, content + bottom)
+        XCTAssertEqual(SheetState.rising.height, SheetState.searching.height, "rising starts where searching was")
+        XCTAssertLessThan(SheetState.searching.height, SheetState.half.height)
+    }
+
     func testSearchingThenRisingThenHalf() async throws {
         let m = FindsModel()
         m.latestFrames = [Data([0xff, 0xd8]).base64EncodedString()]

@@ -7,9 +7,11 @@ import AppKit
 /// peek, close + Undo, and the same drag / tap rules. Product links open in the Mac's default browser
 /// (MAC-LINK, 184:150), never inside the sheet.
 extension SheetState {
-    /// Finds r01: searching is 328 like the iPhone (question title, stage line, 3 skeleton rows).
+    /// Finds r01, tightened b16 (Chelsea 11/4 21:49, no empty band): searching is sized to its content — 32 top + 52 header
+    /// + 18 + 2 × 64 skeleton rows + 14 + 20 bottom = 264 (a window has no home indicator).
     /// Mac v2: the full sheet stops 54 pt lower so the face pip (top 28) never covers its ✕ and bookmark.
-    var macHeight: CGFloat { self == .searching ? 328 : (self == .full && MacDesignV2.enabled ? 674 : height) }
+    static let searchingHeight: CGFloat = 264
+    var macHeight: CGFloat { self == .searching || self == .rising ? Self.searchingHeight : (self == .full && MacDesignV2.enabled ? 674 : height) }
 }
 
 struct MacResultSheet: View {
@@ -25,7 +27,8 @@ struct MacResultSheet: View {
     private var card: FindCard? { entry?.card }
 
     var body: some View {
-        let visible = finds.state.macHeight
+        // a failed search has no skeleton rows: the peek height holds its title, reason and Retry / Close (b16)
+        let visible = finds.state == .searching && entry?.failureLines != nil ? SheetState.peek.height : finds.state.macHeight
         ZStack(alignment: .top) {
             UnevenRoundedRectangle(topLeadingRadius: 30, topTrailingRadius: 30).fill(MacSheetInk.sheet)
                 .shadow(color: MacSheetInk.ink.opacity(0.18), radius: 16, y: -8)
@@ -110,7 +113,8 @@ struct MacResultSheet: View {
             }
             if failed == nil {
                 VStack(spacing: 14) {
-                    ForEach(0..<(why == nil ? 3 : 2), id: \.self) { i in MacSkeletonRow(last: i == 2) }
+                    // b16: two rows (one under the product "Why"), the sheet ends 20 pt below them
+                    ForEach(0..<(why == nil ? 2 : 1), id: \.self) { i in MacSkeletonRow(last: i == 1) }
                 }.padding(.top, 18).accessibilityHidden(true)
             }
         }
