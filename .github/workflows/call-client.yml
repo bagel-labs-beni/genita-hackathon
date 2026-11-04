@@ -50,7 +50,7 @@ jobs:
 
       - name: iOS build, unit tests, call screen states
         # SWIFT_OPTIMIZATION_LEVEL=-O: GenitaKit compiles into the app target, and its face set build (pixel loops)
-        # runs ~10× slower at -Onone than on a device's Release build, so -Onone timings and waits didn't reflect the app.
+        # runs 15-20x slower at -Onone than optimized (face-animal + flow on a Mac: 14.9 s vs 0.9 s), so CI timings didn't reflect the app.
         # The Debug configuration (DEBUG fixtures, testability) stays.
         run: |
           xcodebuild test \

@@ -16,8 +16,9 @@ private func flowFaceManifest() throws -> FaceManifest {
     var m = try JSONDecoder().decode(FaceManifest.self, from: Data(contentsOf: animalDir.appendingPathComponent("manifest.json")))
     m.images = m.images.mapValues { "a:" + $0 }
     m.visemes = m.visemes.mapValues { "a:" + $0 }
-    let flow = try JSONDecoder().decode(FaceManifest.self, from: Data(contentsOf: flowDir.appendingPathComponent("manifest.json"))).flow
-    m.flow = try #require(flow)
+    let export = try JSONDecoder().decode(FaceManifest.self, from: Data(contentsOf: flowDir.appendingPathComponent("manifest.json")))
+    let flow: FaceFlowManifest = try #require(export.flow)
+    m.flow = flow
     return m
 }
 
