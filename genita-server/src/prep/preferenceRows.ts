@@ -163,18 +163,25 @@ export function preferenceRows(card: StyleCard | null | undefined, prefs?: Saved
   const sections = card?.sections;
   const norm = (t: string) => lower(t).replace(/[.\s]+$/, "").trim();
   // lines the user took out (saved corrections and ones still being applied) never come back through a fallback or R1
-  const gone = new Set([...(card?.removed ?? []).map((r) => r.text), ...(card?.pendingCorrections ?? []).flatMap((p) => p.items)].map(norm));
-  const kept = (t: string) => !!t && !gone.has(norm(t));
+  // …unless they said it again after taking it out (a finding newer than the removal, Codex r2)
+  const pending = new Set((card?.pendingCorrections ?? []).flatMap((p) => p.items).map(norm));
+  const removedAt = new Map<string, number>();
+  for (const r of card?.removed ?? []) removedAt.set(norm(r.text), Math.max(removedAt.get(norm(r.text)) ?? 0, Date.parse(r.at) || 0));
+  const kept = (t: string, at?: string) => {
+    if (!t || pending.has(norm(t))) return false;
+    const out = removedAt.get(norm(t));
+    return out === undefined || (!!at && (Date.parse(at) || 0) > out);
+  };
   return ROWS.map(({ key, title }) => {
     const own = card?.display?.find((r) => r.key === key);
     const imported: DisplayItem[] = (own?.items ?? []).filter((i) => i?.text && !/^not enough information/i.test(i.text));
     if (!imported.length && sections) {
       for (const s of IMPORT_FALLBACK[key] ?? []) {
         const list = Array.isArray(sections[s]) ? sections[s] : [];
-        for (const f of list) if (f?.text && kept(f.text)) imported.push({ text: f.text, label: s === "approach" ? "suggested" : f.label });
+        for (const f of list) if (f?.text && kept(f.text, f.at)) imported.push({ text: f.text, label: s === "approach" ? "suggested" : f.label });
       }
     }
-    const r1: DisplayItem[] = fromInsights[key].filter(kept).map((text) => ({ text, label: "observed" as const }));
+    const r1: DisplayItem[] = fromInsights[key].filter((t) => kept(t)).map((text) => ({ text, label: "observed" as const }));
     const answers: DisplayItem[] = fromSetup[key].map((text) => ({ text, label: "explicit" as const }));
     const seen = new Set<string>();
     const all = [...imported, ...r1, ...answers].filter((i) => {

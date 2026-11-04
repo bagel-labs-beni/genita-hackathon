@@ -137,3 +137,11 @@ test("preference rows (Codex P2): a line the user took out never comes back thro
   assert.ok(!lines(rows, "interests").some((l) => /sailing/.test(l)));
   assert.ok(rows.every((r) => r.items.length >= 1));
 });
+
+test("preference rows (Codex r2): a line said again after it was taken out shows again", () => {
+  const card = toStyleCard({ sections: { ...empty(), support: [{ ...f("Wants a nudge on deadlines."), at: "2026-11-04T10:00:00Z" }] }, rules: [], to_confirm: [] });
+  card.removed = [{ text: "Wants a nudge on deadlines.", at: "2026-11-04T09:00:00Z" }];
+  assert.ok(lines(preferenceRows(card, null), "help").includes("Wants a nudge on deadlines."));
+  card.removed = [{ text: "Wants a nudge on deadlines.", at: "2026-11-04T11:00:00Z" }];
+  assert.ok(!lines(preferenceRows(card, null), "help").includes("Wants a nudge on deadlines."));
+});
