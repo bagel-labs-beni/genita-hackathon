@@ -477,8 +477,9 @@ test("finds: fridge (D23, #122) — short line at once, boxes, then only checked
   await s2.onClientText(JSON.stringify({ type: "text", text: "What can I make with this?", frames: ["AAAA", "BBBB"] }));
   // ① the short line, not a full answer from the raw photo (which named milk and chicken)
   const ack = await client.waitFor((m) => m.type === "reply", 3000);
-  assert.equal(ack.text, "Ooh, let me see.");
-  assert.equal(sparkCalls.length, before, "no full Spark answer about the photo");
+  // P0 11/4: the recipe turn speaks its own generated line (never the fixed ack); what is seen comes after the check
+  assert.notEqual(ack.text, "Ooh, let me see.");
+  assert.equal(sparkCalls.length, before + 1, "one short generated reaction (text only, no tools), not a full answer about the photo");
   const created = await client.waitFor((m) => m.type === "find.created", 3000);
   // ③ only checked items, after their boxes ②
   const line = "I can see eggs. You could make kimchi fried rice, if you have kimchi. First, fry it.";
@@ -486,7 +487,8 @@ test("finds: fridge (D23, #122) — short line at once, boxes, then only checked
   const boxes = client.json.findIndex((m) => m.type === "observe.boxes");
   const lineStart = client.json.findIndex((m) => m.type === "reply.delta" && m.utteranceId === said.utteranceId);
   assert.ok(boxes >= 0 && boxes < lineStart, "boxes are up before the line starts");
-  assert.ok(!ttsCalls.some((t) => /chicken|milk|see [^.]*kimchi/i.test(t)), `named only checked items: ${ttsCalls.join(" | ")}`);
+  // (the first line is the fake Spark's canned reaction text; the real one is text-only and told not to list items)
+  assert.ok(!ttsCalls.filter((t) => t !== ack.text).some((t) => /chicken|milk|see [^.]*kimchi/i.test(t)), `named only checked items: ${ttsCalls.join(" | ")}`);
   const done = await client.waitFor((m) => m.type === "find.items" && m.checking === false, 3000);
   const tiers = (done.items as { name: string; tier: string }[]).map((i) => `${i.name}:${i.tier}`);
   assert.deepEqual(tiers, ["eggs:have", "kimchi:maybe", "chicken:maybe"]);
@@ -1119,7 +1121,7 @@ test("AU-70 (Codex r6): an Ask chip still loading its card never runs after a ne
   s2.close();
 });
 
-test("D59 · CW-01 DARK: frames the app judged too dark/blurry → the IC-4 line at once, no 'let me see' it takes back", async () => {
+test("D59 · CW-01 DARK (P0 11/4): frames the app judged too dark/blurry → no find, the LLM reply answers in its own words", async () => {
   const { client, session, sparkCalls } = setup();
   const { MemoryFindsStore } = await import("../src/finds/store.ts");
   let looked = 0;
@@ -1137,13 +1139,12 @@ test("D59 · CW-01 DARK: frames the app judged too dark/blurry → the IC-4 line
   await s2.onClientText(JSON.stringify({ type: "text", text: "What can I make with this?" }));
   const reply = await client.waitFor((m) => m.type === "reply", 3000);
   const { FRIDGE_UNCLEAR } = await import("../src/finds/pipeline.ts");
-  assert.equal(reply.text, FRIDGE_UNCLEAR, "the honest line is the answer");
-  assert.ok(!client.json.some((m) => m.type === "reply" && /let me see|nice haul/i.test(String(m.text))), "no seeing ack");
-  const failed = client.json.find((m) => m.type === "find.failed");
-  assert.equal(failed?.reason, "unclear", "the IC-4 card");
-  assert.equal(sparkCalls.length, before, "no full answer from the dark photo");
+  // P0 11/4 (Chelsea): the conversation answers, in its own words — no canned IC-4 line, no find sheet
+  assert.notEqual(reply.text, FRIDGE_UNCLEAR);
+  assert.ok(String(reply.text).trim().length > 0, "a real generated reply");
+  assert.ok(!client.json.some((m) => m.type === "find.started" || m.type === "find.failed"), "no find opened");
+  assert.ok(sparkCalls.length > before, "the LLM answered the turn");
   await sleep(20);
-  assert.equal(looked, 0, "nothing looked at or guessed");
-  assert.equal(client.json.filter((m) => m.type === "reply" && m.text === FRIDGE_UNCLEAR).length, 1, "said once");
+  assert.equal(looked, 0, "the finds pipeline looked at nothing");
   s2.close();
 });

@@ -675,7 +675,8 @@ test("AU-60/61 CW-02 variants: clothes held up and a choice between them is an o
   // unchanged: an explicit shop verb still searches; food still cooks; no camera still shops
   assert.deepEqual(classifyTurn("can you find me some white sneakers", true), { kind: "product" });
   assert.deepEqual(classifyTurn("Can we look for a jacket like this one or that one?", true), { kind: "product" });
-  assert.deepEqual(classifyTurn("Which one should I make for dinner?", true), { kind: "recipe" });
+  // P0 11/4: a dinner plan without "these / what's in here" is conversation, not the fridge card
+  assert.notEqual(classifyTurn("Which one should I make for dinner?", true)?.kind, "recipe");
   assert.deepEqual(classifyTurn("What can I make for lunch?", true), { kind: "recipe" });
   assert.deepEqual(classifyTurn("Which jacket would you recommend for this weekend?", false), { kind: "product" }, "no camera: nothing to choose between");
   // Codex r1: ordering one is a search; jacket potatoes are food
