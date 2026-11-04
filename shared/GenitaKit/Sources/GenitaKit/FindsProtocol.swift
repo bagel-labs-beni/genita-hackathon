@@ -111,7 +111,15 @@ public struct FindImage: Codable, Equatable, Sendable {
     public var status: Status
     /// Server-relative ("/v1/finds/<id>/images/<slot>"); add the server base and the token.
     public var url: String?
-    public init(slot: String, status: Status, url: String? = nil) { self.slot = slot; self.status = status; self.url = url }
+    /// "generated": Muse Image made it (no photo was found) — label it "Illustration". nil = a real photo.
+    public var source: String?
+    /// true (always with status `failed`): there will be no picture for this slot — draw no box at all.
+    public var omit: Bool?
+    public init(slot: String, status: Status, url: String? = nil, source: String? = nil, omit: Bool? = nil) {
+        self.slot = slot; self.status = status; self.url = url; self.source = source; self.omit = omit
+    }
+    public var isGenerated: Bool { source == "generated" }
+    public var isOmitted: Bool { omit == true }
 }
 
 public struct FindCard: Codable, Equatable, Identifiable, Sendable {
@@ -278,6 +286,12 @@ extension ServerEvent {
         public var slot: String
         public var status: FindImage.Status
         public var url: String?
+        /// "generated": a Muse Image picture (label it "Illustration")
+        public var source: String?
+        /// true (with status `failed`): no picture will come for this slot — remove its box
+        public var omit: Bool?
+        /// slot `product-N` only, with omit: the product that takes this slot's place (its image is ready, same slot)
+        public var replace: FindCard.Product?
     }
     public struct FindFailed: Codable, Equatable, Sendable {
         public enum Reason: String, Codable, Sendable { case unclear, searchFailed = "search_failed", error, stopped }

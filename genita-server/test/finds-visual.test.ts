@@ -104,7 +104,7 @@ test("named recipe: layout recipe; every ingredient and step gets a ready photo 
   assert.equal(stored.hero?.status, "ready");
 });
 
-test("named recipe: a step with no picture found gets no slot at all", async () => {
+test("named recipe (GENITA_FIND_IMAGE_GATE=0): a step with no picture found gets no slot at all", async () => {
   const events: ServerEvent[] = [];
   const base = vendors();
   const v = {
@@ -116,7 +116,8 @@ test("named recipe: a step with no picture found gets no slot at all", async () 
       return base.spark(req);
     },
   } as FindsVendors;
-  await runNamedRecipe(namedCtx(events, v));
+  process.env.GENITA_FIND_IMAGE_GATE = "0";
+  await runNamedRecipe(namedCtx(events, v)).finally(() => delete process.env.GENITA_FIND_IMAGE_GATE);
   const slots = (events.filter((e) => e.type === "find.image") as { slot: string }[]).map((e) => e.slot);
   assert.ok(slots.includes("step-2"));
   assert.ok(!slots.includes("step-3"));
@@ -291,8 +292,10 @@ test("rowPictures: row 0 without any picture → hero is the next row's picture 
   const events: ServerEvent[] = [];
   const v = { ...vendors({ pages: { "https://a.example/": null, "https://b.example/": "https://b.example/b.jpg" } }), spark: async () => ({ text: "OK", output: [] }) } as FindsVendors;
   await rowPictures({ findId: "r1", vendors: v, signal: new AbortController().signal, emit: (e) => events.push(e), log: () => {}, putImage: async (s) => `/u/${s}` }, [{ title: "A", url: "https://a.example/" }, { title: "B", url: "https://b.example/" }]);
-  const slots = (events as Extract<ServerEvent, { type: "find.image" }>[]).map((e) => e.slot).sort();
-  assert.deepEqual(slots, ["hero", "source-1"]);
+  const imgs = events as Extract<ServerEvent, { type: "find.image" }>[];
+  assert.deepEqual(imgs.map((e) => e.slot).sort(), ["hero", "source-0", "source-1"]);
+  // no empty pictures: row 0 (nothing found) takes the hero as a stand-in
+  assert.ok(imgs.every((e) => e.status === "ready" && !e.source));
 });
 
 test("over budget or already stopped: no further paid search starts (Codex P2)", async () => {

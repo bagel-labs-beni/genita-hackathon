@@ -6,13 +6,13 @@
  * on screen so "Ask about this" follow-ups make sense.
  */
 import { webAnswerCard, type WebSearch } from "./webAnswer.ts";
-import { applySourceImage, assessLine, rowPictures, runGeneral } from "./general.ts";
+import { applySourceImage, assessLine, generalLayout, rowPictures, runGeneral } from "./general.ts";
 import { JUDGE_TIMEOUT_MS, judgeEnabled, judgeWithin, sparkJudge, type Judge, type JudgeResult } from "./judge.ts";
 import type { Intent } from "./intent.ts";
 import { findUrl } from "./parse.ts";
 import { reasonChips, tasteLines, type TasteLine } from "../personalize/reasons.ts";
 import { randomUUID } from "node:crypto";
-import type { FindCard, FindImage, FindKind, ServerEvent } from "../protocol.ts";
+import type { FindCard, FindImage, FindKind, FindProduct, ServerEvent } from "../protocol.ts";
 import { classifyTurn, isBareAccept, isGoesWithFollowUp, isLinksAsk, isProductAsk, refersToScreen } from "./intent.ts";
 import { PRODUCT_COUNT, SEARCH_TITLE, decidePick, guessLabel, runProduct, shortLabel, tasteLines as productTaste } from "./product.ts";
 import { runNamedRecipe } from "./namedRecipe.ts";
@@ -155,12 +155,19 @@ export type TurnInput = {
 };
 
 /** A find.image on the stored card: hero · step-N (1-based) · product-N (1-based) · source-N (0-based) · ingredient-<item id>. */
-export function applyFindImage(card: FindCard, img: FindImage): void {
+export function applyFindImage(card: FindCard, img: FindImage, replace?: FindProduct): void {
   if (img.slot === "hero") card.hero = img;
   const m = img.slot.match(/^step-(\d+)$/);
   if (m && card.steps[Number(m[1]) - 1]) card.steps[Number(m[1]) - 1].image = img;
   const p = img.slot.match(/^product-(\d+)$/);
-  if (p && card.products?.[Number(p[1]) - 1]) card.products[Number(p[1]) - 1].image = img;
+  if (p && card.products?.[Number(p[1]) - 1]) {
+    const i = Number(p[1]) - 1;
+    // no empty pictures: the next verified product (with its picture) takes the slot's place
+    if (replace) {
+      card.products[i] = replace;
+      if (card.sources[i]) card.sources[i] = { title: replace.name, url: replace.url, domain: replace.domain };
+    } else card.products[i].image = img;
+  }
   if (img.slot.startsWith("ingredient-")) {
     const item = card.items.find((i) => i.id === img.slot.slice("ingredient-".length));
     if (item) item.image = img;
@@ -563,7 +570,7 @@ export class FindsRunner {
     const release = this.deps.store.work.track(this.owner, () => abort.abort());
     void rowPictures(
       {
-        findId, vendors: this.deps.vendors, signal: abort.signal, emit: (e) => this.onEvent(e), log: this.hooks.log,
+        findId, vendors: this.deps.vendors, signal: abort.signal, emit: (e) => this.onEvent(e), log: this.hooks.log, images: this.deps.images,
         putImage: async (slot, bytes) => {
           if (this.purged || (this.owner && this.deps.store.work.isDeleted(this.owner))) throw new Error("account deleted");
           await this.deps.store.work.write(this.owner, () => this.deps.store.putImage(findId, slot, bytes));
@@ -571,6 +578,8 @@ export class FindsRunner {
         },
       },
       card.sources.map((s) => ({ title: s.title, url: s.url })),
+      // a spoken answer about places ("ramen near me") never gets a made-up picture
+      { layout: generalLayout(o.question) === "place" ? "place" : card.layout, topic: card.title },
     ).catch(() => {}).finally(release);
     return findId;
   }
@@ -691,7 +700,8 @@ export class FindsRunner {
       const q = { ...p, situation: "" };
       // the picture's bytes, wherever the card's own status stopped (a background search sends no image events, so
       // its card still says "pending" — Codex #522 r3): there → ready here; not there → failed (nothing will follow)
-      if (p.image) {
+      if (p.image?.omit) q.image = p.image;
+      else if (p.image) {
         const bytes = entry.images?.get(p.image.slot) ?? (entry.sourceFindId ? (await this.deps.store.getImage(entry.sourceFindId, p.image.slot).catch(() => null))?.bytes : undefined);
         if (bytes) {
           try { q.image = { slot: p.image.slot, status: "ready", url: await c.putImage(p.image.slot, bytes) }; } catch { q.image = { slot: p.image.slot, status: "failed" }; }
@@ -766,6 +776,15 @@ export class FindsRunner {
     const forward = async (src: Src, e: ServerEvent) => {
       // only the winner reaches the app; a search that found nothing is never shown on its own
       if (c.signal.aborted || winner !== src || e.type === "find.started" || e.type === "find.failed") return;
+      if (src.rekey && e.type === "find.image" && e.replace) {
+        // a swapped-in product: its picture moves under this ask's id too (none → the slot is just omitted)
+        const { replace, ...rest } = e;
+        const bytes = replace.image?.status === "ready" ? src.images?.get(e.slot) : undefined;
+        let url: string | null = null;
+        if (bytes) url = await c.putImage(e.slot, bytes).catch(() => null);
+        c.emit(url ? { ...rest, findId: c.findId, replace: { ...replace, image: { slot: e.slot, status: "ready", url } } } : { ...rest, findId: c.findId });
+        return;
+      }
       if (src.rekey && e.type === "find.image") {
         const bytes = e.status === "ready" ? src.images?.get(e.slot) : undefined;
         if (bytes) {
@@ -852,7 +871,7 @@ export class FindsRunner {
     } else if (e.type === "find.image") {
       const card = this.cards.get(e.findId);
       if (card) {
-        applyFindImage(card, { slot: e.slot, status: e.status, ...(e.url ? { url: e.url } : {}) });
+        applyFindImage(card, { slot: e.slot, status: e.status, ...(e.url ? { url: e.url } : {}), ...(e.source ? { source: e.source } : {}), ...(e.omit ? { omit: e.omit } : {}) }, e.replace);
         void this.persist(card);
       }
     }
