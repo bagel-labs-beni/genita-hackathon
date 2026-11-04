@@ -276,7 +276,8 @@ export async function runRecipe(ctx: PipelineCtx): Promise<PipelineResult> {
     } else ctx.emit({ type: "find.items", findId: ctx.findId, items, checking });
   };
   const pushBoxes = () => {
-    const shown = cands.all().filter((c) => c.box && c.yes);
+    // confirmed, or listed by the camera and still being checked (early box); a "no" drops it
+    const shown = cands.all().filter((c) => c.box && (c.yes === true || (c.fromCamera && c.yes === null)));
     // GENITA_SAM_MASKS: one item per match with its outline, capped (instances.ts); otherwise one box per name
     const items = ctx.vendors.samMasks
       ? boxItems(shown.map((c) => ({ label: capFirst(c.name), instances: c.instances?.length ? c.instances : [{ box: c.box!, mask: null, score: null, placed: null, frame: wh }] })))
@@ -288,7 +289,12 @@ export async function runRecipe(ctx: PipelineCtx): Promise<PipelineResult> {
     // one slow call must not hold the whole list (a 16 s outlier on 11/2): 7 s each
     // the name's matches: the first box only, or (GENITA_SAM_MASKS) every match above the score bar with its mask
     const hits = async (prompt: string): Promise<{ box: NormBox; instances?: SamInstance[] } | null> => {
-      const boxes = (await withTimeout(ctx.vendors.sam(frame, prompt, ctx.signal), CHECK_TIMEOUT_MS, ctx.signal)) ?? [];
+      // 11/4 21:2x: boxes never showed on prod and nothing said why — every SAM outcome is logged (no prompt text)
+      const t = ctx.now();
+      let error: string | undefined;
+      const raw = await withTimeout(ctx.vendors.sam(frame, prompt, ctx.signal).catch((e: unknown) => { error = String(e).slice(0, 120); throw e; }), CHECK_TIMEOUT_MS, ctx.signal);
+      if (!ctx.signal.aborted) ctx.log("find.sam", { findId: ctx.findId, n: raw?.length ?? 0, ms: Math.round(ctx.now() - t), ...(error ? { error } : raw === null ? { timeout: true } : {}) });
+      const boxes = raw ?? [];
       const b = boxes[0];
       if (b?.w && b.h) wh = { w: b.w, h: b.h };
       if (!ctx.vendors.samMasks) {
@@ -301,13 +307,26 @@ export async function runRecipe(ctx: PipelineCtx): Promise<PipelineResult> {
     const firstBox = async (prompt: string) => (await hits(prompt))?.box ?? null;
     // SAM by name (and its plural: "green onion" missed where "green onions" hit, 11/2)
     const names = [c.name, ...(/s$/.test(c.name) ? [] : [`${c.name}s`])];
+    // a food the camera listed gets its box as soon as SAM finds it (~6 s), not after the Spark YES and the card
+    // (~8–11 s, when the sheet already covers the picture): its tier stays "checking" until the YES is in
+    let early = false;
+    const samP = Promise.all(names.map(hits)).then((nb) => {
+      const h = pickPhrasing(nb);
+      if (h && c.fromCamera && c.yes === null && !ctx.signal.aborted) {
+        c.box = h.box;
+        c.instances = h.instances;
+        early = true;
+        pushBoxes();
+      }
+      return nb;
+    });
     const [yes, nameBoxes, hint] = await Promise.all([
       withTimeout(
         ctx.vendors.spark({ input: userMessage(yesPrompt(c.name), [frame]), effort: "minimal", maxOutputTokens: 200 }, ctx.signal).then((r) => isYes(r.text)),
         CHECK_TIMEOUT_MS,
         ctx.signal,
       ),
-      Promise.all(names.map(hits)),
+      samP,
       c.look ? firstBox(c.look) : Promise.resolve(null),
     ]);
     // "tomato" vs "tomatoes": higher best score, then more matches (instances.ts); without scores the first that hit
@@ -321,7 +340,8 @@ export async function runRecipe(ctx: PipelineCtx): Promise<PipelineResult> {
     c.hint = box ?? hint;
     c.samDone = true;
     pushItems(true);
-    if (box && c.yes) pushBoxes();
+    // an early box the YES turned down comes off again
+    if ((box && c.yes) || early) pushBoxes();
   };
 
   const addAndCheck = (name: string, src: Parameters<Candidates["add"]>[1]) => {
