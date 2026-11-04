@@ -57,6 +57,16 @@ public final class FaceDriver: ObservableObject {
         self.reduceMotion = reduceMotion
     }
 
+    /// A renderer built off the main thread (its `FlowMorph` setup is the expensive part; face plan item 5). It must
+    /// not be used elsewhere once handed over: from here on it lives on this driver's render queue.
+    public init(renderer: FaceRenderer, reduceMotion: Bool) {
+        self.renderer = renderer
+        lookaheadMs = renderer.lipLookaheadMs
+        aheadMs = renderer.lipAheadMs
+        self.reduceMotion = reduceMotion
+        renderer.reduceMotion = reduceMotion
+    }
+
     // MARK: events
 
     public func handle(replyDelta d: ServerEvent.ReplyDelta) {

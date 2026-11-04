@@ -352,9 +352,13 @@ struct ConversationView: View {
         // S09-P (D28): the face is still being made while the call runs; keep `model.prep` fresh so the in-call
         // indicator (`model.callPrepIndicator`, S09-PREP 228:543) follows scene → expressions → mouth.
         // keyed on the status too: a PREP-1e Try again answered after the call started (failed → running) polls again
-        .task(id: "\(connecting) \(model.prep?.status ?? "")") { if !connecting { await model.followPrep(every: 5) } }
+        .task(id: "\(connecting) \(model.prep?.status ?? "")") { if !connecting { await model.followPrep(every: 5, sceneFirst: false) } }
         // AU-25 (D28 reveal): prep finished mid-call → fetch the face set now (the call's own retry is the fallback)
-        .onChange(of: model.prep?.isReady == true) { _, ready in if ready && !connecting && scenePhase == .active { showFace() } }
+        .onChange(of: model.prep?.isReady == true) { _, ready in
+            // face plan item 3: a load waiting out its 5 s retry asks again now
+            if ready { call.faceSetReady() }
+            if ready && !connecting && scenePhase == .active { showFace() }
+        }
         .onAppear {
             if !connecting {
                 call.companionName = model.companionDisplayName

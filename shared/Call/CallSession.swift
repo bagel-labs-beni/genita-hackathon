@@ -1097,7 +1097,23 @@ enum CallStop: Equatable {
     // MARK: face (L4)
 
     /// Shows this face set (nil → the still). The driver reads the speaker's playhead for the mouth.
-    func useFace(_ set: FaceSet?, key: String?, owner: String? = nil, reduceMotion: Bool) {
+    /// A renderer built (and its rest frame drawn) off the main thread, for `useFace` (face plan item 5).
+    struct PreparedFace: @unchecked Sendable {
+        let renderer: FaceRenderer
+        let poster: CGImage?
+        let seed: UInt64
+        let reduceMotion: Bool
+        /// one renderer for the live face and its poster (FlowMorph set up once, not twice)
+        static func build(_ set: FaceSet, reduceMotion: Bool) async -> PreparedFace {
+            await Task.detached(priority: .userInitiated) {
+                let seed = UInt64.random(in: 1...UInt64.max)
+                let renderer = FaceRenderer(faceSet: set, outputSize: CompanionFace.outputSize(for: set), seed: seed, reduceMotion: reduceMotion)
+                return PreparedFace(renderer: renderer, poster: renderer.render(at: 0, lip: .rest), seed: seed, reduceMotion: reduceMotion)
+            }.value
+        }
+    }
+
+    func useFace(_ set: FaceSet?, key: String?, owner: String? = nil, reduceMotion: Bool, prepared: PreparedFace? = nil) {
         face?.stop()
         faceKey = key
         faceOwner = owner
@@ -1109,10 +1125,11 @@ enum CallStop: Equatable {
         guard let set else { face = nil; return }
         let size = CompanionFace.outputSize(for: set)
         // one seed for the live face and its poster: same overscan and motion, so the poster → live step doesn't jump
-        let seed = UInt64.random(in: 1...UInt64.max)
+        let seed = prepared?.seed ?? UInt64.random(in: 1...UInt64.max)
         faceSeed = seed
         posterReduceMotion = nil
-        let driver = FaceDriver(faceSet: set, outputSize: size, reduceMotion: reduceMotion, seed: seed)
+        let driver = prepared.map { FaceDriver(renderer: $0.renderer, reduceMotion: reduceMotion) }
+            ?? FaceDriver(faceSet: set, outputSize: size, reduceMotion: reduceMotion, seed: seed)
         driver.playbackClock = { [weak self, weak driver] in
             guard let self, let driver else { return nil }
             self.flushFacePending()
@@ -1123,7 +1140,12 @@ enum CallStop: Equatable {
         if faceOnScreen && faceAnimates { driver.start() }
         if !faceAnimates { renderFaceStill(set, size: size, for: driver) }
         // iPhone too since build 8: the generated face's rest frame shows before it moves (no upload-photo flash)
-        renderFacePoster(set, size: size, seed: seed, reduceMotion: reduceMotion, for: driver)
+        if let prepared, prepared.reduceMotion == reduceMotion, let poster = prepared.poster {
+            posterReduceMotion = reduceMotion
+            facePoster = poster
+        } else {
+            renderFacePoster(set, size: size, seed: seed, reduceMotion: reduceMotion, for: driver)
+        }
     }
 
     /// The live renderer's settings (seed, reduce motion → same overscan and motion), at rest, off the main thread.
@@ -1142,9 +1164,12 @@ enum CallStop: Equatable {
 
     /// Same presence (Mac, 11/3): load the companion's face set while the conversation is still on the iPhone, so
     /// the face that arrives here already moves on its first frame. Nothing animates until `showFace`.
-    func prepareFace(reduceMotion: Bool) {
+    /// `keepTrying` (Mac, face plan item 3): a face set that is still being made (or a failed request) is tried again
+    /// every `faceRetryInterval` off screen too, so it is ready when the conversation arrives.
+    func prepareFace(reduceMotion: Bool, keepTrying: Bool = false) {
         guard !CompanionFace.clipLoopFace, !faceOnScreen else { return }
         faceReduceMotion = reduceMotion
+        faceKeepTrying = keepTrying
         // #645: a prefetch already in flight for this account (PREP-1c) keeps going into S07
         if faceLoading, faceLoadOwner == Self.tokenSubject(currentEndpoint.token) { return }
         cancelFaceLoad()
@@ -1259,6 +1284,9 @@ enum CallStop: Equatable {
         faceLoading = false
         faceLoadGeneration += 1
         faceFetching = false
+        faceRetryNap?.cancel()
+        faceRetryNap = nil
+        faceRetryNow = false
     }
 
     func setFaceReduceMotion(_ on: Bool) {
@@ -1276,6 +1304,11 @@ enum CallStop: Equatable {
     /// AU-25 · S09-P (D28): a call that starts before the face set is made checks again this often while the call
     /// screen is up, so the mouth starts moving in that same call once prep finishes (or the network comes back).
     @ObservationIgnored var faceRetryInterval: Duration = .seconds(5)
+    /// the retry wait in flight (`faceSetReady` cancels it) and whether the next try skips the wait
+    @ObservationIgnored private var faceRetryNap: Task<Void, Never>?
+    @ObservationIgnored private var faceRetryNow = false
+    /// Mac same presence: keep retrying off screen (`prepareFace(keepTrying:)`)
+    @ObservationIgnored private var faceKeepTrying = false
     #if DEBUG
     /// UI-test diagnostics for the face pipeline (why a call shows the still instead of the face)
     var faceDebugShows = 0
@@ -1306,9 +1339,24 @@ enum CallStop: Equatable {
             return await loadFaceOnce()
         }
         while await once() {
-            try? await Task.sleep(for: faceRetryInterval)
-            guard !Task.isCancelled, faceOnScreen, face == nil else { return }
+            // face plan item 3: `faceSetReady` (prep just finished) cuts this wait short
+            if !faceRetryNow {
+                let nap = Task { try? await Task.sleep(for: faceRetryInterval) }
+                faceRetryNap = nap
+                await nap.value
+                if faceRetryNap == nap { faceRetryNap = nil }
+            }
+            faceRetryNow = false
+            guard !Task.isCancelled, faceOnScreen || faceKeepTrying, face == nil else { return }
         }
+    }
+
+    /// Prep says the face set is made (S09-P polling, PREP-1c): a load waiting out its retry interval asks again now
+    /// instead of up to 5 s later. A request on the wire that comes back "not yet" goes again at once as well.
+    func faceSetReady() {
+        guard faceLoading, face == nil else { return }
+        faceRetryNow = true
+        faceRetryNap?.cancel()
     }
 
     private func makeFaceLoader() -> CompanionFaceLoader {
@@ -1343,10 +1391,13 @@ enum CallStop: Equatable {
             case .none: if face != nil { useFace(nil, key: nil, reduceMotion: faceReduceMotion) }; return false
             case .pending:
                 if face != nil { useFace(nil, key: nil, reduceMotion: faceReduceMotion) }
-                return faceOnScreen
+                return faceOnScreen || faceKeepTrying
             case let .loaded(key, set):
                 log.info("face set \(key, privacy: .public): \(set.patches.count) mouth shapes; \(set.notes.joined(separator: "; "), privacy: .public)")
-                useFace(set, key: key, owner: owner, reduceMotion: faceReduceMotion)
+                // face plan item 5: the renderer (FlowMorph) is built once, off the main thread, and draws the poster
+                let prepared = await PreparedFace.build(set, reduceMotion: faceReduceMotion)
+                guard !Task.isCancelled else { return false }
+                useFace(set, key: key, owner: owner, reduceMotion: faceReduceMotion, prepared: prepared)
                 return false
             }
         } catch {
@@ -1356,7 +1407,7 @@ enum CallStop: Equatable {
             #if DEBUG
             faceDebugLastError = String(describing: error)
             #endif
-            return !Task.isCancelled && faceOnScreen && face == nil
+            return !Task.isCancelled && (faceOnScreen || faceKeepTrying) && face == nil
         }
     }
 
