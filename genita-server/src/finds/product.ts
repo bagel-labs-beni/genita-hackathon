@@ -48,7 +48,31 @@ export function shortLabel(label: string, max = 16): string {
   return out;
 }
 const SEARCH_TIMEOUT_MS = 35_000;
-const PAGE_TIMEOUT_MS = 4500;
+/**
+ * S5 speed (11/4: cards 16–21 s): one shop page's read budget. GENITA_PRODUCT_PAGE_MS, default 3 s (was 4.5 s;
+ * 4500 restores it). Pages are read in parallel; a slow shop no longer holds the card.
+ */
+export function productPageMs(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number(env.GENITA_PRODUCT_PAGE_MS);
+  return Number.isFinite(n) && n >= 500 && n <= 20_000 ? n : 3000;
+}
+/**
+ * S5 speed: the card's overall deadline from the ask. Page reads that would run past it get what is left (at least
+ * 1 s). GENITA_PRODUCT_DEADLINE_MS, default 10 s; 0 = no deadline (the old behaviour: every read gets its full budget).
+ */
+export function productDeadlineMs(env: NodeJS.ProcessEnv = process.env): number {
+  if (env.GENITA_PRODUCT_DEADLINE_MS === "0") return 0;
+  const n = Number(env.GENITA_PRODUCT_DEADLINE_MS);
+  return Number.isFinite(n) && n >= 2000 && n <= 60_000 ? n : 10_000;
+}
+/**
+ * S5 one-link cards: a listed result whose URL reads as one product page (/products/…) counts toward the 2 links
+ * even when neither the search nor our own read opened it in time (a slow shop, not a wrong page).
+ * GENITA_PRODUCT_FILL_UNREAD=0 turns it off (only opened / read-as-product pages count, as before).
+ */
+export function fillUnread(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.GENITA_PRODUCT_FILL_UNREAD !== "0";
+}
 
 type ProductJson = {
   label?: unknown;
@@ -470,7 +494,8 @@ function showableUrls(r: SearchResult, keep?: (name: string) => boolean): string
   const out: string[] = [];
   for (const i of items) {
     const hit = matchOpened(str(i?.url, 600), opened);
-    const url = hit ? httpsOf(hit) : null;
+    // a listed page the search didn't open still counts when its URL is one product's page (fillUnread)
+    const url = hit ? httpsOf(hit) : fillUnread() && urlShape(str(i?.url, 600)) === "product" ? httpsOf(str(i?.url, 600)) : null;
     // the same URL-only rule a page nobody could read gets in the card (category / collection slugs never count)
     if (url && isProductPage(url, null) && !looksLikeList(url, str(i?.name, 200)) && (!keep || keep(`${str(i?.name, 200)} ${url}`))) out.push(urlKey(url) ?? url);
   }
@@ -559,20 +584,21 @@ export async function decidePick(vendors: FindsVendors, o: { question: string; r
 
 /**
  * Demo S5 latency (lead 11/4): after this long a lane that already proved one product page is shown instead of
- * waiting for slower lanes (a 2-pick lane still wins before it). GENITA_PRODUCT_SOFT_MS, default 10 s (+ pages ≈ 12 s).
+ * waiting for slower lanes (a 2-pick lane still wins before it). GENITA_PRODUCT_SOFT_MS, default 6 s (was 10 s; 10000 restores it).
  */
 export function productSoftMs(env: NodeJS.ProcessEnv = process.env): number {
   const n = Number(env.GENITA_PRODUCT_SOFT_MS);
-  return Number.isFinite(n) && n >= 1000 && n <= 60_000 ? n : 10_000;
+  return Number.isFinite(n) && n >= 1000 && n <= 60_000 ? n : 6000;
 }
 
 /**
  * QA 11/4 (#726 on live vendors): waiting for a second page that fits the pick took the card to ~26 s. Past this, one
- * fitting page is shown (topped up if another lane has more). GENITA_PRODUCT_HARD_MS, default 16 s; 35000 = always wait.
+ * fitting page is shown (topped up if another lane has more). GENITA_PRODUCT_HARD_MS, default 7 s (was 16 s; 16000
+ * restores it); 35000 = always wait.
  */
 export function productHardMs(env: NodeJS.ProcessEnv = process.env): number {
   const n = Number(env.GENITA_PRODUCT_HARD_MS);
-  return Number.isFinite(n) && n >= 2000 && n <= 60_000 ? n : 16_000;
+  return Number.isFinite(n) && n >= 2000 && n <= 60_000 ? n : 7000;
 }
 
 export async function hedgedSearch(vendors: FindsVendors, prompt: string, n: number, signal: AbortSignal, images: string[] = [], opts: { background?: boolean; softMs?: number; hardMs?: number; keep?: (name: string) => boolean } = {}): Promise<SearchResult | null> {
@@ -740,7 +766,12 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
   }
 
   // read each page (in parallel, capped): one product? price? picture?
-  const facts = await Promise.all(cands.map((p) => (vendors.pageFacts ? withTimeout(vendors.pageFacts(p.url, ctx.signal), PAGE_TIMEOUT_MS, ctx.signal) : Promise.resolve(null))));
+  // each read has its own budget, cut to what is left of the card's deadline (never under 1 s)
+  const deadline = productDeadlineMs();
+  const pageMs = deadline ? Math.min(productPageMs(), Math.max(1000, deadline - ms())) : productPageMs();
+  // a read that answered (even "nothing here") vs one that ran out of time: only the latter may fill a slot below
+  const answered = new Set<number>();
+  const facts = await Promise.all(cands.map((p, i) => (vendors.pageFacts ? withTimeout(vendors.pageFacts(p.url, ctx.signal).then((f) => (answered.add(i), f), () => (answered.add(i), null)), pageMs, ctx.signal) : Promise.resolve(null))));
   timings.pagesMs = ms();
   if (ctx.signal.aborted) return { card: null, timings };
 
@@ -791,6 +822,34 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
       situation: str(p.item.situation, 34),
     });
   });
+  // one-link cards (QA 11/4): a second listed result whose URL is one product's page fills the slot when its read
+  // ran out of time (a slow shop). A read that answered — 404, a list, no product markup — never fills (invented URLs stay out)
+  if (products.length < PRODUCT_COUNT && fillUnread()) {
+    for (const i of order) {
+      if (products.length >= PRODUCT_COUNT) break;
+      const p = cands[i];
+      const f = facts[i];
+      if (p.inTrace || f || answered.has(i) || !vendors.pageFacts || urlShape(p.url) !== "product" || !isProductPage(p.url, null)) continue;
+      if (products.some((x) => x.url === p.url)) continue;
+      const pd = productDepartment(`${str(p.item?.name, 200)} ${p.url}`);
+      if (pd && cardDept && pd !== cardDept) continue;
+      const domain = domainOf(p.url);
+      const price = cleanPrice(str(p.item.price, 30));
+      const picture = allowedImage(str(p.item.image, 600)) ?? undefined;
+      dropped.notOpened = Math.max(0, dropped.notOpened - 1);
+      products.push({
+        id: `p${products.length + 1}`,
+        name: shortName(str(p.item.name, 200) || domain),
+        url: p.url,
+        domain,
+        store: str(p.item.store, 40) || domain,
+        ...(price ? { price } : {}),
+        ...(picture ? { image: { slot: `product-${products.length + 1}`, status: "pending" as const }, _image: picture } : {}),
+        taste: styleLine ? str(p.item.taste, 30) : "",
+        situation: str(p.item.situation, 34),
+      });
+    }
+  }
   ctx.log("product.kept", { findId: ctx.findId, kept: products.length, ...dropped, serverOpened, pageRead: facts.filter(Boolean).length });
 
   if (!products.length) {
@@ -836,7 +895,7 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
       if (!p._image) return;
       const slot = `product-${i + 1}`;
       try {
-        const bytes = vendors.productImage ? await withTimeout(vendors.productImage(p._image, ctx.signal), PAGE_TIMEOUT_MS, ctx.signal) : null;
+        const bytes = vendors.productImage ? await withTimeout(vendors.productImage(p._image, ctx.signal), productPageMs(), ctx.signal) : null;
         if (ctx.signal.aborted) return;
         if (!bytes) throw new Error("no image");
         const url = await ctx.putImage(slot, bytes);

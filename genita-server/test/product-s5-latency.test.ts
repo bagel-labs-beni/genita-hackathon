@@ -121,3 +121,49 @@ test("S5 hard cap (QA 11/4 #726: 26 s cards): past it one fitting page is shown 
   const r = await hedgedSearch(v, "p", 2, new AbortController().signal, [], { softMs: 30, hardMs: 90 });
   assert.ok(r && performance.now() - t0 < 500);
 });
+
+// ───────────── S5 speed (11/4: cards 16–21 s, often one link) ─────────────
+
+const shopItem = (n: number) => ({ name: `Leather Boot ${n}`, url: `https://shop-${n}.example.com/products/boot-${n}`, store: "S", price: "$100", image: "", taste: "", situation: "" });
+const shopOpen = (n: number) => ({ type: "web_search_call", status: "completed", action: { type: "open_page", url: `https://shop-${n}.example.com/products/boot-${n}` } });
+
+test("S5 speed: a slow shop page does not hold the card past the page budget, and the card keeps 2 links", async () => {
+  const { runProduct } = await import("../src/finds/product.ts");
+  const v: FindsVendors = {
+    async spark() { await sleep(10); return { text: JSON.stringify({ label: "Boots", items: [shopItem(1), shopItem(2)] }), output: [shopOpen(1)] } as SparkResult; },
+    async *sparkStream() {}, sam: async () => [], image: async () => Buffer.from([]),
+    // shop 2 never answers
+    async pageFacts(url: string) { if (url.includes("boot-2")) return new Promise(() => {}); await sleep(5); return { kind: "product" as const, title: "Boot" }; },
+  };
+  const t0 = performance.now();
+  let created = -1;
+  let links = 0;
+  await runProduct({
+    findId: "f1", utteranceId: 1, kind: "product", question: "find me leather boots", frames: [], memories: [], vendors: v,
+    signal: new AbortController().signal, now: () => performance.now(), hedge: 1, log() {}, putImage: async () => "x",
+    emit: (e: ServerEvent) => { if (e.type === "find.created") { created = performance.now() - t0; links = e.card.products?.length ?? 0; } },
+  } as unknown as Parameters<typeof runProduct>[0]);
+  assert.ok(created >= 0 && created < 3600, `card within the 3 s page budget (${Math.round(created)} ms)`);
+  assert.equal(links, 2, "the unread shop's product link fills the second slot (no one-link card)");
+});
+
+test("S5 speed: past the soft cap a lane with one opened page + one listed product page is enough (no wait for stragglers)", async () => {
+  let calls = 0;
+  const v: FindsVendors = {
+    async spark() { calls++; if (calls === 1) { await sleep(10); return { text: JSON.stringify({ items: [shopItem(1), shopItem(2)] }), output: [shopOpen(1)] } as SparkResult; } return new Promise(() => {}); },
+    async *sparkStream() {}, sam: async () => [], image: async () => Buffer.from([]),
+  };
+  const r = await Promise.race([hedgedSearch(v, "p", 2, new AbortController().signal, [], { softMs: 40 }), sleep(1000).then(() => "stuck" as const)]);
+  assert.notEqual(r, "stuck", "the lane with 2 product links won at the soft cap");
+  assert.equal(JSON.parse((r as SparkResult).text).items.length, 2);
+});
+
+test("S5 speed: budgets have env knobs with the old values recoverable", async () => {
+  const p = await import("../src/finds/product.ts");
+  assert.equal(p.productPageMs({}), 3000);
+  assert.equal(p.productPageMs({ GENITA_PRODUCT_PAGE_MS: "4500" }), 4500);
+  assert.equal(p.productSoftMs({ GENITA_PRODUCT_SOFT_MS: "10000" }), 10_000);
+  assert.equal(p.productHardMs({ GENITA_PRODUCT_HARD_MS: "16000" }), 16_000);
+  assert.equal(p.productDeadlineMs({ GENITA_PRODUCT_DEADLINE_MS: "0" }), 0);
+  assert.equal(p.fillUnread({ GENITA_PRODUCT_FILL_UNREAD: "0" }), false);
+});
