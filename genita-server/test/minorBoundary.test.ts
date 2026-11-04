@@ -87,3 +87,7 @@ test("coordinator 11/4 P1 set: common self-age phrasings always get the line", (
   for (const t of ["I'm 15", "im 16", "15 years old", "I'm only 14", "I'm 17 lol", "I'm a sophomore in high school", "i am 13", "I'm fifteen", "I'm 16 years old", "I'm in high school", "I'm a teenager", "I'm 14, why", "I'm under 18", "I'm a minor", "I'm 17 btw", "i'm 16 and bored"]) assert.ok(minorLine([t]), t);
   for (const t of ["I'm 25", "I'm 30 and single", "hey what's up", "I had 15 minutes to spare", "my 16-year-old son is driving me crazy"]) assert.equal(minorLine([t]), null, t);
 });
+
+test("Codex #640 r17: 'I've just turned 16.' and 'I'm 16 with strict parents.' get the line", () => {
+  for (const t of ["I've just turned 16.", "I'm 16 with strict parents.", "15 years old"]) assert.ok(minorLine([t]), t);
+});
