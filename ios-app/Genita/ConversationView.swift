@@ -35,7 +35,7 @@ struct ConversationView: View {
     #endif
     /// S09: no picture of the generated face yet (the scene, or the face set's rendered poster / still; a driver
     /// whose first frame isn't drawn doesn't count — Codex P2), and one is still coming: not after the prep failed
-    /// (S09-PF, the call goes on as usual), and at most `waitCap` when no prep is running. Upload photos never count.
+    /// (S09-PF, the call goes on as usual), and at most 20 s when nothing is being made or downloaded. Upload photos never count.
     /// DEBUG `GENITA_WAIT_STAGE=hold` keeps it waiting, `=<seconds>` lets the face arrive after that long
     /// (review shots of the wait stage and the arrival on unwired builds).
     private var waitingForFace: Bool {
@@ -44,7 +44,8 @@ struct ConversationView: View {
         #endif
         guard !hasFacePicture, model.prep?.isFailed != true else { return false }
         let prepRunning = model.prep.map { !$0.isReady } ?? false
-        return prepRunning || !waitCapOver
+        // a face set download in flight is no idle wait either (17–48 s seen on CI; Codex P2)
+        return prepRunning || call.faceLoading || !waitCapOver
     }
     private var hasFacePicture: Bool { companionImage != nil || call.facePoster != nil || call.faceStill != nil }
     /// the wait stage gives up after this long when nothing is being made (a scene or face set that never loads)

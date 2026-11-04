@@ -202,8 +202,8 @@ enum CallStop: Equatable {
     @ObservationIgnored private var faceAnimates = true
     @ObservationIgnored private var faceReduceMotion = false
     @ObservationIgnored private var faceLoad: Task<Void, Never>?
-    /// a face set download is in flight (from prepareFace or showFace)
-    @ObservationIgnored private var faceLoading = false
+    /// a face set download is in flight (from prepareFace or showFace); observed by S09's wait stage (it holds the orb)
+    private(set) var faceLoading = false
     /// which load `faceLoading` belongs to (AU-25 × #524)
     @ObservationIgnored private var faceLoadGeneration = 0
     /// the account the load in flight is for

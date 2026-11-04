@@ -44,7 +44,8 @@ struct CallWaitStage: View {
     }
 
     @ViewBuilder private func orb(_ d: CGFloat, calm: Bool) -> some View {
-        if SoulOrbFlag.isOn {
+        // calm (Reduce Motion, review stills): the still orb, no breathing — the live orb keeps moving (Codex P3)
+        if SoulOrbFlag.isOn && !calm {
             SoulOrbView(stretchWide: false).frame(width: d, height: d)
         } else {
             // orb.png carries wide transparent margins (the mock's -212 pt inset on a 250 pt box)
