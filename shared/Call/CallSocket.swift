@@ -80,6 +80,23 @@ final class CallSocket: NSObject, URLSessionWebSocketDelegate, @unchecked Sendab
         }
     }
 
+    /// Closes without `stop`, so the server does not take it as a hang-up (the call continues in a new session).
+    func disconnect() {
+        #if DEBUG
+        if BrowserPreview.isActive {
+            DispatchQueue.main.async { MainActor.assumeIsolated { self.replay?.stop() } }
+            closed = true
+            return
+        }
+        #endif
+        queue.async { [weak self] in
+            guard let self, !self.closed else { return }
+            self.closed = true
+            self.task?.cancel(with: .goingAway, reason: nil)
+            self.session?.finishTasksAndInvalidate()
+        }
+    }
+
     private func receive(_ task: URLSessionWebSocketTask) {
         task.receive { [weak self] result in
             guard let self else { return }

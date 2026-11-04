@@ -622,3 +622,28 @@ test("settings lane Codex: after 'forget about seafood' the N3 pick isn't sent t
   assert.ok(!/seafood/i.test(sent), sent.slice(0, 300));
   assert.match(sent, /Spicy/);
 });
+
+test("Codex r12: a real 'forget about seafood' (voice path) leaves nothing about seafood in what goes to Spark", async (t) => {
+  const h = harness((req) => (req.schemaName === "insight_report" ? RAW : { updates: [], answered: false }));
+  t.after(h.cleanup);
+  const card = toStyleCard({ sections: { tendencies: [f("Asks for two or three options before deciding.")], communication: [], response: [], help: [], support: [], interests: [], likes: [f("Dislikes seafood."), f("Food: spicy.")], boundaries: [], approach: [] }, rules: [], to_confirm: [] }, "skip");
+  await h.p.replaceStyle("u1", { ...card, picks: [{ question: "Food: you don't want", label: "Seafood" }, { question: "Food: you like", label: "Spicy" }] });
+  await h.p.voiceCorrection("u1", "Forget about seafood.", "");
+  const n = h.calls.length;
+  await new Promise((r) => setTimeout(r, 1100)); // the write starts after the forget
+  await h.ins.fromAnswers("u1", { help: "Think with me" });
+  await h.ins.get("u1", 3000);
+  const sent = h.calls.slice(n).filter((c) => c.schemaName === "insight_report").map((c) => String(c.input)).join("\n");
+  assert.ok(sent.length > 0, "a write went out");
+  assert.ok(!/seafood/i.test(sent), sent.slice(0, 400));
+});
+
+test("design-lane Codex: a trait resting on a line the user marked wrong leaves the call profile at once (pending or saved)", () => {
+  const r = toReport(RAW, INPUTS, { at: "", from: "import" });
+  const humor = r.observations.find((o) => o.category === "humor")!;
+  const pending = { ...CARD, insights: r, pendingCorrections: [{ cardId: "talk", items: ["ok but which one is cheaper lol"], text: "", asOf: "t" }] };
+  assert.ok(!insightProfileLines(pending).some((l) => l.includes(humor.use_in_call)));
+  const saved = { ...CARD, insights: r, removed: [{ text: "Jokes even in work threads.", at: "t" }] };
+  assert.ok(!insightProfileLines(saved).some((l) => l.includes(humor.use_in_call)));
+  assert.ok(insightProfileLines(saved).some((l) => l.includes(r.observations.find((o) => o.category === "think")!.use_in_call)), "the others stay");
+});

@@ -31,7 +31,7 @@ export type ReactGate = {
 
 export type GateResult = { ok: true } | { ok: false; why: string };
 
-/** F5-L14: only while sharing, at most once per 30 s, never over dialogue or anyone talking. */
+/** F5-L14: only while sharing, at most once per REACT_MIN_GAP_MS (25 s, Chelsea 11/3), never over dialogue or anyone talking. */
 export function reactionAllowed(g: ReactGate): GateResult {
   if (!g.sharing) return { ok: false, why: "not_sharing" };
   if (g.blank) return { ok: false, why: "blank" };
@@ -55,10 +55,21 @@ const EMOTION_TAG = /<\s*[A-Za-z][A-Za-z_-]{0,23}\s*>/g;
  * near misses, things flying off, what's about to happen. Better silent than invented; the memo's next verdict can
  * still react. A fall or fail that happened ("he fell", "he slipped and fell", "total wipeout") is not a guess and stays (Codex P2).
  */
-const GUESS = /\b(?:los(?:ing|t|es) (?:(?:his|her|their|the) )?balance|off balance|dodg(?:e|ed|es|ing)|almost|nearly|about to|gonna (?:fall|eat it|crash)|(?:shoe|hat|cap|shirt|pants|wig|glasses) (?:flew|flying|fell|falling|came) off|flew off|wobbl\w*|stumbling|slipping|tripping|hurt|injur\w*|(?:oh no|uh oh|whoops|oops),? (?:his|her|their) (?:pants|shorts|shirt|skirt|top|wig|dress))\b/i;
+const GUESS = /\b(?:los(?:ing|t|es) (?:(?:his|her|their|the) )?balance|off balance|dodg(?:e|ed|es|ing)|almost|nearly|about to|gonna (?:fall|eat it|crash)|(?:shoe|hat|cap|shirt|pants|wig|glasses) (?:flew|flying|fell|falling|came) off|flew off|there goes (?:his|her|their) (?:shoe|hat|cap|shirt|pants|wig|glasses)|wobbl\w*|stumbling|slipping|tripping|hurt|injur\w*|(?:oh no|uh oh|whoops|oops),? (?:his|her|their) (?:pants|shorts|shirt|skirt|top|wig|dress))\b/i;
 export function isGuessLine(words: string): boolean {
   return GUESS.test(words);
 }
+
+/**
+ * A named play, trick or technique needs context two frames can't show (QA build 6, 11/4: a solo drive-and-dunk was
+ * called an "alley-oop", which needs a lob pass). Such a line is never said as written; the moment's plain line is
+ * said instead, so the reaction still lands on time. The plain action ("he dunked it", "landed it", "flips") stays.
+ */
+const JARGON = /\b(?:alley[- ]?oops?|assists?|no[- ]look|behind[- ]the[- ]back|between[- ]the[- ]legs|crossovers?|fade ?aways?|step[- ]?backs?|euro ?steps?|buzzer[- ]?beaters?|and[- ]one|three[- ]pointers?|from downtown|hat[- ]tricks?|bicycle kicks?|kick ?flips?|heel ?flips?|tre ?flips?|varial\w*|hard ?flips?|n?ollies?|manuals?|grinds?|(?:180|360|540|720|900)s?|tomahawks?|windmills?|reverse (?:dunk|layup)s?|back ?flips?|front ?flips?|moonwalk\w*|head ?spins?)\b/i;
+export function isJargonLine(words: string): boolean {
+  return JARGON.test(words);
+}
+const PLAIN: Record<Exclude<Moment, "none">, string> = { surprising: "Whoa, no way!", funny: "Haha, no way", sweet: "Aww, that's sweet" };
 
 /**
  * The spoken reaction line: Spark writes the words only; the tags are ours.
@@ -68,7 +79,7 @@ export function isGuessLine(words: string): boolean {
 export function reactionScript(moment: Moment, words: string): string | null {
   const clean = words.replace(AUDIO_TAG, " ").replace(EMOTION_TAG, " ").replace(/\s+/g, " ").trim();
   if (moment === "none" || !clean || isGuessLine(clean)) return null;
-  const capped = clean.split(" ").slice(0, 12).join(" ");
+  const capped = isJargonLine(clean) ? PLAIN[moment] : clean.split(" ").slice(0, 12).join(" ");
   // the face: funny → smileopen (laugh draws as smileopen for now, 11/3), sweet → smile, surprising → surprised
   if (moment === "funny") return `<laugh> [smileopen] [laughs] ${capped}`;
   if (moment === "surprising") return `<surprised> [surprised] ${capped}`;

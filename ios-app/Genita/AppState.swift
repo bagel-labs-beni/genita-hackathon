@@ -151,12 +151,21 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
             storage.set(sceneImage.key, forKey: Self.sceneKeyKey)
         }
     }
-    var sceneKey: String? { prep?.sceneURL.map { "\(setup.accountId ?? "-")|\($0.absoluteString)" } }
-    /// Until `/prep` answers (no `sceneKey` yet) the saved scene counts only for the same account.
+    var sceneKey: String? { prep?.sceneURL.map { "\(sceneOwner)\($0.absoluteString)" } }
+    var sceneOwner: String { "\(setup.accountId ?? "-")|" }
+    /// A scene on this phone only counts once it's known to be the account's current companion (handover b9-6:
+    /// another phone deleted and remade the companion, and this one opened its call on the old cached scene; the
+    /// scene URL is the same for every companion, so the key alone can't tell). Either this launch asked the server
+    /// and it's the same companion (`sceneCompanionConfirmed`), or the scene was downloaded in this launch (`sceneFresh`).
+    var sceneCompanionConfirmed = false
+    var sceneFresh = false   // both observed: a view that drew the placeholder redraws when trust arrives (Codex P2)
+    var sceneTrusted: Bool { sceneCompanionConfirmed || sceneFresh }
+    /// Until `/prep` answers (no `sceneKey` yet) the saved scene counts only for this account.
     var sceneImageData: Data? {
-        sceneImage.flatMap { saved in
+        guard sceneTrusted else { return nil }
+        return sceneImage.flatMap { saved in
             if let key = sceneKey { return saved.key == key ? saved.data : nil }
-            return saved.key.hasPrefix("\(setup.accountId ?? "-")|") ? saved.data : nil
+            return saved.key.hasPrefix(sceneOwner) ? saved.data : nil
         }
     }
     var sceneFileURL: URL { imageURL.deletingLastPathComponent().appending(path: "scene.jpg") }
@@ -190,6 +199,9 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     @ObservationIgnored var insightVerdictTask: Task<String?, Never>?
     @ObservationIgnored var importTask: Task<Void, Never>?
     @ObservationIgnored var companionTask: Task<Void, Never>?
+    /// `409 reset_in_progress` on create: this many more tries, this far apart (tests shorten it)
+    @ObservationIgnored var resetRetries = 4
+    @ObservationIgnored var resetRetryDelay: Duration = .seconds(2)
     @ObservationIgnored var imageCheckTask: Task<Void, Never>?
     @ObservationIgnored var imageCheckTicket: UUID?
     /// Changes whenever sign-in state changes, so old account responses cannot affect the new account.

@@ -503,6 +503,8 @@ public enum ClientMessage: Equatable, Sendable {
     case findConfirm(FindConfirm)
     /// Stop button while a card is still being looked for.
     case findStop(findId: String)
+    /// FD-01 "Talk about this on a call": later turns are about this card (one from an earlier call too).
+    case findFocus(findId: String)
     /// PERC-1: a face crop (base64 JPEG ≤ 256 px) for perception — only when `ready.perception == true`.
     case perceptionFrame(image: String)
 
@@ -626,6 +628,7 @@ extension ClientMessage: Codable {
         case "stop": self = .stop
         case "find.confirm": self = .findConfirm(try .init(from: decoder))
         case "find.stop": self = .findStop(findId: try c.decode(String.self, forKey: .findId))
+        case "find.focus": self = .findFocus(findId: try c.decode(String.self, forKey: .findId))
         case "perception.frame": self = .perceptionFrame(image: try c.decode(String.self, forKey: .image))
         default: throw DecodingError.dataCorruptedError(forKey: .type, in: c, debugDescription: "unknown client message \(type)")
         }
@@ -648,6 +651,7 @@ extension ClientMessage: Codable {
         case .stop: try c.encode("stop", forKey: .type)
         case let .findConfirm(p): try p.encode(to: encoder); try c.encode("find.confirm", forKey: .type)
         case let .findStop(id): try c.encode("find.stop", forKey: .type); try c.encode(id, forKey: .findId)
+        case let .findFocus(id): try c.encode("find.focus", forKey: .type); try c.encode(id, forKey: .findId)
         case let .perceptionFrame(image): try c.encode("perception.frame", forKey: .type); try c.encode(image, forKey: .image)
         }
     }

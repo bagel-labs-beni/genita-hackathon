@@ -509,10 +509,12 @@ import UIKit
         let dir = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         let photo = dir.appending(path: "companion.jpg")
         let model = AppState(storage: store, imageURL: photo)
-        model.setup.accountId = "a"
+        model.setup.accountId = "a"; model.setup.imageId = "c1"
         model.sceneImage = ("a|https://x/scene.jpg", Data([1, 2, 3]))
         let relaunched = AppState(storage: store, imageURL: photo)
-        relaunched.setup.accountId = "a"
+        relaunched.setup.accountId = "a"; relaunched.setup.imageId = "c1"
+        XCTAssertNil(relaunched.sceneImageData, "not before the server confirmed the companion")
+        relaunched.adoptServerCompanion(imageId: "c1")
         XCTAssertEqual(relaunched.sceneImageData, Data([1, 2, 3]), "before /prep answers: the saved scene")
         relaunched.setup.accountId = "b"
         XCTAssertNil(relaunched.sceneImageData, "another account never sees it")
@@ -528,10 +530,36 @@ import UIKit
         XCTAssertTrue(model.serverWired, "unit tests run as a wired build")
         model.setup.imageData = Data([9, 9, 9])   // the upload
         XCTAssertNil(model.companionFaceData, "no scene yet: a placeholder, not the upload")
-        model.setup.accountId = "a"
+        model.setup.accountId = "a"; model.setup.imageId = "c1"; model.adoptServerCompanion(imageId: "c1")
+        model.setup.imageData = Data([9, 9, 9])
         model.sceneImage = ("a|https://x/scene.jpg", Data([1, 2, 3]))
         XCTAssertEqual(model.companionFaceData, Data([1, 2, 3]), "the generated scene")
         model.setup.accountId = "b"
         XCTAssertNil(model.companionFaceData, "another account's scene never shows, and still not the upload")
+    }
+
+    /// Handover b9-6 (P2, #524 × #514): another phone deleted and remade the companion; this phone still had the old
+    /// one's scene on disk. The scene is keyed by the companion, and the server's companion decides at launch.
+    func testACachedSceneNeverOutlivesItsCompanion() {
+        let photo = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString).appending(path: "companion.jpg")
+        let model = AppState(storage: store, imageURL: photo)
+        model.setup.accountId = "a"; model.setup.imageId = "old"
+        model.setup.imageData = Data([9])
+        model.sceneImage = ("a|https://x/scene.jpg", Data([1, 2, 3]))
+        XCTAssertNil(model.sceneImageData, "unconfirmed at launch: not shown")
+        model.adoptServerCompanion(imageId: "new")   // the server has another companion now
+        XCTAssertNil(model.sceneImage, "the old companion's scene is dropped (memory and disk)")
+        XCTAssertNil(model.setup.imageData, "and its picture")
+        model.setup.imageId = "new"
+        XCTAssertNil(model.sceneImageData)
+        XCTAssertNil(AppState(storage: store, imageURL: photo).sceneImage, "gone after a relaunch too")
+        let other = AppState(storage: store, imageURL: photo)
+        other.setup.accountId = "a"; other.setup.imageId = "new"
+        other.sceneImage = ("a|https://x/scene.jpg", Data([7]))      // cached by whichever companion, same URL
+        let next = AppState(storage: store, imageURL: photo)
+        next.setup.accountId = "a"; next.setup.imageId = "new"
+        XCTAssertNil(next.sceneImageData, "a cached scene waits for the server's word, even with the same key")
+        next.adoptServerCompanion(imageId: "new")
+        XCTAssertEqual(next.sceneImageData, Data([7]), "same companion confirmed: the cache counts")
     }
 }

@@ -25,6 +25,8 @@ extension AppState {
     func routeOnLaunch(afterSignIn: Bool = false) async {
         let launchRequest = launchAuthSnapshot
         let request = onboardingSnapshot()
+        // what this phone knew when /me was asked: a companion made while it was on its way is not "missed" (Codex P2)
+        let companionWhenAsked = setup.companionCreated == true && !creatingCompanion
         // no session but the phone remembers a later screen (a cleared/expired token, a sign-out that didn't reach
         // here): A02 first, never A03 → N1–N3 and a bounce to A02 at the end (QA build 5; PRD A02 → CS01 → A03)
         if needsSignInFirst { signedOut(); return }
@@ -61,7 +63,13 @@ extension AppState {
         let route = StartRouter.route(state, device: .iphone)
         // a companion on the server but not on this phone (reinstall, new phone, a judge's ready-made one):
         // bring its name, card and face back first
-        if route == .connecting || route == .textWhilePreparing, setup.companionName == nil || me?.companionDemo == true { await restoreCompanion(for: request) }
+        // Every launch into a call asks which companion the account has: another phone may have replaced it, and its
+        // cached scene / photo must not open this call (handover b9-6). Not on this phone yet, or another one now →
+        // bring it back in full; the same one → only confirm it (inputs on this phone stay, Codex P2).
+        if route == .connecting || route == .textWhilePreparing {
+            if setup.companionName == nil || me?.companionDemo == true { await restoreCompanion(for: request) }
+            else { await confirmCompanion(for: request) }
+        }
         guard launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled,
               ownsOnboardingResponse(request) else {
             // The session expired while the companion came back: that request's 401 cleared this lifetime's token.
@@ -70,7 +78,7 @@ extension AppState {
                ownsOnboardingResponse(request, allowingClearedSession: true) { signedOut() }
             return
         }
-        apply(route, me: me, afterSignIn: afterSignIn)
+        apply(route, me: me, afterSignIn: afterSignIn, companionWhenAsked: companionWhenAsked)
     }
 
     /// CS01 "Agree and continue", after the server recorded the consent.
@@ -90,11 +98,37 @@ extension AppState {
         if stage == .consent { consentAccepted() }
     }
 
+    /// The server's companion vs the one this phone remembers: a different one (replaced or deleted on another
+    /// device) drops this phone's scene and picture before anything draws them; the same one confirms the cache.
+    func adoptServerCompanion(imageId: String?) {
+        if let mine = setup.imageId, mine != imageId {
+            // a scene downloaded in this launch is already the server's current one; a cached one isn't
+            if !sceneFresh { sceneImage = nil }
+            setup.imageData = nil
+        }
+        sceneCompanionConfirmed = true
+    }
+
+    /// The companion on this phone is the server's one → confirmed; another one → restored in full.
+    func confirmCompanion(for request: OnboardingSessionGeneration.Snapshot? = nil) async {
+        let launchRequest = launchAuthSnapshot
+        let request = request ?? onboardingSnapshot()
+        guard let c = try? await onboarding.companion(), launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled,
+              ownsOnboardingResponse(request) else { return }
+        if c.imageId == setup.imageId { adoptServerCompanion(imageId: c.imageId); return }
+        await applyServerCompanion(c, launchRequest: launchRequest, request: request)
+    }
+
     func restoreCompanion(for request: OnboardingSessionGeneration.Snapshot? = nil) async {
         let launchRequest = launchAuthSnapshot
         let request = request ?? onboardingSnapshot()
         guard let c = try? await onboarding.companion(), launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled,
               ownsOnboardingResponse(request) else { return }
+        await applyServerCompanion(c, launchRequest: launchRequest, request: request)
+    }
+
+    private func applyServerCompanion(_ c: CompanionInfo, launchRequest: LaunchAuthSnapshot, request: OnboardingSessionGeneration.Snapshot) async {
+        adoptServerCompanion(imageId: c.imageId)
         setup.companionName = c.name
         setup.imageId = c.imageId
         setup.imageType = c.type
@@ -128,14 +162,16 @@ extension AppState {
     func loadScene(for upcoming: PrepProgress? = nil) async {
         let p = upcoming ?? prep
         guard serverWired, let url = p?.sceneURL else { return }
-        let account = setup.accountId ?? "-", key = "\(account)|\(url.absoluteString)"
-        guard sceneImage?.key != key, let data = try? await onboarding.sceneImage(url), UIImage(data: data) != nil,
+        // same key format as `sceneKey` (Codex P1); a cached copy under the same key is reused only once trusted
+        let owner = sceneOwner, key = "\(owner)\(url.absoluteString)"
+        guard !(sceneImage?.key == key && sceneTrusted), let data = try? await onboarding.sceneImage(url), UIImage(data: data) != nil,
               !Task.isCancelled else { return }
         // the account or companion may have changed while the image was on its way: keep it only for the same
         // account, and never over a newer scene already loaded for the prep on screen (an `upcoming` answer is
         // applied by the caller right after this, so its scene always wins)
-        guard (setup.accountId ?? "-") == account, upcoming != nil || prep?.sceneURL == url || sceneImageData == nil else { return }
+        guard sceneOwner == owner, upcoming != nil || prep?.sceneURL == url || sceneImageData == nil else { return }
         sceneImage = (key, data)
+        sceneFresh = true
     }
 
     /// `loadScene`, given up after `seconds` (a slow or hanging image download never holds a screen).
@@ -163,7 +199,7 @@ extension AppState {
         }
     }
 
-    func apply(_ route: StartRoute, me: GenitaMe? = nil, afterSignIn: Bool = false) {
+    func apply(_ route: StartRoute, me: GenitaMe? = nil, afterSignIn: Bool = false, companionWhenAsked: Bool = false) {
         let onboardingStages: Set<Stage> = [.prompt, .paste, .preparing, .preferences, .image, .imageCheck, .voice, .companionName,
                                             .depth, .help, .relationship, .challenge, .tempo, .initiative, .boundaries, .presence, .summary,
                                             .skipTopics, .skipReplies, .skipAvoid, .bringing]
@@ -175,6 +211,9 @@ extension AppState {
         case .consent: if stage != .consent { go(.consent) }
         case .name: if !onboardingStages.contains(stage) || stage == .conversation { returnTo(.name) }
         case .importPrompt:
+            // the server has no companion but this phone remembers one: a Start over finished while the app was gone
+            // (killed right after the reset, #514 Codex r3 P1). Drop it here too and pick a new photo (V01).
+            if companionWhenAsked, setup.companionCreated == true, !creatingCompanion { companionReset(); return }
             // a companion isn't made yet: resume where this phone left off, else I01
             // (A03 stays: right after CS01 the user still confirms their name, B8)
             if setup.hasOnboarded || !(onboardingStages.contains(stage) || stage == .name) { setup.hasOnboarded = false; returnTo(.prompt) }
@@ -506,14 +545,46 @@ extension AppState {
         companionTask = Task {
             defer { creatingCompanion = false }
             do {
-                let c = try await onboarding.createCompanion(imageId: imageId)
+                let c = try await createCompanionAfterReset(imageId: imageId)
                 setup.companionCreated = true
                 prep = c.prep
+            } catch GenitaAuthError.server(409, "reset_in_progress", _) {
+                // still starting over after the retries: nothing exists yet, NM01 Continue creates it (#514)
+            } catch is CancellationError {
+                // another account now: nothing of this one's create applies
             } catch GenitaAuthError.server(409, _, _) {
                 setup.companionCreated = true   // one companion per user; it already exists
             } catch { flowError = Self.errorLine(error); route(error) }
         }
         suggestName()
+    }
+
+    /// The server's own words for `409 reset_in_progress` (prep/routes.ts, #514).
+    static let resetBusyLine = "Starting over. Try again in a moment."
+
+    /// POST /v1/companion. `409 reset_in_progress` (#514: a Start over on this account is still erasing) means
+    /// nothing exists yet, not "already made": wait a moment and ask again, a few times (handover b9-6).
+    @discardableResult
+    func createCompanionAfterReset(imageId: String, voiceId: String? = nil, name: String? = nil) async throws -> CompanionInfo {
+        // another sign-in (or sign-out) meanwhile: never send this account's photo and name under the next one's
+        // token, and never apply the answer to it (Codex P2)
+        let generation = authGeneration
+        func stillOurs() throws { if authGeneration != generation || Task.isCancelled { throw CancellationError() } }
+        var tries = 0
+        while true {
+            try stillOurs()
+            do {
+                let c = try await onboarding.createCompanion(imageId: imageId, voiceId: voiceId, name: name)
+                try stillOurs()
+                return c
+            } catch {
+                // an error for the account before (its 401, say) is not this account's: no A02 bounce (Codex r2 P2)
+                try stillOurs()
+                guard case .server(409, "reset_in_progress"?, _)? = error as? GenitaAuthError, tries < resetRetries else { throw error }
+                tries += 1
+                try await Task.sleep(for: resetRetryDelay)
+            }
+        }
     }
 
     // MARK: V04
@@ -562,12 +633,16 @@ extension AppState {
                 if voiceUnsaved, let voiceId = setup.voiceId, (try? await onboarding.saveVoice(voiceId)) != nil { voiceUnsaved = false }
                 if setup.companionCreated == true { try await onboarding.renameCompanion(setup.companionName ?? "") }
                 else if let imageId = setup.imageId {
-                    try await onboarding.createCompanion(imageId: imageId, voiceId: setup.voiceId, name: setup.companionName)
+                    try await createCompanionAfterReset(imageId: imageId, voiceId: setup.voiceId, name: setup.companionName)
                     setup.companionCreated = true
                 }
                 go(.depth)
             } catch GenitaAuthError.server(400, _, _) {
                 nameError = "Try a different name."
+            } catch GenitaAuthError.server(409, "reset_in_progress", _) {
+                nameError = Self.resetBusyLine
+            } catch is CancellationError {
+                // another account now: this NM01's answer doesn't belong to it
             } catch { nameError = Self.errorLine(error); route(error) }
         }
     }

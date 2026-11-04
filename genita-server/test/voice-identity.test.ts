@@ -161,3 +161,32 @@ test("prefetch on a cold GPU: the warmup waits past the 4 s live timeout, a fail
   assert.equal(b.isDown(), false, "a prefetch failure never trips the shared breaker");
   assert.equal(calls, 2, "the warmup clause is tried twice, then the prefetch stops");
 });
+
+// handover b9-6 (11/4): a restarted server says the cold-GPU lines in the companion's voice before the GPU is warm
+test("cold-GPU lines are kept on disk: a new client (restart) plays them cachedOnly with the voice service down", async () => {
+  const { createSeamless, HOLD_LINE, RECOVER_LINE } = await import("../src/tts/seamless.ts");
+  const { fileClips } = await import("../src/tts/clips.ts");
+  const dir = mkdtempSync(join(tmpdir(), "voice-clips-"));
+  try {
+    const cfg = loadConfig({ MODEL_API_KEY: "k", GENITA_VOICE_URL: "https://v", GENITA_VOICE_TOKEN: "t" }).voice!;
+    const up = (async () => new Response(`${JSON.stringify({ audio_base64: Buffer.alloc(960).toString("base64"), alignment: null })}\n{"done":true}\n`, { status: 200 })) as unknown as typeof fetch;
+    const a = createSeamless(cfg, { fetch: up, clips: fileClips(dir) });
+    a.prefetch(19);
+    await new Promise((r) => setTimeout(r, 200));
+    let asked = 0;
+    const down = (async () => (asked++, new Response("cold", { status: 503 }))) as unknown as typeof fetch;
+    const b = createSeamless(cfg, { fetch: down, clips: fileClips(dir) }); // the next process
+    for (const text of [HOLD_LINE, RECOVER_LINE]) {
+      let bytes = 0;
+      for await (const c of b.speak({ voiceId: "seamless:19", text, emotion: null, model: "seamless-m4t-v2", lang: "en-US", cachedOnly: true })) bytes += c.audio.length;
+      assert.equal(bytes, 960, `${text} from disk`);
+    }
+    assert.equal(asked, 0, "never asks the cold service");
+    await assert.rejects(async () => { for await (const _ of b.speak({ voiceId: "seamless:26", text: RECOVER_LINE, emotion: null, model: "seamless-m4t-v2", lang: "en-US", cachedOnly: true })) void _; }, /not_cached/, "per speaker");
+    // Codex P2: a kept clip is only reused with the same model and post chain
+    const post = createSeamless(loadConfig({ MODEL_API_KEY: "k", GENITA_VOICE_URL: "https://v", GENITA_VOICE_TOKEN: "t", GENITA_VOICE_POST: "1" }).voice!, { fetch: down, clips: fileClips(dir) });
+    await assert.rejects(async () => { for await (const _ of post.speak({ voiceId: "seamless:19", text: RECOVER_LINE, emotion: null, model: "seamless-m4t-v2", lang: "en-US", cachedOnly: true })) void _; }, /not_cached/, "post chain on: the raw clip is not reused");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
