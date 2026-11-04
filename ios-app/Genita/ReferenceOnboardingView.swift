@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreText
 import PhotosUI
 import UniformTypeIdentifiers
 
@@ -339,7 +340,8 @@ import UniformTypeIdentifiers
     @ViewBuilder func processing(width: CGFloat, top: CGFloat, shift: CGFloat = 0) -> some View {
         // the reading block (title, line, bar, %) follows the orb down by `shift`; the heading stays
         ForEach(texts.filter { $0.id != title.id && $0.y < 650 }) { n in
-            DesignText(node: n, text: n.characters == "62%" ? "\(Int(progress * 100))%" : nil).designSlot(n, width: width, top: top + (n.y >= Self.readingBlockTop ? shift : 0))
+            let fit = Self.processingLine(n, width: width, percent: "\(Int(progress * 100))%")
+            DesignText(node: fit.node, text: fit.text).designSlot(fit.node, width: width, top: top + (n.y >= Self.readingBlockTop ? shift : 0))
         }
         let track = nodes.first { $0.name == "Rectangle 305" }!
         let fill = nodes.first { $0.name == "Rectangle 306" }!
@@ -347,6 +349,33 @@ import UniformTypeIdentifiers
         DesignShape(node: track).frame(width: trackWidth, height: track.h).position(x: (width + 1) / 2, y: track.y + top + shift + track.h / 2)
         let fillWidth = referenceViewport ? fill.w : trackWidth * CGFloat(progress)
         DesignShape(node: fill).frame(width: fillWidth, height: fill.h).position(x: 59 + fillWidth / 2, y: fill.y + top + shift + fill.h / 2)
+    }
+
+    /// I03 reading-block text: "62%" is live; a line that doesn't fit its slot (SE 375: "Picking up your preferences and
+    /// communication style." in 280 pt) gets a second line instead of being cut, with its last two words kept together.
+    /// At 390 the Figma line stays one line.
+    static func processingLine(_ n: DesignNode, width: CGFloat, percent: String) -> (node: DesignNode, text: String?) {
+        if n.characters == "62%" { return (n, percent) }
+        guard let chars = n.characters, !chars.contains("\n"), chars.split(separator: " ").count > 2 else { return (n, nil) }
+        var text = chars
+        if let r = text.range(of: " ", options: .backwards) { text.replaceSubrange(r, with: "\u{00A0}") }
+        // the slot width DesignPlacement gives this node
+        let margin = 390 - n.x - n.w
+        let w = n.w >= 240 && margin >= 20 && n.x >= 20 ? max(1, width - n.x - margin) : n.w
+        let lineHeight = n.lineHeight ?? n.font.lineHeight
+        let measured = NSMutableAttributedString(attributedString: n.attributed(text))
+        measured.removeAttribute(.paragraphStyle, range: NSRange(location: 0, length: measured.length))   // as ExactDesignLabel lays it out
+        let typesetter = CTTypesetterCreateWithAttributedString(measured)
+        var lines = 0, start = 0
+        while start < text.utf16.count {
+            let count = CTTypesetterSuggestLineBreak(typesetter, start, Double(w + 0.5))
+            guard count > 0 else { break }
+            lines += 1; start += count
+        }
+        guard lines > 1 else { return (n, nil) }
+        var tall = n
+        tall.h = max(n.h, ceil(CGFloat(lines) * lineHeight))
+        return (tall, text)
     }
 
     /// I03 spacing (Chelsea 11/4, deviates from the Figma soul-orb node): the orb's frame starts 24 pt under the subtitle
