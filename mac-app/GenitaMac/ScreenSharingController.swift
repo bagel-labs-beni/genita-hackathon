@@ -2,10 +2,21 @@ import AppKit
 import ScreenCaptureKit
 import CoreMedia
 import QuartzCore
+import os
 
 @MainActor final class ScreenSharingController: NSObject, ObservableObject {
-    @Published var permissionRequired = false
+    @Published var permissionRequired = false {
+        didSet { if permissionRequired { choosing = false; log.info("share: Screen Recording not allowed, permission sheet shown") } }
+    }
     @Published var isSharing = false
+    /// The macOS picker is open (the Share pill says "Choose a window"); a picker that never answers stays visible as
+    /// that state, and pressing the pill again presents it again — never a press that does nothing.
+    @Published private(set) var choosing = false
+    /// "Stopped sharing" in the call cue for 1.6 s after the user stops (Share screen r01).
+    @Published private(set) var stoppedCue = false
+    private var stoppedCueTask: Task<Void, Never>?
+    /// `log stream --predicate 'subsystem == "ai.thebeni.genita" AND category == "share"'` shows every step of a share.
+    private let log = Logger(subsystem: "ai.thebeni.genita", category: "share")
     @Published var error: String?
     /// The alert's title: a share that ran and then ended (the system stopped the stream, the uplink dropped) is not
     /// "could not start" (Mac QA 11/3: macOS ended a live share and the alert said it never started).
@@ -35,7 +46,14 @@ import QuartzCore
         #endif
     }() {
         // a reconnect gives the call a new session id: a running share moves to it (or starts, if it began before ready)
-        didSet { if isSharing, watchConfig != oldValue { disconnectUplink(); reconnectAttempt = 0; connectUplink(source: sourceName) } }
+        didSet { if isSharing, !adoptingLiveConfig, watchConfig != oldValue { disconnectUplink(); reconnectAttempt = 0; connectUplink(source: sourceName) } }
+    }
+    private var adoptingLiveConfig = false
+    /// The live call's /v1/watch config (the same values MacConversationView passes on a session change).
+    private static func liveCallConfig() -> WatchUplink.Config? {
+        let call = CallController.shared
+        guard call.link == .live, let id = call.sessionId else { return nil }
+        return .init(server: call.currentEndpoint.url, token: call.currentEndpoint.token, sessionId: id)
     }
     private struct CaptureSession {
         let stream: SCStream
@@ -54,10 +72,19 @@ import QuartzCore
     private let audioQueue = DispatchQueue(label: "ai.thebeni.genita.mac.screen-sharing.audio")
     override init() { super.init(); SCContentSharingPicker.shared.add(self) }
     func requestSharing() {
-        if isSharing { stop(); return }
+        if isSharing { stop(); showStoppedCue(); return }
         if !UserDefaults.standard.bool(forKey: Self.noticeKey) { noticeVisible = true; return }
         guard Self.screenAccess() else { permissionRequired = true; return }
         showPicker()
+    }
+    private func showStoppedCue() {
+        stoppedCue = true
+        AccessibilityNotification.Announcement("Stopped sharing").post()
+        stoppedCueTask?.cancel()
+        stoppedCueTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(1600))
+            if !Task.isCancelled { self?.stoppedCue = false }
+        }
     }
     /// First run: macOS lists Genita under Screen Recording only after the app asks once. Without this request
     /// "Open Settings" lands on a list with no Genita in it. The system prompt shows once; later calls just answer.
@@ -105,8 +132,13 @@ import QuartzCore
     }
     private var staleWait: Task<Void, Never>?
     private func presentPicker() {
+        // The call window is ordered in without activating Genita (a move, a launch at login): the system picker
+        // only comes up for the active app, so a press could look like nothing happened.
+        NSApp.activate()
         SCContentSharingPicker.shared.isActive = true
         SCContentSharingPicker.shared.present()
+        choosing = true
+        log.info("share: picker presented (screen access \(CGPreflightScreenCaptureAccess(), privacy: .public))")
     }
     func openSettings() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") { NSWorkspace.shared.open(url) }
@@ -115,7 +147,7 @@ import QuartzCore
         staleWait?.cancel(); staleWait = nil
         captureRequest.invalidate()
         stopStartingCapture()
-        let old = activeCapture; activeCapture = nil; isSharing = false
+        let old = activeCapture; activeCapture = nil; isSharing = false; choosing = false
         SCContentSharingPicker.shared.isActive = false
         stopCapture(old)
         disconnectUplink(); reconnectAttempt = 0; connectionMessage = nil
@@ -133,6 +165,8 @@ import QuartzCore
         stopCapture(old)
     }
     private func cancelPicker() {
+        choosing = false
+        log.info("share: picker cancelled")
         captureRequest.cancelPicker(now: CACurrentMediaTime())
     }
     /// End this account's capture, including a picker/start still in flight, before another account can sign in.
@@ -142,6 +176,8 @@ import QuartzCore
         noticeVisible = false; permissionRequired = false; error = nil
     }
     private func start(_ picked: SCContentFilter, replacing stream: SCStream?) {
+        choosing = false
+        log.info("share: picked \(Self.sourceName(of: picked) ?? "a display", privacy: .public)")
         // Control Center can reselect an existing stream without showPicker().
         // Only a stream still owned by this account may authorize that selection.
         if let stream {
@@ -183,6 +219,7 @@ import QuartzCore
                 stopCapture(old)
                 blank = false
                 isSharing = true; permissionRequired = false; sourceName = name
+                log.info("share: capture started (audio on)")
                 disconnectUplink(); reconnectAttempt = 0
                 pickedFilter = picked
                 lastTitle = nil // a new window: the next poll (≤2 s) sends its title; a fresh uplink starts without the old one
@@ -192,6 +229,10 @@ import QuartzCore
                 guard captureRequest.isStarting(request) else { return }
                 captureRequest.cancelCapture(request)
                 stopStartingCapture()
+                log.error("share: capture failed \(error.localizedDescription, privacy: .public)")
+                // macOS refused the capture itself (Screen Recording off, or on but Genita not reopened yet): the
+                // permission sheet with Open Settings, not an alert that only says it failed
+                if !CGPreflightScreenCaptureAccess() { permissionRequired = true; return }
                 self.errorTitle = "Screen sharing could not start"; self.error = error.localizedDescription
             }
         }
@@ -246,10 +287,17 @@ import QuartzCore
     }
     private func connectUplink(source: String?) {
         guard isSharing else { return }
+        // The call window's view sets watchConfig when the session id changes; a view that appeared after the call
+        // was already live never saw that change, so a share would wait for the call forever. Take it from the call.
+        if watchConfig == nil, let live = Self.liveCallConfig() {
+            adoptingLiveConfig = true; watchConfig = live; adoptingLiveConfig = false
+        }
         guard callIsValid, let watchConfig else {
+            log.info("share: waiting for the call (config \(self.watchConfig != nil, privacy: .public))")
             connectionMessage = "Screen sharing is waiting for the call."
             return
         }
+        log.info("share: connecting /v1/watch")
         connectionMessage = reconnectAttempt == 0 ? "Connecting screen sharing…" : "Reconnecting screen sharing…"
         let generation = UUID(); uplinkGeneration = generation
         let link = WatchUplink(config: watchConfig) { [weak self] event in
@@ -273,6 +321,7 @@ import QuartzCore
             guard callIsValid else { disconnectUplink(); connectionMessage = "Screen sharing is disconnected."; return }
             blank = isBlank || blank
             if sharing, connectionMessage != nil {
+                log.info("share: /v1/watch started, frames flowing")
                 connectionMessage = nil; reconnectAttempt = 0
                 reconnectTask?.cancel(); reconnectTask = nil
                 // The new server session needs a frame even if the screen has not changed.
@@ -369,7 +418,14 @@ import QuartzCore
 extension ScreenSharingController: SCContentSharingPickerObserver {
     nonisolated func contentSharingPicker(_ picker: SCContentSharingPicker, didCancelFor stream: SCStream?) { Task { @MainActor in if stream == nil { self.cancelPicker() } } }
     nonisolated func contentSharingPicker(_ picker: SCContentSharingPicker, didUpdateWith filter: SCContentFilter, for stream: SCStream?) { Task { @MainActor in self.start(filter, replacing: stream) } }
-    nonisolated func contentSharingPickerStartDidFailWithError(_ error: Error) { Task { @MainActor in self.errorTitle = "Screen sharing could not start"; self.error = error.localizedDescription } }
+    nonisolated func contentSharingPickerStartDidFailWithError(_ error: Error) {
+        Task { @MainActor in
+            self.choosing = false
+            self.log.error("share: picker failed \(error.localizedDescription, privacy: .public)")
+            if !CGPreflightScreenCaptureAccess() { self.permissionRequired = true; return }
+            self.errorTitle = "Screen sharing could not start"; self.error = error.localizedDescription
+        }
+    }
 }
 extension ScreenSharingController: SCStreamDelegate {
     nonisolated func stream(_ stream: SCStream, didStopWithError error: Error) {

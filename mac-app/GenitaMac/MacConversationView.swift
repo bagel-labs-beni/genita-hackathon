@@ -16,7 +16,6 @@ struct MacConversationView: View {
     @State private var linkOpened: ProductPick?
     @State private var menuOpen = false
     @State private var settingsOpen = false
-    @State private var hoverShare = false
     /// Debug review renders one state per screenshot without the env (MacHandoff.renderReviewScreens).
     var reviewOverride: String? = nil
     private var reviewState: String {
@@ -30,6 +29,12 @@ struct MacConversationView: View {
     private var waitingCopy: HandoffCopy? { handoff.motion == nil ? HandoffCopy.mac(handoff.surface, sharingStopped: handoff.sharingStopped) : nil }
     private var displaySharing: Bool { sharing.isSharing || ["sharing", "reacting", "black", "speaker"].contains(reviewState) }
     private var permissionVisible: Bool { sharing.permissionRequired }
+    /// The Share screen pill: sharing, starting (the permission sheet or the macOS picker is open), or idle.
+    private var sharePhase: MacSharePill.Phase {
+        if displaySharing { return .sharing }
+        if permissionVisible || sharing.choosing || reviewState == "share-starting" { return .starting }
+        return .idle
+    }
     private let blue = Color(red: 0, green: 162.0 / 255, blue: 1)
     /// The menu / share row: under the fake status bar before, at the window's top in Mac v2 (#216).
     private var topRowY: CGFloat { MacDesignV2.enabled ? 47.5 : 86.5 }
@@ -96,17 +101,9 @@ struct MacConversationView: View {
                     }.position(x: 334, y: 724 - railShift).opacity(sheetCovers ? 0 : 1).allowsHitTesting(!sheetCovers)
                 }
                 if waitingCopy == nil && handoff.motion == nil && !sheetFull && linkOpened == nil {
-                Button { sharing.requestSharing() } label: {
-                    MacGlassControl(icon: "glass-share-icon", tint: displaySharing || permissionVisible ? Color(red: 231.0 / 255, green: 32.0 / 255, blue: 12.0 / 255) : nil)
-                }.buttonStyle(.plain).position(x: 342.5, y: topRowY).onHover { hoverShare = $0 }
-                    .accessibilityLabel(displaySharing ? "Stop screen sharing" : "Share screen").accessibilityIdentifier("macShareScreen")
-                }
-                if waitingCopy == nil && !permissionVisible && (hoverShare || reviewState == "hint") {
-                    // the hover label: a padded capsule (it was a fixed 76 pt box, the text touched both sides)
-                    Text(displaySharing ? "Stop sharing" : "Share screen").font(.custom("PretendardVariable-SemiBold", size: 12)).foregroundStyle(.white).lineLimit(1)
-                        .padding(.horizontal, 10).frame(height: 24).fixedSize().macDarkGlass(in: Capsule())
-                        // right edge on the share button's right edge (366), not hanging past it
-                        .frame(width: 160, alignment: .trailing).position(x: 366 - 80, y: MacDesignV2.enabled ? 92 : 43.5).allowsHitTesting(false)
+                    // Share screen r01 (Chelsea OK 11/4): one labelled glass pill, right edge at 366, centred on the top row
+                    MacSharePill(phase: sharePhase, action: { sharing.requestSharing() }, reviewHover: reviewState == "share-hover")
+                        .frame(width: 342, alignment: .trailing).position(x: 195, y: topRowY)
                 }
                 if let waitingCopy {
                     VStack(spacing: 0) { Spacer(minLength: 0); HandoffWaitingSheet(copy: waitingCopy) { handoff.continueHere() } }.frame(width: 390, height: 844)
@@ -236,6 +233,7 @@ struct MacConversationView: View {
     private var cueText: String? {
         // MC-M (90:2): the face beside the open menu carries nothing
         if linkOpened != nil || menuOpen { return nil }
+        if sharing.stoppedCue || reviewState == "share-stopped" { return "Stopped sharing" }
         if sharing.isSharing, let message = sharing.connectionMessage { return message }
         // MS-2 "Reacting" and MS-3 black-screen card own that spot while a share is live
         if sharing.isSharing && (sharing.reacting || sharing.blank) { return nil }
@@ -326,7 +324,7 @@ struct MacConversationView: View {
             UnevenRoundedRectangle(topLeadingRadius: 30, topTrailingRadius: 30).fill(Color(white: 254.0 / 255)).frame(width: 390, height: 551).shadow(color: .black.opacity(0.04), radius: 12.95)
             Capsule().fill(Color(white: 219.0 / 255)).frame(width: 47, height: 5).position(x: 195.5, y: 14.5)
             Text("Allow screen sharing.").font(.custom("KMUTTF-SungkokSemiSerif", size: 28)).foregroundStyle(ink).position(x: 179, y: 69)
-            Text("Allow Genita to record your screen in\nSystem Settings, then try sharing again.\nYou can keep talking without sharing.").font(font(16)).foregroundStyle(ink).fixedSize(horizontal: true, vertical: true).frame(width: 320, alignment: .leading).position(x: 201, y: 131)
+            Text("Turn on Genita in System Settings ›\nScreen Recording. Already on? Quit and\nreopen Genita. You can keep talking.").font(font(16)).foregroundStyle(ink).fixedSize(horizontal: true, vertical: true).frame(width: 320, alignment: .leading).position(x: 201, y: 131)
             MacV2Button(label: "Open Settings", id: "macSharePermissionOpen") { sharing.openSettings() }.frame(width: 313).position(x: 194.5, y: 251)
             Button { sharing.permissionRequired = false } label: { Text("Not now").font(font(15, medium: true)).foregroundStyle(ink).frame(width: 313, height: 36).contentShape(Rectangle()) }.buttonStyle(.plain).position(x: 194.5, y: 307).accessibilityLabel("Not now").accessibilityIdentifier("macSharePermissionNotNow")
         }.frame(width: 390, height: 366, alignment: .topLeading).position(x: 195, y: 661).accessibilityIdentifier("macSharePermission")
