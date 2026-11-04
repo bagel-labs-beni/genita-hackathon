@@ -414,10 +414,16 @@ import UIKit
         #if os(iOS)
         let session = AVAudioSession.sharedInstance()
         do {
-            try session.setCategory(.playAndRecord, mode: Self.useVoiceProcessing ? .voiceChat : .default, options: [.defaultToSpeaker, .allowBluetoothHFP])
+            // P0 11/4 (TF 361 robotic voice): the session came up at 24 kHz in .voiceChat, so VPIO ran narrow-band
+            // with call-style output processing. Now: .videoChat (echo cancellation stays on, wide-band speaker
+            // route/EQ) at a preferred 48 kHz, set before activation; the 24 kHz reply player is converted up by the
+            // main mixer. The voice processing on the input node (setVoiceProcessingEnabled) is unchanged.
+            try session.setCategory(.playAndRecord, mode: Self.useVoiceProcessing ? .videoChat : .default,
+                                    options: [.defaultToSpeaker, .allowBluetoothHFP, .allowBluetoothA2DP])
+            try? session.setPreferredSampleRate(48_000)
             try session.setPreferredIOBufferDuration(0.02)
             try session.setActive(true)
-            log.info("audio session: playAndRecord mode=\(Self.useVoiceProcessing ? "voiceChat (VPIO)" : "default (no voice processing)", privacy: .public)")
+            log.info("audio session: playAndRecord mode=\(Self.useVoiceProcessing ? "videoChat (VPIO)" : "default (no voice processing)", privacy: .public) rate=\(session.sampleRate, privacy: .public)")
         } catch {
             log.error("audio session: \(error.localizedDescription, privacy: .public)")
         }

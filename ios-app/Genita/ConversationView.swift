@@ -118,7 +118,11 @@ struct ConversationView: View {
                             .onTapGesture(count: 2) { if call.canFlipCamera { call.flipCamera() } } }
                         // F10-U-SHEET r03: the face steps back as the sheet rises (half .814, rising .895) and
                         // becomes a 96 × 128 window when the sheet is full.
-                        CompanionFaceView(still: companionImage, loop: loopURL, face: connecting ? nil : call.face, faceStill: call.faceStill, poster: call.facePoster, framedStill: framedScene, speaking: call.companionSpeaking).frame(width: full.size.width, height: full.size.height).clipped()
+                        CompanionFaceView(still: companionImage, loop: loopURL, face: connecting ? nil : call.face, faceStill: call.faceStill, poster: call.facePoster, framedStill: framedScene, speaking: call.companionSpeaking).frame(width: full.size.width, height: full.size.height)
+                            // r03 `.stage` clip-path inset(-8 -60): the aspect-filled face keeps 60 pt each side past the
+                            // screen, so when it steps back (translate 43.1, scale .814) it still reaches the left edge.
+                            // `.clipped()` cut it at 390 first → a 43 pt black band on the left under the half sheet (b12).
+                            .clipShape(FaceOverscanClip())
                             // S07 veiled → S09 the veil lifts (motion lane); never in the handoff snapshot (ImageRenderer, no onAppear)
                             // motion details card 10: veiled until the generated face (poster or live) is there, then clears
                             // once (blur 14, 520 ms) with one medium tap; flag off → the catalog reveal as before
@@ -751,4 +755,9 @@ struct CallPrepLine: View {
         timer?.cancel(); timer = nil
         if task != .invalid { UIApplication.shared.endBackgroundTask(task); task = .invalid }
     }
+}
+
+/// r03 `.stage{clip-path:inset(-8px -60px -8px -60px)}`: the call face clips 60 pt outside its frame left / right, 8 pt above / below.
+struct FaceOverscanClip: Shape {
+    func path(in rect: CGRect) -> Path { Path(rect.insetBy(dx: -60, dy: -8)) }
 }

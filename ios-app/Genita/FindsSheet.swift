@@ -123,9 +123,11 @@ enum BundlePicture {
 /// r03 `.skel`: a 1.4 s shimmer; still under Reduce Motion.
 /// Motion card 4 (flag `motionDetails` on): a white band sweeps left → right every 1.2 s, and the loop stops in UI tests.
 struct Shimmer: View {
+    /// true while its layer is hidden (the searching layer stays in the tree under the half / full sheet): no 60 fps redraw
+    var paused: Bool = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
-        if MotionDetails.enabled { FindsShimmer(base: FindsInk.skip) } else if reduceMotion { FindsInk.skip } else {
+        if MotionDetails.enabled { FindsShimmer(base: FindsInk.skip) } else if reduceMotion || paused { FindsInk.skip } else {
             TimelineView(.animation) { context in
                 let t = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.4) / 1.4
                 LinearGradient(stops: [.init(color: FindsInk.skip, location: 0.3), .init(color: CallInk.sheet, location: 0.5), .init(color: FindsInk.skip, location: 0.7)],
@@ -180,13 +182,14 @@ struct PressScale: ButtonStyle {
 /// r01 searching icon: 32 pt soft-blue orb with a magnifier, a 2 pt blue ring turning every 1.1 s. Driven by
 /// TimelineView, not an onAppear animation (the layer is built while hidden, so onAppear ran once and froze).
 struct SearchOrb: View {
+    var paused: Bool = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         ZStack {
             Circle().fill(FindsInk.blueSoft).frame(width: 32, height: 32)
             Image(systemName: "magnifyingglass").font(.system(size: 14, weight: .semibold)).foregroundStyle(FindsInk.blueText)
             if !reduceMotion {
-                TimelineView(.animation) { context in
+                TimelineView(.animation(minimumInterval: nil, paused: paused)) { context in
                     let t = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.1) / 1.1
                     // CSS: top + left border coloured = a half ring, starting at the top-right corner
                     Circle().trim(from: 0, to: 0.5).stroke(FindsInk.blue, style: StrokeStyle(lineWidth: 2, lineCap: .round))
@@ -223,14 +226,15 @@ struct SearchStageLine: View {
 /// r01 skeleton row: 64 pt shimmer tile (r12) + three bars 14 / 12 / 10 tall, gap 7.
 struct SkeletonRow: View {
     let widths: (CGFloat, CGFloat, CGFloat)
+    var paused: Bool = false
     var body: some View {
         HStack(spacing: 12) {
-            Shimmer().frame(width: 64, height: 64).clipShape(RoundedRectangle(cornerRadius: 12))
+            Shimmer(paused: paused).frame(width: 64, height: 64).clipShape(RoundedRectangle(cornerRadius: 12))
             GeometryReader { g in
                 VStack(alignment: .leading, spacing: 7) {
-                    Shimmer().frame(width: g.size.width * widths.0, height: 14).clipShape(RoundedRectangle(cornerRadius: 8))
-                    Shimmer().frame(width: g.size.width * widths.1, height: 12).clipShape(RoundedRectangle(cornerRadius: 8))
-                    Shimmer().frame(width: g.size.width * widths.2, height: 10).clipShape(RoundedRectangle(cornerRadius: 8))
+                    Shimmer(paused: paused).frame(width: g.size.width * widths.0, height: 14).clipShape(RoundedRectangle(cornerRadius: 8))
+                    Shimmer(paused: paused).frame(width: g.size.width * widths.1, height: 12).clipShape(RoundedRectangle(cornerRadius: 8))
+                    Shimmer(paused: paused).frame(width: g.size.width * widths.2, height: 10).clipShape(RoundedRectangle(cornerRadius: 8))
                 }.frame(maxHeight: .infinity)
             }.frame(height: 64)
         }
@@ -305,9 +309,11 @@ struct FindsSheet: View {
 
     private var searchLayer: some View {
         let f = finds.current
+        // hidden under half / full (opacity 0, still in the tree): 13 TimelineViews redrawing every frame made the drag lag
+        let hidden = finds.state != .searching
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 12) {
-                SearchOrb()
+                SearchOrb(paused: hidden)
                 VStack(alignment: .leading, spacing: 0) {
                     // one line each next to Stop at 390 pt (Chelsea 11/3): never wraps, never cuts a word
                     OneLineText(text: f?.failureLines?.title ?? f?.searchTitle ?? "Looking", font: TypeStyle.body(16, .medium), color: CallInk.ink)
@@ -334,7 +340,7 @@ struct FindsSheet: View {
             }.frame(minHeight: 52)
             if f?.failed == nil {
                 VStack(spacing: 14) {
-                    ForEach(0..<3, id: \.self) { i in SkeletonRow(widths: i == 2 ? (0.60, 0.82, 0.40) : (0.78, 0.94, 0.40)) }
+                    ForEach(0..<3, id: \.self) { i in SkeletonRow(widths: i == 2 ? (0.60, 0.82, 0.40) : (0.78, 0.94, 0.40), paused: hidden) }
                 }.padding(.top, 18).accessibilityHidden(true)
             }
         }
