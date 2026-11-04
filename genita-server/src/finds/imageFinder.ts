@@ -232,18 +232,23 @@ export async function findWebImage(v: FindsVendors, query: string, signal: Abort
   if (!webImagesOn() || !v.productImage) return null;
   const key = norm(query);
   if (!key) return null;
+  if (signal.aborted) return null;
   const searchFor = (q: string) => (v.pageFacts ? memo(norm(q), (s) => search(v, norm(q), s)) : Promise.resolve(null));
-  const run = async (): Promise<Buffer | null> => {
+  // `s` = the caller's signal + this call's budget: nothing new (a paid search) starts once it is over (Codex P2);
+  // a lookup already shared with other callers keeps running for them
+  const run = async (s: AbortSignal): Promise<Buffer | null> => {
     for (const t of opts.wiki ?? []) {
+      if (s.aborted) return null;
       if (!norm(t)) continue;
-      const b = await memo(`wiki:${norm(t)}`, (s) => wikiPicture(v, t, s));
-      if (b || signal.aborted) return b;
+      const b = await memo(`wiki:${norm(t)}`, (sig) => wikiPicture(v, t, sig));
+      if (b) return b;
     }
+    if (s.aborted) return null;
     const b = await searchFor(query);
-    if (b || signal.aborted) return b;
+    if (b || s.aborted) return b;
     return firstOf((opts.variants ?? []).filter((q) => norm(q) && norm(q) !== key).map(searchFor));
   };
-  return timeboxed(() => run(), opts.budgetMs ?? WEB_IMAGE_BUDGET_MS, signal);
+  return timeboxed(run, opts.budgetMs ?? WEB_IMAGE_BUDGET_MS, signal);
 }
 
 /** An ingredient's lookups: Wikipedia ("anchovy stock", then "stock", then "anchovy"), then "<x> ingredient", "<x> food", "<x>". */

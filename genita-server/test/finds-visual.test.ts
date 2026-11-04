@@ -294,3 +294,18 @@ test("rowPictures: row 0 without any picture → hero is the next row's picture 
   const slots = (events as Extract<ServerEvent, { type: "find.image" }>[]).map((e) => e.slot).sort();
   assert.deepEqual(slots, ["hero", "source-1"]);
 });
+
+test("over budget or already stopped: no further paid search starts (Codex P2)", async () => {
+  const asked: string[] = [];
+  const v = {
+    ...vendors(),
+    spark: async (req: Parameters<FindsVendors["spark"]>[0]) => { asked.push(JSON.stringify(req.input)); await new Promise((r) => setTimeout(r, 60)); return { text: "OK", output: [] }; },
+  } as FindsVendors;
+  assert.equal(await findWebImage(v, "late one", new AbortController().signal, { budgetMs: 20, variants: ["late one food", "late one"] }), null);
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(asked.length, 1, "the variants never start after the budget");
+  const stopped = new AbortController();
+  stopped.abort();
+  assert.equal(await findWebImage(v, "never", stopped.signal), null);
+  assert.equal(asked.length, 1, "an already-stopped call searches nothing");
+});
