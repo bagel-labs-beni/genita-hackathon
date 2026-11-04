@@ -2288,7 +2288,14 @@ export class Session {
     let style = "";
     if (styleReasonOn() && !suggestMac && !interpret && !greeting && !turn.cue) {
       const follow = this.lastStyleAt !== null && this.now() - this.lastStyleAt < 120_000 && (isGoesWithFollowUp(text) || /\b(?:find|show|get) (?:me )?(?:some |a pair of |a )?[a-z]+(?: [a-z]+)? (?:for|to go with|that go with) (?:it|this|that|them)\b/i.test(text));
-      if (follow) { style = styleFollowLine(this.history.filter((h) => h.role === "assistant").at(-1)?.text); this.lastStyleAt = null; }
+      // only a verdict that survives this call's forgets is quoted (Codex r9 P1); a forgotten one is not followed up
+      if (follow) {
+        const kept = forgetInCall(this.history, this.removedLines);
+        const last = kept.filter((h) => h.role === "assistant").at(-1);
+        const lastAll = this.history.filter((h) => h.role === "assistant").at(-1);
+        style = last && last === lastAll ? styleFollowLine(last.text) : "";
+        this.lastStyleAt = null;
+      }
       else if (camera.length > 0 && (outfitPick || isStyleTurn(text))) {
         const said = forgetInCall(this.history, this.removedLines).filter((h) => h.role === "assistant").map((h) => h.text).slice(-4);
         const s = styleLine({ profile: this.user?.profile, memories: this.memories, said, askedColoring: this.styleAsked });

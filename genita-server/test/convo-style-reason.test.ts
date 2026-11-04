@@ -1,7 +1,7 @@
 /** prompt-100 style (Chelsea 11/4 23:4x): style feedback uses what we know about them, woven in. */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isStyleTurn, knowsColoring, styleFollowLine, styleLine, STYLE_FOLLOW_LINE, STYLE_SEARCH_HINT, styleReasonOn } from "../src/convo/styleReason.ts";
+import { isStyleTurn, knowsColoring, usedReasons, styleFollowLine, styleLine, STYLE_FOLLOW_LINE, STYLE_SEARCH_HINT, styleReasonOn } from "../src/convo/styleReason.ts";
 import { normalizeEnglish } from "../src/voice/normalize.ts";
 import { buildInstructions } from "../src/prompt/persona.ts";
 import { GENERAL_REPLY_LINE } from "../src/finds/general.ts";
@@ -16,15 +16,16 @@ test("style turns, coloring known or not, the once-only question, rotation", () 
   const warm = styleLine({ profile: "- Personal color: warm (autumn)", said: [], askedColoring: false });
   assert.equal(warm.asks, false);
   assert.match(warm.line, /one personal reason in the same breath/);
-  assert.match(warm.line, /Never comment on their body shape/);
+  assert.deepEqual(usedReasons("- Taste: Minimal style", [], ["The navy one, it's minimal and sharper for tonight."]), ["tonight", "minimal"]);
+  assert.match(warm.line, /Never about their body shape/);
   const unknown = styleLine({ profile: "", said: [], askedColoring: false });
   assert.equal(unknown.asks, true);
   assert.match(unknown.line, /warm or cool tones usually work for you\?/);
-  assert.match(unknown.line, /only this one question, and use their answer from then on/);
+  assert.match(unknown.line, /just this once, and use their answer from then on/);
   const later = styleLine({ profile: "", said: ["The cream one, warm tones always look good on you."], askedColoring: true });
   assert.equal(later.asks, false);
   assert.doesNotMatch(later.line, /usually work for you\?/);
-  assert.match(later.line, /Reasons you already gave this call \(data\): "The cream one, warm tones always look good on you\."; use a different one now/);
+  assert.match(later.line, /Already used this call \(data\): "warm", "tones"; give a different reason now/);
   assert.match(STYLE_FOLLOW_LINE, /only a reason you actually said, and don't say you found anything yet/);
   assert.match(styleFollowLine("<happy> The cream one, warm tones love you."), /Your verdict was \(data\): "The cream one, warm tones love you\."/);
   assert.match(STYLE_SEARCH_HINT, /Keep the reason/);

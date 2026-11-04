@@ -1537,13 +1537,13 @@ test("prompt-100 style (session): a style ask on camera gets the personal-reason
   await session.onClientText(JSON.stringify({ type: "text", text: "which one should I wear tonight?", frames: [jpeg] }));
   await client.waitFor((m) => m.type === "reply" && m.final === true);
   const first = calls.at(-1)!.instructions ?? "";
-  assert.match(first, /Style call: say your pick first, then one personal reason/);
+  assert.match(first, /Style call: your pick first, then one personal reason/);
   assert.match(first, /warm or cool tones usually work for you\?/, "coloring unknown → asked once");
   await session.onClientText(JSON.stringify({ type: "text", text: "and does this one suit me?", frames: [jpeg] }));
   await client.waitFor((m) => m.type === "reply" && m.final === true && calls.length >= 2);
   const second = calls.at(-1)!.instructions ?? "";
   assert.doesNotMatch(second, /warm or cool tones usually work for you\?/, "never asked twice");
-  assert.match(second, /use a different one now/);
+  assert.match(second, /Already used this call \(data\): "warm"; give a different reason now/);
   await session.onClientText(JSON.stringify({ type: "text", text: "find me some shoes for it" }));
   await client.waitFor((m) => m.type === "reply" && m.final === true && calls.length >= 3);
   assert.match(calls.at(-1)!.instructions ?? "", /keeping the reason you gave[^\n]*Your verdict was \(data\): "The cream one, it warms you right up\."/);

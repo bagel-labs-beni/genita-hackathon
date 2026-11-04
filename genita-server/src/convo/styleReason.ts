@@ -33,17 +33,28 @@ export type StyleInput = {
   askedColoring: boolean;
 };
 
+const STOP = new Set(["user", "wants", "treated", "taste", "likes", "dislikes", "communication", "casual", "teasing", "welcome", "personal", "color", "colour", "summer", "with", "over", "that", "this", "from", "they", "them", "their", "picked", "last", "week", "style", "like", "into", "when", "what"]);
+const FIXED = ["warm", "cool", "tones", "undertones", "coloring", "winter", "autumn", "date", "tonight", "dinner"];
+/** the reasons already used this call: words from what we know about them (and the fixed coloring/occasion words) that our replies said */
+export function usedReasons(profile: string | undefined, memories: string[], said: string[]): string[] {
+  const known = new Set([...FIXED, ...([profile ?? "", ...memories].join(" ").toLowerCase().match(/[a-z][a-z-]{3,}/g) ?? []).filter((w) => !STOP.has(w))]);
+  const spoken = said.join(" ").replace(/<[^>]*>|\[[^\]]*\]/g, "").toLowerCase().match(/[a-z][a-z-]{3,}/g) ?? [];
+  // "warms" uses "warm"; "dates" uses "date"
+  return [...known].filter((k) => spoken.some((w) => w === k || (w.startsWith(k) && w.length - k.length <= 3))).slice(0, 8);
+}
+
 /** the line for a style turn on camera; `asks` = this line carries the once-per-call coloring question */
 export function styleLine(s: StyleInput): { line: string; asks: boolean } {
   const known = knowsColoring(s.profile, s.memories);
-  // the last two things we said this call (the earlier verdicts are in them)
-  const verdicts = s.said.map((t) => t.replace(/<[^>]*>|\[[^\]]*\]/g, "").trim()).filter(Boolean).slice(-2);
-  const rotate = verdicts.length ? ` Reasons you already gave this call (data): ${verdicts.map((v) => `"${v.slice(0, 90)}"`).join("; ")}; use a different one now.` : "";
-  const base = "Style call: say your pick first, then one personal reason in the same breath, from what you know about them: their coloring, favorite colors, the style they like, the occasion, a fit they said they like or hate, or what they picked before; like \"the cream one, warm tones always look good on you\" or \"black's your go-to anyway, and it's sharper for tonight\". One reason, two at most, friend tone, no list or lecture. Never comment on their body shape.";
+  // the last few things we said this call (the earlier verdicts are in them): their reason words are used up
+  const used = usedReasons(s.profile, s.memories ?? [], s.said.slice(-4));
+  const rotate = used.length ? ` Already used this call (data): ${used.map((w) => `"${w}"`).join(", ")}; give a different reason now (the occasion, something you can see, a past pick or another taste).` : "";
+  // 11/5 eval: a shorter line (Spark minimal effort came back empty 3/96 with the long one)
+  const base = "Style call: your pick first, then one personal reason in the same breath from what you know about them (coloring, favorite colors, taste, the occasion, a fit they like or hate, a past pick), like \"the cream one, warm tones always look good on you\". One reason, two at most, no list. Never about their body shape.";
   if (known) return { line: `${base}${rotate}`, asks: false };
-  if (s.askedColoring) return { line: `${base} You don't know their coloring: if you mention it, read it lightly from what you see (like \"with your hair color, the warmer one pops\"), never as certain.${rotate}`, asks: false };
-  // Chelsea 11/4 (#14): unknown taste or coloring → one light question at the start, then use the answer; never a quiz
-  return { line: `${base} You don't know their coloring yet: give the reason from what you do know (the occasion, their taste), then end with one casual question, like \"warm or cool tones usually work for you?\" — only this one question, and use their answer from then on.${rotate}`, asks: true };
+  if (s.askedColoring) return { line: `${base} Their coloring is unknown: never claim it, at most a light read from what you see (\"with your hair color, the warmer one pops\"), or use what they told you.${rotate}`, asks: false };
+  // Chelsea 11/4 (#14): unknown taste or coloring → one light question, then use the answer; never a quiz
+  return { line: `${base} Their coloring is unknown: add one casual question, like \"warm or cool tones usually work for you?\", just this once, and use their answer from then on.${rotate}`, asks: true };
 }
 
 /** "find me some" right after a style verdict: keep its reason and say it once (only a reason it really gave) */
