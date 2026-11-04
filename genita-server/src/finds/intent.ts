@@ -105,6 +105,11 @@ const ORDER = /\b(order|online|purchase|in stock|on sale|cheapest)\b/i;
 const EXPLICIT_SHOP = /\b(look(?:ing)? for|find(?:ing)?|search(?:ing)? for|shop(?:ping)? for|buy(?:ing)?|get me|where (?:can|do) i (?:get|buy))\b|찾아|사고\s*싶|살\s*만한/i;
 
 /** Chelsea 11/4: a turn no card takes but that asks something the web knows opens a search card (general.ts). */
+/** P0 11/4: cooking from what is in view — not a menu idea, a craving or a dinner plan (those are conversation) */
+const RECIPE_ASK = /\b(?:what (?:can|could|should) i (?:make|cook)|(?:make|cook)\b[^.?!]{0,30}\b(?:with|from|using) (?:this|these|that|those|what)|what(?:'s| is) in (?:here|there|my fridge|the fridge)|with what i (?:have|got|'ve got)|use (?:this|these|them) up|in my fridge|in the fridge)\b|냉장고|이걸로|이거로|있는\s*걸로|이거\s*가지고/i;
+/** P0 11/4: a choice or "help me pick" — never a describe / observe question about what they have on */
+const CHOOSE = /\b(?:which|better|best|or|vs\.?|versus|should i wear|what (?:should|do|can) i wear|what to wear|pick|choose|decide|go with)\b|어느|뭐가\s*나아|입을까|골라/i;
+
 export function classifyTurn(text: string, hasFrames: boolean, afterProduct = false): Intent {
   return cardIntent(text, hasFrames, afterProduct) ?? generalIntent(text);
 }
@@ -114,7 +119,7 @@ function cardIntent(text: string, hasFrames: boolean, afterProduct = false): Int
   if (url) return { kind: "link", url };
   // clothes held up to the camera and a choice between them: an outfit pick, even with "recommend" or "dinner" in it
   // (not when it's about ordering one, or cooking without a word about wearing: "jacket potatoes", Codex r1)
-  if (hasFrames && COMPARE.test(text) && (ON_ME.test(text) || GARMENT.test(text)) && !EXPLICIT_SHOP.test(text) && !ORDER.test(text)
+  if (hasFrames && COMPARE.test(text) && CHOOSE.test(text) && (ON_ME.test(text) || GARMENT.test(text)) && !EXPLICIT_SHOP.test(text) && !ORDER.test(text)
     && !SHOP_LINKS.test(text) && !LINKS_ASK.test(text) && !(COOK.test(text) && !ON_ME.test(text))) {
     return { kind: "outfit" };
   }
@@ -123,11 +128,12 @@ function cardIntent(text: string, hasFrames: boolean, afterProduct = false): Int
   if (!hasFrames) return null;
   const cook = COOK.test(text);
   const clothes = CLOTHES.test(text);
-  // "what should I wear to dinner?" names a meal but asks about clothes (AU-60)
-  if (clothes && (!cook || ON_ME.test(text))) return { kind: "outfit" };
-  // "a dinner place near Gangnam" is a place to look up, not the fridge (P0 11/4)
-  // only a restaurant *search* ("restaurants near…", "a dinner place near Gangnam"): "restaurant-style pasta with these" is cooking (Codex r2)
-  if (cook && !/\brestaurants? (?:near|in|around)\b|\b(?:dinner|lunch|brunch|breakfast) (?:places?|spots?)\b|\bplaces? to eat\b|\bspots? to eat\b|\b(?:near|around) [A-Z]|\bin [A-Z][a-z]+\b/.test(text)) return { kind: "recipe" };
+  // "what should I wear to dinner?" names a meal but asks about clothes (AU-60); only a choice opens the outfit card —
+  // "what am I wearing?" / "how do I look?" / "do you like my shirt?" are answered out loud from the frame (P0 11/4)
+  if (clothes && (!cook || ON_ME.test(text)) && CHOOSE.test(text)) return { kind: "outfit" };
+  // P0 11/4 ("recommend a dinner menu" opened the fridge card): only "what can I make with these / what's in here";
+  // never a restaurant search ("a dinner place near Gangnam", #735)
+  if (cook && RECIPE_ASK.test(text) && !/\brestaurants? (?:near|in|around)\b|\b(?:dinner|lunch|brunch|breakfast) (?:places?|spots?)\b|\bplaces? to eat\b|\bspots? to eat\b|\b(?:near|around) [A-Z]|\bin [A-Z][a-z]+\b/.test(text)) return { kind: "recipe" };
   if (isIdentifyAsk(text)) return { kind: "identify" };
   return null;
 }

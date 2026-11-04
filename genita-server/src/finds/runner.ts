@@ -11,7 +11,7 @@ import { reasonChips, tasteLines, type TasteLine } from "../personalize/reasons.
 import { randomUUID } from "node:crypto";
 import type { FindCard, FindKind, ServerEvent } from "../protocol.ts";
 import { classifyTurn, isBareAccept, isGoesWithFollowUp, isLinksAsk, isProductAsk, refersToScreen } from "./intent.ts";
-import { PRODUCT_COUNT, SEARCH_TITLE, guessLabel, runProduct, shortLabel } from "./product.ts";
+import { PRODUCT_COUNT, SEARCH_TITLE, decidePick, guessLabel, runProduct, shortLabel, tasteLines as productTaste } from "./product.ts";
 import { confirmItem, FRIDGE_UNCLEAR, IDENTIFY_UNSURE, runIdentify, runLink, runOutfit, runRecipe, type PipelineCtx, type PipelineResult } from "./pipeline.ts";
 import { cacheGet, cacheKey, cachePut, cardFitsColors, cardIsKind, categoryOf, claimWarm, colorAsks, colorPhrases, colorsOf, plainAsk, releaseWarm, type CachedProducts } from "./productCache.ts";
 import { ownerKey, type FindsStore } from "./store.ts";
@@ -142,7 +142,8 @@ export type TurnInput = {
   screen?: string;
 };
 
-export type TurnStarted = { findId: string; kind: FindKind | "identify"; ack?: string };
+/** reaction: S5 — the spoken line made from the same pick the search shops (null = say the plain ack) */
+export type TurnStarted = { findId: string; kind: FindKind | "identify"; ack?: string; reaction?: Promise<string | null> };
 
 /** "What's this?": a reaction while it looks (the name comes after the checks, like the fridge) */
 export const IDENTIFY_ACK = "Ooh, let me look.";
@@ -290,6 +291,8 @@ export class FindsRunner {
   onTurn(input: TurnInput): TurnStarted | null {
     if (this.closed || (this.owner && this.deps.store.work.isDeleted(this.owner))) return null;
     let t = input;
+    /** P0 11/4: a camera find that can't see clearly closes quietly — the spoken reply already answered */
+    const silentFail = (e: ServerEvent): ServerEvent => (e.type === "find.failed" && e.reason !== "stopped" ? { ...e, reason: "stopped", message: "" } : e);
     const afterProduct = this.afterProduct(t.recent);
     // demo S4→S5: a bare "send me the links" while the outfit's shoes are being searched already takes that search
     // (only a links ask: "does this jacket match my style?" stays an outfit question, Codex P2)
@@ -319,14 +322,8 @@ export class FindsRunner {
     if (useScreen) t = { ...t, frames: [t.screen!], unclear: false };
     const findId = randomUUID();
     if (intent.kind === "identify") return this.startIdentify(findId, t, useScreen);
-    if (intent.kind === "recipe" && t.unclear) {
-      // D59 · CW-01 DARK: the app saw nothing but dark / blur — no "let me see" that IC-4 then takes back: the honest
-      // line is the turn's whole answer, the IC-4 card shows at once, and nothing is guessed from the picture
-      this.onEvent({ type: "find.started", findId, utteranceId: t.utteranceId, kind: "recipe", title: "Looking at your ingredients", detail: "Checking what's there · recipes" });
-      this.onEvent({ type: "find.failed", findId, reason: "unclear", message: FRIDGE_UNCLEAR });
-      this.hooks.log("finds.unclear_frames", { findId });
-      return { findId, kind: "recipe", ack: FRIDGE_UNCLEAR };
-    }
+    // P0 11/4: a dark / blurry fridge is answered by the conversation itself (no find, no canned line)
+    if (intent.kind === "recipe" && t.unclear) return null;
     const abort = new AbortController();
     const ctx: PipelineCtx = {
       findId,
@@ -343,7 +340,7 @@ export class FindsRunner {
       timeZone: this.timeZone,
       vendors: this.deps.vendors,
       // a shared-screen frame: no boxes for the camera preview, and the card never claims (or shows) a camera picture
-      emit: (e) => this.onEvent(useScreen ? screenEvent(e) : e),
+      emit: (e) => { const s = useScreen ? screenEvent(e) : e; this.onEvent(s && (intent.kind === "recipe" || intent.kind === "outfit") ? silentFail(s) : s); },
       signal: abort.signal,
       now: this.hooks.now,
       log: this.hooks.log,
@@ -351,6 +348,8 @@ export class FindsRunner {
       speak: (text) => {
         const card = this.cards.get(findId);
         if (card) void this.persist(card);
+        // P0 11/4: never a canned "can't see it" line after the reply
+        if (!text.trim() || /^I can['’]t make out/i.test(text)) return;
         if (!this.closed) this.hooks.announce(text);
       },
       putImage: async (slot, bytes) => {
@@ -360,6 +359,7 @@ export class FindsRunner {
       },
     };
     let run: (c: PipelineCtx) => Promise<PipelineResult>;
+    let pickP: ReturnType<typeof decidePick> | null = null;
     if (intent.kind === "product") {
       const now = this.hooks.now();
       const named = guessLabel(t.text, "") !== "";
@@ -377,11 +377,19 @@ export class FindsRunner {
       const camera = t.frames.length > 0;
       const cached = prev || camera || followUp || this.deps.productCache !== true ? null : this.cacheFor(t.text);
       // scene 5: a "yes" to the verdict's offer may take the search started with that verdict (same moment, same frames)
-      const pre = prev || cached || (camera && !followUp) ? null : this.takePrefetch(t.text, now);
+      // S5 (QA 11/4): a follow-up searches fresh from the one pick it says out loud (the prefetch never won anyway: 0/3)
+      const pre = prev || cached || camera || followUp ? null : this.takePrefetch(t.text, now);
       if (pre) this.lastProduct = { label: pre.label, question: `${pre.question} — ${t.text}`, at: now };
+      // S5: one decision — the item + colour said out loud is the item searched (started now, beside the sheet)
+      // (camera asks and the verdict's follow-up: the S5 paths, where she sees the outfit and hears the pick)
+      if (!cached && !pre && (camera || followUp)) {
+        pickP = decidePick(this.deps.vendors, { question: prev ? `${prev.question} — ${t.text}` : t.text, recent: t.recent ?? [], taste: productTaste(undefined, this.profile, this.memories), frames: t.frames, signal: abort.signal });
+        pickP.catch(() => {});
+      }
+      const pick = pickP;
       run = cached ? (c) => this.replayCache(cached, c, t) : pre ? (c) => this.replayPrefetch(pre, c, t) : async (c) => {
         // S5 latency: find.started goes out before the likes are awaited (the sheet shows in this tick)
-        const r = await runProduct({ ...c, likesLater: likes, recent: t.recent ?? [], previous: prev?.question, region: this.deps.shopRegion, hedge: this.deps.productHedge });
+        const r = await runProduct({ ...c, ...(pick ? { pick } : {}), likesLater: likes, recent: t.recent ?? [], previous: prev?.question, region: this.deps.shopRegion, hedge: this.deps.productHedge });
         if (r.label && this.lastProduct) this.lastProduct.label = r.label;
         return r;
       };
@@ -439,24 +447,24 @@ export class FindsRunner {
     if (ACK[intent.kind]) this.acked.add(findId);
     // an outfit pick is answered out loud by the turn itself: its card only shows it (demo S4, one verdict)
     else if (intent.kind === "outfit") this.answered.set(findId, t.replyText);
-    return { findId, kind: intent.kind, ...(ACK[intent.kind] ? { ack: ACK[intent.kind] } : {}) };
+    return { findId, kind: intent.kind, ...(ACK[intent.kind] ? { ack: ACK[intent.kind] } : {}), ...(pickP ? { reaction: pickP.then((p) => p?.say || null, () => null) } : {}) };
   }
 
   /**
    * "What's this?" (CEO demo 11/4): outline the thing on the camera frame and name it once checked — no card, no
    * sheet. On a shared screen (the Mac draws no boxes over it) the answer lands in the sheet instead.
    */
-  private startIdentify(findId: string, t: TurnInput, screen: boolean): TurnStarted {
-    if (t.unclear && !screen) return { findId, kind: "identify", ack: IDENTIFY_UNSURE };
+  private startIdentify(findId: string, t: TurnInput, screen: boolean): TurnStarted | null {
+    // P0 11/4: the turn's own reply names it from the frame; this only draws the outline (or the screen card)
+    if (t.unclear && !screen) return null;
     const abort = new AbortController();
     const ctx: PipelineCtx = {
       findId, utteranceId: t.utteranceId, kind: "answer", question: t.text, frames: t.frames, screen, memories: this.memories, profile: this.profile, userName: this.userName,
       replyText: t.replyText, timeZone: this.timeZone, vendors: this.deps.vendors, emit: (e) => this.onEvent(e), signal: abort.signal, now: this.hooks.now,
       log: this.hooks.log, images: false, putImage: async () => { throw new Error("no pictures"); },
-      speak: (text) => {
+      speak: () => {
         const card = this.cards.get(findId);
         if (card) void this.persist(card);
-        if (!this.closed) this.hooks.announce(text);
       },
     };
     const done = runIdentify(ctx).catch((err) => {
@@ -467,7 +475,7 @@ export class FindsRunner {
       return r;
     }).finally(() => this.running.delete(findId));
     this.running.set(findId, { abort, done });
-    return { findId, kind: "identify", ack: IDENTIFY_ACK };
+    return { findId, kind: "identify" };
   }
 
   /**

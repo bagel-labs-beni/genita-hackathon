@@ -32,6 +32,6 @@ test("an acronym or 'I' at the start keeps its capital", () => {
 test("no step, no dish, or nothing confirmed: the line is as before", () => {
   assert.equal(fridgeLine(COUNTER.slice(0, 2), "soup"), "I can see onions and tomatoes. You could make soup.");
   assert.equal(fridgeLine(COUNTER.slice(0, 2), null, "Chop the onions."), "I can see onions and tomatoes.");
-  assert.equal(fridgeLine([maybe("kimchi")], "kimchi stew", "Chop the kimchi."), "I can't say for sure what's in there yet. Tap what you have on the card — kimchi stew might work.");
+  assert.equal(fridgeLine([maybe("kimchi")], "kimchi stew", "Chop the kimchi."), "Maybe kimchi stew? Tap what you have on the card.");
   assert.equal(fridgeLine(COUNTER.slice(0, 1), "soup", "   "), "I can see onions. You could make soup.");
 });

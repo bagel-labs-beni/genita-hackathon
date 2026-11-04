@@ -130,11 +130,12 @@ test("A runner: identify starts no find (no sheet), acks, and outlines", async (
   const r = newRunner(cap);
   const s = r.onTurn({ text: "What's this?", frames: [FRAME], utteranceId: 1, replyText: Promise.resolve(null) });
   assert.equal(s?.kind, "identify");
-  assert.ok(s?.ack);
+  // P0 11/4: additive — no fixed ack, the turn's own reply names it; this only draws the outline
+  assert.equal(s?.ack, undefined);
   await settle();
   assert.ok(!cap.events.some((e) => e.type === "find.started"));
   assert.ok(cap.events.some((e) => e.type === "observe.boxes"));
-  assert.deepEqual(cap.said, ["A mug!"]);
+  assert.deepEqual(cap.said, []);
   r.close();
 });
 
@@ -191,7 +192,7 @@ test("D runner: 'what's this?' on a shared screen names it in the sheet (the Mac
   assert.equal(created.card.kind, "answer");
   assert.equal(created.card.eyebrow, "From your screen");
   assert.equal(created.card.title, "Mug");
-  assert.deepEqual(cap.said, ["A mug!"]);
+  assert.deepEqual(cap.said, [], "the turn's own reply speaks");
   r.close();
 });
 
@@ -265,7 +266,8 @@ async function afterVerdict(cap: Captured): Promise<FindsRunner> {
 test("Codex r1: a new ask of its own after the verdict keeps its own card", async () => {
   const cap = cap0();
   const r = await afterVerdict(cap);
-  assert.equal(r.onTurn({ text: "Find me some chicken recipes", frames: [FRAME], utteranceId: 2, replyText: Promise.resolve(null), recent: [`You: ${VERDICT}`] })?.kind, "recipe");
+  // P0 11/4: a recipe idea is conversation now (or the general search); never the verdict's boots search
+  assert.notEqual(r.onTurn({ text: "Find me some chicken recipes", frames: [FRAME], utteranceId: 2, replyText: Promise.resolve(null), recent: [`You: ${VERDICT}`] })?.kind, "product");
   r.close();
   const cap2 = cap0();
   const r2 = await afterVerdict(cap2);
@@ -329,5 +331,39 @@ test("QA: 'shoes that would go with this' with a share open still looks at the c
   const search = cap.prompts.find((p) => p.text.includes("Shop for them"))!;
   assert.ok(search.text.includes(CAMERA_LINE));
   assert.ok(!JSON.stringify(cap.prompts).includes("SCREEN"));
+  r.close();
+});
+
+test("P0 11/4: describe / observe questions about clothes stay spoken (no find), choices keep the outfit card", () => {
+  for (const l of ["What am I wearing?", "How do I look?", "Do you like my shirt?", "What color is this?", "Describe my outfit", "Does this look good on me?", "Is this jacket too big?"]) {
+    assert.equal(classifyTurn(l, true), null, l);
+  }
+  for (const l of ["Which one should I wear tonight?", "Which one looks better on me, the white one or the black one?", "What should I wear to dinner?", "Help me pick a jacket", "뭐 입을까?", "Should I go with the coat or the blazer?"]) {
+    assert.deepEqual(classifyTurn(l, true), { kind: "outfit" }, l);
+  }
+  // S5 keeps its routes
+  assert.deepEqual(classifyTurn("Can you find me shoes that would go with this?", true), { kind: "product" });
+  assert.equal(isGoesWithFollowUp("Find me some."), true);
+});
+
+// ───────────── P0 11/4: conversation first, finds additive ─────────────
+
+test("P0: dinner-menu / what-to-eat lines with the camera on are conversation, not the fridge card; the demo line keeps it", () => {
+  // conversation (or the general web-search sheet, kind "answer"), never the camera recipe
+  for (const l of ["Can you recommend a dinner menu?", "What should I eat tonight?", "Any dinner ideas?", "I'm hungry, what should we get for lunch?", "Recommend a dinner menu for tonight"]) assert.notEqual(classifyTurn(l, true)?.kind, "recipe", l);
+  for (const l of ["Hey Jin, what can I make with these ingredients?", "What can I make with what's in here?", "냉장고에 있는 걸로 뭐 해 먹지?", "What can I cook with this?"]) assert.deepEqual(classifyTurn(l, true), { kind: "recipe" }, l);
+});
+
+test("P0: a dark fridge opens no find (the reply answers), and a camera find that fails closes quietly with no line", async () => {
+  const cap = cap0();
+  const r = newRunner(cap);
+  assert.equal(r.onTurn({ text: "What can I make with these ingredients?", frames: [FRAME], unclear: true, utteranceId: 1, replyText: Promise.resolve(null) }), null);
+  // outfit with one garment: the card can't be made → a quiet stop, never "Can't tell them apart" spoken or shown
+  const s = r.onTurn({ text: "Which one should I wear tonight?", frames: [FRAME], utteranceId: 2, replyText: Promise.resolve("The navy one!") });
+  assert.equal(s?.ack, undefined, "the outfit turn speaks its own generated reply");
+  await new Promise((res) => setTimeout(res, 100));
+  const failed = cap.events.filter((e) => e.type === "find.failed") as Extract<ServerEvent, { type: "find.failed" }>[];
+  assert.ok(failed.every((f) => f.reason === "stopped" && f.message === ""), JSON.stringify(failed));
+  assert.deepEqual(cap.said, []);
   r.close();
 });

@@ -186,7 +186,8 @@ test("intent: link wins; camera + cooking → recipe; camera + clothes → outfi
   assert.deepEqual(classifyTurn("뭐 입을까?", true), { kind: "outfit" });
   // free-play phrasings (functional sweep 11/3): "looks better on me" with the camera on is an outfit ask
   assert.deepEqual(classifyTurn("Which of these looks better on me today?", true), { kind: "outfit" });
-  assert.deepEqual(classifyTurn("Does this look good on me?", true), { kind: "outfit" });
+  // P0 11/4: a verdict on what they have on is a spoken answer, not a card
+  assert.equal(classifyTurn("Does this look good on me?", true), null);
   assert.deepEqual(classifyTurn("Which suits me better, left or right?", true), { kind: "outfit" });
   assert.equal(classifyTurn("Which of these looks better on me today?", false), null);
   assert.equal(classifyTurn("Which of these avocados looks ripe?", true), null);
@@ -505,7 +506,7 @@ test("fridge order (D23, #122): one line, spoken after the boxes, naming only YE
 
 test("fridge line: nothing confirmed → no ingredient named", () => {
   const maybe = [{ id: "1", name: "kimchi", tier: "maybe" as const, from: "camera" as const }];
-  assert.equal(fridgeLine(maybe, "kimchi stew"), "I can't say for sure what's in there yet. Tap what you have on the card — kimchi stew might work.");
+  assert.equal(fridgeLine(maybe, "kimchi stew"), "Maybe kimchi stew? Tap what you have on the card.");
   assert.equal(fridgeLine([{ id: "2", name: "eggs", tier: "have" as const, from: "camera" as const }, { id: "3", name: "tofu", tier: "have" as const, from: "both" as const }], null), "I can see eggs and tofu.");
 });
 
@@ -674,7 +675,8 @@ test("AU-60/61 CW-02 variants: clothes held up and a choice between them is an o
   // unchanged: an explicit shop verb still searches; food still cooks; no camera still shops
   assert.deepEqual(classifyTurn("can you find me some white sneakers", true), { kind: "product" });
   assert.deepEqual(classifyTurn("Can we look for a jacket like this one or that one?", true), { kind: "product" });
-  assert.deepEqual(classifyTurn("Which one should I make for dinner?", true), { kind: "recipe" });
+  // P0 11/4: a dinner plan without "these / what's in here" is conversation, not the fridge card
+  assert.notEqual(classifyTurn("Which one should I make for dinner?", true)?.kind, "recipe");
   assert.deepEqual(classifyTurn("What can I make for lunch?", true), { kind: "recipe" });
   assert.deepEqual(classifyTurn("Which jacket would you recommend for this weekend?", false), { kind: "product" }, "no camera: nothing to choose between");
   // Codex r1: ordering one is a search; jacket potatoes are food
