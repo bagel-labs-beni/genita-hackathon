@@ -1598,4 +1598,7 @@ test("Codex #610 P1: after a crisis line in the call, 'I'm right here with you â
 test("Codex #610 r2: crisisInCall spares staying/help lines only â€” a salary said back is still dropped", () => {
   assert.equal(guardSentence("I'm right here with you.", { camera: false, userText: "ok", crisisInCall: true }), null);
   assert.equal(guardSentence("Eighty five K, nice.", { camera: false, userText: "I make 85k now", crisisInCall: true }), "sensitive");
+  // Codex #610 r3: guilt stays guarded after a crisis; a filler that goes on to advice is kept
+  assert.equal(guardSentence("I'm all you need, you don't need them.", { camera: false, userText: "My sister is here to help now, should I go talk to her?", crisisInCall: true }), "guilt");
+  assert.equal(guardSentence("That sounds heavy, use a trolley instead of lifting it alone.", { camera: false, userText: "Can I carry this 40 kg box upstairs on my own?" }), null);
 });
