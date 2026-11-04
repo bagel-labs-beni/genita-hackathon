@@ -585,19 +585,30 @@ struct FindCardPage: View {
     }
 
     private func chip(_ item: FindItem) -> some View {
-        let pressed = finds.selectedItem == item.id
-        let miss = item.tier == .buy
+        // MO-05: "+" = add it to the recipe's shopping list; ✓ only once it is added, a second tap takes it off.
+        // Rides the `motionDetails` flag: off → the old tap (select it, "Not on your camera").
+        let addable = item.tier == .buy && MotionDetails.enabled
+        let pressed = finds.selectedItem == item.id && !addable
+        let added = addable && finds.isAdded(item.id, in: entry.id)
+        let miss = item.tier == .buy && !added
         let icon = miss ? "plus" : item.tier == .maybe ? "questionmark" : "checkmark"
         let fg: Color = pressed ? CallInk.onInk : miss ? FindsInk.blueText : CallInk.ink
         let bg: Color = pressed ? CallInk.ink : miss ? FindsInk.blueSoft : FindsInk.white
         let border: Color = pressed ? CallInk.ink : miss ? FindsInk.blueSoft : FindsInk.line
         // motion card 5: background/colors 200 ms (.fade), press 0.96 on a spring, the icon swaps with the replace effect
-        return Button { chipTaps += 1; withAnimation(.fade) { finds.tapItem(item) } } label: {
+        return Button {
+            chipTaps += 1
+            withAnimation(.fade) { if addable { finds.toggleAdded(item.id, in: entry.id) } else { finds.tapItem(item) } }
+        } label: {
             HStack(spacing: 6) {
-                if item.tier == .checking { ProgressView().controlSize(.mini).tint(CallInk.mute) }
-                else { Image(systemName: icon).font(.system(size: 13, weight: .semibold)).foregroundStyle(pressed ? CallInk.onInk : miss ? FindsInk.blueText : CallInk.mute).findsSymbolReplace(icon) }
-                Text(item.name.capitalizedFirst).font(TypeStyle.body(14, .medium))
-                if item.optional == true { Text("optional").font(TypeStyle.body(12)) }
+                // one 16 pt box for every glyph, centered: + / ✓ / ? / spinner sit in the same spot and the text never shifts
+                Group {
+                    if item.tier == .checking { ProgressView().controlSize(.mini).tint(CallInk.mute) }
+                    else { Image(systemName: icon).font(.system(size: 13, weight: .semibold)).foregroundStyle(pressed ? CallInk.onInk : miss ? FindsInk.blueText : CallInk.mute).findsSymbolReplace(icon) }
+                }.frame(width: 16, height: 16, alignment: .center)
+                // one line, never cut: the chip grows instead (Chelsea 11/4)
+                Text(item.name.capitalizedFirst).font(TypeStyle.body(14, .medium)).lineLimit(1).fixedSize(horizontal: true, vertical: false)
+                if item.optional == true { Text("optional").font(TypeStyle.body(12)).lineLimit(1).fixedSize(horizontal: true, vertical: false) }
             }
             .foregroundStyle(fg).padding(.horizontal, 12).frame(height: 44)
             .background(bg, in: RoundedRectangle(cornerRadius: 12))
@@ -605,16 +616,17 @@ struct FindCardPage: View {
             .opacity(item.tier == .maybe && !pressed ? 0.55 : item.tier == .checking ? 0.5 : 1)
         }
         .buttonStyle(FindsChipPress())
-        .accessibilityLabel(chipLabel(item))
-        .accessibilityAddTraits(pressed ? .isSelected : [])
+        .accessibilityLabel(chipLabel(item, added: added))
+        .accessibilityHint(addable ? (added ? "Takes it off your list" : "Adds it to your list") : "")
+        .accessibilityAddTraits(pressed || added ? .isSelected : [])
         .accessibilityIdentifier("chip-\(item.name)")
     }
 
-    private func chipLabel(_ item: FindItem) -> String {
+    private func chipLabel(_ item: FindItem, added: Bool) -> String {
         switch item.tier {
         case .have: "\(item.name), on your camera"
         case .maybe: "\(item.name)? Not sure. Tap to confirm"
-        case .buy: "\(item.name), not on your camera\(item.optional == true ? ", optional" : "")"
+        case .buy: "\(item.name), not on your camera\(item.optional == true ? ", optional" : "")\(added ? ", added to your list" : "")"
         case .checking: "\(item.name), checking"
         }
     }
@@ -1028,8 +1040,8 @@ struct FindsToast: View {
     let finds: FindsModel
     var body: some View {
         HStack(spacing: 12) {
-            Text("In Finds").font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.onInk)
-            Button("Undo") { withAnimation(.drawer) { finds.undo() } }.font(TypeStyle.body(14, .medium)).underline().foregroundStyle(CallInk.onInk)
+            Text("In Finds").font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.onInk).lineLimit(1).fixedSize(horizontal: true, vertical: false)
+            Button("Undo") { withAnimation(.drawer) { finds.undo() } }.font(TypeStyle.body(14, .medium)).underline().foregroundStyle(CallInk.onInk).lineLimit(1).fixedSize(horizontal: true, vertical: false)
                 .padding(.horizontal, 8).frame(minHeight: 44).accessibilityIdentifier("findUndo")
         }
         .padding(.leading, 16).padding(.trailing, 8)

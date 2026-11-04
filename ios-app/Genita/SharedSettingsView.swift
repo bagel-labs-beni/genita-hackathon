@@ -123,6 +123,11 @@ struct SettingsView: View {
         let n = CompanionName.clean(companionName ?? "")
         return "\(n.isEmpty ? "Your companion" : n), their face, voice and your chats together will be removed. What Genita knows about you stays."
     }
+    /// GET /v1/companion after a failed reset: nil = it's still there, else the error (404 = gone).
+    private static func companionLookup(_ model: AppState) async -> GenitaAuthError? {
+        do { _ = try await model.onboarding.companion(); return nil }
+        catch { return (error as? GenitaAuthError) ?? .badResponse }
+    }
     private func resetCompanion() {
         resetting = true
         // the account this was asked for: a late answer after a sign-out / another sign-in must not touch the new one (Codex P2)
@@ -148,7 +153,18 @@ struct SettingsView: View {
             } catch GenitaAuthError.server(status: 429, _, _) {
                 resetError = "You’ve started over a lot today. Try again tomorrow."
             } catch {
-                resetError = "Try again in a moment. Nothing was removed."
+                // a failure after the companion's rows went (its files, say) still started over (#514 Codex r3 P2):
+                // ask the server what is there now instead of saying nothing was removed
+                let now = await Self.companionLookup(model)
+                if now == .unauthorized, asked.generation == model.authGeneration { dismiss(); model.signedOut(); return }
+                if case GenitaAuthError.server(404, _, _)? = now {
+                    guard asked.accepts(model.launchAuthSnapshot), model.companionResets == resets else { return }
+                    CallController.shared.end()
+                    dismiss()
+                    model.companionResetAnswered(since: resets)
+                    return
+                }
+                resetError = "Try again in a moment."
             }
         }
     }
@@ -163,10 +179,16 @@ struct SettingsView: View {
     }
     private func deleteAccount() {
         working = true
+        // whose camera frames these are, read before the token goes away with the account
+        let frameOwner = FindFrameStore.owner()
         Task { @MainActor in
             defer { working = false }
+            // its finds' ids: frames saved before 11/4 sit loose, without an owner (Codex r2)
+            let ids = ((try? await CallController.shared.findsAPI.list()) ?? []).map(\.id)
             do {
                 _ = try await model.onboarding.auth.deleteAccount()
+                // the fridge / outfit frames kept for reopened Finds are this account's camera pictures (AU-75)
+                FindFrameStore.removeAll(owner: frameOwner, ids: ids)
                 dismiss()
                 model.accountDeleted()
             } catch GenitaAuthError.unauthorized {

@@ -321,6 +321,7 @@ import UniformTypeIdentifiers
             // one tap: copy the prompt, say so, open the AI app (or its site); coming back opens I02
             UIPasteboard.general.string = AppState.prompt
             copied = true; openedAI = true; leftApp = false
+            model.setup.importAI = title == "Open ChatGPT" ? "ChatGPT" : "Claude"
             withAnimation(.easeOut(duration: 0.2)) { copiedToast = true }
             #if DEBUG
             // UI tests (`--stub-external-apps`): nothing opens (no Safari round trip on a loaded CI runner) and the

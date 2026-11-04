@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { loadConfig, type VoiceConfig } from "../src/config.ts";
 import { normalizeEnglish, normalizeKorean, numberToWords, pauseAfterMs, sinoKorean } from "../src/voice/normalize.ts";
 import { SentenceSplitter } from "../src/text/sentences.ts";
-import { FILLERS, NEUTRAL_FILLERS, RECOVER_LINE, VOICE_EMOTIONS, createSeamless, resolveSpeaker, seamlessLang, speedFor } from "../src/tts/seamless.ts";
+import { FILLERS, HOLD_LINE, NEUTRAL_FILLERS, RECOVER_LINE, VOICE_EMOTIONS, createSeamless, resolveSpeaker, seamlessLang, speedFor } from "../src/tts/seamless.ts";
 import { defaultDeps } from "../src/server.ts";
 
 // ---------- config ----------
@@ -182,12 +182,12 @@ test("client: prefetch caches the neutral fillers, then every filler per voice e
   const bodies: Record<string, unknown>[] = [];
   const v = createSeamless(cfg, { fetch: (async (_u: string, init: RequestInit) => (bodies.push(JSON.parse(String(init.body))), ndjson([{ audio_base64: pcm(10) }, { done: true }]))) as typeof fetch });
   v.prefetch(3);
-  // + 1: the recovery line (11/4), right after the neutral fillers
-  const want = FILLERS.length * (1 + VOICE_EMOTIONS.length) - [...NEUTRAL_FILLERS].length + 1;
+  // + 2: the cold-GPU lines (11/4: hold line, then the recovery line), before the neutral fillers
+  const want = FILLERS.length * (1 + VOICE_EMOTIONS.length) - [...NEUTRAL_FILLERS].length + 2;
   for (let i = 0; i < 400 && bodies.length < want; i++) await new Promise((r) => setTimeout(r, 1));
   assert.equal(bodies.length, want);
-  assert.equal(bodies.slice(0, FILLERS.length + 1).every((b) => !("emotion" in b)), true, "neutral first");
-  assert.equal(bodies[FILLERS.length].text, RECOVER_LINE);
+  assert.equal(bodies.slice(0, FILLERS.length + 2).every((b) => !("emotion" in b)), true, "neutral first");
+  assert.deepEqual([bodies[0].text, bodies[1].text], [HOLD_LINE, RECOVER_LINE], "the cold-GPU lines first");
   const n = bodies.length;
   for await (const _ of v.speak({ voiceId: "seamless:3", text: RECOVER_LINE, emotion: null, model: "x", lang: "en", cachedOnly: true })) void _;
   assert.equal(bodies.length, n, "the recovery line answers from the cache");

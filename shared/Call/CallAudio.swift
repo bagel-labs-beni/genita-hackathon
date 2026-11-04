@@ -63,6 +63,9 @@ import os
     /// Player sample time where each utterance's first chunk starts, and where the queue currently ends.
     private var utteranceStart: [Int: AVAudioFramePosition] = [:]
     private var scheduledEnd: AVAudioFramePosition = 0
+    /// Buffers on the player that have not played back yet, in play order. An engine rebuild (the mic turning on
+    /// needs voice processing, a route change) moves what is left of them to the new player (AU-48).
+    private var scheduled: [PlaybackCarry.Entry<AVAudioPCMBuffer>] = []
     private var observers: [NSObjectProtocol] = []
     private let log = Logger(subsystem: "ai.thebeni.genita", category: "call-audio")
 
@@ -123,18 +126,25 @@ import os
         floats.withUnsafeBufferPointer { buffer.floatChannelData![0].update(from: $0.baseAddress!, count: floats.count) }
         if !engine.isRunning { try? engine.start() }
         guard engine.isRunning else { log.error("engine not running; chunk dropped"); return }
-        if !player.isPlaying { player.play() }
-        let begin = max(scheduledEnd, nowSample() ?? 0)
+        let begin = schedule(buffer, utteranceId: utteranceId)
         if utteranceStart[utteranceId] == nil { utteranceStart[utteranceId] = begin }
         outputSpans.append(OutputSpan(start: begin, levels: VoiceLevel.steps(floats, stepSamples: OutputSpan.stepSamples)))
+        if startedUtterances.insert(utteranceId).inserted { onPlaybackStarted?(utteranceId) }
+    }
+
+    /// Puts one buffer at the end of the player's queue; returns the sample time it starts at.
+    @discardableResult private func schedule(_ buffer: AVAudioPCMBuffer, utteranceId: Int) -> AVAudioFramePosition {
+        if !player.isPlaying { player.play() }
+        let begin = max(scheduledEnd, nowSample() ?? 0)
         scheduledEnd = begin + AVAudioFramePosition(buffer.frameLength)
         let gen = generation
         queuedBuffers += 1
         queuedByUtterance[utteranceId, default: 0] += 1
+        scheduled.append(.init(utteranceId: utteranceId, start: begin, frames: AVAudioFramePosition(buffer.frameLength), buffer: buffer))
         player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
             Task { @MainActor in self?.played(utteranceId: utteranceId, generation: gen) }
         }
-        if startedUtterances.insert(utteranceId).inserted { onPlaybackStarted?(utteranceId) }
+        return begin
     }
 
     /// Stops a playing cue and ends its uplink window (a reply starts, flush, reset, the user speaks up).
@@ -190,6 +200,7 @@ import os
         queuedByUtterance.removeAll()
         completeUtterances.removeAll()
         utteranceStart.removeAll()
+        scheduled.removeAll()
         outputSpans.removeAll()
         scheduledEnd = 0
         if engine.isRunning { player.play() }
@@ -198,6 +209,7 @@ import os
 
     private func played(utteranceId: Int, generation gen: Int) {
         guard gen == generation else { return }
+        if let i = scheduled.firstIndex(where: { $0.utteranceId == utteranceId }) { scheduled.remove(at: i) }
         pruneOutputSpans()
         queuedBuffers = max(0, queuedBuffers - 1)
         queuedByUtterance[utteranceId, default: 1] -= 1
@@ -231,6 +243,12 @@ import os
     /// Rebuilds the graph. With the mic, voice processing (AEC) is turned on first; if the platform refuses
     /// (some simulators), the mic still works without it and `voiceProcessing` says so.
     private func buildEngine(withMic: Bool) {
+        // AU-48: what is still to be heard survives the rebuild (the greeting goes on when the mic turns on)
+        // the render clock runs ahead of the speaker by the output latency: only what reached the speaker was heard
+        let latency = AVAudioFramePosition((engine.outputNode.presentationLatency * playFormat.sampleRate).rounded())
+        let carry = PlaybackCarry.remaining(scheduled, playedTo: nowSample().map { max(0, $0 - max(0, latency)) })
+        let startOf = utteranceStart
+        scheduled.removeAll()
         generation += 1
         if engineHasMic { engine.inputNode.removeTap(onBus: 0) }
         engine.stop()
@@ -275,6 +293,33 @@ import os
         engine.prepare()
         do { try engine.start(); player.play() } catch { log.error("engine start: \(error.localizedDescription, privacy: .public)") }
         log.info("engine built mic=\(self.engineHasMic) aec=\(self.voiceProcessing)")
+        resume(carry, startOf: startOf)
+    }
+
+    /// Schedules the carried buffers on the new player, the first one cut where the old player stopped, and keeps
+    /// each utterance's playhead (lips) continuous. Utterances that finished meanwhile report done.
+    private func resume(_ carry: [PlaybackCarry.Entry<AVAudioPCMBuffer>], startOf: [Int: AVAudioFramePosition]) {
+        if engine.isRunning {
+            for entry in carry {
+                guard let buffer = entry.skip == 0 ? entry.buffer : Self.tail(of: entry.buffer, from: entry.skip) else { continue }
+                let begin = schedule(buffer, utteranceId: entry.utteranceId)
+                if utteranceStart[entry.utteranceId] == nil {
+                    let heard = startOf[entry.utteranceId].map { entry.start + entry.skip - $0 } ?? 0
+                    utteranceStart[entry.utteranceId] = begin - heard
+                }
+            }
+            if !carry.isEmpty { log.info("engine rebuild kept \(carry.count) buffer(s) of playback") }
+        }
+        for id in completeUtterances { checkDone(id) }
+    }
+
+    private static func tail(of buffer: AVAudioPCMBuffer, from skip: AVAudioFramePosition) -> AVAudioPCMBuffer? {
+        let left = AVAudioFrameCount(max(0, AVAudioFramePosition(buffer.frameLength) - skip))
+        guard left > 0, let out = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: left),
+              let src = buffer.floatChannelData, let dst = out.floatChannelData else { return nil }
+        out.frameLength = left
+        for ch in 0..<Int(buffer.format.channelCount) { dst[ch].update(from: src[ch] + Int(skip), count: Int(left)) }
+        return out
     }
 
     private func releaseMicIfIdle() {
@@ -374,6 +419,31 @@ final class MicPipeline: @unchecked Sendable {
         }
         if resumed { onSpeechDuringCue?() }
         return frames
+    }
+}
+
+/// AU-48: which part of the player's queue is still to be heard when the engine is rebuilt.
+enum PlaybackCarry {
+    struct Entry<Buffer> {
+        var utteranceId: Int
+        /// player sample time the buffer starts at, and its length in frames
+        var start: Int64
+        var frames: Int64
+        var buffer: Buffer
+        /// frames of it already heard
+        var skip: Int64 = 0
+    }
+
+    /// Drops buffers that already played through `playedTo` and marks how much of the one playing was heard.
+    /// No playhead (the player was not running) keeps everything from its start.
+    static func remaining<B>(_ entries: [Entry<B>], playedTo now: Int64?) -> [Entry<B>] {
+        guard let now else { return entries }
+        return entries.compactMap { e in
+            guard e.start + e.frames > now else { return nil }
+            var kept = e
+            kept.skip = max(0, now - e.start)
+            return kept
+        }
     }
 }
 

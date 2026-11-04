@@ -179,6 +179,8 @@ enum CallStop: Equatable {
     @ObservationIgnored private var profileChipTask: Task<Void, Never>?
     @ObservationIgnored private var askingChipTask: Task<Void, Never>?
     @ObservationIgnored private var pingTask: Task<Void, Never>?
+    @ObservationIgnored private var graceTask: Task<Void, Never>?
+    @ObservationIgnored private var micBeforeBackground = false
     @ObservationIgnored private var userEnded = true
     @ObservationIgnored private var capturePermissions = CapturePermissionRequests()
     @ObservationIgnored private var fixedEndpoint: CallEndpoint?
@@ -239,7 +241,7 @@ enum CallStop: Equatable {
         audio.onUtterancePlayed = { [weak self] id in self?.utterancePlayed(id) }
         audio.onInterrupted = { [weak self] in self?.suspend() }
         voice.onPCM = { [weak self] pcm, id in
-            guard let self, !self.cancelled.contains(id) else { return }
+            guard let self, !self.cancelled.contains(id), self.mayPlayHere else { return }
             self.feedFaceDevicePCM(pcm, utteranceId: id)
             self.audio.enqueue(pcm: pcm, utteranceId: id)
         }
@@ -335,6 +337,28 @@ enum CallStop: Equatable {
         if Self.micWasOn && mode == .chat { toggleMic() }
     }
 
+    /// True between `end()` (or before the first `begin`) and the next `begin`.
+    var isEnded: Bool { userEnded }
+
+    /// The conversation came back to this device while its call socket stayed open (handoff return, AU-83/AU-84).
+    /// The open server session only knows the turns from before the move, so it is replaced by a new one: the server
+    /// seeds that from the session the other device just used. Closed without `stop` (a move back is not a hang-up),
+    /// and the mic comes back the way the user left it (B12, the same rule as a new call).
+    func rejoin() {
+        guard !userEnded, stopped == nil else { return }
+        reconnectTask?.cancel(); pingTask?.cancel()
+        let old = socket
+        socket = nil
+        old?.disconnect()
+        perception.stop()
+        flushPlayback()
+        restFace()
+        playing = false; awaitingFirstAudio = false; reconnectSince = nil
+        phase = .listening
+        connect()
+        if !micOn && (Self.micWasOn || mode == .interpret) { toggleMic() }
+    }
+
     /// The turns of this call (last 20 go into every reconnect's `start`). The Mac keeps them across a move
     /// away and back, so the conversation resumes where it was (#118).
     var historySnapshot: [ClientMessage.HistoryItem] { history }
@@ -342,6 +366,7 @@ enum CallStop: Equatable {
     func end() {
         capturePermissions.invalidate()
         userEnded = true
+        graceTask?.cancel(); graceTask = nil; micBeforeBackground = false
         reconnectTask?.cancel(); pingTask?.cancel(); holdTask?.cancel(); profileChipTask?.cancel(); profileChip = nil; askingChipTask?.cancel(); askingChip = nil
         socket?.close()
         socket = nil
@@ -368,20 +393,71 @@ enum CallStop: Equatable {
 
     /// A system permission alert is inactive, but not backgrounded. Keep its answer until active;
     /// a real background transition still invalidates it, as do end(), handoff and audio interruption.
+    /// Only `.background` closes capture (AU-47): a permission alert, Control Center, Notification Center or the app
+    /// switcher makes the scene `.inactive` for a moment, and the mic and the companion's voice carry on through it.
+    ///
+    /// Home or lock (IC-02 step 4, RV-01 step 2): the call pauses — mic, camera and sound off, the session stays. Back
+    /// within `backgroundGraceMs` the same call goes on (same session, no greeting) with the mic as it was. Past the
+    /// grace the call hangs up with `stop`, so the next call greets as a new one. A swipe-kill ends it at once (app).
     func sceneActivityChanged(_ activity: CapturePermissionRequests.Activity) {
         let answers = capturePermissions.updateActivity(activity, callEnded: userEnded, isOwner: ownsConversation)
-        if activity != .active { suspendCapture() }
+        if activity == .background, !userEnded {
+            if graceTask == nil { micBeforeBackground = micOn }
+            suspendCapture()
+            graceTask?.cancel()
+            graceTask = Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(Self.backgroundGraceMs))
+                guard let self, !Task.isCancelled, self.graceTask != nil else { return }
+                self.log.info("background grace over: hang up")
+                self.end()
+            }
+        }
         for answer in answers { applyCapturePermission(answer) }
+        if activity == .active, let grace = graceTask {
+            grace.cancel(); graceTask = nil
+            // interpretation keeps its mic too (its screen has no mic button)
+            if !userEnded, micBeforeBackground, !micOn { toggleMic() }
+            micBeforeBackground = false
+        }
     }
+
+    /// How long a call paused by Home or lock waits for the user before it hangs up (coordinator 11/4: 30 s).
+    nonisolated(unsafe) static var backgroundGraceMs = 30_000
+    /// The paused call is waiting for the user to come back.
+    var inBackgroundGrace: Bool { graceTask != nil }
 
     private func suspendCapture() {
         guard !userEnded else { return }
         if micOn { setMic(false) }
         if cameraOn { toggleCamera() }
         if playing || phase == .speaking || phase == .thinking { socket?.send(.bargeIn) }
+        silenceCurrentReply()
         flushPlayback()
         restFace()
         playing = false
+    }
+
+    /// AU-50: a local stop (tap, background, handoff) tombstones the reply that was playing, so frames and `say`
+    /// lines already on their way for it are dropped here instead of playing again until `utterance.cancelled`.
+    private func silenceCurrentReply() {
+        for id in Set([currentUtterance, playingUtterance].compactMap { $0 }) {
+            cancelled.insert(id)
+            saidOnDevice.remove(id)
+            face?.cancel(utteranceId: faceId(id))
+        }
+    }
+
+    /// GATE-A (AU-82): the companion is heard only on the device that holds the conversation. Audio and `say` lines
+    /// that reach this iPhone after the conversation moved to the Mac (the rest of a reply, a search card's line)
+    /// are dropped here. The Mac closes its call when the conversation leaves it. Nothing plays while a call is
+    /// paused in the background either (a greeting that lands during the grace stays silent).
+    private var mayPlayHere: Bool {
+        guard graceTask == nil else { return false }
+        #if os(iOS)
+        return ownsConversation
+        #else
+        return true
+        #endif
     }
 
     // MARK: user actions
@@ -536,6 +612,7 @@ enum CallStop: Equatable {
     /// Tap on the face while the companion talks: stop now, the server cancels the reply.
     func interrupt() {
         guard playing || phase == .speaking || phase == .thinking else { return }
+        silenceCurrentReply()
         flushPlayback()
         restFace()   // the mouth rests at once, before the server's utterance.cancelled
         playing = false
@@ -547,6 +624,23 @@ enum CallStop: Equatable {
         answerFailed = false
         guard let text = lastUserText else { return }
         socket?.send(.text(.init(text: text, frames: nil)))
+    }
+
+    /// FD-01 step 6 (AU-71): a link the user pasted (More ▸ Paste link on iPhone, Edit ▸ Paste Link on the Mac) goes
+    /// out as the user's words; the server makes the link card (F10-13 summary / F10-14 couldn't open).
+    /// false = nothing sent (no link in it, the call isn't live, or interpreting, where typed words are translated).
+    @discardableResult func sendLink(_ pasted: String) -> Bool {
+        guard let url = Self.firstLink(in: pasted), link == .live, mode != .interpret, let socket else { return false }
+        socket.send(.text(.init(text: url, frames: nil)))
+        return true
+    }
+
+    /// The first http(s) link in pasted text, trailing punctuation dropped (the server's findUrl reads the same).
+    nonisolated static func firstLink(in text: String) -> String? {
+        guard let r = text.range(of: #"https?://[^\s<>"')]+"#, options: [.regularExpression, .caseInsensitive]) else { return nil }
+        var url = String(text[r])
+        while let last = url.last, ".,!?".contains(last) { url.removeLast() }
+        return url.count > 10 && url.count <= 2000 ? url : nil
     }
 
     /// IC-4 Look again: drop the card, take a fresh frame, ask the same words again (frames go with the next turn).
@@ -713,6 +807,8 @@ enum CallStop: Equatable {
             interpretBoard = InterpretBoard(companionName: companionName)
             link = .live
             if r.sessionId != sessionId {
+                // the old session's searches died with it: no result comes on this one (AU-62, AU-72)
+                if sessionId != nil { finds.interrupted() }
                 // A new session counts utterances from the start: ids of the old one mean nothing now.
                 faceIdBase = faceIdMax + 1
                 cancelled = []; routed = []; seqToUtterance = [:]; faceAudio = [:]; facePending = []; faceDeviceMs = [:]
@@ -741,6 +837,9 @@ enum CallStop: Equatable {
                 firstFrame = frame
                 finds.latestFrames = [frame]
                 socket?.send(.frames(.init(images: [frame])))
+            } else {
+                // a question asked with the camera off has no frames: an earlier question's never ride along (AU-75)
+                finds.latestFrames = []
             }
         case .speechEnd:
             speechEndAt = Date()
@@ -767,7 +866,7 @@ enum CallStop: Equatable {
             }
         case let .say(sentence):
             // Device voice mode: speak it into the call's player (same AEC, flush and playback_done as server audio).
-            guard !cancelled.contains(sentence.utteranceId) else { break }
+            guard !cancelled.contains(sentence.utteranceId), mayPlayHere else { break }
             currentUtterance = sentence.utteranceId
             saidOnDevice.insert(sentence.utteranceId)
             voice.say(sentence)
@@ -857,7 +956,7 @@ enum CallStop: Equatable {
         guard header.kind == GenitaProtocol.frameKindTTSPCM else { return }
         let utterance = seqToUtterance.removeValue(forKey: header.seq) ?? currentUtterance ?? -1
         let timing = faceAudio.removeValue(forKey: header.seq)
-        guard !cancelled.contains(utterance) else { return }
+        guard !cancelled.contains(utterance), mayPlayHere else { return }
         let route = interpretBoard.route(utteranceId: utterance)
         if route != .normal, let routeInterpretAudio {
             routed.insert(utterance)
@@ -1123,6 +1222,9 @@ enum CallStop: Equatable {
         // Another account (or signed out) never sees the face set loaded for the one before.
         if face != nil, Self.tokenSubject(currentEndpoint.token) != faceOwner { useFace(nil, key: nil, reduceMotion: reduceMotion) }
         faceOnScreen = true
+        #if DEBUG
+        faceDebugShows += 1
+        #endif
         faceAnimates = animate
         faceReduceMotion = reduceMotion
         face?.reduceMotion = reduceMotion
@@ -1169,6 +1271,15 @@ enum CallStop: Equatable {
     /// screen is up, so the mouth starts moving in that same call once prep finishes (or the network comes back).
     @ObservationIgnored var faceRetryInterval: Duration = .seconds(5)
     #if DEBUG
+    /// UI-test diagnostics for the face pipeline (why a call shows the still instead of the face)
+    var faceDebugShows = 0
+    var faceDebugAttempts = 0
+    var faceDebugLastError = ""
+    var faceDebug: String {
+        "shows=\(faceDebugShows) attempts=\(faceDebugAttempts) loading=\(faceLoading) onScreen=\(faceOnScreen) face=\(face != nil) poster=\(facePoster != nil) err=\(faceDebugLastError)"
+    }
+    #endif
+    #if DEBUG
     /// Tests: the face set loader (stub server, temp cache) instead of the live one.
     @ObservationIgnored var faceLoaderOverride: ((CallEndpoint) -> CompanionFaceLoader)?
     #endif
@@ -1198,6 +1309,9 @@ enum CallStop: Equatable {
 
     /// One load. True = no face yet but one may still come (prep still running, or offline): try again.
     private func loadFaceOnce() async -> Bool {
+        #if DEBUG
+        faceDebugAttempts += 1
+        #endif
         let owner = Self.tokenSubject(currentEndpoint.token)
         do {
             let outcome: CompanionFaceLoader.Outcome
@@ -1228,6 +1342,9 @@ enum CallStop: Equatable {
             // Offline or the server said no: keep what is on screen (the still, or the face from before); with no
             // face yet, try again while the call screen is up.
             log.error("face set: \(String(describing: error), privacy: .public)")
+            #if DEBUG
+            faceDebugLastError = String(describing: error)
+            #endif
             return !Task.isCancelled && faceOnScreen && face == nil
         }
     }

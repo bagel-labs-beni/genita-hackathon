@@ -46,7 +46,10 @@ protocol CallConnection: AnyObject, Sendable {
     func connect(url: URL, token: String?)
     func send(_ message: ClientMessage)
     func send(audio: Data)
+    /// Ends the call from the app side: `stop`, then a normal close (a hang-up).
     func close()
+    /// Closes without `stop`: the conversation goes on in a new session (handoff return).
+    func disconnect()
 }
 
 extension CallAudio: CallAudioPlaying {}

@@ -60,15 +60,32 @@ export function isOutfitAsk(text: string, afterProduct = false): boolean {
 
 export type Intent = { kind: FindKind; url?: string } | null;
 
+/** Choosing between what they hold: "which jacket", "this or that", "looks better on me" (CW-02, AU-61). */
+const COMPARE =
+  /\b(which (?:one|jacket|coat|blazer|dress|shirt|top|skirt|pants|jeans|shoes|sweater|hoodie|outfit|of (?:these|the two|them))|this or (?:that|this)|(?:this|that) one or|looks? (?:better|best|good|nicer) on me|suits? me (?:better|best))\b|어느\s*게|뭐가\s*나아/i;
+/** Wearing it, not eating it: "wear to dinner", "looks better on me" (AU-60). */
+const ON_ME = /\b(wear|wearing|outfits?|looks? (?:better|best|good|nicer) on me|suits? me)\b|입을|입고/i;
+/** Ordering it: "…that I order online", "to purchase" — a web search even without a shop verb. */
+const ORDER = /\b(order|online|purchase|in stock|on sale|cheapest)\b/i;
+/** Only these say "shop the web" when they hold clothes up to the camera; "recommend / suggest" stays a pick (AU-61). */
+const EXPLICIT_SHOP = /\b(look(?:ing)? for|find(?:ing)?|search(?:ing)? for|shop(?:ping)? for|buy(?:ing)?|get me|where (?:can|do) i (?:get|buy))\b|찾아|사고\s*싶|살\s*만한/i;
+
 export function classifyTurn(text: string, hasFrames: boolean, afterProduct = false): Intent {
   const url = findUrl(text);
   if (url) return { kind: "link", url };
+  // clothes held up to the camera and a choice between them: an outfit pick, even with "recommend" or "dinner" in it
+  // (not when it's about ordering one, or cooking without a word about wearing: "jacket potatoes", Codex r1)
+  if (hasFrames && COMPARE.test(text) && (ON_ME.test(text) || GARMENT.test(text)) && !EXPLICIT_SHOP.test(text) && !ORDER.test(text)
+    && !SHOP_LINKS.test(text) && !LINKS_ASK.test(text) && !(COOK.test(text) && !ON_ME.test(text))) {
+    return { kind: "outfit" };
+  }
   // shopping words win over the camera: "look for a jacket" with the camera on is a search, not a try-on
   if (isProductAsk(text, afterProduct)) return { kind: "product" };
   if (!hasFrames) return null;
   const cook = COOK.test(text);
   const clothes = CLOTHES.test(text);
-  if (clothes && !cook) return { kind: "outfit" };
+  // "what should I wear to dinner?" names a meal but asks about clothes (AU-60)
+  if (clothes && (!cook || ON_ME.test(text))) return { kind: "outfit" };
   if (cook) return { kind: "recipe" };
   return null;
 }

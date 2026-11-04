@@ -50,7 +50,7 @@ const CASE_SENSITIVE = new Set(['/Users/']);
 const FORBIDDEN_PATTERNS = ENCODED_PATTERNS.map(([label, source]) => ({ label: decode(label), expression: new RegExp(decode(source), CASE_SENSITIVE.has(decode(label)) ? '' : 'i') }));
 
 function runGit(args, options = {}) {
-  return execFileSync('git', args, { encoding: options.encoding ?? 'utf8' });
+  return execFileSync('git', args, { encoding: options.encoding ?? 'utf8', maxBuffer: 1024 * 1024 * 1024 }); // batch trains diff hundreds of files (ENOBUFS at the 1 MB default)
 }
 
 function trackedFiles() {

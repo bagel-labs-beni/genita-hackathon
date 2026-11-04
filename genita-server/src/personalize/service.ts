@@ -25,6 +25,7 @@ import { tasteLines, type TasteLine } from "./reasons.ts";
 import { firstCallNod } from "./knows.ts";
 import { avoidKeys, forgetTarget, isForgetRequest, type Removed } from "./forgotten.ts";
 import { isSensitiveDetail } from "./sensitive.ts";
+import { scrubRemoved } from "../insights/report.ts";
 
 export type JsonFn = <T>(req: Omit<SparkRequest, "text"> & { schemaName: string; schema: Record<string, unknown> }, signal?: AbortSignal) => Promise<T>;
 export type PersonalizeStore = Pick<PrepStore, "getStyle" | "putStyle" | "getCompanion">;
@@ -212,15 +213,25 @@ export class Personalize {
     ]).finally(() => clearTimeout(timer));
   }
 
-  /** Replace the user's style (import, N1–N3) under the same lock as every other write. */
+  /** Read-modify-write the latest card under the user's lock (the SUM insight report, src/insights). fn → null = no change. */
+  async patchStyle(userId: string, fn: (card: StyleCard) => StyleCard | null): Promise<StyleCard | null> {
+    return this.update(userId, (card) => {
+      const next = fn(card);
+      return next ? { card: next, out: next } : null;
+    });
+  }
+
   /** Companion reset (AU-90): call 1 with the new companion (first-call nod and question); what they know stays. In the per-user lock, so a save under way can't write the old count back. */
   async resetGrowth(userId: string): Promise<void> {
     await this.update(userId, (c) => (c.growth ? { card: { ...c, growth: { calls: 0, asked: [] } }, out: true } : null));
   }
 
-  async replaceStyle(userId: string, card: StyleCard): Promise<void> {
+  /** Replace the user's style (import, N1–N3) under the same lock as every other write.
+   *  → the card's importedAt (the SUM insight report of this import is saved only onto this card) */
+  async replaceStyle(userId: string, card: StyleCard): Promise<string> {
     const at = this.now().toISOString();
     await this.serial(userId, () => this.store.putStyle(userId, { ...card, importedAt: at }));
+    return at;
   }
 
   // ───────────── D47 story ─────────────
@@ -619,7 +630,12 @@ export class Personalize {
    */
   private async rememberForget(userId: string, card: StyleCard, target: string): Promise<{ applied: AppliedUpdate[]; kept: string } | null> {
     const keys = avoidKeys([{ text: target, forget: true }]);
-    const lines = Object.values(card.sections ?? {}).flatMap((l) => (l as Array<{ text: string }>).map((f) => f.text));
+    // the "not me" list's own words count too: a fact only stored in a correction ("I collect fountain pens.") is
+    // still forgettable, and scrubRemoved then takes it off the list (Codex r4 P1)
+    const deniedLines = (card.insights?.denied ?? []).flatMap((d) => [d.claim, d.correction ?? ""]).filter(Boolean);
+    // …and the report's own traits (claim, receipts, chips, how I'll use it): a fact only the report holds (Codex r6 P1)
+    const reportLines = (card.insights?.observations ?? []).flatMap((o) => [o.claim, o.use_in_call, ...o.evidence.map((e) => e.quote), ...(o.chips ?? []).map((c) => c.label)]).filter(Boolean);
+    const lines = [...Object.values(card.sections ?? {}).flatMap((l) => (l as Array<{ text: string }>).map((f) => f.text)), ...deniedLines, ...reportLines];
     const named = [...new Set(keys.flatMap((k) => k.keys).filter((stem) => lines.some((t) => keyWords(t).includes(stem))))];
     const words = [...new Set(lines.flatMap((t) => (t.match(/[\p{L}\p{N}-]{3,}/gu) ?? []).filter((w) => named.includes(w.toLowerCase().slice(0, 5)))))].map((w) => w.toLowerCase());
     const kept = words.join(" ").slice(0, 80);
@@ -642,7 +658,9 @@ export class Personalize {
       const m = updates.length ? mergeUpdates(c, updates, at) : null;
       applied = m?.applied ?? [];
       const merged = m ? m.card : c;
-      return { card: { ...merged, removed: [...(merged.removed ?? []), { text: kept, at, forget: true as const }].slice(-40) }, out: true };
+      const removed = [...(merged.removed ?? []), { text: kept, at, forget: true as const }].slice(-40);
+      // the SUM insight report forgets it too (Codex P1: a trait citing it would stay in the call profile)
+      return { card: { ...merged, removed, ...(merged.insights ? { insights: scrubRemoved(merged.insights, removed) } : {}) }, out: true };
     });
     return { applied, kept };
   }
@@ -668,7 +686,8 @@ export class Personalize {
     }
     // removed already: the call's profile and taste follow now, even if Spark has nothing more to change (Codex r9)
     const forgotUpdate = async (): Promise<VoiceUpdate | null> => {
-      if (!forgot?.applied.length) return null;
+      // a forget that only touched the SUM insight report (a "not me" correction) still changes the call's profile (Codex r5)
+      if (!forgot || (!forgot.applied.length && !forgot.kept)) return null;
       const latest = (await this.store.getStyle(userId)) ?? card;
       return { events: [{ text: `Updated: forgot ${forgot.kept}`.slice(0, 60), fields: [...new Set(forgot.applied.map((a) => a.field))] }], applied: forgot.applied, answered: false, profile: styleProfileText(latest, 2000, { toConfirm: false }), taste: tasteLines(latest) };
     };
