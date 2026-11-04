@@ -312,7 +312,8 @@ struct ConversationView: View {
             // the arrival is card 10's moment: its one tap moves here when the face came after the call went live
             // (the wait gave up with no picture: only the live tap it held back)
             if !hasFacePicture { if connectedTaps == 0, call.link == .live { connectedTaps = 1 } }
-            else if connectedTaps == 0 { connectedTaps = 1 } else { faceArrivedTaps += 1 }
+            // before the link is live the arrival taps on its own and card 10's live tap stays for the link (Codex P3)
+            else if connectedTaps == 0, call.link == .live { connectedTaps = 1 } else { faceArrivedTaps += 1 }
             Task { try? await Task.sleep(for: .milliseconds(320)); if !waitingForFace { waitStageUp = false } }
         }
         #if DEBUG
