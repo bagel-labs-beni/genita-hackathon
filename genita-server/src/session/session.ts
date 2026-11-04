@@ -169,6 +169,8 @@ export type SessionDeps = {
 };
 
 /** Demo S5 (agreed with the convo lane 11/3): the product-ask turn's reply while the search runs in the background. */
+/** S5: how long the spoken pick may take before the plain ack goes out instead (the pick call is ~1–2 s) */
+const PICK_WAIT_MS = 4000;
 export const PRODUCT_REACTION_LINE =
   "A shopping search for this is already running in the background and its card will appear on its own. Reply with ONE short sentence (under 10 words): a natural, in-character reaction to what they asked or what you see (taste, color, how it goes with the outfit); talk to them as you. Never say you are searching, looking, checking or pulling anything up, no 'let me…'; don't name products, stores, prices or links.";
 /** The slice of the personalize service a call uses (structural, so tests can fake it). */
@@ -2509,7 +2511,17 @@ export class Session {
           yield { type: "text" as const, delta: ack };
           yield { type: "done" as const, responseId: null, text: ack, status: "completed" };
         })();
-        if (started.kind === "product") {
+        if (started.kind === "product" && started.reaction) {
+          // S5 (QA 11/4): the line comes from the same pick the search shops ("white sneakers" said = searched); a
+          // pick that doesn't come in time says the plain ack, never a free reaction that could name something else
+          const reaction = started.reaction;
+          pre = (async function* () {
+            const line = await Promise.race([reaction, new Promise<null>((r) => setTimeout(() => r(null), PICK_WAIT_MS))]);
+            const text = line?.trim() || ack;
+            yield { type: "text" as const, delta: text };
+            yield { type: "done" as const, responseId: null, text, status: "completed" };
+          })();
+        } else if (started.kind === "product") {
           // demo S5: the search can take 10–30 s, so no silent wait and no "On it." — one quick in-character reaction
           // (no tools: nothing to narrate, no guessed products); the card and its own line follow when it lands.
           // A failed reaction falls back to the short ack.
