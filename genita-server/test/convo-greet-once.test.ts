@@ -180,3 +180,18 @@ test("r6: no 'finally showed up' even on the first reply; 'finally getting to ac
   assert.equal(noRepeatGreeting("Hey Summer, finally getting to actually talk.", "hey"), "Hey Summer.");
   assert.deepEqual(freshThreads(["Likes jasmine tea before bed", "Started a pottery class"], ["I always have jasmine tea before bed"]), ["Started a pottery class"]);
 });
+
+test("r7 (Codex): a stored thread about what was forgotten in the call is filtered by its key words", async () => {
+  const { avoidKeys, mentionsAvoided } = await import("../src/personalize/forgotten.ts");
+  const keys = avoidKeys([{ text: "My ex is Jake.", forget: true }]);
+  assert.ok(mentionsAvoided("Her ex is Jake.", keys));
+  assert.ok(!mentionsAvoided("Started a pottery class", keys));
+});
+
+test("r7: 'took you long enough' / 'bout time' / 'nice of you to show up' on any reply", async () => {
+  const { noFinallyTone } = await import("../src/convo/greetOnce.ts");
+  assert.equal(noFinallyTone("Hey, Summer, took you long enough.", "hey"), "Hey.");
+  assert.equal(noFinallyTone("Hey Summer, nice of you to show up.", "hi"), "Hey Summer.");
+  assert.equal(noFinallyTone("'Bout time, what's the plan tonight?", "hey"), "What's the plan tonight?");
+  assert.equal(noFinallyTone("It's about time you got some sleep.", "I'm finally going to bed"), "It's about time you got some sleep.");
+});

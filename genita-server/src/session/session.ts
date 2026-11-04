@@ -2139,8 +2139,11 @@ export class Session {
       const kept = forgetInCall(this.history, this.removedLines);
       const said = kept.filter((h) => h.role === "assistant").map((h) => h.text).slice(-6);
       // a stored thread about what was just forgotten in this call is never offered either (Codex r6 P1)
-      const gone = this.history.filter((h) => !kept.includes(h)).map((h) => h.text);
-      const offer = gone.length ? freshThreads(threads, gone) : threads;
+      // the forget request and its "got it" are not content; the forgotten lines and the stored removed lines are, by their
+      // own key words too ("My ex is Jake." → never "Her ex is Jake.": Codex r7 P1)
+      const gone = this.history.filter((h) => !kept.includes(h) && !/\b(?:forget|forgot|drop(?:ped)?|let it go|never mind)\b/i.test(h.text)).map((h) => h.text);
+      const keys = avoidKeys([...this.removedLines, ...gone.map((text) => ({ text, forget: true }))]);
+      const offer = freshThreads(threads, gone).filter((t) => !mentionsAvoided(t, keys));
       const camera = !!(this.frames && this.now() - this.frames.at <= FRAMES_TTL_MS);
       this.cueTurn = { source: again.source, block: cueRhythm(initiativeBlock(again.source, offer, { said, camera }), again.source, this.recentReplies), input };
       this.log("convo.initiative", { source: again.source, threads: threads.length, n: gov.count });
