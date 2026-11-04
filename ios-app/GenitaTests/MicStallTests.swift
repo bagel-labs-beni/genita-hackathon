@@ -48,4 +48,25 @@ final class MicStallTests: XCTestCase {
         XCTAssertEqual(CallAudio.vpOutputFormat(micRate: 0, outputChannels: 2)?.sampleRate, nil, "no mic: the default wiring")
         XCTAssertEqual(CallAudio.vpOutputFormat(micRate: 48_000, outputChannels: 9)?.channelCount, 2)
     }
+
+    /// iOS P0 (TF 341): the first reply on the speaker changes the route; the rebuild right after it saw a 0 Hz input
+    /// and the old handler turned the mic off silently (pill: Listening, uplink: nothing, mic watch: stopped).
+    func testAnEngineChangeNeverTurnsTheUsersMicOff() {
+        XCTAssertTrue(MicStall.rebuildWithMic(micOpen: true, engineHasMic: false), "mic on, engine lost it: rebuild with the mic")
+        XCTAssertTrue(MicStall.rebuildWithMic(micOpen: true, engineHasMic: true))
+        XCTAssertTrue(MicStall.rebuildWithMic(micOpen: false, engineHasMic: true), "a mic engine kept for playback stays one")
+        XCTAssertFalse(MicStall.rebuildWithMic(micOpen: false, engineHasMic: false))
+    }
+
+    func testAnEngineWithNoMicIsRebuiltEverySecondEvenWhileAReplyPlays() {
+        XCTAssertTrue(MicStall.mayHeal(now: 10, lastHeal: 8.9, heals: 1, engineHasMic: false, queuedBuffers: 12))
+        XCTAssertFalse(MicStall.mayHeal(now: 10, lastHeal: 9.5, heals: 1, engineHasMic: false, queuedBuffers: 0))
+        XCTAssertFalse(MicStall.mayHeal(now: 10, lastHeal: 8, heals: 6, engineHasMic: false, queuedBuffers: 0), "after 5 tries it backs off")
+    }
+
+    func testAQuietTapWaitsForTheReplyToFinish() {
+        XCTAssertFalse(MicStall.mayHeal(now: 100, lastHeal: 0, heals: 0, engineHasMic: true, queuedBuffers: 3))
+        XCTAssertTrue(MicStall.mayHeal(now: 100, lastHeal: 0, heals: 0, engineHasMic: true, queuedBuffers: 0))
+        XCTAssertFalse(MicStall.mayHeal(now: 100, lastHeal: 98, heals: 1, engineHasMic: true, queuedBuffers: 0))
+    }
 }
