@@ -309,7 +309,9 @@ export const HOLD_CAP_DEFAULT_MS = 1400;
 /** the least time a reply gets after its turn commits before the first-sound beat */
 const CAP_FLOOR_MS = 700;
 /** Codex #664 r2: medical or danger lines that get no hold beat ahead of the help */
-export const NO_BEAT_EMERGENCY = /\b(?:can'?t breathe|cannot breathe|can barely breathe|not breathing|chest (?:pain|hurts|feels tight|is tight)|heart attack|stroke|seizure|choking|unconscious|passed out|overdos\w*|poison\w*|swallowed|bleeding|allergic reaction|anaphyla\w*|throat (?:is )?closing|fainted|someone is (?:following|attacking|hurting)|break(?:ing)? in|intruder|fire\b|gas leak|knife|gun|911|emergency)\b/i;
+// Codex #664 r3 P1: variants ("My baby has stopped breathing.", "Someone is breaking into my house.") — a beat costs
+// nothing to skip, so this errs wide
+export const NO_BEAT_EMERGENCY = /\b(?:(?:can'?t|cannot|can barely|can hardly|isn'?t|is not|aren'?t|not|wasn'?t|stopped|stop|quit|no longer|trouble|struggling to|hard to|having trouble) breath\w*|chest (?:pain|hurts|feels tight|is tight)|heart attack|stroke|seizure|choking|unconscious|unresponsive|not responding|won'?t wake up|not waking up|collapsed|passed out|overdos\w*|poison\w*|swallowed|bleeding|allergic reaction|anaphyla\w*|throat (?:is )?closing|fainted|drown\w*|hit by a car|car (?:crash|accident)|(?:someone|somebody|a man|a guy|a woman|people|they)(?: is| are|'s|'re| was| were)? (?:following|attacking|hurting|chasing|stalking|trying to (?:get|break) in)|(?:someone|somebody|a man|a guy|a stranger)(?: is|'s|s)? in (?:my|the|our) (?:house|home|room|apartment|flat|yard|garage)|being (?:attacked|followed|chased|stalked)|attacked me|kidnap\w*|br(?:eak|eaking|oke|oken) (?:in|into)|break-?in|intruder|fire\b|gas leak|knife|gun|911|emergency)\b/i;
 export function holdCapMs(env: NodeJS.ProcessEnv = process.env): number {
   const n = Number(env.GENITA_HOLD_CAP_MS ?? HOLD_CAP_DEFAULT_MS);
   return Number.isFinite(n) && n >= 0 && n <= 10_000 ? n : HOLD_CAP_DEFAULT_MS;
@@ -320,6 +322,8 @@ export function holdCapMs(env: NodeJS.ProcessEnv = process.env): number {
  */
 // Chelsea 11/4 (hold-cap B): the short "Mm. / Yeah. / Ooh." set only — no "Okay, so.", "Hmm.", "Mm-hm." (or "Aw")
 export const HOLD_BEATS = ["<warm> Mm.", "<curious> Ooh.", "<warm> Yeah."];
+/** a hold beat's word ("<warm> Mm." / "Mm." → "mm"), what the call remembers as the last beat played */
+const playedBeat = (b: string) => b.replace(/<[^>]*>/g, "").trim().split(/[\s,.]/)[0].toLowerCase();
 /** a greeting / initiative sentence that is plainly a question (QA P3: it ended with "." 1/2) */
 const EXPLICIT_REMEMBER = /\b(?:remember|don'?t forget|keep in mind|note) (?:that|this|i|my|me)\b/i;
 /** the backchannel cue's echo in a transcript ("mm-hm", "mhm", "mm"), never a real word */
@@ -622,8 +626,9 @@ export class Session {
   private bargeTimer: NodeJS.Timeout | null = null;
   private seq = 0;
   private lastWarmAt = -Infinity;
-  /** next hold beat (rotates through HOLD_BEATS, so two in a row are never the same) */
+  /** next hold beat (rotates through HOLD_BEATS) and the last one played, never played twice in a row */
   private beatIx = 0;
+  private lastBeat: string | null = null;
   /** replies whose first sound waits for the user to stop talking */
   private quietWaiters: (() => void)[] = [];
   private metrics: TurnMetrics = {};
@@ -2767,12 +2772,14 @@ export class Session {
         const before = sentences.length;
         beating = true;
         // rotate (never the same twice in a row), and never the opening word of the last replies (QA P3, #423)
+        // Codex #664 r3 P2: the last beat is ruled out first (it is remembered), the replies' opening words after that
         const used = recentOpeningWords(this.recentReplies);
         const firstWord = (b: string) => b.replace(/<[^>]*>/g, "").trim().split(/[\s,.]/)[0].toLowerCase();
-        let k = 0;
-        while (k < HOLD_BEATS.length - 1 && used.includes(firstWord(HOLD_BEATS[(this.beatIx + k) % HOLD_BEATS.length]))) k++;
-        const beat = HOLD_BEATS[(this.beatIx + k) % HOLD_BEATS.length];
-        this.beatIx += k + 1;
+        // Codex #664 r4 P2: lastBeat is the beat actually played (set when it is said or voiced, not when queued)
+        const order = HOLD_BEATS.map((_, i) => (this.beatIx + i) % HOLD_BEATS.length).filter((i) => firstWord(HOLD_BEATS[i]) !== this.lastBeat);
+        const pick = order.find((i) => !used.includes(firstWord(HOLD_BEATS[i]))) ?? order[0];
+        const beat = HOLD_BEATS[pick];
+        this.beatIx = pick + 1;
         try { enqueueSentences([beat], true); } finally { beating = false; }
         for (let i = before; i < sentences.length; i++) sentences[i].beat = true;
         this.log("convo.hold_beat", { utteranceId });
@@ -2989,6 +2996,7 @@ export class Session {
     const sayOnDevice = (i: number, s: { display: string; emotion: string | null; beat?: true }, record = true) => {
       if (record && !s.beat) reply.spoken.push(s.display);
       if (!s.display) return;
+      if (s.beat) this.lastBeat = playedBeat(s.display);
       if (reply.firstAudioAt === null) {
         reply.firstAudioAt = this.now();
         m.firstAudioAt = reply.firstAudioAt;
@@ -3114,6 +3122,7 @@ export class Session {
         }
         if (!signal.aborted) {
           if (!s.beat) reply.spoken.push(s.display);
+          else if (sentAudio) this.lastBeat = playedBeat(s.display);
           // after the clause's audio: its words' span (aligner) or else its audio span, same timeline as audio.offsetMs
           if (s.face && sentAudio && this.deps.config.voice?.expressions !== false) {
             const startMs = clauseWords?.s ?? Math.round(sentenceOffset);
