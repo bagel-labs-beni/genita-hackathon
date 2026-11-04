@@ -54,7 +54,8 @@ const USER_HABIT = /\b(?:again|as usual|like usual|per usual|as always|like alwa
 const STILL = /\b(you(?:'re| are)?|u|are you|you guys)\s+still\b\s*(?=(?:on|into|obsessed|stuck|hooked|doing|making|listening|watching|playing|eating|cooking|up|awake|at it|in your|in that|going|living)\b|[a-z]+ing\b)/giu;
 
 // Codex #536 r3: emergency / help sentences are never touched ("If you remember when it started, tell the emergency services")
-const HELP = /\b(?:911|988|112|999|emergency|ambulance|hospital|doctor|crisis|hotline|helpline|poison control|nine[- ]one[- ]one|nine[- ]eight[- ]eight)\b/i;
+// Codex #536 r5: police / a safe place too ("Try to remember when you last saw her and call the police now.")
+const HELP = /\b(?:911|988|112|999|emergency|ambulance|hospital|doctor|crisis|hotline|helpline|poison control|police|cops|authorities|amber alert|fire department|somewhere safe|call for help|nine[- ]one[- ]one|nine[- ]eight[- ]eight)\b/i;
 export function unbackedPast(sentence: string, ctx: PastContext): string {
   if (!sentence.trim() || HELP.test(sentence)) return sentence;
   const user = ctx.userText ?? "";

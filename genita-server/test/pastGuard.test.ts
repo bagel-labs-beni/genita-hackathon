@@ -64,3 +64,8 @@ test("Codex #536 r4: a question about their memory stays; a 2-letter place they 
   assert.equal(unbackedPast("You told me that you're from LA.", { past: false, userText: "Where am I from?", callText: "I'm from LA." }), "You told me that you're from LA.");
   assert.equal(unbackedPast("You told me that you're from LA.", { past: false, userText: "Where am I from?", callText: "hi there" }), "");
 });
+
+test("Codex #536 r5: a police / safety instruction is never cut", () => {
+  const t = "Try to remember when you last saw her and call the police now.";
+  assert.equal(unbackedPast(t, { past: false, userText: "Someone has taken my daughter." }), t);
+});
