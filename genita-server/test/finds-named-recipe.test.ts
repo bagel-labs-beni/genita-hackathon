@@ -56,9 +56,9 @@ test("card payload: recipe kind, every ingredient 'buy' with its amount, steps, 
   assert.equal(card.items[5].optional, true);
   assert.equal(card.steps.length, 4);
   assert.ok(card.steps.every((s) => !s.image), "no generated step pictures");
-  assert.deepEqual(card.hero, { slot: "hero", status: "pending" });
+  assert.equal(card.hero, undefined, "no pending hero slot (an empty grey square if it never loads)");
   assert.equal(card.sources.length, 1, "an invented URL is dropped");
-  assert.deepEqual(card.sources[0].image, { slot: "source-0", status: "pending" });
+  assert.equal(card.sources[0].image, undefined);
   assert.deepEqual(card.why, ["Day-old rice keeps it from going mushy."]);
   assert.equal(card.say, NAMED_RECIPE_SAY);
   assert.ok(card.say!.split(/\s+/).length < 14);
@@ -83,9 +83,26 @@ test("runNamedRecipe: started → created → hero from the page's og:image; no 
   } as unknown as PipelineCtx;
   const r = await runNamedRecipe(ctx);
   assert.ok(r.card);
-  assert.deepEqual(events.map((e) => e.type), ["find.started", "find.created", "find.image", "find.image"]);
+  assert.deepEqual(events.map((e) => e.type), ["find.started", "find.created", "find.image"]);
   assert.equal((events[0] as { kind: string }).kind, "recipe");
   const imgs = events.filter((e) => e.type === "find.image") as { slot: string; status: string }[];
-  assert.deepEqual(imgs.map((e) => [e.slot, e.status]), [["hero", "ready"], ["source-0", "ready"]]);
+  assert.deepEqual(imgs.map((e) => [e.slot, e.status]), [["hero", "ready"]]);
   assert.equal(generated, 0);
+});
+
+test("no og:image anywhere → no hero event at all (never a failed / grey slot)", async () => {
+  const events: ServerEvent[] = [];
+  const ctx = {
+    findId: "f3", utteranceId: 1, kind: "recipe", question: "how do I make bibimbap", frames: [], memories: [],
+    replyText: Promise.resolve(null), emit: (e: ServerEvent) => events.push(e), signal: new AbortController().signal,
+    now: () => Date.now(), log: () => {}, images: true, putImage: async (slot: string) => `/x/${slot}`,
+    vendors: {
+      spark: async () => ({ text: JSON.stringify({ ...JSON_OK, dish: "bibimbap" }), output: [] }),
+      pageFacts: async () => ({ image: null }),
+      productImage: async () => null,
+    },
+  } as unknown as PipelineCtx;
+  const r = await runNamedRecipe(ctx);
+  assert.ok(r.card && !r.card.hero);
+  assert.deepEqual(events.map((e) => e.type), ["find.started", "find.created"]);
 });

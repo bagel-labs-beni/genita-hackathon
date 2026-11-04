@@ -64,7 +64,7 @@ export function namedRecipeCard(findId: string, j: NamedJson | null, traced: str
     .map((s) => ({ title: str(s.title, 120), url: str(s.url, 500) }))
     .filter((s) => /^https?:\/\//.test(s.url) && (!real.size || real.has(samePageKey(s.url))))
     .slice(0, 3)
-    .map((s, i) => ({ url: s.url, domain: domainOf(s.url), title: s.title || domainOf(s.url), ...(pictures ? { image: { slot: `source-${i}`, status: "pending" as const } } : {}) }));
+    .map((s) => ({ url: s.url, domain: domainOf(s.url), title: s.title || domainOf(s.url) }));
   const minutes = typeof j?.minutes === "number" ? Math.round(j.minutes) : Number.parseInt(String(j?.minutes ?? ""), 10) || null;
   const sum = recipeSummary(items, minutes);
   const why = str(j?.why, 140);
@@ -78,7 +78,7 @@ export function namedRecipeCard(findId: string, j: NamedJson | null, traced: str
     status: sum.status,
     say: NAMED_RECIPE_SAY,
     pill: "Recipe is up",
-    ...(pictures && sources.length ? { hero: { slot: "hero", status: "pending" as const } } : {}),
+    // no pending hero: the dish photo arrives by find.image only once it loaded (never an empty grey square)
     items,
     steps: steps.map((text) => ({ text, ...(sources[0] ? { source: sources[0].domain } : {}) })),
     options: [],
@@ -120,30 +120,26 @@ export async function runNamedRecipe(ctx: PipelineCtx & { recent?: string[] }): 
   return { card, timings };
 }
 
-/** each recipe page's og:image → its source slot; the first one that loads is also the dish photo (hero) */
+/** the first recipe page whose og:image loads is the dish photo (hero); nothing is sent when none loads */
 async function sourcePhotos(ctx: PipelineCtx, card: FindCard): Promise<void> {
   const { pageFacts, productImage } = ctx.vendors;
   if (!pageFacts || !productImage) return;
   let heroDone = false;
   await Promise.all(
     card.sources.map(async (s, i) => {
-      const slot = `source-${i}`;
       const facts = await cutOff((sig) => pageFacts(s.url, sig), GENERAL_IMAGE_MS * 2, ctx.signal);
       const bytes = facts?.image ? await cutOff((sig) => productImage(facts.image!, sig), GENERAL_IMAGE_MS * 2, ctx.signal) : null;
-      if (ctx.signal.aborted) return;
+      if (ctx.signal.aborted || heroDone) return;
+      if (!bytes?.length) {
+        ctx.log("find.named_recipe_image_failed", { findId: ctx.findId, source: i, message: facts?.image ? "image unreadable" : "no og:image" });
+        return;
+      }
+      heroDone = true;
       try {
-        if (!bytes?.length) throw new Error(facts?.image ? "image unreadable" : "no og:image");
-        if (!heroDone) {
-          heroDone = true;
-          ctx.emit({ type: "find.image", findId: ctx.findId, slot: "hero", status: "ready", url: await ctx.putImage("hero", bytes) });
-        }
-        ctx.emit({ type: "find.image", findId: ctx.findId, slot, status: "ready", url: await ctx.putImage(slot, bytes) });
+        ctx.emit({ type: "find.image", findId: ctx.findId, slot: "hero", status: "ready", url: await ctx.putImage("hero", bytes) });
       } catch (err) {
-        if (ctx.signal.aborted) return;
-        ctx.emit({ type: "find.image", findId: ctx.findId, slot, status: "failed" });
-        ctx.log("find.named_recipe_image_failed", { findId: ctx.findId, slot, message: String(err).slice(0, 120) });
+        ctx.log("find.named_recipe_image_failed", { findId: ctx.findId, source: i, message: String(err).slice(0, 120) });
       }
     }),
   );
-  if (!heroDone && card.hero && !ctx.signal.aborted) ctx.emit({ type: "find.image", findId: ctx.findId, slot: "hero", status: "failed" });
 }
