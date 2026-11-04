@@ -71,6 +71,8 @@ import os
     private var micWatch: Timer?
     private var micOpenedAt: TimeInterval = 0
     private var lastMicHeal: TimeInterval = 0
+    /// heals in a row that brought no buffer (backoff, Codex #705 P2)
+    private var micHeals = 0
     private let log = Logger(subsystem: "ai.thebeni.genita", category: "call-audio")
 
     init() {}
@@ -115,6 +117,7 @@ import os
         micOpen = true
         pipeline?.enabled = true
         micOpenedAt = now
+        micHeals = 0
         watchMic()
         return true
     }
@@ -122,7 +125,8 @@ import os
     /// DEMO P0 11/4 (TF 331: the first turn was answered, then the user's voice never reached the server again while
     /// the pill said Listening). While the mic is on, a tap that has delivered nothing for `MicStall.thresholdS`, or a
     /// voice-processing input left muted, is healed: the call's session category is set again and the engine rebuilt
-    /// with the mic (what is still playing carries over, AU-48). At most once per `MicStall.healGapS`.
+    /// with the mic. Only between replies (a reply still queued is never put at risk by a rebuild, Codex #705 P1: the
+    /// user's next turn comes after it anyway), and with a growing gap while heals bring nothing (`MicStall.gap`).
     private func watchMic() {
         guard micWatch == nil else { return }
         micWatch = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
@@ -137,9 +141,11 @@ import os
             engine.inputNode.isVoiceProcessingInputMuted = false
         }
         let now = ProcessInfo.processInfo.systemUptime
-        guard engineHasMic ? MicStall.stalled(now: now, lastBuffer: pipeline?.lastBufferUptime, since: max(micOpenedAt, lastMicHeal)) : true,
-              now - lastMicHeal >= MicStall.healGapS else { return }
+        let stalled = engineHasMic ? MicStall.stalled(now: now, lastBuffer: pipeline?.lastBufferUptime, since: max(micOpenedAt, lastMicHeal)) : true
+        if !stalled { micHeals = 0; return }
+        guard queuedBuffers == 0, now - lastMicHeal >= MicStall.gap(afterHeals: micHeals) else { return }
         lastMicHeal = now
+        micHeals += 1
         log.error("mic: no input for \(MicStall.thresholdS, privacy: .public)s while on; resetting the session and rebuilding the engine")
         configureSession()
         buildEngine(withMic: true)
@@ -476,6 +482,8 @@ enum MicStall {
     static let thresholdS: TimeInterval = 1.5
     /// the least time between two heals (a rebuild takes a moment to deliver its first buffer)
     static let healGapS: TimeInterval = 3
+    /// the gap before the next heal after `afterHeals` that brought nothing: 3, 6, 12, 24, then every 30 s
+    static func gap(afterHeals n: Int) -> TimeInterval { min(30, healGapS * pow(2, Double(max(0, n - 1)))) }
     /// `since`: when the current input was opened or last rebuilt (it gets `thresholdS` to deliver its first buffer).
     static func stalled(now: TimeInterval, lastBuffer: TimeInterval?, since: TimeInterval) -> Bool {
         let last = max(lastBuffer ?? -.infinity, since)

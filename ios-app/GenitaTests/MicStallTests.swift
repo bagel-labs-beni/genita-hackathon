@@ -26,4 +26,12 @@ final class MicStallTests: XCTestCase {
         XCTAssertTrue(MicStall.stalled(now: 100, lastBuffer: 97, since: -.infinity))
         XCTAssertFalse(MicStall.stalled(now: 100, lastBuffer: 99.9, since: -.infinity))
     }
+
+    func testHealsThatBringNothingBackOff() {
+        XCTAssertEqual(MicStall.gap(afterHeals: 0), 3)
+        XCTAssertEqual(MicStall.gap(afterHeals: 1), 3)
+        XCTAssertEqual(MicStall.gap(afterHeals: 2), 6)
+        XCTAssertEqual(MicStall.gap(afterHeals: 3), 12)
+        XCTAssertEqual(MicStall.gap(afterHeals: 9), 30)
+    }
 }
