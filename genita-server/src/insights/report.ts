@@ -276,6 +276,7 @@ export function linkSources(card: Pick<StyleCard, "sections">, o: Pick<Observati
   const allLines = Object.entries(card.sections ?? {}).filter(([k, v]) => Array.isArray(v) && !OPERATIONAL.has(k)).flatMap(([, v]) => (v as Array<{ text: string }>).map((f) => norm(f.text)));
   const inLine = o.evidence.filter((e) => e.source === "import").map((e) => norm(e.quote))
     .filter((q) => q.split(" ").length >= 3 && allLines.filter((l) => wordIn(q, l)).length === 1);
+  const pasteQ = o.evidence.filter((e) => e.source === "import").map((e) => norm(e.quote)).filter(Boolean);
   for (const [section, list] of Object.entries(card.sections ?? {})) {
     if (!Array.isArray(list) || OPERATIONAL.has(section)) continue;
     for (const f of list as Array<{ text: string }>) {
@@ -287,13 +288,16 @@ export function linkSources(card: Pick<StyleCard, "sections">, o: Pick<Observati
       // observation didn't name (Codex #581 link r1)
       if (parts.length > 1) {
         if (exact.includes(line)) { add({ section, text: f.text }); continue; }   // the whole list quoted word for word
-        for (const it of parts) if (exact.includes(norm(it))) add({ section, text: f.text, item: it.trim() });
+        // …or named word for word inside a paste quote ("I like spicy food." → spicy), the same rule as the older
+        // matching (r24): an observation linked on one line only must still take this one (Codex #581 recut r2 P1)
+        for (const it of parts) if (exact.includes(norm(it)) || pasteQ.some((q) => wordIn(norm(it), q))) add({ section, text: f.text, item: it.trim() });
         continue;
       }
       // cited, its pick's line, said whole, or the whole line inside a longer quote ("usually asks for two or three
       // options before deciding" ⊃ "Asks for two or three options before deciding.")
       if (basis.has(line) || mapped.has(line) || exact.includes(line) || (line.split(" ").length >= 3 && exact.some((q) => wordIn(line, q))) || inLine.some((q) => wordIn(q, line))) { add({ section, text: f.text }); continue; }
-      if (parts.length === 1 && exact.includes(norm(parts[0]))) add({ section, text: f.text });
+      // a one-item list line too: said whole, or named inside a paste quote (Codex #581 recut r3 P1)
+      if (parts.length === 1 && (exact.includes(norm(parts[0])) || pasteQ.some((q) => wordIn(norm(parts[0]), q)))) add({ section, text: f.text });
     }
   }
   return out;

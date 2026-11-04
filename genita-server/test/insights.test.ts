@@ -972,8 +972,38 @@ test("demo P0 #1 (Codex P2): a 'refreshing' flag left by a restart (no write run
 test("demo P0 #2 (Codex r3): a quoted phrase two profile lines share links neither", async () => {
   const { linkSources } = await import("../src/insights/report.ts");
   const card = toStyleCard({ sections: { tendencies: [], communication: [], response: [], help: [], support: [], interests: [], likes: [f("Loves tomato soup on rainy days."), f("Reads science fiction on rainy days.")], boundaries: [], approach: [] }, rules: [], to_confirm: [] }, "import");
-  const links = linkSources(card, { evidence: [ev("import", "tomato soup"), ev("import", "on rainy days")], chips: [] });
+  const links = linkSources(card, { evidence: [ev("import", "tomato soup"), ev("import", "on rainy days")], chips: [] } as never);
   assert.ok(!links.some((l) => /science fiction/.test(l.text)), "the unrelated line isn't linked");
-  const one = linkSources(card, { evidence: [ev("import", "tomato soup on rainy days")], chips: [] });
+  const one = linkSources(card, { evidence: [ev("import", "tomato soup on rainy days")], chips: [] } as never);
   assert.deepEqual(one.map((l) => l.text), ["Loves tomato soup on rainy days."]);
+});
+
+test("Codex #581 recut P1: a report saved with no linked lines (sources: []) still takes the quoted list item out of the call profile", async (t) => {
+  const h = harness(() => RAW);
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  await h.ins.get("u1", 3000);
+  const c0 = (await h.store.getStyle("u1"))!;
+  const [a, ...rest] = c0.insights!.observations;
+  const likes = [{ text: "Food: spicy, seafood.", label: "explicit", scope: "any" }];
+  const quoted = { ...a, claim: "You love spicy food", chips: [], evidence: [{ source: "import", quote: "I like spicy food.", source_label: "From the reply you pasted" }], sources: [] };
+  await h.store.putStyle("u1", { ...c0, sections: { ...c0.sections, likes } as never, insights: { ...c0.insights!, observations: [quoted, ...rest] } as never });
+  await h.ins.verdict("u1", a.id, { verdict: "not_me" });
+  const card1 = (await h.store.getStyle("u1"))!;
+  assert.deepEqual(card1.sections.likes.map((f) => f.text), ["Food: seafood."], "spicy leaves the call profile");
+});
+
+test("Codex #581 recut r2 P1: a list item named inside a paste quote is linked too, next to another linked line", async () => {
+  const { linkSources } = await import("../src/insights/report.ts");
+  const card = { sections: { likes: [{ text: "Food: spicy, seafood." }, { text: "Style: Minimal." }] } } as never;
+  const got = linkSources(card, { evidence: [{ source: "import", quote: "I like spicy food.", source_label: "x" }, { source: "answer", quote: "Minimal", source_label: "x" }], chips: [] } as never);
+  assert.deepEqual(got, [{ section: "likes", text: "Food: spicy, seafood.", item: "spicy" }, { section: "likes", text: "Style: Minimal." }]);
+});
+
+test("Codex #581 recut r3 P1: a one-item line named inside a paste quote is linked too", async () => {
+  const { linkSources } = await import("../src/insights/report.ts");
+  const card = { sections: { likes: [{ text: "Food: spicy." }, { text: "Style: Minimal." }] } } as never;
+  const got = linkSources(card, { evidence: [{ source: "import", quote: "I like spicy food.", source_label: "x" }, { source: "answer", quote: "Minimal", source_label: "x" }], chips: [] } as never);
+  assert.deepEqual(got, [{ section: "likes", text: "Food: spicy." }, { section: "likes", text: "Style: Minimal." }]);
 });

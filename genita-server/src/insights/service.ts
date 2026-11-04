@@ -338,7 +338,8 @@ export class Insights {
       // shares a word ("short" films after "short replies", Codex #581 r2)
       // a list finding loses only the picked item ("Food: spicy, seafood." → "Food: seafood.", Codex #581 r3)
       // linked report: exactly its linked lines; an older report (no links): the text matching it had (AU-91)
-      const edits = o.sources ? editsFromSources(c, o) : editsBehind(c, o);
+      // a report saved with no links found (sources: []) falls back to the older matching too (Codex #581 recut P1)
+      const edits = o.sources?.length ? editsFromSources(c, o) : editsBehind(c, o);
       const { drop, rewrite, picks, items, removedLines } = edits;
       // a linked edit applies only in its own section (the same words elsewhere are another setting, Codex #581 link r1)
       const sectionOf: Map<string, string> | null = "sectionOf" in edits ? (edits.sectionOf as Map<string, string>) : null;
@@ -369,7 +370,7 @@ export class Insights {
       const quotes = o.evidence.filter((e) => e.source !== "answer").map((e) => quoteWords(e.quote)).filter((w) => w.length).slice(0, 6);
       const alsoGone = gone.size || pickN.size || quotes.length ? ins.observations.filter((x) => {
         if (x.id === id) return false;
-        const e = x.sources ? editsFromSources(c, x) : editsBehind(c, x);
+        const e = x.sources?.length ? editsFromSources(c, x) : editsBehind(c, x);
         // the same rule as the save path: anything standing on what they said "not me" to (Codex #581 r22)
         if (standsOnDenied(x, { picks, items, quotes })) return true;
         // the same paste quote (hash) as the one they said "not me" to, too (Codex #581 r13)
