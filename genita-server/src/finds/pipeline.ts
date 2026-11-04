@@ -11,7 +11,7 @@
  * 1.5–3.7 s, one-search recipe 3–6 s (both start at t0, in parallel), each
  * re-check Spark YES/NO ≈1.5–2.4 s and SAM ≈1–2.5 s, all in parallel.
  */
-import type { FindCard, FindImage, FindItem, FindKind, NormBox, ServerEvent } from "../protocol.ts";
+import type { FindCard, FindItem, FindKind, NormBox, ServerEvent } from "../protocol.ts";
 import { boxItems, instancesOf, pickPhrasing, type SamInstance } from "./instances.ts";
 import type { SamBox } from "../meta/sam.ts";
 import { Candidates, recipeSummary, toWire, type Candidate } from "./tiers.ts";
@@ -183,14 +183,13 @@ function illustrate(ctx: PipelineCtx, jobs: { slot: string; prompt: string }[]):
         ctx.log("find.image", { findId: ctx.findId, slot, ms: Math.round(ctx.now() - t0) });
       } catch (err) {
         if (ctx.signal.aborted) return;
-        ctx.emit({ type: "find.image", findId: ctx.findId, slot, status: "failed" });
+        // Chelsea 11/4: a failed picture sends nothing — a "failed" slot draws an empty grey square in the shipped app
         ctx.log("find.image_failed", { findId: ctx.findId, slot, message: String(err).slice(0, 160) });
       }
     }),
   ).then(() => {});
 }
 
-const pending = (slot: string): FindImage => ({ slot, status: "pending" });
 
 /** FD-01 step 1 'How I found this' on camera cards (Figma 151:29/54/74); never on product cards (D50). AU-76 */
 export const MODEL_CREDIT = "Muse Spark · SAM 3.1";
@@ -429,10 +428,11 @@ export async function runRecipe(ctx: PipelineCtx): Promise<PipelineResult> {
       subtitle: sum.subtitle,
       status: sum.status,
       // no `say` yet: the spoken line is made from checked items once the boxes are up (D23)
-      ...(ctx.images ? { hero: pending("hero") } : {}),
+      // Chelsea 11/4: no pending picture slot on the card (an image that never comes stays an empty grey square);
+      // the hero / step pictures arrive by find.image only once ready (the app sets the slot from the event)
       camera: { frame: frameIndex, at: at.toISOString(), w: wh.w, h: wh.h, label: `Your camera · ${label}` },
       items,
-      steps: steps.map((text, i) => ({ text, ...(sources[0] ? { source: sources[0].domain } : {}), ...(ctx.images ? { image: pending(`step-${i + 1}`) } : {}) })),
+      steps: steps.map((text) => ({ text, ...(sources[0] ? { source: sources[0].domain } : {}) })),
       options: [],
       why: [],
       ask: strList(r?.ask, 4, 40).filter((t) => !HEALTH_ADVICE.test(t)).slice(0, 2),
@@ -787,7 +787,7 @@ export async function runLink(ctx: PipelineCtx): Promise<PipelineResult> {
     subtitle: `${domain} · ${takeaways.length} takeaway${takeaways.length > 1 ? "s" : ""}`,
     status: `${takeaways.length} takeaways`,
     say: str(j.say, 120) || undefined,
-    ...(ctx.images ? { hero: pending("hero") } : {}),
+    // no pending hero (an empty grey square if it never comes): find.image sets it once ready
     items: [],
     steps: takeaways.map((t) => ({ text: t })),
     options: [],
