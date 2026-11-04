@@ -56,8 +56,10 @@ export function memoryPrompt(items: Memory[], opening = false, notes = false): s
 /**
  * CV-01 (eval v2 11/4: 9 invented-past lines / 100 calls): said on a user turn while nothing from an earlier call (memories,
  * notes, last call's lines, a recall result) has reached Spark in this call. Short on purpose (Spark reasons on every line).
+ * b10 gate 11/4: "and ask" made "I don't remember, what happened?" (v2 questions 32→39, forget-respected 2→5) and first-call
+ * profile use slipped 4.2→3.8: the profile stays usable, no ask.
  */
-export const NO_PAST_LINE = "\nNothing from earlier calls is in front of you: don't act like you two have history (no \"again\", \"last time\", \"as usual\", \"I remember\"). If they ask about before and you find nothing, say you don't remember that part and ask.\n";
+export const NO_PAST_LINE = "\nNothing from earlier calls is in front of you: don't act like you two have history (no \"again\", \"last time\", \"as usual\", \"I remember\"). Their profile is still yours to use. If they ask about before and you find nothing, just say you don't remember that part.\n";
 /**
  * Prod 11/4: right after a crisis call, "I'm kinda tired today" got "please call nine one one or nine eight eight". With a
  * real hint in the last call's lines and none in this turn: a warm check-in at most, no help lines (Chelsea 11/1 rule).
