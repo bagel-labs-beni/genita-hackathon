@@ -11,6 +11,15 @@ public enum FindKind: String, Codable, Sendable {
     }
 }
 
+/// Per-info card layout hint (visual-everything 11/4). Separate from `kind`; absent → lay out by `kind` as before.
+/// Wire values: recipe, product, place, how-to, general. A value this build does not know decodes as `.unknown`.
+public enum FindLayout: String, Codable, Sendable {
+    case recipe, product, place, howTo = "how-to", general, unknown
+    public init(from decoder: Decoder) throws {
+        self = FindLayout(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .unknown
+    }
+}
+
 /// checking → have (Spark YES + SAM box) | maybe ("맞아?") | buy (recipe only).
 public enum FindTier: String, Codable, Sendable { case checking, have, maybe, buy }
 
@@ -80,9 +89,19 @@ public struct FindItem: Codable, Equatable, Identifiable, Sendable {
     /// SAM box for how it looks — a hint on `maybe`, never proof.
     public var hint: NormBox?
     public var confirmed: Confirmed?
-    public init(id: String, name: String, tier: FindTier, from: From, count: Int? = nil, optional: Bool? = nil, box: NormBox? = nil, hint: NormBox? = nil, confirmed: Confirmed? = nil) {
+    /// The ingredient's photo (find.image slot `ingredient-<id>`, keyed by `id`, not position); only ever `ready`.
+    public var image: FindImage?
+    public init(id: String, name: String, tier: FindTier, from: From, count: Int? = nil, optional: Bool? = nil, box: NormBox? = nil, hint: NormBox? = nil, confirmed: Confirmed? = nil, image: FindImage? = nil) {
         self.id = id; self.name = name; self.tier = tier; self.from = from; self.count = count; self.optional = optional
-        self.box = box; self.hint = hint; self.confirmed = confirmed
+        self.box = box; self.hint = hint; self.confirmed = confirmed; self.image = image
+    }
+
+    /// find.image slot prefix for an ingredient's photo: `ingredient-<item id>`.
+    public static let imageSlotPrefix = "ingredient-"
+    /// The item id an `ingredient-<id>` slot names; nil for any other slot.
+    public static func itemId(forImageSlot slot: String) -> String? {
+        guard slot.hasPrefix(imageSlotPrefix), slot.count > imageSlotPrefix.count else { return nil }
+        return String(slot.dropFirst(imageSlotPrefix.count))
     }
 }
 
@@ -117,9 +136,31 @@ public struct FindCard: Codable, Equatable, Identifiable, Sendable {
         public var box: NormBox?
     }
     public struct Source: Codable, Equatable, Sendable {
+        /// layout `place`: what the search said about the place; any field may be missing (draw only what is there)
+        public struct Place: Codable, Equatable, Sendable {
+            public var address: String?
+            /// 0...5
+            public var rating: Double?
+            public var reviews: Int?
+            public var hours: String?
+            /// a maps link the server built from the name and address
+            public var mapUrl: String?
+            public init(address: String? = nil, rating: Double? = nil, reviews: Int? = nil, hours: String? = nil, mapUrl: String? = nil) {
+                self.address = address; self.rating = rating; self.reviews = reviews; self.hours = hours; self.mapUrl = mapUrl
+            }
+        }
         public var title: String
         public var url: String
         public var domain: String
+        /// r01: the reason line on its own (`title` still reads "Title — why" for older apps)
+        public var why: String?
+        /// the page's picture (find.image slot `source-N`, N 0-based); only ever `ready`
+        public var image: FindImage?
+        public var favicon: String?
+        public var place: Place?
+        public init(title: String, url: String, domain: String, why: String? = nil, image: FindImage? = nil, favicon: String? = nil, place: Place? = nil) {
+            self.title = title; self.url = url; self.domain = domain; self.why = why; self.image = image; self.favicon = favicon; self.place = place
+        }
     }
     /// `from` profile = blue "Your style/taste: …" (import, HISY corrections) · call = grey "You said: …" (this call)
     public struct Reason: Codable, Equatable, Sendable {
@@ -135,6 +176,8 @@ public struct FindCard: Codable, Equatable, Identifiable, Sendable {
     }
     public var id: String
     public var kind: FindKind
+    /// visual-everything: which per-info layout to draw (nil → by `kind`, as before)
+    public var layout: FindLayout?
     public var createdAt: String
     public var eyebrow: String
     public var title: String
