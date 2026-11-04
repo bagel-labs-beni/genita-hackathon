@@ -1909,7 +1909,7 @@ export class Session {
     // Codex #541 r2: only this turn's camera frames say the camera is on (a cached face line can outlive it); a shared
     // screen counts for "look at this", never for "do I look ok?"
     // Codex #541 r3: never on a crisis line or in a call that had one (no "playful" nudge there)
-    if (!turn.greeting && !turn.cue && userText && !realCrisisSignal(userText) && !this.crisisInCall) { const off = cameraOffHint(userText, cameraFrames > 0, screenFrames > 0); if (off) perceptionHint = off; }
+    if (!turn.greeting && !turn.cue && userText && !realCrisisSignal(userText) && !this.crisisInCall) { const users = this.history.filter((h) => h.role === "user").map((h) => h.text); if (users.at(-1) === userText) users.pop(); const off = cameraOffHint(userText, cameraFrames > 0, screenFrames > 0, users.at(-1)); if (off) perceptionHint = off; }
     // P1: closeness, question rhythm, mood, what landed, recall — one "This turn:" line on a user turn (never a greeting / cue)
     let turnLine: string | undefined;
     this.subscribePerception();

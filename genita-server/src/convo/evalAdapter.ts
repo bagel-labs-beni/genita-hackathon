@@ -105,7 +105,7 @@ export const adapter = {
     const minor = minorLine(userLines);
     const turnWithMinor = minor ? (turn ? turn.replace(/^This turn: /, `This turn: ${minor} `) : `This turn: ${minor}`) : turn;
     // scripted calls send no camera frames: the session's camera-off hint for a "do I look ok?" line
-    const instructions = buildInstructions({ ...base, turn: turnWithMinor, perceptionHint: userLines.some(realCrisisSignal) ? undefined : cameraOffHint(t.text, false) ?? undefined }) + lastCallBlock(s, t.text) + memoryPrompt((s.memories ?? []).map(mem), false) + (hasPast(s) ? "" : NO_PAST_LINE);
+    const instructions = buildInstructions({ ...base, turn: turnWithMinor, perceptionHint: userLines.some(realCrisisSignal) ? undefined : cameraOffHint(t.text, false, false, ctx.history.filter((h) => h.role === "user").at(-1)?.text) ?? undefined }) + lastCallBlock(s, t.text) + memoryPrompt((s.memories ?? []).map(mem), false) + (hasPast(s) ? "" : NO_PAST_LINE);
     return { instructions, input: [...msgs(ctx.history), { role: "user", content: t.text }], maxOutputTokens: 800, effort: "minimal" };
   },
 
