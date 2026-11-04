@@ -30,6 +30,19 @@ extension FindCard {
         }
     }
 
+    /// Which result leads with the big photo (r01 top pick): row 0 when it has its own picture (or one is loading);
+    /// else the first row whose picture landed (contract v2: `hero` can come from another row, so it never goes under
+    /// row 0's name); else row 0 with `hero` when no row has a picture of its own (an older server sends #1's og:image
+    /// only as `hero`). nil → rows only.
+    var topPick: (index: Int, photo: FindImage)? {
+        guard !sources.isEmpty else { return nil }
+        func usable(_ i: FindImage?) -> FindImage? { i.flatMap { $0.status == .failed ? nil : $0 } }
+        if let img = usable(sources[0].image) { return (0, img) }
+        if let i = sources.indices.first(where: { sources[$0].image?.status == .ready }), let img = sources[i].image { return (i, img) }
+        if !sources.contains(where: { usable($0.image) != nil }), let h = usable(hero) { return (0, h) }
+        return nil
+    }
+
     /// The dish photo above the ingredients: only on a recipe with no camera frame (a named dish), and only a
     /// picture that is there or still coming (never an empty box for one that failed).
     var dishPhoto: FindImage? {
