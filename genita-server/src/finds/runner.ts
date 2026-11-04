@@ -669,13 +669,14 @@ export class FindsRunner {
       if (by("buy")) parts.push(`not seen: ${by("buy")}`);
     }
     if (c.products?.length) {
-      parts.push(`products: ${c.products.map((p, i) => `${i + 1}. ${p.name} (${p.store}, ${p.price ?? "price on the site"}; ${[old ? "" : p.taste, p.situation].filter(Boolean).join(", ")})`).join(" ")}`);
+      parts.push(`products: ${c.products.map((p, i) => `${i + 1}. ${p.name} (${p.store}, ${p.price ?? "price on the site"}; ${(old ? [] : [p.taste, p.situation]).filter(Boolean).join(", ")})`).join(" ")}`);
       if (c.evidence?.style && !old) parts.push(`their style line: ${c.evidence.style}`);
       if (c.products.length < PRODUCT_COUNT) parts.push("only one product page opened");
     }
     if (c.options.length) parts.push(`options: ${c.options.map((o) => `${o.label}${o.picked ? " (your pick)" : ""}`).join(", ")}`);
     if (c.steps.length) parts.push(`${c.kind === "link" ? "takeaways" : "steps"}: ${c.steps.map((s, i) => `${i + 1}. ${s.text}`).join(" ")}`);
-    if (c.why.length) parts.push(`why: ${c.why.join(" ")}`);
+    // an old card's "why" lines were written with the old taste too ("Clean camel, totally you.")
+    if (c.why.length && !old) parts.push(`why: ${c.why.join(" ")}`);
     if (c.page && !c.page.opened) parts.push("you could not open the page itself");
     if (c.sources[0]) parts.push(`source: ${c.sources[0].domain}`);
     return parts.join("; ").slice(0, 900);

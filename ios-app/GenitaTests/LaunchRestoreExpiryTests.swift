@@ -55,3 +55,38 @@ final class RestoreStub: URLProtocol, @unchecked Sendable {
         XCTAssertFalse(storage.bool(forKey: AppState.signedOutKey))
     }
 }
+
+/// AU-92 fail closed (lead 11/4): "Forget all of this" clears the phone's copy first; a server failure says so and
+/// keeps a retry queued, never bringing the copy back.
+@MainActor final class ForgetProfileTests: XCTestCase {
+    private func model(status: Int) -> AppState {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RestoreStub.self]
+        RestoreStub.handler = { req in
+            (req.url?.path ?? "").hasSuffix("/v1/profile") ? (status, Data(status == 200 ? #"{"ok":true}"#.utf8 : #"{"error":"x"}"#.utf8)) : (404, Data())
+        }
+        let m = AppState(storage: UserDefaults(suiteName: UUID().uuidString)!)
+        m.routeAfterSignIn = {}
+        m.onboarding = OnboardingClient(auth: GenitaAuthClient(baseURL: URL(string: "https://forget.stub")!, store: InMemoryTokenStore("token-a"), session: URLSession(configuration: config)))
+        m.setup.styleProfile = "How the user wants to be treated"; m.setup.styleRows = []; m.setup.response = "pasted"
+        m.setup.companionName = "Jin"
+        return m
+    }
+
+    func testServerFailureKeepsTheCopyClearedAndARetryQueued() async {
+        let m = model(status: 503)
+        let line = await m.forgetProfile()
+        XCTAssertEqual(line, "Couldn’t finish forgetting — try again.")
+        XCTAssertNil(m.setup.styleProfile); XCTAssertNil(m.setup.styleRows); XCTAssertEqual(m.setup.response, "")
+        XCTAssertEqual(m.setup.forgetPending, true, "a retry stays queued")
+        XCTAssertEqual(m.setup.companionName, "Jin", "the companion stays")
+    }
+
+    func testSuccessClearsTheQueue() async {
+        let m = model(status: 200)
+        let line = await m.forgetProfile()
+        XCTAssertNil(line)
+        XCTAssertNil(m.setup.forgetPending)
+        XCTAssertNil(m.setup.styleProfile)
+    }
+}

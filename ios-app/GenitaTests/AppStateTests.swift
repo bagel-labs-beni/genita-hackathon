@@ -21,6 +21,7 @@ import UIKit
         XCTAssertNil(model.setup.styleProfile); XCTAssertNil(model.setup.styleRows); XCTAssertNil(model.setup.stylePartial)
         XCTAssertEqual(model.setup.response, "", "the pasted reply goes too: the call never falls back to it")
         XCTAssertEqual(model.profileForgets, 1)
+        XCTAssertNil(model.setup.forgetPending, "profileForgotten alone doesn't queue a retry (forgetProfile() does)")
         XCTAssertNil(model.setup.skipInterests); XCTAssertNil(model.setup.skipLikes)
         XCTAssertNil(model.story); XCTAssertNil(model.storySource); XCTAssertEqual(model.hisyPage, 0)
         XCTAssertEqual(model.setup.companionName, "Jin", "the companion stays")

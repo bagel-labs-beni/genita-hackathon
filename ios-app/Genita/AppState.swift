@@ -69,8 +69,11 @@ struct SavedSetup: Codable {
     var accountId: String?
     /// The judge account's ready-made companion (server `demo: true`), labelled "Demo companion"
     var companionDemo: Bool?
+    /// AU-92 fail closed: "Forget all of this" was asked but the server hasn't confirmed it yet — the local copy is
+    /// already gone and the request is sent again (on launch, and on the next try)
+    var forgetPending: Bool?
     enum CodingKeys: String, CodingKey { case stage, name, response, depth, voice, answers, boundaries, presence, presenceCardIDs, hasOnboarded,
-        companionName, imageId, imageType, styleRows, styleProfile, stylePartial, companionCreated, voiceId, voiceName, deviceVoice, skipInterests, skipReplies, skipAvoid, skipLikes, firstCallPending, serverPersona, accountId, companionDemo }
+        companionName, imageId, imageType, styleRows, styleProfile, stylePartial, companionCreated, voiceId, voiceName, deviceVoice, skipInterests, skipReplies, skipAvoid, skipLikes, firstCallPending, serverPersona, accountId, companionDemo, forgetPending }
 
 }
 /// A launch response belongs to the token and authentication lifetime that requested it.

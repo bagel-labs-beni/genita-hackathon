@@ -250,7 +250,7 @@ test("AU-92: after 'Forget all of this' the card on screen no longer quotes the 
   const { v } = vendors(10);
   const { r } = runner(v, "acct-forget", "");
   const card = { id: "f1", kind: "product", title: "Two picks", subtitle: "You prefer minimal clothes.", createdAt: new Date(Date.now() - 1000).toISOString(), items: [], options: [], steps: [], why: [], sources: [],
-    products: [{ name: "Black Chelsea Boot", store: "Shop", price: "$90", taste: "Clean, minimal", situation: "" }, { name: "Penny Loafer", store: "Store", price: "", taste: "Leather", situation: "" }],
+    products: [{ name: "Black Chelsea Boot", store: "Shop", price: "$90", taste: "Clean, minimal", situation: "Your weekend wedding" }, { name: "Penny Loafer", store: "Store", price: "", taste: "Leather", situation: "" }],
     evidence: { style: "Black, camel, dark brown.", situation: "" } } as unknown as FindCard;
   (r as unknown as { cards: Map<string, FindCard> }).cards.set("f1", card);
   r.focus("f1");
@@ -258,7 +258,7 @@ test("AU-92: after 'Forget all of this' the card on screen no longer quotes the 
   assert.match(r.onScreen() ?? "", /style line/);
   r.forgetTaste();
   const after = r.onScreen() ?? "";
-  assert.doesNotMatch(after, /Clean, minimal|Leather|style line|prefer minimal/);
+  assert.doesNotMatch(after, /Clean, minimal|Leather|style line|prefer minimal|weekend wedding/);
   assert.match(after, /Black Chelsea Boot/, "the products themselves stay");
   r.close();
 });

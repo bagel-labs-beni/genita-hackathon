@@ -871,10 +871,9 @@ export class Session {
         ]);
         this.callStartedAt = new Date().toISOString();
         if (p === TIMED_OUT) {
-          // the app's copy carries the call until the server's lands (then it applies to the rest of the call) — except
-          // right after "Forget all of this" in this process: no profile then (AU-92). Trade-off kept on purpose: a slow
-          // or failing profile store must not strip every call of its profile.
-          if (this.deps.personalize.isForgotten?.(this.deps.userId)) { this.user = { ...this.user, profile: undefined }; this.taste = []; }
+          // fail closed (lead 11/4, AU-92): never the app's copy — it may hold what they asked to forget. No profile until
+          // the server's lands, then it applies to the rest of the call.
+          this.user = { ...this.user, profile: undefined }; this.taste = [];
           this.log("profile.start_timeout", {});
           void read.then((late) => {
             if (!late || this.closed) return;
@@ -903,8 +902,8 @@ export class Session {
         if (got?.ask && got.askItem) this.ask = { line: got.ask, item: got.askItem, topic: got.askTopic ?? null, asked: false };
         this.taste = got?.taste ?? [];
       } catch (err) {
-        // the read failed: the app's copy, unless they just asked to forget it (AU-92)
-        if (this.deps.personalize.isForgotten?.(this.deps.userId)) { this.user = { ...this.user, profile: undefined }; this.taste = []; }
+        // the read failed: fail closed (lead 11/4, AU-92) — no profile rather than the app's copy
+        this.user = { ...this.user, profile: undefined }; this.taste = [];
         this.log("profile.unavailable", { message: String(err).slice(0, 120) });
       }
       if (this.closed) return;

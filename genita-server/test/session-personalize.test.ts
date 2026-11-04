@@ -157,7 +157,8 @@ test("a failing personalize dep never breaks the call", async () => {
   await s.session.onClientText(JSON.stringify({ type: "start", persona, user: { profile: "- Taste: Loves cilantro." } }));
   assert.ok(s.client.json.some((m) => m.type === "ready"));
   await say(s, "Actually I don't like mushrooms anymore.", 1);
-  assert.match(s.sparkCalls[0].instructions!, /Loves cilantro/, "falls back to the app's profile");
+  // fail closed (lead 11/4, AU-92): the app's copy may hold what they asked to forget
+  assert.doesNotMatch(s.sparkCalls[0].instructions!, /Loves cilantro/, "never the app's copy when the store fails");
   s.session.close();
   await sleep(10);
 });

@@ -55,6 +55,7 @@ extension AppState {
             return
         }
         apply(route, me: me, afterSignIn: afterSignIn)
+        if setup.forgetPending == true { await retryPendingForget() }
     }
 
     func restoreCompanion(for request: OnboardingSessionGeneration.Snapshot? = nil) async {
@@ -250,16 +251,25 @@ extension AppState {
     /// About you → "Forget all of this" (AU-92): the server forgets what Genita knows about the user (import, HISY,
     /// corrections, insights, call memory); the companion stays. Returns the error line to show (nil = done).
     func forgetProfile() async -> String? {
+        // fail closed (lead 11/4): the phone's copy goes first and a retry stays queued until the server confirms —
+        // a failure never leaves (or brings back) what they asked to forget
+        profileForgotten()
+        setup.forgetPending = true
         do {
             try await onboarding.forgetProfile()
-            profileForgotten()
+            setup.forgetPending = nil
             return nil
         } catch {
             route(error)
-            if case GenitaAuthError.server(status: 429, _, _) = error { return "Try again in a minute." }
-            // the server may have done part of it (the profile, not yet the call memory): a retry finishes it
-            return "Couldn’t finish forgetting. Try again."
+            if case GenitaAuthError.server(status: 429, _, _) = error { return "Couldn’t finish forgetting — try again in a minute." }
+            return "Couldn’t finish forgetting — try again."
         }
+    }
+
+    /// A queued "Forget all of this" the server never confirmed: sent again (on launch, once signed in).
+    func retryPendingForget() async {
+        guard setup.forgetPending == true, serverWired, onboarding.auth.token != nil else { return }
+        if (try? await onboarding.forgetProfile()) != nil { setup.forgetPending = nil }
     }
 
     /// The phone drops its copy too: the I04 rows, the call's profile text, the pasted reply, the story cards, the
