@@ -803,13 +803,15 @@ extension AppState {
         defer { insightLoading = false }
         await insightAnswersTask?.value
         let request = onboardingSnapshot()
-        for _ in 0..<3 {
+        // demo P0 (11/4): the answers' rewrite takes 15–50 s. The report with the answers' own parts is there at once
+        // (refreshing); keep asking for up to ~60 s, showing it with "Adding your answers…", and swap in the rewrite.
+        for _ in 0..<8 {
             do {
-                let r = try await onboarding.insights(wait: 6)
+                let r = try await onboarding.insights(wait: 8)
                 guard ownsOnboardingResponse(request), !Task.isCancelled else { return }
                 // a report that arrives later (Settings) clears an earlier failure (AU-94)
                 if let report = r.report, insightVerdictTask == nil { insightReport = report; insightUnavailable = false }
-                if r.status == .ready { return }
+                if r.status == .ready, r.report?.refreshing != true { return }
                 if r.status == .none || r.status == .failed { break }
             } catch {
                 if ownsOnboardingResponse(request) { route(error) }

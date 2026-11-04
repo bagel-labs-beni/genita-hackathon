@@ -866,3 +866,40 @@ test("design-lane Codex: a trait resting on a line the user marked wrong leaves 
   assert.ok(!insightProfileLines(saved).some((l) => l.includes(humor.use_in_call)));
   assert.ok(insightProfileLines(saved).some((l) => l.includes(r.observations.find((o) => o.category === "think")!.use_in_call)), "the others stay");
 });
+
+test("demo P0: setup answers land on the stored report at once (settings, mix, refreshing); the slow rewrite is quick-mode and clears it", async (t) => {
+  let release!: () => void;
+  let gated = false;
+  const gate = new Promise<void>((r) => (release = r));
+  const h = harness(async (req) => { if (gated) await gate; return req.schemaName === "insight_report" ? RAW : null; });
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  await h.ins.get("u1", 3000);
+  gated = true;
+  const t0 = Date.now();
+  await h.ins.fromAnswers("u1", { help: "Be there", relationship: "Close companion", presence: ["Warm"], challenge: 2, pace: 4 });
+  const now = await h.ins.get("u1", 0);
+  assert.ok(Date.now() - t0 < 500, "no wait for Spark");
+  assert.equal(now.report!.settings!.why, "Be there");
+  assert.ok(now.report!.mix.some((m) => m.id === "pace"), "Your mix from the answers");
+  assert.equal(now.report!.refreshing, true);
+  const sent = h.calls.at(-1)!;
+  assert.equal((sent as unknown as { effort?: string }).effort, "minimal", "quick rewrite");
+  release();
+  const done = await h.ins.get("u1", 3000);
+  assert.equal(done.status, "ready");
+  assert.ok(!done.report!.refreshing);
+
+  // a failed rewrite also clears "refreshing" (the app stops waiting)
+  const h2 = harness(async (req) => { if (req.schemaName === "insight_report" && h2calls++ > 0) throw new Error("504"); return RAW; });
+  let h2calls = 0;
+  t.after(h2.cleanup);
+  const j2 = h2.ins.begin("u1", PASTE);
+  j2.commit(await h2.p.replaceStyle("u1", CARD));
+  await h2.ins.get("u1", 3000);
+  await h2.ins.fromAnswers("u1", { help: "Be there" });
+  await h2.ins.get("u1", 3000);
+  await new Promise((r) => setTimeout(r, 30));
+  assert.ok(!(await h2.store.getStyle("u1"))!.insights!.refreshing);
+});

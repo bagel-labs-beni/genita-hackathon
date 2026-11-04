@@ -19,7 +19,7 @@ import { museJson } from "../meta/spark.ts";
 import type { Personalize } from "../personalize/service.ts";
 import { looksLikeInjection, redactSensitive, ruleLine, type StyleCard } from "../prep/importProfile.ts";
 import type { PrepStore } from "../prep/store.ts";
-import { LEARN_LABEL, OBS_MIN, OPERATIONAL, buildInsightRequest, editsBehind, editsFromSources, findingsBehind, linkSources, rulesBehind, picksFromAnswers, privateDetail, settingsFrom, similarClaim, scrubRemoved, toReport, withoutObservations, withoutRemoved, type InsightInputs } from "./report.ts";
+import { LEARN_LABEL, OBS_MIN, OPERATIONAL, mixFrom, buildInsightRequest, editsBehind, editsFromSources, findingsBehind, linkSources, rulesBehind, picksFromAnswers, privateDetail, settingsFrom, similarClaim, scrubRemoved, toReport, withoutObservations, withoutRemoved, type InsightInputs } from "./report.ts";
 import type { InsightReport, StoredInsights } from "./profile.ts";
 export { insightProfileLines } from "./profile.ts";
 
@@ -143,7 +143,7 @@ export class Insights {
       this.log("insights.retry", { from, message: String(err).slice(0, 120) });
       return once();
     });
-    if (r.observations.length < OBS_MIN) {
+    if (r.observations.length < OBS_MIN && !inputs.quick) {
       const again = await once().catch(() => null);
       if (again && again.observations.length > r.observations.length) r = again;
     }
@@ -201,7 +201,13 @@ export class Insights {
         this.failedAt.set(userId, Date.now());
         this.log("insights.failed", { from, message: String(err).slice(0, 160) });
       })
-      .finally(() => { if (this.jobs.get(userId)?.promise === promise) this.jobs.delete(userId); });
+      .finally(async () => {
+        if (this.jobs.get(userId)?.promise === promise) this.jobs.delete(userId);
+        // the last write is done (saved, failed or stale): the report is no longer "refreshing"
+        if (this.seq.get(userId) === mine) {
+          await this.personalize.patchStyle(userId, (c) => (c.insights?.refreshing ? { ...c, insights: { ...c.insights, refreshing: false } } : null)).catch(() => {});
+        }
+      });
     this.jobs.set(userId, { promise, startedAt: Date.now() });
   }
 
@@ -229,6 +235,11 @@ export class Insights {
     const a = answers as Record<string, unknown>;
     const settings = settingsFrom(a);
     const answerPicks = picksFromAnswers(a);
+    // demo P0 (11/4): the rewrite takes 15–50 s, SUM opens seconds later. The answers' own parts (the four setup lines,
+    // "Your mix") go on the stored report now, marked refreshing; the traits follow when Spark lands.
+    if (this.enabled) {
+      await this.personalize.patchStyle(userId, (c) => (c.insights ? { ...c, insights: { ...c.insights, settings, mix: mixFrom([...cardPicks(c), ...answerPicks]), refreshing: true } } : null));
+    }
     this.start(userId, "answers", (card) => {
       if (!card) return null;
       return {
@@ -245,6 +256,7 @@ export class Insights {
           (card.removed ?? []).filter((r) => r.forget),
         ),
         unknowns: card.toConfirm,
+        quick: true,
       };
     }, { settings });
   }

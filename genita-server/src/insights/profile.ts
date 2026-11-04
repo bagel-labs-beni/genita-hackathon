@@ -63,6 +63,8 @@ export type InsightReport = {
   at: string;
   from: "import" | "skip" | "answers" | "card";
   ms?: number;
+  /** the setup answers are in (settings + mix) and Spark is rewriting the traits with them (the app shows "Adding your answers…") */
+  refreshing?: boolean;
 };
 export type DeniedInsight = { id: string; claim: string; category: InsightCategory; correction?: string; at: string;
   /** the picks / list items it stood on (AU-91): a later report can't build on them again */

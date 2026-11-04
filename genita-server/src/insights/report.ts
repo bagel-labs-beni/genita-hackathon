@@ -33,6 +33,8 @@ export type InsightInputs = {
   denied?: Array<{ claim: string; correction?: string }>;
   /** still to confirm (the card's) */
   unknowns?: string[];
+  /** the setup-answers rewrite (demo P0 11/4: 27–51 s): one Spark call at minimal effort, no second try */
+  quick?: boolean;
 };
 
 export const CATEGORIES: InsightCategory[] = ["talk", "think", "humor", "taste", "help", "boundary", "rhythm", "interest"];
@@ -856,5 +858,5 @@ export function buildInsightRequest(inputs: InsightInputs): Omit<SparkRequest, "
   if (inputs.picks.length) parts.push(`<picks>\n${strip(inputs.picks.map((p) => `- ${p.question}: "${p.label}"`).join("\n"), "picks")}\n</picks>`);
   if (inputs.denied?.length) parts.push(`<not_true>\n${strip(inputs.denied.map((d) => `- "${d.claim}"${d.correction ? ` — they said: "${d.correction}"` : ""}`).join("\n"), "not_true")}\n</not_true>`);
   if (inputs.unknowns?.length) parts.push(`<still_unknown>${strip(inputs.unknowns.join("; "), "still_unknown")}</still_unknown>`);
-  return { instructions: INSIGHT_INSTRUCTIONS, input: parts.join("\n\n") || "<picks></picks>", effort: "low", maxOutputTokens: 5000, schemaName: "insight_report", schema: INSIGHT_SCHEMA as unknown as Record<string, unknown> };
+  return { instructions: INSIGHT_INSTRUCTIONS, input: parts.join("\n\n") || "<picks></picks>", effort: inputs.quick ? "minimal" : "low", maxOutputTokens: 5000, schemaName: "insight_report", schema: INSIGHT_SCHEMA as unknown as Record<string, unknown> };
 }
