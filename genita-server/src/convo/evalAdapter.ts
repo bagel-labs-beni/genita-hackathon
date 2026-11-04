@@ -10,6 +10,7 @@ import { memoryPrompt, NO_PAST_LINE, plainLowMood, PRIOR_CRISIS_LINE } from "../
 import { minorLine } from "./minorBoundary.ts";
 import { cameraOffHint } from "./cameraAsk.ts";
 import { unbackedPast } from "./pastGuard.ts";
+import { unseenToHeard } from "./unseenSight.ts";
 import { crisisFollowUpFor } from "../session/session.ts";
 import { forgetInCall } from "./forgetInCall.ts";
 import type { Memory } from "../memory/repository.ts";
@@ -119,6 +120,7 @@ export const adapter = {
     for (const part of parts) {
       let tts = kept.length ? part : avoidRepeatedOpener(part, recent);
       if (tts) tts = dropRepeatedName(tts, ctx.scenario.user.name, [...recent.slice(-2), ...kept]);
+      if (tts) tts = unseenToHeard(tts, false); // scripted calls send no frames
       if (tts) tts = unbackedPast(tts, { past: hasPast(ctx.scenario), userText, callText: ctx.history.map((h) => h.text).join(" ") });
       if (!tts) continue;
       if (!parseTaggedSentence(tts).displayText) continue;
