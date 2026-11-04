@@ -1396,7 +1396,8 @@ enum CallStop: Equatable {
         while await once() {
             // face plan item 3: `faceSetReady` (prep just finished) cuts this wait short
             if !faceRetryNow {
-                let nap = Task { try? await Task.sleep(for: faceRetryInterval) }
+                let interval = faceRetryInterval
+                let nap = Task<Void, Never> { do { try await Task.sleep(for: interval) } catch {} }
                 faceRetryNap = nap
                 await nap.value
                 if faceRetryNap == nap { faceRetryNap = nil }
