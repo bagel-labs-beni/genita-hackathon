@@ -107,6 +107,9 @@ test("prep routes: prompt, validation, one companion per user, prefs → persona
   // persona survives a later prep write
   const after = await call("GET", "/v1/companion");
   assert.equal(after.json.persona.card.name, "Leah");
+  // D99: Settings "Together N days" reads the companion's creation time from here
+  assert.equal(after.json.createdAt, (await store.getCompanion("u1"))!.createdAt);
+  assert.ok(!Number.isNaN(Date.parse(after.json.createdAt)));
   assert.equal(after.json.prep.status, "failed");
 });
 

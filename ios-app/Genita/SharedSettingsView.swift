@@ -103,6 +103,7 @@ struct SettingsView: View {
             // the About you row's preview and counts come from the insight report (GET /v1/profile/insights); read again
             // on every open — a call may have scrubbed it since ("forget that", That's not me: AU-94). The old one stays
             // on screen meanwhile.
+            .task { await model.loadCompanionSince() }
             .task { if model.insightsEnabled { await model.loadInsights() } }
             #endif
             .reportFlow(isPresented: $reportOpen, surface: "settings", auth: model.onboarding.auth) { CallController.shared.lastReplyText }
@@ -167,7 +168,10 @@ struct SettingsView: View {
     }
     private var companionSubtitle: String {
         let voice = voiceName + " voice"
-        return model.setup.companionDemo == true ? voice + " · Demo companion" : voice
+        if model.setup.companionDemo == true { return voice + " · Demo companion" }
+        // D99 "함께한 날": nothing when the date is unknown
+        if let together = CompanionTogether.label(createdAt: model.setup.companionSince) { return voice + " · " + together }
+        return voice
     }
     /// C1 About you row: "What {name} knows about you", the report's headline (2 lines max), "{n} things · {m} still learning".
     private var aboutYouRow: some View {
