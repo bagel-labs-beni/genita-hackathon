@@ -40,6 +40,7 @@ test("a second hello after the opener goes; the rest of the sentence stays", () 
   assert.equal(noRepeatGreeting("Hey. Good to finally hear you.", "hey"), "Hey.");
   assert.equal(noRepeatGreeting("Hey you, good to finally put a face to the voice.", "hey"), "Hey you.");
   assert.equal(noRepeatGreeting("Hey you, finally putting a face to the name.", "hey"), "Hey you.");
+  assert.equal(noRepeatGreeting("Hey, finally putting a voice to the name.", "hey"), "Hey.");
   // Codex r1 P2: praise that happens to say "you made it"
   assert.equal(noRepeatGreeting("You made it through a tough interview without freezing.", "Did I do okay in the interview?"), "You made it through a tough interview without freezing.");
   for (const s of ["That's brutal, making you pitch his version like that.", "Black one, no contest.", "Finally, a dish that needs no oven.", "You're back to square one with the deck, huh."]) assert.equal(noRepeatGreeting(s, "x"), s);
@@ -194,4 +195,13 @@ test("r7: 'took you long enough' / 'bout time' / 'nice of you to show up' on any
   assert.equal(noFinallyTone("Hey Summer, nice of you to show up.", "hi"), "Hey Summer.");
   assert.equal(noFinallyTone("'Bout time, what's the plan tonight?", "hey"), "What's the plan tonight?");
   assert.equal(noFinallyTone("It's about time you got some sleep.", "I'm finally going to bed"), "It's about time you got some sleep.");
+});
+
+test("r8 (Codex): a short name from a forgotten line keeps its thread out", async () => {
+  const { freshThreads } = await import("../src/convo/initiative.ts");
+  for (const n of ["Tom", "Ben", "Amy"]) assert.deepEqual(freshThreads([`Her ex is ${n}.`, "Started a pottery class"], [`My ex is ${n}.`], true), ["Started a pottery class"]);
+  // a sentence-start word is not a name
+  assert.deepEqual(freshThreads(["Started a pottery class"], ["The deck was a mess."], true), ["Started a pottery class"]);
+  // the call's own replies say the user's name; their threads still come (names only for forgotten lines)
+  assert.deepEqual(freshThreads(["Summer started a pottery class"], ["Hey Summer, what's up?"]), ["Summer started a pottery class"]);
 });

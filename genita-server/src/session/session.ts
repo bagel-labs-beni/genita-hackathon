@@ -2143,7 +2143,7 @@ export class Session {
       // own key words too ("My ex is Jake." → never "Her ex is Jake.": Codex r7 P1)
       const gone = this.history.filter((h) => !kept.includes(h) && !/\b(?:forget|forgot|drop(?:ped)?|let it go|never mind)\b/i.test(h.text)).map((h) => h.text);
       const keys = avoidKeys([...this.removedLines, ...gone.map((text) => ({ text, forget: true }))]);
-      const offer = freshThreads(threads, gone).filter((t) => !mentionsAvoided(t, keys));
+      const offer = freshThreads(threads, gone, true).filter((t) => !mentionsAvoided(t, keys));
       const camera = !!(this.frames && this.now() - this.frames.at <= FRAMES_TTL_MS);
       this.cueTurn = { source: again.source, block: cueRhythm(initiativeBlock(again.source, offer, { said, camera }), again.source, this.recentReplies), input };
       this.log("convo.initiative", { source: again.source, threads: threads.length, n: gov.count });

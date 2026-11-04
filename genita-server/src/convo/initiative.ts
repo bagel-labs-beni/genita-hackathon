@@ -96,10 +96,15 @@ const NO_HANDBACK = "Never ask what's on their mind or what they want to talk ab
 /** prompt-100 r4 (prod 22:04): two silence lines in a row, both "Still …" about the same Korea food thread */
 const STOP = new Set(["about", "their", "there", "these", "those", "would", "could", "should", "summer", "really", "think", "still", "maybe", "today", "tonight", "thing", "things", "going", "right", "being", "where", "which", "while", "after", "before", "again", "never", "every", "something"]);
 const words = (t: string) => new Set((t.toLowerCase().match(/[a-z]{5,}/g) ?? []).filter((w) => !STOP.has(w)));
-/** threads that share a content word with what was already said this call are not offered again */
-export function freshThreads(threads: string[], said: string[]): string[] {
+/** short names count too ("My ex is Tom." → never "Her ex is Tom.": Codex r8) */
+const CAP_STOP = new Set(["The", "And", "But", "She", "Her", "His", "Hey", "You", "Your", "Our", "They", "Its", "That", "This", "What", "When", "Why", "How", "Who", "Yeah", "Okay", "Got", "Forget", "Not", "Just", "Can", "Did", "Was", "Are", "Yes", "Nah", "Ugh", "Oh"]);
+const names = (t: string) => new Set((t.replace(/<[^>]*>|\[[^\]]*\]/g, "").match(/\b[A-Z][a-z]{2,}\b/g) ?? []).filter((w) => !CAP_STOP.has(w)));
+/** threads that share a content word (or a name) with what was already said this call are not offered again */
+/** byName: also by a name in those lines — for forgotten lines only (the user's own name is in every thread) */
+export function freshThreads(threads: string[], said: string[], byName = false): string[] {
   const used = new Set(said.flatMap((t) => [...words(t)]));
-  return threads.filter((t) => ![...words(t)].some((w) => used.has(w)));
+  const usedNames = new Set(byName ? said.flatMap((t) => [...names(t)]) : []);
+  return threads.filter((t) => ![...words(t)].some((w) => used.has(w)) && ![...names(t)].some((n) => usedNames.has(n)));
 }
 
 export type InitiativeOpts = { said?: string[]; camera?: boolean };
