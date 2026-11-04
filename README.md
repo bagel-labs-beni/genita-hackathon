@@ -2,7 +2,7 @@
 
 > **Everything in this demo was built during the hackathon on Meta models; none of our earlier products' code is used.** Genita is a new app, first commit October 31, 2026. The only third-party code is open-source libraries, listed in [Credits](#credits).
 
-### The AI companion that already knows you, sees what you see, and follows you from iPhone to Mac.
+### Easy to start, personal from the first hello: Genita is the AI companion that already knows you, sees what you see, and follows you from iPhone to Mac.
 
 Genita is a face-to-face video call with an AI companion. It starts out knowing you from the AI assistant you already use, looks through your camera and your Mac screen with you, answers with cards you can act on, and carries the same conversation from your iPhone to your Mac.
 
