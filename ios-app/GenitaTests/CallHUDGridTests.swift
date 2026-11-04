@@ -68,7 +68,9 @@ final class CallHUDGridTests: XCTestCase {
         XCTAssertFalse(CallHUDGrid.showsFlip(cameraOn: false, canFlip: true, sheet: .idle), "camera off: no flip")
         XCTAssertFalse(CallHUDGrid.showsFlip(cameraOn: true, canFlip: false, sheet: .idle))
         XCTAssertFalse(CallHUDGrid.showsFlip(cameraOn: true, canFlip: true, sheet: .half), "half sheet: More keeps Flip camera")
-        XCTAssertTrue(CallHUDGrid.showsFlip(cameraOn: true, canFlip: true, sheet: .peek))
+        XCTAssertFalse(CallHUDGrid.showsFlip(cameraOn: true, canFlip: true, sheet: .peek), "peek: SE captions would reach the window (Codex P2)")
+        XCTAssertTrue(CallHUDGrid.showsFlip(cameraOn: true, canFlip: true, sheet: .idle))
+        XCTAssertTrue(CallHUDGrid.showsFlip(cameraOn: true, canFlip: true, sheet: .dismissed))
     }
 
     /// Codex P2: on SE (no home bar) the HUD baseline is 27 pt below the board's; with the sheet up the rail keeps the
