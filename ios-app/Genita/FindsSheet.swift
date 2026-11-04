@@ -470,8 +470,15 @@ struct FindsSheet: View {
                     }.buttonStyle(PressScale()).accessibilityIdentifier(saved ? "openFinds" : "findCTA").accessibilitySortPriority(-10)
                 } else {
                 // r03 F2 `.fcta`: on a card reopened from Finds the one button continues the call about it
-                Button { if reopened { finds.talkAboutThis(); talk?() } else if let card { finds.ask(Self.cta(card.kind)) } } label: {
-                    Text(reopened ? "Talk about this on a call" : (card.map { Self.cta($0.kind) } ?? "")).font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.onInk)
+                // P0 11/4: on a recipe it starts the walkthrough (full sheet on the steps), then reads "Next step"
+                let walking = finds.walking != nil && finds.walking == finds.current?.id
+                Button {
+                    if reopened { finds.talkAboutThis(); talk?() }
+                    else if walking { withAnimation(.fade) { finds.nextStep() } }
+                    else if let card, card.kind == .recipe, !card.steps.isEmpty { withAnimation(.drawer) { finds.walkThrough() } }
+                    else if let card { finds.ask(Self.cta(card.kind)) }
+                } label: {
+                    Text(reopened ? "Talk about this on a call" : walking ? "Next step" : (card.map { Self.cta($0.kind) } ?? "")).font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.onInk)
                         .frame(maxWidth: .infinity).frame(height: 50).background(GlassCTA(color: CallInk.ink))
                 }.buttonStyle(PressScale()).disabled(!reopened && !finds.canAsk).opacity(reopened || finds.canAsk ? 1 : 0.4).accessibilityIdentifier(reopened ? "findTalk" : "findCTA").accessibilitySortPriority(-10)
                 }

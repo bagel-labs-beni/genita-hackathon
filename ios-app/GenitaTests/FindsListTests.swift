@@ -219,4 +219,13 @@ import XCTest
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(seen.map { "\($0.0) \($0.1)" }, ["save-1234 true", "save-1234 false"])
     }
+
+    func testDisplayCountIsTheLoadedListNotTheCall() async {
+        let api = FakeAPI()
+        api.cards = [card("a", title: "A", at: "2026-11-02T11:00:00Z"), card("b", title: "B", at: "2026-11-02T11:00:00Z")]
+        let m = FindsListModel(api: api)
+        XCTAssertEqual(m.displayCount(thisCall: 1), 1, "before the first load this call's finds stand in")
+        await m.load()
+        XCTAssertEqual(m.displayCount(thisCall: 5), 2, "once loaded, drawer and More show the list's count")
+    }
 }

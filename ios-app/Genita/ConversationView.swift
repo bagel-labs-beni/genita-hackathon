@@ -297,13 +297,15 @@ struct ConversationView: View {
                             VStack(spacing: 0) {
                                 Spacer(minLength: 0)
                                 // #180: Move to Mac runs the move (unpaired → the P01 pairing sheet)
-                                CallMoreSheet(call: call, textChatEnabled: appConfig.config.flag("textChat", default: false), moveToMacSubtitle: handoff.link.connected ? "Connected to your Mac" : "Pair with your Mac", moveToMac: { handoff.moveToMac() },
+                                CallMoreSheet(call: call, findsTotal: findsList.displayCount(thisCall: call.findsCount), textChatEnabled: appConfig.config.flag("textChat", default: false), moveToMacSubtitle: handoff.link.connected ? "Connected to your Mac" : "Pair with your Mac", moveToMac: { handoff.moveToMac() },
                                               openFinds: { openFindsTab() }, report: { reportOpen = true }) {
                                     withAnimation(.easeOut(duration: 0.22)) { moreOpen = false }
                                 }
                             }.frame(width: full.size.width, height: full.size.height).transition(.move(edge: .bottom))
                         }
                     }.frame(width: full.size.width, height: full.size.height).offset(x: model.menuOpen ? panelWidth : 0)
+                    .onChange(of: model.menuOpen) { _, open in if open { Task { await findsList.load() } } }
+                    .onChange(of: moreOpen) { _, open in if open { Task { await findsList.load() } } }
                     if cameraGuide && !connecting {
                         CameraGuideSheet(bottomInset: max(0, bottom), turnOn: { CameraGuide.seen = true; withAnimation(.drawer) { cameraGuide = false }; call.toggleCamera() },
                                          notNow: { withAnimation(.drawer) { cameraGuide = false } })
@@ -314,7 +316,7 @@ struct ConversationView: View {
                         let title = DesignLibrary.nodes("menu").first { $0.characters == "Genita" }!
                         DesignText(node: title).frame(width: title.w, height: title.h).position(x: title.x + title.w / 2, y: title.y + top + title.h / 2)
                         menuRow("Chat", icon: "reference-menu-chat", y: 118, width: panelWidth, top: top) { withAnimation { model.menuOpen = false } }.accessibilityIdentifier("returnConversation")
-                        menuRow("Setting", text: "Finds", symbol: "bookmark", badge: findsList.count > 0 ? "\(findsList.count)" : nil, y: 165, width: panelWidth, top: top) { openFindsTab() }.accessibilityIdentifier("menuFinds")
+                        menuRow("Setting", text: "Finds", symbol: "bookmark", badge: findsList.displayCount(thisCall: call.findsCount) > 0 ? "\(findsList.displayCount(thisCall: call.findsCount))" : nil, y: 165, width: panelWidth, top: top) { openFindsTab() }.accessibilityIdentifier("menuFinds")
                         menuRow("Setting", text: "Settings", icon: "reference-menu-settings", y: 212, width: panelWidth, top: top) { model.menuOpen = false; model.settingsOpen = true }.accessibilityIdentifier("settings")
                         if waitingCopy == nil && handoffEnabled {
                             moveToMacRow(y: 259, width: panelWidth, top: top) { withAnimation { model.menuOpen = false }; handoff.moveToMac() }.accessibilityIdentifier("moveToMac")

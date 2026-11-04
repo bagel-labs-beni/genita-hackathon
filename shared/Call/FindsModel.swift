@@ -80,6 +80,8 @@ struct FindEntry: Identifiable, Equatable {
     private(set) var savePulse = 0
     /// Step marked done, per find.
     var doneSteps: [String: Set<Int>] = [:]
+    /// P0 11/4: the recipe card being cooked step by step ("Walk me through it" → "Next step"), or nil.
+    var walking: String?
     /// r03 #11: a result arrived while the user reads another one.
     private(set) var newFind: String?
     /// Source opened inside the sheet (r03 #8).
@@ -516,6 +518,30 @@ struct FindEntry: Identifiable, Equatable {
         doneSteps[f.id] = set
     }
 
+    /// P0 11/4 "Walk me through it": the sheet goes full on the steps, the first step not done is the one lit
+    /// (FindCardPage.stepCard `now`), and the companion says it and checks one ingredient (server finds/walkthrough.ts).
+    func walkThrough() {
+        userActed()
+        guard canAsk, let f = current, f.card?.kind == .recipe, f.card?.steps.isEmpty == false else { return }
+        walking = f.id
+        state = .full
+        scrollTarget = nil
+        scrollTarget = "steps"
+        send(.text(.init(text: "Walk me through it", frames: nil, findId: f.id)))
+    }
+
+    /// "Next step": the lit step is marked done (the next one lights up) and the companion moves on with it.
+    /// After the last step the button goes back to "Walk me through it".
+    func nextStep() {
+        userActed()
+        guard canAsk, let f = current, walking == f.id, let count = f.card?.steps.count else { return }
+        var set = doneSteps[f.id] ?? []
+        if let i = (0..<count).first(where: { !set.contains($0) }) { set.insert(i) }
+        doneSteps[f.id] = set
+        if set.count >= count { walking = nil }
+        send(.text(.init(text: "Next step", frames: nil, findId: f.id)))
+    }
+
     /// "Ask about this": the question goes out as the user's words, about this card.
     func ask(_ text: String) {
         userActed()
@@ -576,6 +602,7 @@ struct FindEntry: Identifiable, Equatable {
         page = 0
         selectedItem = nil
         doneSteps = [:]
+        walking = nil
         addedItems = [:]
         pendingItems = [:]
         latestFrames = []

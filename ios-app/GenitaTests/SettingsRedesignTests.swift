@@ -51,4 +51,9 @@ final class SettingsRedesignTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(avatar(top).minY - arrow.maxY, 8, "at least 8 pt clear of the arrow's touch row")
         XCTAssertEqual(InsightReportView.headerTop(showsBack: false), 16, "About you in Settings: no arrow, the header where it was")
     }
+
+    func testVersionText() {
+        XCTAssertEqual(SettingsView.versionText(["CFBundleShortVersionString": "1.0", "CFBundleVersion": "14"]), "1.0 (14)")
+        XCTAssertEqual(SettingsView.versionText(["CFBundleShortVersionString": "1.0"]), "1.0")
+    }
 }

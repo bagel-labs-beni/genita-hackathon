@@ -143,6 +143,8 @@ final class OnboardingUITests: XCTestCase {
         // D44/D55: the copy says "the AI assistant you use"; only the two Open buttons name ChatGPT / Claude
         let named = NSPredicate(format: "(label CONTAINS[c] 'chatgpt' OR label CONTAINS[c] 'claude') AND NOT (label BEGINSWITH 'Open ')")
         XCTAssertFalse(app.staticTexts.matching(named).firstMatch.exists, "I01 copy names no assistant (D44)")
+        XCTAssertEqual(app.buttons["skipImport"].label, "I don’t use an AI assistant", "b14: the no-AI option row")
+        XCTAssertGreaterThanOrEqual(app.buttons["skipImport"].frame.height, 44, "b14: a full 44 pt row, not a text link")
         let skipLabel = app.buttons["skipImport"].label.lowercased()
         XCTAssertFalse(skipLabel.contains("chatgpt") || skipLabel.contains("claude"), "I01 skip link names no assistant (D44)")
         capture("I01")
@@ -379,6 +381,7 @@ final class OnboardingUITests: XCTestCase {
         XCTAssertTrue(skip.waitForExistence(timeout: 15), "StartRouter → I01")
         skip.tap()
         XCTAssertTrue(element("skipTopics").waitForExistence(timeout: 5), "N1")
+        XCTAssertTrue(app.staticTexts["No AI needed. Just three quick picks."].exists, "b14: N1 says no AI is needed")
         // Figma 267:4 shows Design, Food and Film & TV picked
         for chip in ["Design", "Food", "Film & TV"] { app.buttons["skipChip-" + chip].tap() }
         XCTAssertTrue(app.buttons["skipChip-Building things"].exists && app.buttons["skipCustom"].exists, "N1 tiles + Add your own")

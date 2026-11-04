@@ -116,7 +116,9 @@ struct InsightReportView: View {
                 .onScrollGeometryChange(for: Bool.self) { $0.contentOffset.y + $0.contentInsets.top > 90 + Self.headerTop(showsBack: showsCTA) - 16 } action: { _, now in
                     withAnimation(.easeOut(duration: 0.2)) { scrolled = now }
                 }
-                if scrolled {
+                // b14 (doubled header): in Settings the page already sits under the "About you" bar, so its own
+                // scrolled title bar stacked a second header right below it; that bar is for the SUM screen only
+                if scrolled && showsCTA {
                     VStack(spacing: 0) {
                         Text("\(name)’s read on you").insightText(15, .semibold, line: 20).frame(maxWidth: .infinity).frame(height: 44)
                             .padding(.top, safe.safeAreaInsets.top)
@@ -534,7 +536,7 @@ struct InsightShareCard: View {
         }
     }
 
-    private var isPrefix: String { title.hasSuffix(type.name) ? String(title.dropLast(type.name.count)).trimmingCharacters(in: .whitespaces) : title }
+    private var isPrefix: String { (title.hasSuffix(type.name) ? String(title.dropLast(type.name.count)).trimmingCharacters(in: .whitespaces) : title).firstLetterUppercased }
 
     var card: some View {
         ZStack(alignment: .topLeading) {

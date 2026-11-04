@@ -113,7 +113,8 @@ struct ImageCheckView: View {
 
     /// The check answer's face points → the net, swept on from the top over 0.4 s.
     private func showMesh() {
-        guard let r = result else { mesh = nil; smallMesh = nil; reveal = 0; focus = nil; return }
+        // b14: a re-check in flight (result nil) keeps the net and the pan; blanking them made the net blink off and re-lay
+        guard let r = result else { return }
         mesh = FaceMesh.make(outline: r.faceOutline, points: r.facePoints, headBox: r.headBox)
         smallMesh = FaceMesh.make(outline: r.faceOutline, points: r.facePoints, headBox: r.headBox, layout: .r02Small)
         guard let mesh else { focus = nil; return }
@@ -464,7 +465,8 @@ struct SkipImportView: View {
 
     // MARK: body
     var body: some View {
-        WirePage(title: title, pageID: step.rawValue, subtitle: nil, back: { model.back() },
+        // b14: N1 says this door needs no AI and how long it is (mock TbzFuosXMi9gsZ9GcJh7LQ); N2 / N3 as Figma
+        WirePage(title: title, pageID: step.rawValue, subtitle: step == .skipTopics ? "No AI needed. Just three quick picks." : nil, back: { model.back() },
                  primary: "Continue", primaryBusy: model.importing,
                  action: {
                      switch step {
