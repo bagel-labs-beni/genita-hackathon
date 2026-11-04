@@ -69,7 +69,8 @@ import type { TasteLine } from "../personalize/reasons.ts";
 import { backchannelOn, convoV1, englishOnly, eotHoldOn, initiativeOn } from "../convo/flags.ts";
 import { Backchannel } from "../convo/backchannel.ts";
 import { EOT, eotTuning, joinSegments, judgeEndOfTurn, type EotKind, type EotVerdict } from "../convo/endOfTurn.ts";
-import { addressUser, thirdPersonCouldBeUser, fallbackLine, guardSentence, neverSpoken, NO_ANSWER_LINE, LOST_LINE, UPSTREAM_RETRY_MS, realCrisisSignal, mayBeSelfHarm, nameAsYou, type GuardClass } from "../convo/guard.ts";
+import { noRepeatGreeting, noUnpromptedGoodbye } from "../convo/greetOnce.ts";
+import { addressUser, thirdPersonCouldBeUser, fallbackLine, guardSentence, neverSpoken, NO_FRAME_RETRY_LINE, NO_ANSWER_LINE, LOST_LINE, UPSTREAM_RETRY_MS, realCrisisSignal, mayBeSelfHarm, nameAsYou, type GuardClass } from "../convo/guard.ts";
 import { isInterjectionOnly } from "../text/toolNarration.ts";
 import { daySeed, openerBlock, openerKind, profileHooks } from "../convo/opener.ts";
 import { mentionsProfile, moodFrom, moodLine, turnHints, type Mood } from "../convo/rhythm.ts";
@@ -2652,7 +2653,7 @@ export class Session {
     const hasAnswer = () => narration.hasAnswer(said().map(({ display }) => display));
     let onlyOpener: string | null = null;
     // v1 sentence guard (src/convo/guard.ts): the first dropped sentence, spoken only if nothing else is
-    const guarded: { first: { raw: string; cls: GuardClass } | null; narration: boolean; tool: boolean } = { first: null, narration: false, tool: false };
+    const guarded: { first: { raw: string; cls: GuardClass } | null; narration: boolean; tool: boolean; unseen?: boolean } = { first: null, narration: false, tool: false };
     // #344: this reply's mood (the user's line already in history for a user turn)
     const replyMood: Mood | null = this.v1 && !interpret && !self ? this.callMood() : null;
     let laughs = 0;
@@ -2697,6 +2698,17 @@ export class Session {
         if (this.v1 && tts && !interpret && !self) {
           const you = nameAsYou(tts, this.user?.name);
           if (you !== tts) { tts = you; this.log("convo.name_to_you", { utteranceId }); }
+        }
+        // prompt-100 11/4: the call already has our reply → no second hello ("look who finally showed up"); a question that
+        // isn't them leaving never gets a send-off ("Go, have fun!" to "can I throw in the leftover rice?"), convo/greetOnce.ts
+        if (this.v1 && tts && !interpret && !self && !synthetic) {
+          const greeted = this.history.some((h) => h.role === "assistant") || sentences.some((x) => x.opener);
+          const once = noUnpromptedGoodbye(greeted ? noRepeatGreeting(tts, guardCtx.userText) : tts, guardCtx.userText);
+          if (once !== tts) {
+            this.log("convo.greet_once", { utteranceId, dropped: !once });
+            if (!once) { cutBefore = true; continue; }
+            tts = once;
+          }
         }
         // b10 gate 11/4: nothing seen this turn → "That looks good" is said as "That sounds good" (convo/unseenSight.ts)
         if (this.v1 && tts && !interpret && !self) {
@@ -2771,6 +2783,8 @@ export class Session {
             // narration never becomes the spoken fallback; a style drop does (the first one kept)
             if (!neverSpoken(cls)) guarded.first ??= { raw, cls };
             else guarded.narration = true;
+            // no frame reached us and the reply was about what it "sees": the retry answers without vision
+            if ((cls === "unseen" || cls === "appearance") && !guardCtx.camera) guarded.unseen = true;
             this.log("convo.guard", { utteranceId, cls });
             cutBefore = true;
             continue;
@@ -2936,7 +2950,10 @@ export class Session {
           let status = "";
           let attemptError: unknown = null;
           try {
-            const raw0 = attempt === 0 ? (pre ?? this.sparkSource(req, signal, greeting?.item, !interpret && !cue, undefined, undefined, memoryRetry)) : this.sparkSource(req, signal, greeting?.item, !interpret && !cue, undefined, 1, memoryRetry);
+            // prompt-100 11/4 (Mac stage, frame not there yet): the first try only described what it "saw" → the retry is
+            // told no frame came and answers from their words, never an empty reply or "lost you"
+            const retryReq = attempt === 1 && guarded.unseen ? { ...req, instructions: `${req.instructions ?? ""}\n${NO_FRAME_RETRY_LINE}\n` } : req;
+            const raw0 = attempt === 0 ? (pre ?? this.sparkSource(req, signal, greeting?.item, !interpret && !cue, undefined, undefined, memoryRetry)) : this.sparkSource(retryReq, signal, greeting?.item, !interpret && !cue, undefined, 1, memoryRetry);
             const raw = oneSentence ? firstSentenceOnly(raw0) : raw0;
             // Demo S4 (QA P2): the suggest turn must name the Mac; a reply that doesn't is swapped for the fixed line
             const stream = built.suggestMac && !interpret && !self ? mustNameMac(raw, SUGGEST_MAC_REPLIES[utteranceId % SUGGEST_MAC_REPLIES.length], this.now) : raw;
@@ -2980,8 +2997,9 @@ export class Session {
           // opener until EOF so "Oh, the rest" still loses the repeated Oh.
           if (!said().length && guarded.first && !neverSpoken(guarded.first.cls)) {
             // never an empty reply: a style drop speaks its sentence; a safety drop says the fallback line
-            const fb = fallbackLine(guarded.first.cls);
-            enqueueSentences(fb ? [fb] : [guarded.first.raw], true);
+            const fb = fallbackLine(guarded.first.cls, guardCtx.userText);
+            // a guilt line whose send-off fallback doesn't fit (they asked something) is retried, never said
+            if (fb || guarded.first.cls !== "guilt") enqueueSentences(fb ? [fb] : [guarded.first.raw], true);
           }
           if (!said().length && onlyOpener) enqueueSentences([onlyOpener], true);
           // the retry also only announced a lookup and NO tool ran: say so honestly. With a tool, never "not sure"

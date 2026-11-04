@@ -419,36 +419,51 @@ export function styleProfileText(card: StyleCard, max = 2000, opts: { toConfirm?
   // Likes & dislikes get more room (Finds reads them): up to 5 likes and every dislike up to 3
   const likes = list("likes").filter(sure);
   const taste = [...likes.filter((f) => !isDislike(f.text)).slice(0, 5), ...likes.filter((f) => isDislike(f.text)).slice(0, 3)].map((f) => line("likes", f));
-  const main = [
-    ...taste,
-    ...facts(["interests", "communication", "response", "help"], PROFILE_PER_SECTION),
-    // a boundary the user set is never dropped for space (up to the 8 N3 allows)
-    ...facts(["boundaries"], 8),
-  ];
   const more = facts(PROFILE_MORE, PROFILE_PER_SECTION);
   const leans = [...PROFILE_ORDER, ...PROFILE_MORE].flatMap((k) => list(k).filter((f) => f.label !== "suggested" && f.direction).slice(0, 3).map((f) => line(k, f)));
   const manner = list("tendencies").filter((f) => f.label !== "suggested" && f.scope === "conversation" && !f.direction).slice(0, 4).map((f) => `- ${f.text}`);
   const sugg = [...PROFILE_ORDER, ...PROFILE_MORE].flatMap((k) => list(k).filter((f) => f.label === "suggested").slice(0, 2).map((f) => line(k, f)));
   const rules = Array.isArray(card.rules) ? card.rules.slice(0, 5) : [];
-  const parts: string[] = [];
-  if (main.length) parts.push("How the user wants to be treated:", ...main);
-  if (rules.length) parts.push("Rules:", ...rules.map((r) => `- ${ruleLine(r)}`));
+  // 11/4 prompt-100: each line carries a keep priority. Over `max`, the lowest-priority lines go first (from the end of
+  // their block), never the do-not-mention list, the boundaries or how they want to be talked to. It used to cut from the
+  // end, so on a big import the "Never bring these up" list was the first thing lost.
+  const blocks: { head: string; lines: { text: string; keep: number }[] }[] = [];
+  const block = (head: string, lines: string[] | { text: string; keep: number }[], keep = 0) => {
+    const ls = lines.map((l) => (typeof l === "string" ? { text: l, keep } : l));
+    if (ls.length) blocks.push({ head, lines: ls });
+  };
+  block("How the user wants to be treated:", [
+    ...taste.map((text) => ({ text, keep: 6 })),
+    // how they want to be talked to is the core of who they are to the companion; interests and help trim before it
+    ...(["interests", "communication", "response", "help"] as FindingKey[]).flatMap((k) => facts([k], PROFILE_PER_SECTION).map((text) => ({ text, keep: k === "communication" || k === "response" ? 7 : 5 }))),
+    // a boundary the user set is never dropped for space (up to the 8 N3 allows)
+    ...facts(["boundaries"], 8).map((text) => ({ text, keep: 9 })),
+  ]);
+  block("Rules:", rules.map((r) => `- ${ruleLine(r)}`), 8);
   // toConfirm:false — the call asks one item at a time (src/personalize/unknowns.ts)
-  if (card.toConfirm?.length && opts.toConfirm !== false) parts.push(`Ask naturally on the first call about: ${card.toConfirm.join("; ")}.`);
-  if (more.length) parts.push("Also:", ...more);
+  if (card.toConfirm?.length && opts.toConfirm !== false) block("", [`Ask naturally on the first call about: ${card.toConfirm.join("; ")}.`], 4);
+  block("Also:", more, 3);
   // SUM insight report: what was noticed and how to use it (lightly); "not me" ones as not true
-  const noticed = insightProfileLines(card);
-  if (noticed.length) parts.push("What I noticed about them at setup (use it quietly; never say you noticed or read this, never describe them with it):", ...noticed);
-  if (manner.length) parts.push("How they come across with you (match it; never describe or label them with it):", ...manner);
-  if (leans.length) parts.push("Leans (indirect, not stated by them; at most a light guess, never a fact or a nickname):", ...leans);
+  block("What I noticed about them at setup (use it quietly; never say you noticed or read this, never describe them with it):", insightProfileLines(card), 2);
+  block("How they come across with you (match it; never describe or label them with it):", manner, 2);
+  block("Leans (indirect, not stated by them; at most a light guess, never a fact or a nickname):", leans, 1);
   // "forget that…" / "That's not me": the model must not know-and-say it. Listed only as do-not-mention, never as a
   // fact, and never acknowledged ("you told me to forget …" in the next call, QA post-deploy 11/3)
   // only what they asked to forget; a corrected line is simply replaced (its new line is the fact now)
   const gone = (card.removed ?? []).filter((t) => t.forget && !looksLikeInjection(t.text) && redactSensitive(t.text) === t.text && !/@|\b\d{3,}\b/.test(t.text)).slice(-5).map((t) => t.text.replace(/[<>\n]/g, " ").slice(0, 120)).filter(Boolean);
-  if (gone.length) parts.push("Never bring these up, and never say you were asked to forget or drop them; talk as if you never knew them:", ...gone.map((t) => `- ${t}`));
-  if (sugg.length) parts.push("Suggestions (not confirmed by the user):", ...sugg);
-  let out = parts.join("\n");
-  if (out.length > max) out = out.slice(0, out.lastIndexOf("\n", max));
+  block("Never bring these up, and never say you were asked to forget or drop them; talk as if you never knew them:", gone.map((t) => `- ${t}`), 10);
+  block("Suggestions (not confirmed by the user):", sugg, 0);
+  const render = () => blocks.filter((b) => b.lines.length).flatMap((b) => (b.head ? [b.head, ...b.lines.map((l) => l.text)] : b.lines.map((l) => l.text))).join("\n");
+  let out = render();
+  while (out.length > max) {
+    // the lowest keep, last of its kind in reading order
+    let at: [number, number] | null = null;
+    blocks.forEach((b, bi) => b.lines.forEach((l, li) => { if (!at || l.keep <= blocks[at[0]].lines[at[1]].keep) at = [bi, li]; }));
+    if (!at) break;
+    const [bi, li] = at as [number, number];
+    blocks[bi].lines.splice(li, 1);
+    out = render();
+  }
   return out;
 }
 

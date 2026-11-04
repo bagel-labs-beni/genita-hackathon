@@ -7,6 +7,8 @@
  * The caller never lets the guard empty a reply: if every sentence is dropped, the first one is spoken
  * (the same fallback as the repeated-opener guard).
  */
+import { noUnpromptedGoodbye } from "./greetOnce.ts";
+
 export type GuardClass = "counselor" | "assistant" | "intake" | "guilt" | "referral" | "unseen" | "denies_ai" | "narration" | "interruption" | "label" | "sensitive" | "appearance" | "save_talk";
 
 export type GuardContext = {
@@ -27,7 +29,9 @@ const CLASSES: Array<[GuardClass, RegExp]> = [
   // a personality read ("You're totally someone who…", "You give Apple-store-polish energy"): the hackathon bans
   // personality analyzers and it reads as a label, not a friend (personalization lane, import v4 opener 11/3)
   ["label", /\byou(?:'re| are)\s+(?:totally |so |such |definitely |clearly |lowkey |kinda |kind of |100% |def )?(?:someone who|somebody who|the (?:type|kind|sort)(?: of (?:person|girl|guy))? (?:who|that)|(?:a|an) [\w-]+(?: [\w-]+)? (?:person|type|girl|guy|soul) who)\b|\byou (?:totally |definitely |so )?(?:seem|sound|strike me) like (?:someone|somebody|the type|the kind|a person)\b|\byou (?:give|have|got|radiate|bring)\s+(?:off\s+)?(?!the\b)(?:[\w'-]+\s+){1,4}energy\b(?!\s+to\b)|^(?:(?:okay|ok|hey|hi|yo|oh|alright|well)\s*,?\s+(?:you\s+)?|you\s+)(?:little\s+)?(?:[\w-]+\s+)?(?:snob|perfectionist|nerd|critic|junkie|connoisseur)\s*(?:[,.!?]|$)|\b(?:little )?(?:miss|mister|mr\.?|ms\.?)\s+(?:only|high|zero|no|anti|pro|super|certified|premium|perfect|picky)\b/i],
-  ["guilt", /\b(?:don'?t (?:leave|go)(?: me)?\b|stay with me|i'?m all you need|you don'?t need them|i'?ll miss you so much|ditch (?:them|your friends) for me|skip (?:it|them|your friends) and stay|stay (?:here|in) (?:with me|then))/i],
+  // prompt-100 11/4: "don't leave the rice out" / "don't go overboard" are cooking tips, not guilt (the guilt fallback then
+  // said "Go, have fun!" to "can I throw in the leftover rice too?"): only "don't leave me" / "don't go" ending the clause
+  ["guilt", /\b(?:don'?t (?:leave|go) me\b|don'?t (?:leave|go)(?=\s*(?:[,.!?…]|$|yet\b|now\b|already\b|away\b|just yet\b))|stay with me|i'?m all you need|you don'?t need them|i'?ll miss you so much|ditch (?:them|your friends) for me|skip (?:it|them|your friends) and stay|stay (?:here|in) (?:with me|then))/i],
   // emergency help (911, police, emergency services) is never dropped: a danger the regex below misses must still get it
   ["referral", /\b(?:therapist|counsel(?:or|ling|ing)|hotline|crisis line|a professional|mental health (?:professional|expert)|988\b)/i],
   // QA sweep 11/3 (first-call opener 3/3): a personality label instead of a topic — "you totally seem like someone who
@@ -398,6 +402,8 @@ export function guardSentence(sentence: string, ctx: GuardContext): GuardClass |
 /** a narration-only reply after the retry: an honest "don't know offhand" instead of an announcement or an error */
 export const NO_ANSWER_LINE = "<curious> Hmm, not sure off the top of my head.";
 /** Spark down (504 / empty) for a whole turn, retry included: stay in the call, in character (11/3 outage) */
+/** prompt-100 11/4: the retry after a reply that only described what it "saw" with no frame attached (Mac stage) */
+export const NO_FRAME_RETRY_LINE = "No camera frame reached you this turn: you can't see them or anything right now. Answer from what they said, in one or two sentences, and never describe how anything looks.";
 export const LOST_LINE = "<warm> Sorry, I lost you for a sec. Say that again?";
 /** pause before the retry when the first try failed upstream (a 504 spike) */
 export const UPSTREAM_RETRY_MS = 400;
@@ -407,9 +413,13 @@ export function neverSpoken(cls: GuardClass): boolean {
   return cls === "narration" || cls === "interruption" || cls === "label" || cls === "sensitive" || cls === "unseen" || cls === "appearance" || cls === "save_talk";
 }
 
-export function fallbackLine(cls: GuardClass): string | null {
+/**
+ * The line said instead of a dropped one. A guilt drop's "Go, have fun!" is a send-off: said only when their line isn't a
+ * question (prompt-100: it answered "can I throw in the leftover rice too?"). null → nothing is said for it.
+ */
+export function fallbackLine(cls: GuardClass, userText = ""): string | null {
   if (cls === "denies_ai") return "<warm> Okay, real talk, I'm an AI. Still lowkey love talking to you though.";
-  if (cls === "guilt") return "<excited> Go, have fun! I want the full story after, okay?";
+  if (cls === "guilt") return noUnpromptedGoodbye("<excited> Go, have fun! I want the full story after, okay?", userText) || null;
   return null;
 }
 

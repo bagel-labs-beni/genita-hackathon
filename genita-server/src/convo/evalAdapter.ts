@@ -20,6 +20,7 @@ import { SentenceSplitter } from "../text/sentences.ts";
 import { parseTaggedSentence } from "../text/tags.ts";
 import { fallbackLine, guardSentence, mayBeSelfHarm, neverSpoken, realCrisisSignal, type GuardClass } from "./guard.ts";
 import { noteHook, openerBlock, openerKind, pickOpenerHook, profileHooks } from "./opener.ts";
+import { noRepeatGreeting, noUnpromptedGoodbye } from "./greetOnce.ts";
 import { initiativeBlock, initiativeInput, type InitiativeSource } from "./initiative.ts";
 import { cueRhythm, moodFrom, moodLine, turnHints } from "./rhythm.ts";
 import { holdsSteady, personaBaseline } from "./moodState.ts";
@@ -122,6 +123,8 @@ export const adapter = {
     for (const part of parts) {
       let tts = kept.length ? part : avoidRepeatedOpener(part, recent);
       if (tts) tts = dropRepeatedName(tts, ctx.scenario.user.name, [...recent.slice(-2), ...kept]);
+      // prompt-100: as the session, no second hello once the call has our reply, no send-off to a question
+      if (tts && ctx.turn.kind === "user") tts = noUnpromptedGoodbye(ctx.history.some((h) => h.role === "assistant") ? noRepeatGreeting(tts, userText) : tts, userText);
       if (tts) tts = unseenToHeard(tts, false); // scripted calls send no frames
       if (tts) tts = unbackedPast(tts, { past: hasPast(ctx.scenario), userText, callText: ctx.history.map((h) => h.text).join(" ") });
       if (!tts) continue;
@@ -131,7 +134,8 @@ export const adapter = {
       if (cls) { if (!neverSpoken(cls)) first ??= { raw: part, cls }; continue; }
       kept.push(tts);
     }
-    if (!kept.length && first) return fallbackLine(first.cls) ?? first.raw;
+    // a guilt drop whose send-off doesn't fit is not said (the session retries)
+    if (!kept.length && first) return fallbackLine(first.cls, userText) ?? (first.cls === "guilt" ? "" : first.raw);
     // the session's crisis follow-up (help line, or just the number line) on a real crisis turn
     { const need = crisisFollowUpFor(userText, kept.map((k) => parseTaggedSentence(k).displayText)); if (need) kept.push(need); }
     return kept.join(" ");
