@@ -16,6 +16,7 @@ import type { FindCard, FindKind, ServerEvent } from "../protocol.ts";
 import { classifyTurn, isBareAccept, isGoesWithFollowUp, isLinksAsk, isProductAsk, refersToScreen } from "./intent.ts";
 import { PRODUCT_COUNT, SEARCH_TITLE, decidePick, guessLabel, runProduct, shortLabel, tasteLines as productTaste } from "./product.ts";
 import { runNamedRecipe } from "./namedRecipe.ts";
+import { choiceForSearch, isColorWord } from "./choice.ts";
 import { confirmItem, FRIDGE_UNCLEAR, IDENTIFY_UNSURE, runIdentify, runLink, runOutfit, runRecipe, type PipelineCtx, type PipelineResult } from "./pipeline.ts";
 import { cacheGet, cacheKey, cachePut, cardFitsColors, cardIsKind, categoryOf, claimWarm, colorAsks, colorPhrases, colorsOf, plainAsk, releaseWarm, type CachedProducts } from "./productCache.ts";
 import { ownerKey, type FindsStore } from "./store.ts";
@@ -204,7 +205,7 @@ export class FindsRunner {
   private likes: Promise<string[] | undefined> = Promise.resolve(undefined);
   private lastProduct: { label: string; question: string; at: number } | null = null;
   /** demo scene 5: the outfit verdict just said in this call (what a "yes" to its offer means) */
-  private lastOutfit: { said: string; at: number } | null = null;
+  private lastOutfit: { said: string; at: number; question?: string } | null = null;
   private readonly cards = new Map<string, FindCard>();
   private readonly running = new Map<string, Running>();
   private focusId: string | null = null;
@@ -320,9 +321,12 @@ export class FindsRunner {
     const base = classifyTurn(t.text, t.frames.length > 0 || !!t.screen, afterProduct);
     // a new ask of its own ("find me some chicken recipes", "a pair of headphones") keeps its own card (Codex r1 P2)
     const followUp = !!outfit && (!base || base.kind === "outfit") && isGoesWithFollowUp(t.text) && (!isBareAccept(t.text) || OFFER.test(lastLine));
+    // demo 11/4: an "A or B" verdict decides what is searched; no clear pick out loud = no sheet
+    const choice = followUp ? choiceForSearch(outfit!.question ?? "", outfit!.said) : null;
+    if (choice === false) { this.hooks.log("finds.choice_unclear", {}); return null; }
     if (followUp) {
       this.lastOutfit = null;
-      t = { ...t, text: `Find what you offered to find for the look they just picked (shoes or accessories that go with it). What you told them: "${outfit!.said.slice(0, 300)}". They answered: "${t.text.slice(0, 100)}".` };
+      t = { ...t, text: `Find what you offered to find for the look they just picked (shoes or accessories that go with it). What you told them: "${outfit!.said.slice(0, 300)}". They answered: "${t.text.slice(0, 100)}".${choice ? ` You picked ${choice} out loud: find ${choice} ones only, never the other option.` : ""}` };
     }
     // Chelsea 11/4 D: while the Mac shares its screen, a question takes the shared frame (fresher than the camera,
     // ≤1 s old), unless it's about them or what they hold; "on my screen" / "this video" always mean the share
@@ -334,11 +338,11 @@ export class FindsRunner {
       this.startJudge(input);
       return null;
     }
-    return this.start(intent0, t, followUp, false);
+    return this.start(intent0, t, followUp, false, choice || null);
   }
 
   /** The keyword intent or the judge's pick, started the same way. `judged`: the turn already answered out loud. */
-  private start(intent: NonNullable<Intent>, t: TurnInput, followUp: boolean, judged: boolean): TurnStarted | null {
+  private start(intent: NonNullable<Intent>, t: TurnInput, followUp: boolean, judged: boolean, choice: string | null = null): TurnStarted | null {
     const silentFail = (e: ServerEvent): ServerEvent => (e.type === "find.failed" && e.reason !== "stopped" ? { ...e, reason: "stopped", message: "" } : e);
     // the share when there is no camera picture, or when the line points at it; otherwise the camera (Codex r1 P2)
     const useScreen = !!t.screen && !followUp && (
@@ -408,7 +412,9 @@ export class FindsRunner {
       // S5: one decision — the item + colour said out loud is the item searched (started now, beside the sheet)
       // (camera asks and the verdict's follow-up: the S5 paths, where she sees the outfit and hears the pick)
       if (!cached && !pre && (camera || followUp)) {
-        pickP = decidePick(this.deps.vendors, { question: prev ? `${prev.question} — ${t.text}` : t.text, recent: t.recent ?? [], taste: productTaste(undefined, this.profile, this.memories), frames: t.frames, signal: abort.signal });
+        const decided = decidePick(this.deps.vendors, { question: prev ? `${prev.question} — ${t.text}` : t.text, recent: t.recent ?? [], taste: productTaste(undefined, this.profile, this.memories), frames: t.frames, signal: abort.signal });
+        // the spoken "A or B" verdict wins over the pick model (it once said white and searched black)
+        pickP = choice ? decided.then((p) => p ? (isColorWord(choice) ? { ...p, color: choice, say: p.color === choice ? p.say : "" } : { ...p, item: choice, say: p.item === choice ? p.say : "" }) : p) : decided;
         pickP.catch(() => {});
       }
       const pick = pickP;
@@ -427,7 +433,7 @@ export class FindsRunner {
       const forgotSince = () => this.tasteForgottenAt !== null && turnAt <= this.tasteForgottenAt;
       const turn = t;
       void t.replyText.then((said) => {
-        if (said && !forgotSince()) this.lastOutfit = { said, at: this.hooks.now() };
+        if (said && !forgotSince()) this.lastOutfit = { said, at: this.hooks.now(), question: turn.text };
         if (said && !abort.signal.aborted && !forgotSince()) { prefetching = true; this.startPrefetch(null, said, turn); }
       }).catch(() => {});
       run = async (c) => {
@@ -583,10 +589,13 @@ export class FindsRunner {
   private startPrefetch(card: FindCard | null, said: string | null, t: TurnInput): void {
     if (this.closed || this.deps.productPrefetch === false) return;
     const reply = (said ?? card?.say ?? "").slice(0, 300);
+    // demo 11/4: an "A or B" ask searches only the option said out loud; no clear pick = no search
+    const choice = choiceForSearch(t.text, reply);
+    if (choice === false) return;
     const wants = new Set([...reply.matchAll(GOES_WITH)].map((m) => m[1].toLowerCase()));
     if (!wants.size) for (const w of ["shoes", "accessories", "bag"]) wants.add(w);
     const picked = card ? ` (${card.status || card.title})` : "";
-    const question = `Find shoes or accessories that go with the outfit they just picked${picked}.${reply ? ` What you told them: "${reply}". If you named shoes or accessories there, find those.` : ""}`;
+    const question = `Find shoes or accessories that go with the outfit they just picked${picked}.${reply ? ` What you told them: "${reply}". If you named shoes or accessories there, find those.` : ""}${choice ? ` You picked ${choice} out loud: find ${choice} ones only, never the other option.` : ""}`;
     this.prefetched?.abort.abort();
     const abort = new AbortController();
     const p: Prefetch = { at: this.hooks.now(), wants, question, inView: question.toLowerCase(), label: guessLabel(reply, "Shoes"), events: [], images: new Map(), listeners: new Set(), abort, settled: false, done: Promise.resolve({ card: null, timings: {} }) };
