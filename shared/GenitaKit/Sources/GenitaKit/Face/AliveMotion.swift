@@ -48,6 +48,15 @@ struct AliveMotion {
     /// nose and mouth move together (the eye band stays still relative to the face). Map `alive.sway` scales it (0 = off).
     var swayGain = 1.0
     static let swayMaxPx = 1.5, swayMaxDeg = 0.6, swayMaxScale = 0.004
+    /// the largest on-screen move of any face-box corner (output px, after the framing zoom); a little under the
+    /// ±1.5 px spec so the measured value (encoder, sub-pixel resampling) stays inside it
+    static let swayScreenMaxPx = 1.35
+    /// 11/4 CA-09: low-pass time constant (s) of the sway drive; 0 = off. On fur and line art every frame-to-frame
+    /// sub-pixel step reads as texture shimmer (dog eye band 0.52 / 1.19 vs 0.3 / 0.8), so non-people get a smoother —
+    /// not smaller — path: the syllable-rate nod and the noise's fast partials are filtered, the slow sway stays.
+    /// Critically damped (no overshoot), so the filtered path never leaves the range of the unfiltered one.
+    var swaySmoothing = 0.0
+    private var swayLP: [Double] = [], swayLPV: [Double] = []
     private var energy = 0.0, energyPeak = 0.0
 
     init(seed: UInt64) {
@@ -63,7 +72,9 @@ struct AliveMotion {
     }
 
     /// Advances the nod spring to `t` with the current openness and returns the layer transforms.
-    mutating func transforms(at t: Double, open: Double, face: CGRect, extent: CGRect, outputWidth: CGFloat)
+    /// `screenScale`: output px per still px as shown (aspect fill × overscan × framing zoom); nil = a width fill with
+    /// the overscan. The ±1.5 px sway cap is enforced in these on-screen pixels.
+    mutating func transforms(at t: Double, open: Double, face: CGRect, extent: CGRect, outputWidth: CGFloat, screenScale: CGFloat? = nil)
         -> (head: CGAffineTransform, body: CGAffineTransform, camera: CGAffineTransform)
     {
         // Output px → still px.
@@ -122,16 +133,48 @@ struct AliveMotion {
             sy -= 0.6 * swayGain * min(1, nod)                                 // stressed onset: a small nod (down)
             sy -= 0.5 * swayGain * endDrop
             sy += 0.25 * swayGain * (1 - live) * sin(2 * .pi * Self.breathingHz * t)   // quiet breath
-            let cx = max(-Self.swayMaxPx, min(Self.swayMaxPx, sx)) * k
-            let cy = max(-Self.swayMaxPx, min(Self.swayMaxPx, sy)) * k
-            let rr = max(-Self.swayMaxDeg, min(Self.swayMaxDeg, Self.swayMaxDeg * swayGain * live * noise(11, hz: 0.35, t))) * .pi / 180
-            let sc = 1 + max(-Self.swayMaxScale, min(Self.swayMaxScale, Self.swayMaxScale * swayGain * live * noise(12, hz: 0.3, t)))
+            // drive: x, y (output px), roll and scale (shares of their caps)
+            var u = [sx, sy, swayGain * live * noise(11, hz: 0.35, t), swayGain * live * noise(12, hz: 0.3, t)]
+            if swaySmoothing.isFinite, swaySmoothing >= 0.01 {   // codex P3: a tiny / non-finite constant is off, not 1e19 steps
+                if swayLP.count != u.count || dt < 0 || dt > 0.5 { swayLP = u; swayLPV = u.map { _ in 0 } }   // first frame / jump
+                else if dt > 0 {
+                    let w = 1 / swaySmoothing, steps = max(1, Int((dt * w / 0.1).rounded(.up))), h = dt / Double(steps)
+                    for _ in 0..<steps { for i in u.indices {
+                        swayLPV[i] += (w * w * (u[i] - swayLP[i]) - 2 * w * swayLPV[i]) * h
+                        swayLP[i] += swayLPV[i] * h
+                    } }
+                }
+                u = swayLP
+            }
+            var cx = max(-Self.swayMaxPx, min(Self.swayMaxPx, u[0])) * k
+            var cy = max(-Self.swayMaxPx, min(Self.swayMaxPx, u[1])) * k
+            var rr = max(-Self.swayMaxDeg, min(Self.swayMaxDeg, Self.swayMaxDeg * u[2])) * .pi / 180
+            var sc = 1 + max(-Self.swayMaxScale, min(Self.swayMaxScale, Self.swayMaxScale * u[3]))
             // about the face centre: the eyes, nose and mouth stay within the caps (a neck pivot swung the forehead 3 px per 0.5°)
             let pivot = CGPoint(x: face.midX, y: face.midY)
-            sway = CGAffineTransform(translationX: -pivot.x, y: -pivot.y)
-                .concatenating(CGAffineTransform(scaleX: sc, y: sc))
-                .concatenating(CGAffineTransform(rotationAngle: rr))
-                .concatenating(CGAffineTransform(translationX: pivot.x + cx, y: pivot.y + cy))
+            func make() -> CGAffineTransform {
+                CGAffineTransform(translationX: -pivot.x, y: -pivot.y)
+                    .concatenating(CGAffineTransform(scaleX: sc, y: sc))
+                    .concatenating(CGAffineTransform(rotationAngle: rr))
+                    .concatenating(CGAffineTransform(translationX: pivot.x + cx, y: pivot.y + cy))
+            }
+            sway = make()
+            // 11/4 CA-09: ±1.5 px is the whole move ON SCREEN — translation + roll + scale at the face's corners, after the
+            // framing zoom (2D / animals are zoomed up to 1.35×) and the overscan. Measured 1.5–3.7 px before (roll and zoom
+            // added to the clamped translation). Over the cap, the whole sway is scaled down together.
+            // (codex P1: the camera's local `zoom` above shadowed a parameter called `zoom`; codex P2: a portrait output
+            // fills by height, so the caller passes the real on-screen scale)
+            let outPerStill = screenScale.map(Double.init) ?? Double(Self.overscan) / max(1e-6, k)
+            var worst = 0.0
+            for q in [CGPoint(x: face.minX, y: face.minY), CGPoint(x: face.maxX, y: face.minY), CGPoint(x: face.minX, y: face.maxY),
+                      CGPoint(x: face.maxX, y: face.maxY), pivot] {
+                let d = q.applying(sway); worst = max(worst, Double(hypot(d.x - q.x, d.y - q.y)) * outPerStill)
+            }
+            if worst > Self.swayScreenMaxPx {
+                let f = Self.swayScreenMaxPx / worst
+                cx *= f; cy *= f; rr *= f; sc = 1 + (sc - 1) * f
+                sway = make()
+            }
         }
 
         // Head: tilt about the neck, drift, nod (down + slight pitch), then it rides the body.
