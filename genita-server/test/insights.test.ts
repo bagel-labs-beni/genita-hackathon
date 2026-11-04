@@ -317,6 +317,58 @@ test("D95 r3: a rewrite that completes after the import TTL cannot restart recei
   assert.ok(after.report!.observations.every((o) => o.evidence.every((e) => e.source !== "import")), "a post-expiry rewrite returned no renewed import receipt");
 });
 
+test("D95 r4: a short forget clears import memory before correction gates, so answers never resend the paste", async (t) => {
+  const h = harness((req) => (req.schemaName === "insight_report" ? RAW : { updates: [], answered: false }));
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  assert.ok(JSON.stringify((await h.ins.get("u1", 3000)).report).includes("which one is cheaper lol"));
+
+  await h.p.voiceCorrection("u1", "Forget it.", "");
+  assert.ok(!JSON.stringify((await h.ins.get("u1", 0)).report).includes("which one is cheaper lol"));
+  const before = h.calls.length;
+  await h.ins.fromAnswers("u1", { help: "Think with me" });
+  await h.ins.get("u1", 3000);
+  assert.ok(!h.calls.slice(before).some((c) => c.schemaName === "insight_report" && String(c.input).includes("which one is cheaper lol")), "the paste was not sent after the short forget");
+});
+
+test("D95 r4: a forget during import still saves the stripped report but never commits its volatile receipts", async (t) => {
+  const h = harness((req) => (req.schemaName === "insight_report" ? RAW : { updates: [], answered: false }));
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  await h.p.voiceCorrection("u1", "Forget it.", "");
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  const ready = await h.ins.get("u1", 3000);
+  assert.equal(ready.status, "ready");
+  assert.ok((await h.store.getStyle("u1"))!.insights, "the import report still saves through the privacy boundary");
+  assert.ok(!JSON.stringify(ready.report).includes("which one is cheaper lol"), "a pre-commit forget cannot restore import memory");
+});
+
+test("D95 r4: forget during an accepted-answers rewrite keeps the rewrite but not its import receipts", async (t) => {
+  let reports = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  const h = harness(async (req) => {
+    if (req.schemaName !== "insight_report") return { updates: [], answered: false };
+    reports++;
+    if (reports === 2) { entered(); await gate; }
+    return RAW;
+  });
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  await h.ins.get("u1", 3000);
+  await h.ins.fromAnswers("u1", { help: "Think with me" });
+  await started;
+  await h.p.voiceCorrection("u1", "Forget it.", "");
+  release();
+  const after = await h.ins.get("u1", 3000);
+  assert.equal(after.report!.settings!.why, "Think with me", "the accepted answers rewrite was not cancelled");
+  assert.ok(!JSON.stringify(after.report).includes("which one is cheaper lol"));
+});
+
 test("service: setup answers re-write the report (import text kept in memory only) with settings; verdicts stick", async (t) => {
   const h = harness((req) => (req.schemaName === "insight_report" ? RAW : null));
   t.after(h.cleanup);

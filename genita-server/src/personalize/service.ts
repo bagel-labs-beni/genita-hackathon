@@ -231,7 +231,8 @@ export class Personalize {
     return () => this.forgetListeners.delete(listener);
   }
 
-  private notifyForget(userId: string): void {
+  /** Session calls this before its correction/budget gates; direct callers use voiceCorrection below. */
+  notifyForget(userId: string): void {
     for (const listener of this.forgetListeners) listener(userId);
   }
 
@@ -685,6 +686,10 @@ export class Personalize {
    * checked for an answer ("Noted: …"); otherwise only lines that look like a correction reach Spark ("Updated: …").
    */
   async voiceCorrection(userId: string, line: string, lastAssistant?: string, signal?: AbortSignal, asked?: UnknownItem | null): Promise<VoiceUpdate | null> {
+    const forgetting = isForgetRequest(line);
+    // A short request ("Forget it.") normally has no correction work, but it
+    // still must clear volatile insights before this early return.
+    if (forgetting) this.notifyForget(userId);
     if (!asked && !mightBeCorrection(line)) return null;
     const card = await this.store.getStyle(userId);
     if (!card) return null;
@@ -693,8 +698,7 @@ export class Personalize {
     let forgot: { applied: AppliedUpdate[]; kept: string } | null = null;
     // "forget that …": its target is kept out of everything from now on, whatever Spark makes of the line
     // checked on the whole line too: stripping punctuation can hide an email ("alice@example com", Codex P1)
-    if (isForgetRequest(line)) this.notifyForget(userId);
-    if (isForgetRequest(line) && !isSensitiveDetail(line) && redactSensitive(line) === line && !looksLikeInjection(line)) {
+    if (forgetting && !isSensitiveDetail(line) && redactSensitive(line) === line && !looksLikeInjection(line)) {
       const target = forgetTarget(line);
       // a sensitive target (health, money, …) is never stored or sent on: the memory filters drop it anyway (Codex P1)
       // a target with a number in it (an address, a phone, an account) is never kept, whatever its shape

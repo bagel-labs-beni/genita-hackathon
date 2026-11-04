@@ -122,6 +122,8 @@ export class Insights {
   private readonly jobs = new Map<string, Job>();
   private readonly texts = new Map<string, { text: string; at: number }>();
   private readonly importQuotes = new Map<string, ImportQuotes>();
+  /** Forget invalidates only volatile paste/receipts; running report writes may still save their stripped card. */
+  private readonly importMemoryGeneration = new Map<string, number>();
   private readonly failedAt = new Map<string, number>();
   /** the newest write per user (a slower older one never lands over it) */
   private readonly seq = new Map<string, number>();
@@ -136,7 +138,9 @@ export class Insights {
     this.log = o.log ?? (() => {});
     this.now = o.now ?? (() => new Date());
     this.enabled = o.enabled ?? process.env.GENITA_INSIGHTS !== "0";
-    this.personalize.onForget((userId) => this.forget(userId));
+    // A targeted forget must not cancel an accepted-answers rewrite. It only makes
+    // this process's paste and receipts ineligible to be read or re-registered.
+    this.personalize.onForget((userId) => this.invalidateImportMemory(userId));
   }
 
   private nowMs(): number { return this.now().getTime(); }
@@ -146,21 +150,34 @@ export class Insights {
     this.importQuotes.delete(userId);
   }
 
+  private importGeneration(userId: string): number {
+    return this.importMemoryGeneration.get(userId) ?? 0;
+  }
+
+  private invalidateImportMemory(userId: string) {
+    this.clearImportMemory(userId);
+    this.importMemoryGeneration.set(userId, this.importGeneration(userId) + 1);
+  }
+
   private pruneImportMemory() {
     const now = this.nowMs();
     for (const [userId, value] of this.texts) if (now - value.at > TEXT_TTL_MS) this.clearImportMemory(userId);
     for (const [userId, value] of this.importQuotes) if (now - value.at > TEXT_TTL_MS) this.clearImportMemory(userId);
   }
 
-  private rememberText(userId: string, text: string) {
+  private rememberText(userId: string, text: string, generation: number) {
+    if (this.importGeneration(userId) !== generation) return;
     this.pruneImportMemory();
+    if (this.importGeneration(userId) !== generation) return;
     if (this.texts.size >= TEXT_MAX_USERS) this.clearImportMemory(this.texts.keys().next().value!);
     const now = this.nowMs();
     this.texts.set(userId, { text, at: now });
   }
 
-  private rememberImportQuotes(userId: string, report: InsightReport) {
+  private rememberImportQuotes(userId: string, report: InsightReport, generation: number) {
+    if (this.importGeneration(userId) !== generation) return;
     this.pruneImportMemory();
+    if (this.importGeneration(userId) !== generation) return;
     // The original import starts the retention window. A rewrite completing
     // after expiry cannot make a new two-hour receipt window.
     const text = this.texts.get(userId);
@@ -232,6 +249,9 @@ export class Insights {
   private start(userId: string, from: InsightReport["from"], inputsOf: (card: StyleCard | null) => InsightInputs | null, opts: { gate?: Promise<string | null>; settings?: InsightReport["settings"] } = {}) {
     if (!this.enabled) return;
     const mine = ++this.seqNext;
+    // A targeted forget does not advance `seq`: this write may finish, but it
+    // can never restore memory belonging to the generation it started in.
+    const importGeneration = this.importGeneration(userId);
     this.seq.set(userId, mine);
     const promise = (async () => {
       // import: the card isn't there yet — the paste is the source
@@ -265,10 +285,9 @@ export class Insights {
         saved = { ...kept, observations };
         return { ...c, insights: { ...saved, ...(denied.length ? { denied } : {}) } };
       });
-      // `forget()` advances seq through Personalize's callback. Check again
-      // after the serialized write so a receipt can never come back from an
-      // in-flight job after that forget.
-      if (next?.insights && saved && this.seq.get(userId) === mine) this.rememberImportQuotes(userId, saved);
+      // A full `forget()` advances seq; a targeted forget advances import
+      // generation. Check both paths before re-registering a receipt.
+      if (next?.insights && saved && this.seq.get(userId) === mine) this.rememberImportQuotes(userId, saved, importGeneration);
       this.failedAt.delete(userId);
     })()
       .catch((err) => {
@@ -281,12 +300,13 @@ export class Insights {
 
   /** Import: the report starts on the redacted paste now; commit(importedAt) after the card is saved, cancel() if the import failed. */
   begin(userId: string, redactedText: string): { commit(importedAt: string): void; cancel(): void } {
+    const importGeneration = this.importGeneration(userId);
     let settle!: (at: string | null) => void;
     const gate = new Promise<string | null>((r) => (settle = r));
     this.start(userId, "import", () => ({ text: redactedText, findings: [], picks: [], source: "import" }), { gate });
     return {
       // the paste is kept (memory only) for the answers rewrite only once its card is the user's card
-      commit: (at) => { if (this.enabled) this.rememberText(userId, redactedText); settle(at); },
+      commit: (at) => { if (this.enabled) this.rememberText(userId, redactedText, importGeneration); settle(at); },
       cancel: () => { this.clearImportMemory(userId); settle(null); },
     };
   }
@@ -354,7 +374,7 @@ export class Insights {
    * backoff — and makes any write still running land nowhere (a newer write number, and no card to land on).
    */
   forget(userId: string): void {
-    this.clearImportMemory(userId);
+    this.invalidateImportMemory(userId);
     this.failedAt.delete(userId);
     this.seq.set(userId, ++this.seqNext);
   }

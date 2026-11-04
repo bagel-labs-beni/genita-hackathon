@@ -172,6 +172,8 @@ export type SessionPersonalize = {
   /** watch together attached before the question: not a new conversation after all (give the count back) */
   unplanCall?(userId: string, item: string | null): Promise<void>;
   voiceCorrection(userId: string, line: string, lastAssistant?: string, signal?: AbortSignal, asked?: UnknownItem | null): Promise<VoiceUpdate | null>;
+  /** Clears volatile import material even when this line does not enter voiceCorrection. */
+  notifyForget?(userId: string): void;
   endCall(userId: string, turns: CallTurn[], asked: string | null, startedAt?: string): Promise<number>;
   /** Knows-Me S1: the user cut two long replies short → observed "short replies" line; null = not saved */
   noteShorter?(userId: string): Promise<{ text: string; fields: string[]; profile: string } | null>;
@@ -1803,6 +1805,9 @@ export class Session {
   private checkCorrection(text: string): void {
     const p = this.deps.personalize;
     const userId = this.deps.userId;
+    // This is before every Session-side correction/budget gate. `voiceCorrection`
+    // repeats it for direct callers; invalidating the same generation twice is safe.
+    if (p && userId && isForgetRequest(text)) p.notifyForget?.(userId);
     // "forget that …": from this line on, memory, notes and the turns handed on leave its target out (no Spark wait)
     // "forget I said that" points back: the line to forget is their previous one (strict match, not loose words of
     // "i don't wanna get into it" — intel eval 11/4)

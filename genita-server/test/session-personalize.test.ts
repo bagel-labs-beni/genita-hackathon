@@ -114,6 +114,15 @@ test("voice correction: profile.updated after the merge, the reply is not held u
   s.session.close();
 });
 
+test("D95 r4: a short forget notifies volatile consumers before the session correction gates", async () => {
+  let notified = 0;
+  const s = setup({ notifyForget() { notified++; } });
+  await s.session.onClientText(JSON.stringify({ type: "start", persona }));
+  await say(s, "Forget it.", 1);
+  assert.equal(notified, 1, "the Session path cannot skip a short forget before its correction filter");
+  s.session.close();
+});
+
 test("no correction check while interpreting; the call's turns and the asked item go to endCall on close", async () => {
   const s = setup();
   await s.session.onClientText(JSON.stringify({ type: "start", persona }));
