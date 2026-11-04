@@ -327,7 +327,7 @@ export class MemoryCall {
         // Checkpoint completed calls/results before exposing completion. An empty
         // or failed follow-up retries this continuation, never the original save.
         // Codex #536 P2: a recall that found something lifts the "nothing from earlier calls" line for the next round
-        const instructions = this.pastShown && next.instructions?.includes(NO_PAST_LINE) ? next.instructions.replace(NO_PAST_LINE, "") : next.instructions;
+        const instructions: string | undefined = this.pastShown && next.instructions?.includes(NO_PAST_LINE) ? next.instructions.replace(NO_PAST_LINE, "") : next.instructions;
         next = { ...next, instructions, input: [...input], ...(round === 2 ? { tools: [] } : {}) };
         if (retryState) retryState.request = next;
         yield { type: "tool", name: call.name, status: "completed" };

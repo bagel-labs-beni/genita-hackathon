@@ -52,3 +52,8 @@ test("Codex #536 r2: 'you got a job' said this call stays; 'your interview last 
   assert.equal(unbackedPast("You told me that you got a job.", { past: false, userText: "What did I say?", callText: "I got a job." }), "You told me that you got a job.");
   assert.equal(unbackedPast("You told me about your interview last week.", { past: false, userText: "hm", callText: "My interview is tomorrow." }), "");
 });
+
+test("Codex #536 r3: help sentences untouched; a number said this call grounds the recall", () => {
+  assert.equal(unbackedPast("If you remember when it started, tell the emergency services.", none("My chest hurts.")), "If you remember when it started, tell the emergency services.");
+  assert.equal(unbackedPast("You told me that you're 23.", { past: false, userText: "How old am I?", callText: "I'm 23." }), "You told me that you're 23.");
+});

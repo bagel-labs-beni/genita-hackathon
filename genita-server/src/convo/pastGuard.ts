@@ -31,10 +31,11 @@ const STOPW = new Set("about that this with your you told said remember when tim
 const WHEN_PAST = /\b(?:last (?:week|month|year|night|time)|yesterday|the other (?:day|night)|weeks? ago|days? ago|a while ago|before)\b/i;
 /** Codex #536 r2: a content word (≥3 letters) they really said in this call, and no "last week"-type time they didn't say */
 function groundedInCall(sentence: string, callText: string): boolean {
-  const said = new Set((callText.toLowerCase().match(/[a-z']{3,}/g) ?? []));
+  // numbers count too (Codex #536 r3: "I'm 23." → "You told me that you're 23.")
+  const said = new Set((callText.toLowerCase().match(/[a-z']{3,}|\d+/g) ?? []));
   const when = sentence.match(WHEN_PAST)?.[0];
   if (when && !callText.toLowerCase().includes(when.toLowerCase())) return false;
-  return (sentence.toLowerCase().match(/[a-z']{3,}/g) ?? []).some((w) => !STOPW.has(w) && !["you", "the", "and", "got", "did", "say", "was", "are", "had", "has", "for", "but", "not", "now"].includes(w) && said.has(w));
+  return (sentence.toLowerCase().match(/[a-z']{3,}|\d+/g) ?? []).some((w) => !STOPW.has(w) && !["you", "the", "and", "got", "did", "say", "was", "are", "had", "has", "for", "but", "not", "now"].includes(w) && said.has(w));
 }
 function said(re: RegExp, text: string): boolean { re.lastIndex = 0; return re.test(text); }
 
@@ -47,8 +48,10 @@ const USER_HABIT = /\b(?:again|as usual|like usual|per usual|as always|like alwa
 // call itself gave ("You still have that interview tomorrow" — session test, Codex #423)
 const STILL = /\b(you(?:'re| are)?|u|are you|you guys)\s+still\b\s*(?=(?:on|into|obsessed|stuck|hooked|doing|making|listening|watching|playing|eating|cooking|up|awake|at it|in your|in that|going|living)\b|[a-z]+ing\b)/giu;
 
+// Codex #536 r3: emergency / help sentences are never touched ("If you remember when it started, tell the emergency services")
+const HELP = /\b(?:911|988|112|999|emergency|ambulance|hospital|doctor|crisis|hotline|helpline|poison control|nine[- ]one[- ]one|nine[- ]eight[- ]eight)\b/i;
 export function unbackedPast(sentence: string, ctx: PastContext): string {
-  if (!sentence.trim()) return sentence;
+  if (!sentence.trim() || HELP.test(sentence)) return sentence;
   const user = ctx.userText ?? "";
   if (ctx.past) {
     if (USER_HABIT.test(user)) return sentence;
