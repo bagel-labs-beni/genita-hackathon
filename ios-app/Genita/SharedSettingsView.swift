@@ -585,6 +585,8 @@ struct AboutYouPage: View {
                 }
             }
             // C3: one Still learning block, r16, 14/16 — white on the #F2F2F7 page (lead 11/4: #F4F4F2 vanished on it)
+            // Chelsea 11/4: only while something is still missing; a full card shows only what it knows
+            if Self.hasGaps(styleText) {
             VStack(alignment: .leading, spacing: 0) {
                 Text("Still learning").font(SettingsType.font(13, .semibold, relativeTo: .footnote)).foregroundStyle(SettingsInk.header)
                     .accessibilityAddTraits(.isHeader).padding(.horizontal, 16).padding(.top, 22).padding(.bottom, 8)
@@ -593,6 +595,7 @@ struct AboutYouPage: View {
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.vertical, 14)
                     .background(SettingsInk.card, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             }.padding(.horizontal, 16)
+            }
             SettingsGroup(header: "Where this comes from") {
                 // the paste only: the skip path fills styleRows from the answers too (Codex P3)
                 if !model.setup.response.isEmpty {
@@ -608,6 +611,16 @@ struct AboutYouPage: View {
         #endif
     }
 
+    /// Still learning shows only while the card has a gap: nothing noticed yet, a heading with no claims, or a
+    /// "Not enough information yet." line.
+    static func hasGaps(_ text: String) -> Bool {
+        let groups = noticed(text)
+        if groups.isEmpty || groups.contains(where: { $0.claims.isEmpty }) { return true }
+        return SettingsView.styleLines(text).contains { line in
+            let t = line.text.hasPrefix("•") ? String(line.text.dropFirst()).trimmingCharacters(in: .whitespaces) : line.text
+            return t.lowercased().hasPrefix("not enough information")
+        }
+    }
     /// The style card's text as observation rows: a heading becomes the row's category, its bullets the claims.
     /// "Not enough information yet." lines are dropped (they belong to the one Still learning block).
     static func noticed(_ text: String) -> [(category: String?, claims: [String])] {
