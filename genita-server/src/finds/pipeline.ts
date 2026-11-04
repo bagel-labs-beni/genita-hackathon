@@ -506,6 +506,21 @@ export function outfitSituation(model: unknown, question: string, pick?: string)
   return capFirst(pick ? `${pick.toLowerCase()} for ${o}.` : `for ${o}.`);
 }
 
+/** words a taste line uses whatever it stands on ("…you love", "just your style") */
+const TASTE_FILLER = new Set(["your", "you", "you're", "love", "loves", "like", "likes", "just", "keep", "keeps", "vibe", "style", "which", "mentioned", "said", "told", "that", "this", "with", "from", "what", "look", "looks", "always", "perfect", "matches", "match", "fits", "goes", "very", "really", "into", "suits", "suit", "feel", "feels", "want", "wear"]);
+const tasteWords = (s: string) => (s.toLowerCase().match(/[a-z가-힣]{4,}/g) ?? []).filter((w) => !TASTE_FILLER.has(w)).map((w) => w.slice(0, 5));
+/**
+ * P1-7: the outfit card's taste line, only when it stands on something Genita remembers (a memory or the
+ * imported profile) — a content word in common. Nothing remembered, or nothing in common → "" (the card leaves
+ * the line out; the runner falls back to the imported preference when there is one). Never a made-up taste.
+ */
+export function outfitTaste(model: unknown, remembered: string[]): string {
+  const line = str(model, 90);
+  if (!line || !remembered.length) return "";
+  const known = new Set(remembered.flatMap(tasteWords));
+  return tasteWords(line).some((w) => known.has(w)) ? line : "";
+}
+
 const STOP = new Set(["the", "a", "one", "your", "my", "and", "with", "coat", "jacket", "top"]);
 const tokens = (s: string) => s.toLowerCase().match(/[a-z]+/g)?.filter((w) => w.length > 2 && !STOP.has(w)) ?? [];
 
@@ -590,7 +605,8 @@ export async function runOutfit(ctx: PipelineCtx): Promise<PipelineResult> {
   if (ctx.signal.aborted) return { card: null, timings };
   const label = clockLabel(at, ctx.timeZone);
   // CW-02: three reasons — taste (memory), what is seen (why, per option), and the occasion they asked about
-  const taste = str(j.taste, 90);
+  const taste = outfitTaste(j.taste, mem);
+  if (!taste && str(j.taste, 90)) ctx.log("find.outfit_taste_dropped", { findId: ctx.findId });
   const situation = outfitSituation(j.situation, ctx.question, options[pick].label);
   const card: FindCard = {
     id: ctx.findId,
@@ -613,7 +629,6 @@ export async function runOutfit(ctx: PipelineCtx): Promise<PipelineResult> {
     how: [`From ${ctx.frames.length} frame${ctx.frames.length > 1 ? "s" : ""} on your camera, ${label}.`, searched ? "Checked the weather on the web." : "No web search for this one.", MODEL_CREDIT],
   };
   if (!card.say) delete card.say;
-  if (!card.subtitle && said) card.subtitle = "";
   ctx.emit({ type: "find.created", findId: ctx.findId, card });
   for (const fi of new Set(card.options.map((o) => o.frame))) {
     const items = card.options.filter((o) => o.frame === fi && o.box).map((o) => ({ label: o.label, box: o.box! }));

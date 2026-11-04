@@ -595,7 +595,7 @@ test("AU-57 CW-02: the outfit card names the occasion they asked about (taste + 
   const v = fakeVendors({
     outfit: '{"pick":0,"title":"Wear the navy one.","taste":"You like dark, simple colors","situation":"Easy to wear all weekend","options":[{"label":"Navy coat","frame":1},{"label":"Camel blazer","frame":0}],"why":["The navy coat reads relaxed.","The camel blazer looks like office."],"ask":["What shoes?","Warm enough?"],"say":"Navy."}',
   });
-  const { ctx } = ctxFor("outfit", v, { question: "Which one for this weekend?" });
+  const { ctx } = ctxFor("outfit", v, { question: "Which one for this weekend?", memories: ["Likes dark, simple colors."] });
   const card = (await runOutfit(ctx)).card!;
   assert.equal(card.subtitle, "You like dark, simple colors");
   assert.deepEqual(card.why, ["The navy coat reads relaxed.", "The camel blazer looks like office.", "Easy to wear all weekend"]);
@@ -607,13 +607,39 @@ test("AU-57 CW-02: the outfit card names the occasion they asked about (taste + 
   assert.equal(b.evidence?.situation, "Camel blazer for dinner.");
   // prod 11/4 (proxy CW-02, 4/5 runs): a model line that never mentions the weekend doesn't count as the situation
   const off = fakeVendors({ outfit: '{"pick":0,"title":"Wear the trench.","taste":"clean, minimal, camel - so you","situation":"Classic and polished","options":[{"label":"Beige trench","frame":1},{"label":"Denim jacket","frame":0}],"why":["Classic clean camel, no logos","Casual blue, less your minimal vibe"],"ask":[],"say":"Trench."}' });
-  const t = (await runOutfit(ctxFor("outfit", off, { question: "Which one for this weekend?" }).ctx)).card!;
+  const t = (await runOutfit(ctxFor("outfit", off, { question: "Which one for this weekend?", profile: "- Taste: Clean, minimal clothes in camel and black." }).ctx)).card!;
   assert.equal(t.why.at(-1), "Beige trench for this weekend.");
   assert.deepEqual(t.evidence, { style: "clean, minimal, camel - so you", situation: "Beige trench for this weekend." });
   // no occasion named: no made-up situation line
   const none = (await runOutfit(ctxFor("outfit", bare, { question: "Which one looks better on me?" }).ctx)).card!;
   assert.deepEqual(none.why, ["Navy reads relaxed.", "Camel looks sharp."]);
   assert.equal(none.evidence, undefined);
+});
+
+test("P1-7: the outfit taste line comes only from what Genita remembers; none → the line is left out cleanly", async () => {
+  const card = (taste: string, extra: Partial<PipelineCtx> = {}, question = "Which one looks better on me?") =>
+    runOutfit(
+      ctxFor("outfit", fakeVendors({ outfit: JSON.stringify({ pick: 0, title: "Wear the black one.", taste, options: [{ label: "White trench", frame: 0 }, { label: "Black jacket", frame: 1 }], why: ["Crisp classic.", "Bold contrast."], ask: [], say: "The black one." }) }), { question, ...extra }).ctx,
+    ).then((r) => r.card!);
+  // nothing remembered and nothing imported: a model-written taste is invented → no taste line, no style claim
+  const bare = await card("You love bold, edgy looks");
+  assert.equal(bare.subtitle, "");
+  assert.equal(bare.evidence, undefined);
+  // remembered things, but the taste line stands on none of them → dropped
+  const off = await card("Bright colors suit your sunny style", { memories: ["I am going to a Halloween party tonight."] });
+  assert.equal(off.subtitle, "");
+  // a line that stands on a memory stays
+  const mem = await card("For the Halloween party, which you mentioned", { memories: ["I am going to a Halloween party tonight."] });
+  assert.equal(mem.subtitle, "For the Halloween party, which you mentioned");
+  // a line that stands on the imported profile stays
+  const imp = await card("Clean minimal vibe you love", { profile: "- Taste: Clean, minimal clothes in black and camel." });
+  assert.equal(imp.subtitle, "Clean minimal vibe you love");
+  assert.equal(imp.evidence?.style, "Clean minimal vibe you love");
+  // an occasion with no taste: the situation stays, the style is empty (no "From your style")
+  const sit = await card("", {}, "Which one for the Halloween party tonight?");
+  assert.equal(sit.subtitle, "");
+  assert.equal(sit.evidence?.style, "");
+  assert.ok(sit.evidence?.situation);
 });
 
 test("AU-57: occasionOf reads the occasion as said", () => {
