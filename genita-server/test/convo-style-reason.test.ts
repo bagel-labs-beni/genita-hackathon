@@ -17,6 +17,10 @@ test("style turns, coloring known or not, the once-only question, rotation", () 
   assert.equal(warm.asks, false);
   assert.match(warm.line, /one personal reason in the same breath/);
   assert.deepEqual(usedReasons("- Taste: Minimal style", [], ["The navy one, it's minimal and sharper for tonight."]), ["tonight", "minimal"]);
+  // one reason in other words is still that reason ("relaxed fit" → the fit group is spent, so the fit fact isn't offered)
+  const fit = styleLine({ profile: "- Taste: Dislikes tight, clingy fits\n- Taste: Silver jewelry\n- Personal color: cool", said: ["That knit has the relaxed fit you like."], askedColoring: false }).line;
+  assert.doesNotMatch(fit, /like one of these \(data\): "Dislikes tight/);
+  assert.match(fit, /like one of these \(data\): "Silver jewelry"/);
   assert.match(warm.line, /Never about their body shape/);
   const unknown = styleLine({ profile: "", said: [], askedColoring: false });
   assert.equal(unknown.asks, true);
@@ -25,7 +29,7 @@ test("style turns, coloring known or not, the once-only question, rotation", () 
   const later = styleLine({ profile: "", said: ["The cream one, warm tones always look good on you."], askedColoring: true });
   assert.equal(later.asks, false);
   assert.doesNotMatch(later.line, /usually work for you\?/);
-  assert.match(later.line, /Already used this call \(data\): "warm", "tones"; give a different reason now/);
+  assert.match(later.line, /Already used this call \(data\): "warm", "tones"; give a different personal reason now/);
   assert.match(STYLE_FOLLOW_LINE, /only a reason you actually said, and don't say you found anything yet/);
   assert.match(styleFollowLine("<happy> The cream one, warm tones love you."), /Your verdict was \(data\): "The cream one, warm tones love you\."/);
   assert.match(STYLE_SEARCH_HINT, /Keep the reason/);
@@ -41,4 +45,13 @@ test("prod 23:30 items: digits in text, years read naturally, no 'we got cut off
   assert.equal(normalizeEnglish("Back in 2019 it was $40."), "Back in twenty nineteen it was forty dollars.");
   assert.doesNotMatch(RECONNECT_LINE, /cut off/);
   assert.match(GENERAL_REPLY_LINE, /Give your real answer/);
+});
+
+test("prod 23:30: the wait line says 'dress', not 'dres'", async () => {
+  const { stillHunting } = await import("../src/finds/runner.ts");
+  assert.equal(stillHunting("Dress"), "Still hunting for the right dress, one sec.");
+  assert.equal(stillHunting("Dresses"), "Still hunting for the right dress, one sec.");
+  assert.equal(stillHunting("Watches"), "Still hunting for the right watch, one sec.");
+  assert.equal(stillHunting("Jackets"), "Still hunting for the right jacket, one sec.");
+  assert.equal(stillHunting("Boots"), "Still hunting for the right pair, one sec.");
 });

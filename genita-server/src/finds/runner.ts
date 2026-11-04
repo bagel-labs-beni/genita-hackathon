@@ -135,7 +135,9 @@ const COLOR = /^(black|white|grey|gray|navy|blue|red|green|pink|purple|yellow|or
 /** "Still hunting for the right pair, one sec." (shoes) / "…the right jacket…" */
 export function stillHunting(label: string): string {
   const l = label.toLowerCase();
-  const thing = /shoe|sneaker|boot|loafer|sandal|heel/.test(l) ? "pair" : l === "things" ? "one" : l.replace(/s$/, "");
+  // prod 23:30 "the right dres": "dress" / "glasses" keep their s; "dresses" → "dress", "watches" → "watch"
+  const one = (w: string) => (/(?:ss|us|is)$/.test(w) ? w : /(?:sses|xes|ches|shes)$/.test(w) ? w.slice(0, -2) : w.replace(/s$/, ""));
+  const thing = /shoe|sneaker|boot|loafer|sandal|heel/.test(l) ? "pair" : l === "things" ? "one" : one(l);
   return `Still hunting for the right ${thing}, one sec.`;
 }
 

@@ -35,6 +35,11 @@ export type StyleInput = {
 
 const STOP = new Set(["user", "wants", "treated", "taste", "likes", "dislikes", "communication", "casual", "teasing", "welcome", "personal", "color", "colour", "summer", "with", "over", "that", "this", "from", "they", "them", "their", "picked", "last", "week", "style", "like", "into", "when", "what"]);
 const FIXED = ["warm", "cool", "tones", "undertones", "coloring", "winter", "autumn", "date", "tonight", "dinner"];
+const GROUPS = [
+  ["fit", "fits", "fitted", "loose", "looser", "relaxed", "clingy", "tight", "slouchy", "baggy", "oversized", "cut", "cuts"],
+  ["warm", "cool", "tones", "tone", "undertones", "coloring", "colouring", "autumn", "winter", "earthy"],
+  ["minimal", "clean", "simple", "basics"],
+];
 /** the reasons already used this call: words from what we know about them (and the fixed coloring/occasion words) that our replies said */
 export function usedReasons(profile: string | undefined, memories: string[], said: string[]): string[] {
   const known = new Set([...FIXED, ...([profile ?? "", ...memories].join(" ").toLowerCase().match(/[a-z][a-z-]{3,}/g) ?? []).filter((w) => !STOP.has(w))]);
@@ -43,12 +48,26 @@ export function usedReasons(profile: string | undefined, memories: string[], sai
   return [...known].filter((k) => spoken.some((w) => w === k || (w.startsWith(k) && w.length - k.length <= 3))).slice(0, 8);
 }
 
+/** one reason, many words (11/5 eval: "relaxed fit" then "too fitted for you" was the same reason): a group counts whole */
+export function usedGroups(said: string[]): string[] {
+  const all = new Set(said.join(" ").toLowerCase().match(/[a-z][a-z-]{2,}/g) ?? []);
+  return GROUPS.filter((g) => g.some((w) => all.has(w))).flat();
+}
+
 /** the line for a style turn on camera; `asks` = this line carries the once-per-call coloring question */
 export function styleLine(s: StyleInput): { line: string; asks: boolean } {
   const known = knowsColoring(s.profile, s.memories);
   // the last few things we said this call (the earlier verdicts are in them): their reason words are used up
   const used = usedReasons(s.profile, s.memories ?? [], s.said.slice(-4));
-  const rotate = used.length ? ` Already used this call (data): ${used.map((w) => `"${w}"`).join(", ")}; give a different reason now (the occasion, something you can see, a past pick or another taste).` : "";
+  // a new personal reason, named for it: the facts we know that no reply of this call has used yet (11/5 eval: "the
+  // occasion" or "what you can see" alone read as no personal reason, 15% of verdicts)
+  const facts = [...(s.profile ?? "").split("\n").map((l) => /^\s*-\s*[^:]{1,30}:\s*(.+)$/.exec(l)?.[1]?.trim()).filter((x): x is string => !!x && !/teasing|casual/i.test(x)), ...(s.memories ?? [])];
+  const words = (f: string) => (f.toLowerCase().match(/[a-z][a-z-]{3,}/g) ?? []).filter((w) => !STOP.has(w));
+  const spent = [...used, ...usedGroups(s.said.slice(-4))];
+  const fresh = facts.filter((f) => !words(f).some((w) => spent.some((u) => w === u || w.startsWith(u) || u.startsWith(w)))).slice(0, 3);
+  const spokenAll = new Set(s.said.slice(-4).join(" ").toLowerCase().match(/[a-z][a-z-]{2,}/g) ?? []);
+  const shown = [...new Set([...used, ...usedGroups(s.said.slice(-4)).filter((w) => spokenAll.has(w))])].slice(0, 8);
+  const rotate = shown.length ? ` Already used this call (data): ${shown.map((w) => `"${w}"`).join(", ")}; give a different personal reason now${fresh.length ? `, like one of these (data): ${fresh.map((f) => `"${f.replace(/["\n]/g, " ").slice(0, 80)}"`).join("; ")}` : ", like what they told you this call or a light read of their coloring from what you see"}; never contradict what you know about them.` : "";
   // 11/5 eval: a shorter line (Spark minimal effort came back empty 3/96 with the long one)
   const base = "Style call: your pick first, then one personal reason in the same breath from what you know about them (coloring, favorite colors, taste, the occasion, a fit they like or hate, a past pick), like \"the cream one, warm tones always look good on you\". One reason, two at most, no list. Never about their body shape.";
   if (known) return { line: `${base}${rotate}`, asks: false };
