@@ -543,13 +543,15 @@ export const V93_PERIORAL = Object.freeze({
 
 /**
  * 11/4: the app's speech-coupled rigid frame sway (app #465, map `alive.sway`; 0 = the still frame). Ops can turn it
- * down or off without an app build: GENITA_ALIVE_SWAY (default 1, clamped 0…2; not a number → 1).
+ * on without an app build: GENITA_ALIVE_SWAY (clamped 0…2). Build 10 (Chelsea: "the person moving left and right is
+ * distracting"): default 0 — no frame translation, roll, scale or breath; blinks, mouth and expressions are untouched.
+ * Unset or not a number → 0.
  */
 export function aliveSway(env: Record<string, string | undefined> = process.env): number {
   const raw = (env.GENITA_ALIVE_SWAY ?? "").trim();
-  if (raw === "") return 1;
+  if (raw === "") return 0;
   const v = Number(raw);
-  return Number.isFinite(v) ? Math.min(2, Math.max(0, v)) : 1;
+  return Number.isFinite(v) ? Math.min(2, Math.max(0, v)) : 0;
 }
 
 /**

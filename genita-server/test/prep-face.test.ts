@@ -374,7 +374,7 @@ test("withV93Mouth: people on the rig get the v57c block (openMag 0, jaw 1 px), 
   const out = withV93Mouth(map, "human", true);
   assert.deepEqual(out.perioral, { ...V93_PERIORAL, jawDropPx: 1 });
   assert.equal((out.perioral as Record<string, number>).openMag, 0);
-  assert.deepEqual(out.alive, { ...STILL_FACE.alive, sway: 1 });
+  assert.deepEqual(out.alive, { ...STILL_FACE.alive, sway: 0 });
   assert.deepEqual(out.brow, { px: 0 });
   assert.deepEqual(out.cheek, { ...STILL_FACE.cheek, delayFrames: 1 });
   const mv = out.motionV2 as Record<string, unknown>;
@@ -388,7 +388,7 @@ test("withV93Mouth: people on the rig get the v57c block (openMag 0, jaw 1 px), 
   // no rig / own perioral: still face only
   const noRig = withV93Mouth({ alive: { headX: 3 } }, "human", true);
   assert.equal(noRig.perioral, undefined);
-  assert.deepEqual(noRig.alive, { ...STILL_FACE.alive, sway: 1 });
+  assert.deepEqual(noRig.alive, { ...STILL_FACE.alive, sway: 0 });
   const own = withV93Mouth({ rig: {}, perioral: { lipThin: 0.5 } }, "human", true);
   assert.deepEqual(own.perioral, { lipThin: 0.5 });
   // switch: default on
@@ -459,12 +459,13 @@ test("mouth interior (11/4): rig people get rig.interior 1 + a lips-together lis
   for (const v of ["0", "false", "off", " OFF "]) assert.equal(mouthInteriorOn({ GENITA_FACE_MOUTH_INTERIOR: v }), false);
 });
 
-test("aliveSway: GENITA_ALIVE_SWAY scales the app's frame sway (default 1, clamped, junk = 1)", async () => {
+test("aliveSway: GENITA_ALIVE_SWAY scales the app's frame sway (default 0 since build 10, clamped, junk = 0)", async () => {
   const { aliveSway } = await import("../src/prep/face.ts");
-  assert.equal(aliveSway({}), 1);
+  assert.equal(aliveSway({}), 0);
+  assert.equal(aliveSway({ GENITA_ALIVE_SWAY: "1" }), 1);
   assert.equal(aliveSway({ GENITA_ALIVE_SWAY: "0" }), 0);
   assert.equal(aliveSway({ GENITA_ALIVE_SWAY: "0.5" }), 0.5);
   assert.equal(aliveSway({ GENITA_ALIVE_SWAY: "9" }), 2);
   assert.equal(aliveSway({ GENITA_ALIVE_SWAY: "-1" }), 0);
-  assert.equal(aliveSway({ GENITA_ALIVE_SWAY: "abc" }), 1);
+  assert.equal(aliveSway({ GENITA_ALIVE_SWAY: "abc" }), 0);
 });
