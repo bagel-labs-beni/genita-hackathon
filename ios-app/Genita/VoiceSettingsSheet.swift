@@ -32,9 +32,10 @@ struct VoiceCardView: View {
                     else if fetching { ProgressView().controlSize(.small).tint(.white) }
                     else { Image(systemName: "play.fill").font(.system(size: 11)).foregroundStyle(.white).offset(x: 1) }
                 }.frame(width: 44, height: 44)
-            }.disabled(waking).accessibilityLabel(playing ? "Stop \(voice.name)" : "Play \(voice.name)").accessibilityIdentifier("play\(index)")
+            }.disabled(waking).opacity(waking ? 0.3 : 1)   // SY-06: waking dims only the play button; names and #737373 lines stay readable
+                .accessibilityLabel(playing ? "Stop \(voice.name)" : "Play \(voice.name)").accessibilityIdentifier("play\(index)")
                 .frame(maxWidth: .infinity, alignment: .trailing).padding(.trailing, 14)
-        }.opacity(waking ? 0.5 : 1).buttonStyle(.plain)
+        }.buttonStyle(.plain)
     }
 }
 
