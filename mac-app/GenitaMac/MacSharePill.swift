@@ -29,7 +29,7 @@ struct MacSharePill: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 8) {
-                glyph.frame(width: 16, height: 16)
+                glyph
                 Text(Self.label(phase)).font(.custom("PretendardVariable-SemiBold", fixedSize: 14)).foregroundStyle(.white)
                     .lineLimit(1).fixedSize()
                     .id(phase).transition(.opacity.animation(.easeOut(duration: 0.15)))
@@ -52,9 +52,10 @@ struct MacSharePill: View {
 
     @ViewBuilder private var glyph: some View {
         switch phase {
-        case .starting: MacShareSpinner()
+        case .starting: MacShareSpinner().frame(width: 16, height: 16)
+        // the dot sits inline (no 16 pt slot): 12 pt before it, 8 pt to the words (design review 11/4)
         case .sharing: MacShareLiveDot()
-        case .idle: resourceImage("glass-share-icon").resizable().scaledToFit()
+        case .idle: resourceImage("glass-share-icon").resizable().scaledToFit().frame(width: 16, height: 16)
         }
     }
 
@@ -65,7 +66,9 @@ struct MacSharePill: View {
             if #available(macOS 26.0, *) { Capsule().fill(tint.opacity(0.92)).glassEffect(.regular.tint(tint), in: Capsule()) }
             else { Capsule().fill(tint) }
         } else {
-            Capsule().fill(Color.black.opacity(hover ? 0.68 : 0.55)).macDarkGlass(in: Capsule())
+            // the call cue's own material (about 60 % black over video; an extra 0.55 fill made it near-opaque,
+            // design review 11/4). White text over white video stays above 4.5:1. Hover darkens by 13 points.
+            Capsule().fill(Color.black.opacity(hover ? 0.13 : 0)).macDarkGlass(in: Capsule())
         }
     }
 }

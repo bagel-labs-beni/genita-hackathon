@@ -513,7 +513,7 @@ struct MacSettingsSheet: View {
             if loginItem.needsApproval {
                 Button { loginItem.openLoginItemsSettings() } label: {
                     HStack(spacing: 4) {
-                        Text("Approve in System Settings > Login Items").lineLimit(1).minimumScaleFactor(0.85)
+                        Text("Approve in System Settings › Login Items").lineLimit(1).minimumScaleFactor(0.85)
                         Image(systemName: "arrow.up.right").font(.system(size: 10, weight: .medium))
                     }.font(MacSheetInk.sans(12)).foregroundStyle(MacSheetInk.mute)
                         .padding(.horizontal, 16).padding(.bottom, 12).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
