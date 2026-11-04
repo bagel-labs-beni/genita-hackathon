@@ -1985,12 +1985,12 @@ test("Codex #664 r2: medical / danger emergencies get no hold beat", async () =>
 
 test("Codex #664 r3 P1: breathing / break-in variants get no hold beat (regex + slow Session reply)", { skip: !v1 }, async (t) => {
   const { NO_BEAT_EMERGENCY } = await import("../src/session/session.ts");
-  for (const s of ["My baby has stopped breathing.", "Someone is breaking into my house.", "he isn't breathing", "someone broke into our apartment", "there's a guy in my house", "my dad collapsed and won't wake up"]) assert.ok(NO_BEAT_EMERGENCY.test(s), s);
+  for (const s of ["My baby has stopped breathing.", "Someone is breaking into my house.", "he isn't breathing", "someone broke into our apartment", "there's a guy in my house", "my dad collapsed and won't wake up", "Someone's in my house.", "somebody's following me", "they're trying to break in"]) assert.ok(NO_BEAT_EMERGENCY.test(s), s);
   for (const s of ["take a deep breath with me", "I love breakfast", "tell me a story about a fireplace"]) assert.ok(!NO_BEAT_EMERGENCY.test(s), s);
   const prev = process.env.GENITA_HOLD_CAP_MS;
   process.env.GENITA_HOLD_CAP_MS = "100";
   t.after(() => { if (prev === undefined) delete process.env.GENITA_HOLD_CAP_MS; else process.env.GENITA_HOLD_CAP_MS = prev; });
-  for (const line of ["My baby has stopped breathing.", "Someone is breaking into my house."]) {
+  for (const line of ["My baby has stopped breathing.", "Someone is breaking into my house.", "Someone's in my house."]) {
     const client = new Client();
     const session = new Session("capEmerg", client, {
       config, openAsr: () => { throw new Error("no asr"); },
