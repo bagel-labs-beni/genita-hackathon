@@ -136,6 +136,11 @@ struct MacConversationView: View {
                         MacLinkPrompt(share: { linkOpened = nil; sharing.requestSharing() }, notNow: { withAnimation(.easeOut(duration: 0.22)) { linkOpened = nil } })
                     }
                 }
+                // D73 (TR-01 NET) as the iPhone: interpreting hides the call cue, except S09-R — a dropped link must show
+                if waitingCopy == nil && interpreting && !findsUp && call.link == .reconnecting, let text = cueText {
+                    MacCallCue(text: text).frame(maxWidth: 342, alignment: .leading).fixedSize(horizontal: false, vertical: true)
+                        .position(x: 195, y: MacDesignV2.enabled && !displaySharing ? 103 : 142).frame(width: 390, height: 844, alignment: .topLeading).allowsHitTesting(false)
+                }
                 // A full result sheet owns the top of the window; the share chip and cards come back when it folds.
                 if !sheetFull { WatchOverlays(sharing: sharing, review: reviewState) }
             }.frame(width: 390, height: 844).offset(x: menuOpen ? 299 : 0)
