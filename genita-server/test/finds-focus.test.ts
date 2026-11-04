@@ -71,3 +71,20 @@ test("AU-70 (Codex r2): a slower read of an earlier pick never takes the newer p
   await a;
   assert.match(runner.onScreen() ?? "", /^Card B/);
 });
+
+test("demo S5 return visit: 'what shoes did you find for me earlier?' gets this account's recent Finds in the prompt", async () => {
+  const store = new MemoryFindsStore();
+  const shoes: FindCard = { ...card("33333333-aaaa-4bbb-8ccc-000000000003", "Dark brown boots for tonight"), kind: "product", createdAt: new Date(Date.now() - 3_600_000).toISOString(), why: ["Warm brown goes with your black trench."], products: [{ id: "p1", name: "Leather Chelsea Boot", url: "https://x.example/p1", domain: "x.example", store: "Thursday", price: "$199", taste: "clean, minimal", situation: "Halloween party" }] };
+  const old = { ...card("44444444-aaaa-4bbb-8ccc-000000000004", "Last month's soup"), createdAt: "2026-09-01T10:00:00Z" };
+  await store.put(ownerKey("acct-a"), shoes);
+  await store.put(ownerKey("acct-a"), old);
+  await store.put(ownerKey("acct-b"), { ...card("55555555-aaaa-4bbb-8ccc-000000000005", "Someone else's boots"), createdAt: new Date().toISOString() });
+  const runner = new FindsRunner({ vendors: noVendors, store, images: false, imageBase: "/v1/finds" }, { emit() {}, announce() {}, log() {}, now: () => 0 });
+  runner.configure({ owner: "acct-a", memories: [] });
+  await new Promise((r) => setTimeout(r, 20));
+  const line = runner.foundBefore("What shoes did you find for me earlier, and why did you pick them?") ?? "";
+  assert.match(line, /Leather Chelsea Boot \(Thursday, \$199/);
+  assert.match(line, /Warm brown goes with your black trench/);
+  assert.doesNotMatch(line, /soup|Someone else/);
+  assert.equal(runner.foundBefore("what should I cook tonight"), undefined, "only when they ask about it");
+});

@@ -1904,3 +1904,13 @@ test("intel eval 11/4 forget in call: after 'forget I said that' the pointed-at 
   assert.equal(session.forgetAsked, true);
   session.close();
 });
+
+test("demo S4: asked which to wear, a neutral undertone / color-season note is advice; a looks judgment still is not", async () => {
+  const { guardSentence } = await import("../src/convo/guard.ts");
+  const ask = "Which one looks better on me, the white one or the black one? It's for the Halloween party tonight.";
+  assert.equal(guardSentence("You have warm undertones, so dark brown shoes or leather accessories will pull it together.", { camera: true, userText: ask }), null);
+  assert.equal(guardSentence("With your warm skin tone, the black one with dark brown shoes works.", { camera: true, userText: ask }), null);
+  assert.equal(guardSentence("Your skin is glowing, the black one wins.", { camera: true, userText: ask }), "appearance");
+  assert.equal(guardSentence("You look so pretty in the black one.", { camera: true, userText: ask }), "appearance");
+  assert.equal(guardSentence("Your warm skin tone looks great.", { camera: true, userText: "how was your day" }), "appearance", "no style ask: still a comment on them");
+});

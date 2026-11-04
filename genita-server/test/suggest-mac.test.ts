@@ -297,3 +297,20 @@ test("Codex #423 final: a guard drops the Mac sentence (camera off, 'you look gr
   assert.match(reply.text, /\bMac\b/);
   s.close();
 });
+
+test("demo S4 rehearsal leak (1/6): after the move-to-Mac sentence, an outfit pick from memory is dropped; the 'I want to see it' line stays", async () => {
+  const { deps, sink, events } = setup(() => true);
+  deps.spark = async function* () {
+    yield { type: "text", delta: "Jin here, just move this call to your Mac so I can see the full outfit. I want to see it all. Pretty sure that black top plus the dark brown shoes is still the move for tonight." };
+    yield { type: "done", responseId: "r", text: "", status: "completed" };
+  };
+  const s = new Session("p9", sink, deps);
+  await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  await s.onClientText(JSON.stringify({ type: "text", text: ASK }));
+  await waitFor(() => events.some((e) => e.type === "reply" && (e as { final?: boolean }).final === true));
+  const text = (events.filter((e) => e.type === "reply").at(-1) as { text: string }).text;
+  assert.match(text, /move this call to your Mac/);
+  assert.match(text, /I want to see it all/);
+  assert.doesNotMatch(text, /black top|still the move/);
+  s.close();
+});

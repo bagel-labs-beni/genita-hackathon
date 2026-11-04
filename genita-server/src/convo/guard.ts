@@ -311,6 +311,14 @@ const USER_ON_CLOTHES = /\b(?:wear\w*|outfit|fit|dress|shirt|top|jacket|hoodie|s
 const NUM_WORD = "(?:\\d[\\d,.]*|one|two|three|four|five|six|seven|eight|nine|ten|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred)";
 const INCOME = new RegExp(String.raw`\b${NUM_WORD}(?:[\s-]+${NUM_WORD})*\s?(?:k|grand)\b[^.!?]{0,25}\byou(?:'re| are) (?:doing|making|earning|set|good|solid|comfortable|killing|crushing|living)\b|\byou(?:'re| are)? (?:making|earning|pulling in|bringing in|on)\s+(?:like\s+)?\$?${NUM_WORD}(?:[\s-]+${NUM_WORD})*\s?(?:k|grand|a year)\b|\byour (?:salary|income|paycheck|raise)\b`, "i");
 const APPEARANCE_WORDS = /\b(?:smile|face|skin|hair|eyes|lips|body|figure|glow\w*|complexion|cheeks|jawline|curves|cute|hot|pretty|gorgeous|beautiful|handsome|sexy|stunning|adorable|radiant)\b/i;
+// demo S4 (0/6 "warm undertones"): asked what to wear / which color, neutral color-season styling is advice, not a
+// judgment of their looks — never with a rating word
+const STYLE_ASK = /\b(?:what (?:should i|to|do i) wear|which (?:one|color|colou?r|top|dress|shirt|coat|jacket|outfit)\b[^.!?]{0,40}\b(?:better|best|suit|go|wear)|looks? (?:better|best|good) on me|suits? me|colou?rs? (?:look good|suit|work) on me|colou?r (?:advice|season)|outfit|what goes with)\b/i;
+const STYLE_COLOR = /\b(?:undertones?|skin ?tone|colou?r season|(?:warm|cool|neutral|olive) (?:tones?|undertones?|coloring|colouring)|(?:true |soft |deep )?(?:autumn|spring|summer|winter) palette)\b/i;
+const LOOKS_RATING = /\b(?:cute|hot|pretty|gorgeous|beautiful|handsome|sexy|stunning|adorable|radiant|glow\w*|flawless|perfect skin|clear skin|attractive|ugly|pale|tan(?:ned)?|dark-skinned|light-skinned)\b/i;
+export function colorStyling(sentence: string, userText: string): boolean {
+  return STYLE_ASK.test(userText) && STYLE_COLOR.test(sentence) && !LOOKS_RATING.test(sentence);
+}
 /** they asked about it themselves ("should I dye my hair?"): talking about it is fine */
 const APPEARANCE_WORDS_USER = /\bmy (?:smile|face|skin|hair|eyes|lips|makeup)\b/i;
 const HEALTH = /\b(?:diagnos\w*|medication|meds|therapy|depress\w*|anxiety|adhd|diabet\w*|pregnan\w*|surgery|chemo|cancer|blood pressure|insulin)\b/i;
@@ -357,7 +365,7 @@ export function guardSentence(sentence: string, ctx: GuardContext): GuardClass |
   // a greeting / initiative turn (nothing said yet this turn): never claim to hear them ("your voice sounds super alive")
   if (!ctx.userText.trim() && (UNHEARD.test(sentence) || heardBeforeSpeech(sentence.replace(/’/g, "'")))) return "unseen";
   if (INCOME.test(sentence) || (HEALTH.test(sentence) && !HEALTH.test(ctx.userText)) || echoesSensitiveNumber(sentence, ctx.userText)) return "sensitive";
-  if (APPEARANCE_WORDS.test(sentence) && !APPEARANCE_WORDS_USER.test(ctx.userText) && CLASSES.find(([c]) => c === "appearance")![1].test(sentence)) return "appearance";
+  if (APPEARANCE_WORDS.test(sentence) && !APPEARANCE_WORDS_USER.test(ctx.userText) && !colorStyling(sentence, ctx.userText) && CLASSES.find(([c]) => c === "appearance")![1].test(sentence)) return "appearance";
   if (energyLabel(sentence)) return "label";
   for (const [cls, re] of CLASSES) {
     if (!re.test(sentence)) continue;
