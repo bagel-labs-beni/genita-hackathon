@@ -189,16 +189,16 @@ struct ConversationView: View {
                         if CallHUDGrid.showsFlip(cameraOn: call.cameraOn, canFlip: call.canFlipCamera, sheet: sheet) {
                             // build 10 (Chelsea mock DHhhUPYs): flip camera one step above the camera button while the camera is on — white like camera / mic on
                             Button { call.flipCamera() } label: { CallRailWhiteSymbol(symbol: "arrow.triangle.2.circlepath.camera") }
-                                .buttonStyle(PreviewControlStyle()).disabled(connecting).modifier(CallControlEntrance(shown: !connecting, index: 1))
+                                .buttonStyle(MotionPressStyle()).disabled(connecting).modifier(CallControlEntrance(shown: !connecting, index: 1))
                                 .accessibilityLabel("Flip camera").accessibilityIdentifier("railFlipCamera")
                                 .position(x: grid.railX, y: grid.railY(.flip, sheetUp: CallHUDGrid.sheetUp(sheet)) + railShift(sheet))
                                 .animation(.drawer, value: sheet)
                                 .transition(reduceMotion ? .opacity : .scale(scale: 0.6).combined(with: .opacity))
                         }
                         Button { cameraTapped() } label: { CallToggleGlass(icon: "glass-camera-icon", on: call.cameraOn) }
-                            .buttonStyle(PreviewControlStyle()).disabled(connecting).modifier(CallControlEntrance(shown: !connecting, index: 1)).accessibilityLabel(call.cameraOn ? "Turn camera off" : "Turn camera on").accessibilityIdentifier("cameraToggle").position(x: grid.railX, y: grid.railY(.camera, sheetUp: CallHUDGrid.sheetUp(sheet)) + railShift(sheet))
+                            .buttonStyle(MotionPressStyle()).disabled(connecting).modifier(CallControlEntrance(shown: !connecting, index: 1)).accessibilityLabel(call.cameraOn ? "Turn camera off" : "Turn camera on").accessibilityIdentifier("cameraToggle").position(x: grid.railX, y: grid.railY(.camera, sheetUp: CallHUDGrid.sheetUp(sheet)) + railShift(sheet))
                             .opacity(sheet == .full ? 0 : 1).accessibilityHidden(sheet == .full).animation(.drawer, value: sheet)
-                        // motion details card 2: pressed to 0.92, a light tap on toggle, a blue ring that follows the user's voice
+                        // motion details card 2: pressed to 0.94 (build 11), a light tap on toggle, a blue ring that follows the user's voice
                         Button { call.toggleMic() } label: {
                             CallToggleGlass(icon: "glass-mic-icon", on: call.micOn)
                                 .background { MotionVoiceRing(active: call.micOn && !connecting, diameter: CallHUDGrid.button, color: CallInk.blueOnInk, level: { call.inputLevel }) }
@@ -232,7 +232,10 @@ struct ConversationView: View {
                                 .accessibilityLabel("Back to half height").accessibilityIdentifier("findsPip").transition(.opacity)
                         }
                         if sheet == .dismissed {
-                            FindsToast(finds: call.finds).position(x: full.size.width / 2, y: 210 + top).genitaToastTransition()
+                            // CW-01 (build 11): with the camera on, under the companion window and the FT-NOSEE card, never on them
+                            FindsToast(finds: call.finds).position(x: full.size.width / 2, y: CallHUDGrid.toastCenterY(top: top, cameraOn: call.cameraOn,
+                                                                                                                       noSeeHeight: call.cameraOn && !connecting ? call.finds.noSee?.cardHeight : nil))
+                                .genitaToastTransition()
                         }
                         // The call cue belongs to S09. Keep it below the Finds tab so it cannot cover that
                         // screen's title or subtitle; closing Finds immediately resumes the current call cue.
@@ -617,31 +620,21 @@ struct ConversationView: View {
             }.frame(width: width - 48, height: 44).contentShape(Self.menuRowHitShape)
         }.buttonStyle(.plain).position(x: width / 2, y: y + 22 + top).accessibilityLabel("Move to Mac")
     }
-    /// Self view: the call's front camera when on (one owner: CallController), Dyno's flip button, the placeholder when off.
+    /// Self view, camera off: the glass tile. With the camera on the camera is the stage (CameraStage) and this tile is not
+    /// drawn, so its flip button never showed (build 11 cleanup); the rail's flip button (#717) and double-tap flip instead.
     @ViewBuilder var selfView: some View {
-        if call.cameraOn {
-            ZStack(alignment: .bottomLeading) {
-                SelfCameraView(session: call.cameraSession).frame(width: 113, height: 211).background(CallInk.ink)
-                if call.canFlipCamera {
-                    Button { call.flipCamera() } label: {
-                        Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 15)).foregroundStyle(.white).frame(width: 44, height: 44).contentShape(Rectangle())
-                    }.buttonStyle(.plain).accessibilityLabel("Flip camera").accessibilityIdentifier("flipCamera")
-                }
-            }.frame(width: 113, height: 211).clipShape(RoundedRectangle(cornerRadius: 16)).accessibilityElement(children: .contain).accessibilityLabel("Your camera")
-        } else {
-            // HUD r01 A: camera off = a small glass tile (72 × 96), not the old 113 × 211 dark box
-            let shape = RoundedRectangle(cornerRadius: 16)
-            ZStack {
-                shape.fill(.ultraThinMaterial).environment(\.colorScheme, .dark)
-                shape.fill(Color.black.opacity(0.28))
-                Image(systemName: "video.slash").font(.system(size: 18, weight: .regular)).foregroundStyle(Color.white.opacity(0.7))
-            }
-            .overlay(shape.strokeBorder(Color.white.opacity(0.35), lineWidth: 0.7))
-            .frame(width: CallHUDGrid.selfOff.width, height: CallHUDGrid.selfOff.height)
-            .accessibilityElement().accessibilityLabel("Your camera is off").accessibilityIdentifier("selfViewOff")
-            // D22: double-tap the self view → the camera on, facing back
-            .onTapGesture(count: 2) { call.useBackCamera() }.accessibilityAction(named: "Use back camera") { call.useBackCamera() }
+        // HUD r01 A: camera off = a small glass tile (72 × 96), not the old 113 × 211 dark box
+        let shape = RoundedRectangle(cornerRadius: 16)
+        ZStack {
+            shape.fill(.ultraThinMaterial).environment(\.colorScheme, .dark)
+            shape.fill(Color.black.opacity(0.28))
+            Image(systemName: "video.slash").font(.system(size: 18, weight: .regular)).foregroundStyle(Color.white.opacity(0.7))
         }
+        .overlay(shape.strokeBorder(Color.white.opacity(0.35), lineWidth: 0.7))
+        .frame(width: CallHUDGrid.selfOff.width, height: CallHUDGrid.selfOff.height)
+        .accessibilityElement().accessibilityLabel("Your camera is off").accessibilityIdentifier("selfViewOff")
+        // D22: double-tap the self view → the camera on, facing back
+        .onTapGesture(count: 2) { call.useBackCamera() }.accessibilityAction(named: "Use back camera") { call.useBackCamera() }
     }
     /// What the framed scene is drawn from: the scene bytes, the server's crop and the overscan (reduce motion).
     private var framedSceneID: String {

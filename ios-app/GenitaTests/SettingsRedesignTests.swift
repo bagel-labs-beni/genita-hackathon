@@ -29,4 +29,26 @@ final class SettingsRedesignTests: XCTestCase {
         let keys = SettingsShowsUpPage.keys(["tempo": "2", "help": "Think with me", "zzz": "x", "relationship": "Friend"])
         XCTAssertEqual(keys, ["help", "relationship", "tempo", "zzz"])
     }
+
+    /// UI QA b10 (CI `preview-10b-about-you` / `10c-shows-up`): a full Finds state left behind turned the app dark under the
+    /// settings sheet, so the sub-page titles were white on #F2F2F7. A full sheet darkens only when Settings isn't up.
+    func testAFullFindsSheetNeverDarkensSettings() {
+        XCTAssertTrue(GenitaApp.findsFullDark(.full, settingsUp: false), "PF-1b: the dark band over a full sheet")
+        XCTAssertFalse(GenitaApp.findsFullDark(.full, settingsUp: true), "red on b10: Settings over a leftover full state went dark")
+        for state in SheetState.allCases where state != .full {
+            XCTAssertFalse(GenitaApp.findsFullDark(state, settingsUp: false), state.rawValue)
+        }
+    }
+
+    /// UI QA b10 (R1-avatar-zoom): #630's back arrow (44 pt touch at safe top + 10, x 6) sat on #669's 44 pt avatar
+    /// (safe top + 16, x 24). On R1 the header now starts 8 pt under the arrow's row; Settings' About you (no arrow) keeps 16.
+    func testR1BackArrowClearsTheHeaderAvatar() {
+        let arrow = CGRect(x: 6, y: InsightReportView.backTop, width: 44, height: 44)
+        func avatar(_ top: CGFloat) -> CGRect { CGRect(x: 24, y: top, width: 44, height: 44) }
+        XCTAssertTrue(arrow.intersects(avatar(16)), "red: build 10's avatar at safe top + 16 sat under the arrow")
+        let top = InsightReportView.headerTop(showsBack: true)
+        XCTAssertFalse(arrow.intersects(avatar(top)))
+        XCTAssertGreaterThanOrEqual(avatar(top).minY - arrow.maxY, 8, "at least 8 pt clear of the arrow's touch row")
+        XCTAssertEqual(InsightReportView.headerTop(showsBack: false), 16, "About you in Settings: no arrow, the header where it was")
+    }
 }

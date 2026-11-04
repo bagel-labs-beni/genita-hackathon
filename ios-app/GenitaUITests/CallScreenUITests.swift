@@ -133,8 +133,11 @@ final class CallScreenUITests: XCTestCase {
         XCTAssertEqual(cue.label, "Getting Jin ready")
         capture("S09-wait-stage")
         // arrival: the orb steps back (300 ms) and the face clears (520 ms)
+        // never read `stage.value` here: the orb can be gone between `exists` and `value`, and reading a vanished element
+        // fails the test (CI flake). A query for the leaving orb only answers exists / doesn't.
+        let leaving = app.descendants(matching: .any).matching(NSPredicate(format: "identifier == 'callWaitStage' AND value == 'leaving'")).firstMatch
         let end = Date().addingTimeInterval(20)
-        while Date() < end, stage.exists, (stage.value as? String) != "leaving" { Thread.sleep(forTimeInterval: 0.02) }
+        while Date() < end, stage.exists, !leaving.exists { Thread.sleep(forTimeInterval: 0.02) }
         // (the "arriving" frame is testWaitStageArrivingFrame: a capture here waits for the step back to settle)
         XCTAssertTrue(stage.waitForNonExistence(timeout: 3), "the orb is gone after its step back")
         Thread.sleep(forTimeInterval: 0.5)

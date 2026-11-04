@@ -426,20 +426,25 @@ private struct CueWave: View {
 // MARK: - Rail toggle
 
 /// Camera and mic buttons: glass when off, white with a dark icon when on (board `.glass[aria-pressed=true]`).
+/// Build 11 (Chelsea, TF 341): the change is a clean swap, one glyph at a time. The white face stays in the tree and only
+/// its opacity flips, and nothing here animates on `on`: the glass's glass effect faded at partial opacity reads as a
+/// grey blurred disc, and a crossfade showed the slashed and the plain glyph on top of each other. The press scale
+/// (MotionPressStyle, 0.94) is the feedback.
 struct CallToggleGlass: View {
     let icon: String
     let on: Bool
     var body: some View {
         ZStack {
             CallGlassControl(icon: icon, size: CallHUDGrid.button, off: !on)
-            if on {
+            ZStack {
                 Circle().fill(CallInk.onInk)
                 if let url = Bundle.main.url(forResource: icon, withExtension: "png"), let image = UIImage(contentsOfFile: url.path) {
                     let g = GlassGlyph.size(pixels: CGSize(width: image.size.width * image.scale, height: image.size.height * image.scale), diameter: CallHUDGrid.button)
                     Image(uiImage: image).resizable().colorInvert().frame(width: g.width, height: g.height)
                 }
-            }
+            }.opacity(on ? 1 : 0)
         }.frame(width: CallHUDGrid.button, height: CallHUDGrid.button).contentShape(Circle())
+            .animation(nil, value: on)
     }
 }
 
