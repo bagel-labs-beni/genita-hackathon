@@ -389,10 +389,10 @@ test("server (Codex 11/3): a Mac → iPhone move that ends the Mac call with sto
 });
 
 /** WT-06 follow-up (11/4): a dropped call that comes back is met with one short line, not silence */
-async function dropAndReturn(t: import("node:test").TestContext, o: { from: string; to: string; hangUp?: boolean; gapMs?: number }) {
+async function dropAndReturn(t: import("node:test").TestContext, o: { from: string; to: string; hangUp?: boolean; gapMs?: number; personalize?: unknown }) {
   const { memory, deps } = setup(fakeSummarizer().fn);
   const logs: string[] = [];
-  const server = await startServer({ ...config, sessionToken: "test-token" }, (e) => { logs.push(e); }, { ...deps, log: (e) => { logs.push(e); } }, {}, null);
+  const server = await startServer({ ...config, sessionToken: "test-token" }, (e) => { logs.push(e); }, { ...deps, ...(o.personalize ? { personalize: o.personalize } : {}), log: (e) => { logs.push(e); } } as typeof deps, {}, null);
   t.after(() => new Promise<void>((r) => server.close(() => r())));
   const addr = server.address(); assert.ok(addr && typeof addr === "object");
   const headers = { authorization: "Bearer test-token", "x-genita-user": "acct-a" };
@@ -459,6 +459,19 @@ test("demo P0 (S1): a call on the other device more than 10 s after hanging up t
   assert.ok(!later.logs.includes("call.reconnect_line"));
   assert.ok(later.lines.length >= 1, "the greeting arrives");
   assert.notEqual(later.lines[0], RECONNECT_LINE);
+});
+
+test("demo P0 (S1, Codex #694 P2): that new call is also planned and counted as a call; a move right after hanging up is not", { timeout: 30_000 }, async (t) => {
+  const spy = () => {
+    const plans: boolean[] = [];
+    return { plans, personalize: { async startCall(_u: string, o: { plan: boolean }) { plans.push(o.plan); return null; }, async endCall() {} } };
+  };
+  const later = spy();
+  await dropAndReturn(t, { from: "mac", to: "iphone", hangUp: true, gapMs: 11_000, personalize: later.personalize });
+  assert.equal(later.plans.at(-1), true, `the iPhone call is planned like a new call (plans: ${JSON.stringify(later.plans)})`);
+  const moved = spy();
+  await dropAndReturn(t, { from: "mac", to: "iphone", hangUp: true, personalize: moved.personalize });
+  assert.equal(moved.plans.at(-1), false, `a move is the same call (plans: ${JSON.stringify(moved.plans)})`);
 });
 
 test("server (Codex 11/3): the Mac's stop arriving BEFORE the iPhone's claim still hands over; a stale iPhone copy never replaces the Mac's fuller one", { timeout: 20_000 }, async (t) => {
