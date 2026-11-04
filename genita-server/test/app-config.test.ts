@@ -32,6 +32,7 @@ test("app-config: public GET (no token) returns the defaults with an ETag and a 
   assert.equal(body.updates.ios.url, "https://testflight.apple.com/join/Ybqh482p");
   assert.equal(body.flags.textChat, false);
   assert.equal(body.flags.watchReactions, true);
+  assert.equal(body.flags.proximityHandoff, true, "proximity handoff is on by default (demo kick)");
   assert.equal(body.tuning.bargeInMs, 400);
   assert.equal(body.copy["prep.title"], "Bringing {name} to life");
   assert.equal(body.copy["prep.stage.mouth"], "Mouth");

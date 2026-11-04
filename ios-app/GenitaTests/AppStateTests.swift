@@ -5,6 +5,30 @@ import UIKit
 @MainActor final class AppStateTests: XCTestCase {
     var store: UserDefaults!
     override func setUp() { super.setUp(); store = UserDefaults(suiteName: UUID().uuidString)! }
+    /// AU-92 "Forget all of this": once the server forgot, the phone drops its copy of what Genita knows; the
+    /// companion and the account stay.
+    func testProfileForgottenDropsWhatGenitaKnowsButKeepsTheCompanion() {
+        let url = URL.temporaryDirectory.appending(path: UUID().uuidString + ".jpg")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let model = AppState(storage: store, imageURL: url)
+        model.setup.name = "Chelsea"; model.setup.accountId = "u1"
+        model.setup.styleProfile = "How the user wants to be treated"; model.setup.styleRows = []; model.setup.stylePartial = true
+        model.setup.response = "1. Thinking style - compares options"
+        model.setup.skipInterests = ["Design"]; model.setup.skipLikes = ["Minimal"]
+        model.setup.companionName = "Jin"; model.setup.companionCreated = true
+        model.story = []; model.storySource = "skip"; model.hisyPage = 2
+        model.profileForgotten()
+        XCTAssertNil(model.setup.styleProfile); XCTAssertNil(model.setup.styleRows); XCTAssertNil(model.setup.stylePartial)
+        XCTAssertEqual(model.setup.response, "", "the pasted reply goes too: the call never falls back to it")
+        XCTAssertEqual(model.profileForgets, 1)
+        XCTAssertNil(model.setup.forgetPending, "profileForgotten alone doesn't queue a retry (forgetProfile() does)")
+        XCTAssertNil(model.setup.skipInterests); XCTAssertNil(model.setup.skipLikes)
+        XCTAssertNil(model.story); XCTAssertNil(model.storySource); XCTAssertEqual(model.hisyPage, 0)
+        XCTAssertEqual(model.setup.companionName, "Jin", "the companion stays")
+        XCTAssertEqual(model.setup.companionCreated, true)
+        XCTAssertEqual(model.setup.name, "Chelsea", "their name stays")
+    }
+
     func testBundledDesignTokensAndFontsAreVisible() {
         var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
         XCTAssertTrue(UIColor(named: "Ink")!.getRed(&red, green: &green, blue: &blue, alpha: &alpha))
@@ -513,7 +537,7 @@ import UIKit
         model.sceneImage = ("a|https://x/scene.jpg", Data([1, 2, 3]))
         let relaunched = AppState(storage: store, imageURL: photo)
         relaunched.setup.accountId = "a"; relaunched.setup.imageId = "c1"
-        XCTAssertNil(relaunched.sceneImageData, "not before the server confirmed the companion")
+        XCTAssertEqual(relaunched.sceneImageData, Data([1, 2, 3]), "face plan item 2: the same account's scene shows before the server answers")
         relaunched.adoptServerCompanion(imageId: "c1")
         XCTAssertEqual(relaunched.sceneImageData, Data([1, 2, 3]), "before /prep answers: the saved scene")
         relaunched.setup.accountId = "b"
@@ -546,7 +570,7 @@ import UIKit
         model.setup.accountId = "a"; model.setup.imageId = "old"
         model.setup.imageData = Data([9])
         model.sceneImage = ("a|https://x/scene.jpg", Data([1, 2, 3]))
-        XCTAssertNil(model.sceneImageData, "unconfirmed at launch: not shown")
+        XCTAssertEqual(model.sceneImageData, Data([1, 2, 3]), "unconfirmed at launch: the same account's generated scene shows (face plan item 2)")
         model.adoptServerCompanion(imageId: "new")   // the server has another companion now
         XCTAssertNil(model.sceneImage, "the old companion's scene is dropped (memory and disk)")
         XCTAssertNil(model.setup.imageData, "and its picture")
@@ -558,7 +582,10 @@ import UIKit
         other.sceneImage = ("a|https://x/scene.jpg", Data([7]))      // cached by whichever companion, same URL
         let next = AppState(storage: store, imageURL: photo)
         next.setup.accountId = "a"; next.setup.imageId = "new"
-        XCTAssertNil(next.sceneImageData, "a cached scene waits for the server's word, even with the same key")
+        XCTAssertEqual(next.sceneImageData, Data([7]), "a cached scene shows at once for the same account")
+        next.setup.accountId = nil
+        XCTAssertNil(next.sceneImageData, "no known account: it waits for the server's word")
+        next.setup.accountId = "a"
         next.adoptServerCompanion(imageId: "new")
         XCTAssertEqual(next.sceneImageData, Data([7]), "same companion confirmed: the cache counts")
     }

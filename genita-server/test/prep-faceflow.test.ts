@@ -169,6 +169,27 @@ test("faceflow.py silhouette (11/4): the blend never leaves the subject's face o
   assert.deepEqual(missing!.roi, plain!.roi, "a silhouette without the mouth keeps the old mask");
 });
 
+test("faceflow.py animal chin (11/4 CA-06 dog): the silhouette clip keeps ≥ 2.5 mouth heights under the mouth for animals (the chin fur can move), people still end at the outline", { skip: pythonWithCv2() ? false : "no python with OpenCV here" }, async () => {
+  const W = 256, H = 456;
+  const tex = (x: number, y: number): [number, number, number] => [150 + ((x * 7 + y * 3) % 40), 120 + ((x * 3 + y * 5) % 30), 110 + ((x + y) % 25)];
+  const mouthY = 0.515 * H, mouthX = W / 2;
+  const neutral = pngOf(W, H, (x, y) => (Math.abs(y - mouthY) < 1.5 && Math.abs(x - mouthX) < 18 ? [90, 40, 40] : tex(x, y)));
+  const ah = pngOf(W, H, (x, y) => (((x - mouthX) / 18) ** 2 + ((y - mouthY) / 7) ** 2 < 1 ? [40, 15, 15] : tex(x, y)));
+  const chin = Math.round(mouthY + 0.05 * H);   // an animal's SAM face outline that stops just under the mouth
+  const sil = pngOf(W, H, (x, y) => (y < chin && Math.abs(x - mouthX) < 70 ? [255, 255, 255] : [0, 0, 0]));
+  const run = (kind: "animal" | "human") => makeFaceFlow({
+    python: pythonWithCv2()!, scene: neutral, state: state(), kind,
+    image: async (k) => ({ MID: neutral, AH: ah } as Record<string, Buffer>)[k] ?? null, put: async () => {}, silhouette: async () => sil,
+  });
+  const dog = await run("animal"), person = await run("human");
+  assert.ok(dog && person);
+  const mouthBottom = box.mouth[3] * H, mouthH = (box.mouth[3] - box.mouth[1]) * H;
+  assert.ok(dog!.roi[3] * H >= mouthBottom + 2.5 * mouthH - 2, `animal ROI bottom ${dog!.roi[3] * H} reaches ${mouthBottom + 2.5 * mouthH}`);
+  assert.ok(person!.roi[3] * H <= chin + (3 * W) / 540 + 10, "people still stop at the outline");
+  assert.equal(dog!.maskVersion, 3, "animals with the chin band are mask version 3");
+  assert.equal(person!.maskVersion, 2);
+});
+
 function f16(h: number): number {
   const s = h & 0x8000 ? -1 : 1, e = (h >> 10) & 0x1f, m = h & 0x3ff;
   if (e === 0) return s * m * 2 ** -24;

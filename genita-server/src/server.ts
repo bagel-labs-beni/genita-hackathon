@@ -59,7 +59,7 @@ import { HandoffHub } from "./handoff/hub.ts";
 import { MemoryOwnershipStore, PgOwnershipStore } from "./handoff/store.ts";
 import { forgetOpenerTopics } from "./convo/openerTopics.ts";
 import { safetyTurn } from "./convo/forgetInCall.ts";
-import { attachPresence, deviceFor, gatedCallDevice, gateCall, handleHandoffHttp, handoffHttpPaths } from "./handoff/routes.ts";
+import { attachPresence, callClaim, deviceFor, gatedCallDevice, gateCall, handleHandoffHttp, handoffHttpPaths } from "./handoff/routes.ts";
 import { createAppConfigSource, handleAppConfig, isAppConfigRoute } from "./appconfig/appConfig.ts";
 
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
@@ -137,6 +137,16 @@ export async function startServer(
   const touches = new Map<string, () => void>();
   const sessionUsers = new Map<string, string>(); // ws session id → users.id
   const prep = createPrep(config, log, env, accounts?.prepStore); // onboarding prep routes (src/prep/routes.ts)
+  // About you → "Forget all of this" (AU-92): after the profile row, call memory and summaries, the handed-off turns,
+  // opener topics and the product cards made from the old taste go too; the companion stays
+  prep.deps.onProfileForgotten = async (userId) => {
+    // live calls stop using it at once (their next reply and search), not at the next call (Codex #583 P1)
+    for (const [id, u] of sessionUsers) if (u === userId) sessions.get(id)?.profileForgotten();
+    dropLastTurns(userId);
+    forgetOpenerTopics(userId);
+    forgetProductCache(ownerKey(userId), { block: false });
+    await deps.memory?.forget(userId);
+  };
   // the judge demo copy at sign-in is a companion create: it takes the same lock as POST /v1/companion (Codex #514 P2)
   if (accounts?.seedDemo) accounts.seedDemo = guardDemoSeed(accounts.seedDemo, prep.runner, log);
   // D41: the judge demo template ("Jin") is built by the server itself, in the background after the accounts
@@ -357,7 +367,7 @@ export async function startServer(
             return;
           }
           if (!who.consented) return ws.close(4403, "consent_required");
-          attach(ws, who, gatedCallDevice(who.device, url), who.kind === "dev" && !accounts && !req.headers["x-genita-user"] ? null : who.userId, deviceFor(who.device, url));
+          attach(ws, who, gatedCallDevice(who.device, url), who.kind === "dev" && !accounts && !req.headers["x-genita-user"] ? null : who.userId, deviceFor(who.device, url), callClaim(url));
         });
       },
       () => reject(500, "Internal Server Error"),
@@ -444,10 +454,14 @@ export async function startServer(
     if ((best && crisisInCall) || crisisAny) { const me = sessions.get(self); if (me) me.crisisInCall = true; }
     // the three age flags as they were (Codex #640 r3: a teen phrase stays a teen phrase, an adult age can still win)
     if (best && (ageSaid.minor || ageSaid.adult || ageSaid.teen)) { const me = sessions.get(self); if (me) me.ageSaid = foldAge(me.ageSaid, ageSaid); }
+    // Demo P0 (S1, 11/4): the user hung up on the OTHER device more than RECONNECT_GAP_MS ago (a Mac rehearsal, then the
+    // iPhone a minute later). That is a new call, not a move: seeded as a silent continuation it got no greeting and no
+    // line at all. A move hangs the old device up and the new one starts within seconds, so it still continues.
+    const hungUpThere = !!best && hungUp && fromDevice !== null && fromDevice !== device && gapMs > RECONNECT_GAP_MS;
     // Hung up on this same device and called again: a return visit (greeting + the last call's notes). A call
     // on the OTHER device still continues it, whatever order its stop and the claim arrived in (Codex 11/3).
-    if (best && hungUpHere) {
-      log("history.not_seeded", { session: self, by: "hang_up" });
+    if (best && (hungUpHere || hungUpThere)) {
+      log("history.not_seeded", { session: self, by: hungUpHere ? "hang_up" : "hang_up_other_device", gapMs: Math.round(gapMs) });
       // ...but its last lines go along right away as "the call that just ended" (P1 FILM 11/3): the summary and
       // memories of that call are written in the background and can take longer than a quick call-back
       // a call with a forget request anywhere in it (even before the kept lines) hands over nothing raw (Codex 11/3)
@@ -459,8 +473,8 @@ export async function startServer(
       // the conversation carries its forget request with it to the next device (Codex 11/3 #447 r3)
       if (forgetAsked) { const me = sessions.get(self); if (me) me.forgetAsked = true; }
       // same device (a dropped call: a hang-up there never seeds) or a drop on the other device longer than
-      // RECONNECT_GAP_MS ago: "Sorry, we got cut off — where were we?". A move to the other device (live, within the
-      // gap, or after hanging up there) goes on silently: that's the handoff.
+      // RECONNECT_GAP_MS ago: "Sorry, we got cut off — where were we?". A move to the other device (live, or within
+      // the gap — a hang-up there longer ago is a return visit above) goes on silently: that's the handoff.
       if (fromDevice === device || (!hungUp && gapMs > RECONNECT_GAP_MS)) {
         const me = sessions.get(self);
         if (me) me.reconnected = true;
@@ -492,6 +506,9 @@ export async function startServer(
       if (u === userId && sid !== self && sessionDevices.get(sid) !== device) return true;
     }
     const cached = lastTurns.get(userId);
+    // Codex #694 P2: a hang-up on the other device longer than RECONNECT_GAP_MS ago is a new call (it greets), so it is
+    // planned and counted like one too — the same rule as the greeting in priorTurns
+    if (cached?.hungUp && Date.now() - cached.at > RECONNECT_GAP_MS) return false;
     return !!cached && cached.turns.length > 0 && cached.device !== device && Date.now() - cached.at < 10 * 60_000;
   }
   function priorThread(self: string): ThreadState | null {
@@ -536,7 +553,7 @@ export async function startServer(
     });
   }
 
-  function attach(ws: WebSocket, who: Principal, device: ReturnType<typeof gatedCallDevice>, turnUserId: string | null, here: ReturnType<typeof deviceFor>) {
+  function attach(ws: WebSocket, who: Principal, device: ReturnType<typeof gatedCallDevice>, turnUserId: string | null, here: ReturnType<typeof deviceFor>, known: ReturnType<typeof callClaim> = null) {
     const id = randomUUID();
     // the device this call is on (a gated call names it; else the principal's)
     const callDevice = device ?? who.device;
@@ -548,7 +565,7 @@ export async function startServer(
     // F6-L7: a call that names its device plays only while that device owns the conversation.
     // Calls without a device (older builds, smoke) are not gated.
     const ref: { session?: Session } = {};
-    const gated = device ? gateCall(handoff, who.userId, device, raw, () => ref.session?.stopForHandoff()) : null;
+    const gated = device ? gateCall(handoff, who.userId, device, raw, () => ref.session?.stopForHandoff(), known) : null;
     const sink = gated?.sink ?? raw;
     // F2-L26: a rename said in the call is saved to this user's own companion (no-op without one)
     const rename = deps.renameCompanion ?? ((userId: string, name: string) => renameCompanion(prep.deps.store, userId, name));
@@ -558,12 +575,15 @@ export async function startServer(
     const storedCompanion = () => (companion ??= prep.deps.store.getCompanion(who.userId));
     const companionVoiceId = () => storedCompanion().then((c) => c?.voiceId ?? null);
     const companionName = () => storedCompanion().then((c) => c?.name ?? null);
+    // D42: the account's own name for a start without one. Placeholder names of dev/judge rows ("Judge", "Demo
+    // template", dev user names) are never used as the user's name.
+    const accountName = accounts ? () => accounts.accounts.getUser(who.userId).then((u) => (u && u.provider !== "dev" ? u.displayName : null)) : undefined;
     // Demo S4: an iPhone call may suggest moving to this account's open Mac app
     const macNearby = here === "iphone" ? () => handoff.isPresent(who.userId, "mac") : undefined;
     // lane 개인화: the stored profile, first-call asks, voice corrections and post-call growth for this account
     // D41: judge demo accounts get a per-code daily turn cap (auth/judge.ts), on top of the D46 ops caps
     const turnGate = who.judge && accounts ? accounts.judgeTurns.gate(who.judge) : undefined;
-    const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, turnGate, renameCompanion: rename, companionVoiceId, companionName,
+    const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, turnGate, renameCompanion: rename, companionVoiceId, companionName, accountName,
       priorTurns: (revision) => priorTurns(who.userId, id, revision, callDevice), priorThread: () => priorThread(id), lastCall: () => lastCall(id),
       personalize: deps.personalize ?? prep.deps.personalize, macNearby,
       continuesCall: () => continuesOtherDevice(who.userId, id, callDevice),

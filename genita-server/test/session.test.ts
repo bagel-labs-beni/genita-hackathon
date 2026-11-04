@@ -7,6 +7,8 @@ import { checkServerEvent } from "../src/protocol.ts";
 import type { AsrEvent } from "../src/meta/transcribe.ts";
 import type { SparkRequest, SparkStreamEvent } from "../src/meta/spark.ts";
 import type { TtsChunk } from "../src/tts/types.ts";
+// hold cap B (11/4) made the 1.4 s beat land inside these timing tests (they pin exact say/narration lines): off here
+process.env.GENITA_HOLD_CAP_MS = "0";
 
 // these tests cover server TTS mode (Meta voice service); device mode: session-device.test.ts
 const config: Config = {
@@ -1114,5 +1116,34 @@ test("AU-70 (Codex r6): an Ask chip still loading its card never runs after a ne
   const said = client.json.slice(n).filter((m) => m.type === "transcript").map((m) => m.text);
   assert.deepEqual(said, ["What time is it?"]);
   assert.ok(sparkCalls.length > 0);
+  s2.close();
+});
+
+test("D59 · CW-01 DARK: frames the app judged too dark/blurry → the IC-4 line at once, no 'let me see' it takes back", async () => {
+  const { client, session, sparkCalls } = setup();
+  const { MemoryFindsStore } = await import("../src/finds/store.ts");
+  let looked = 0;
+  const vendors = {
+    async spark() { looked++; return { text: "", output: [] }; },
+    async *sparkStream() { looked++; yield { type: "done" as const, responseId: null, text: "", status: "completed" }; },
+    async sam() { looked++; return []; },
+    async image() { return null; },
+  };
+  const s2 = new Session("d59", client, { ...(session as unknown as { deps: SessionDeps }).deps, finds: { vendors, store: new MemoryFindsStore(), images: false, imageBase: "/v1/finds" } as never, userId: "dev-1" });
+  session.close();
+  await s2.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  const before = sparkCalls.length;
+  await s2.onClientText(JSON.stringify({ type: "frames", images: ["AAAA", "BBBB"], unclear: true }));
+  await s2.onClientText(JSON.stringify({ type: "text", text: "What can I make with this?" }));
+  const reply = await client.waitFor((m) => m.type === "reply", 3000);
+  const { FRIDGE_UNCLEAR } = await import("../src/finds/pipeline.ts");
+  assert.equal(reply.text, FRIDGE_UNCLEAR, "the honest line is the answer");
+  assert.ok(!client.json.some((m) => m.type === "reply" && /let me see|nice haul/i.test(String(m.text))), "no seeing ack");
+  const failed = client.json.find((m) => m.type === "find.failed");
+  assert.equal(failed?.reason, "unclear", "the IC-4 card");
+  assert.equal(sparkCalls.length, before, "no full answer from the dark photo");
+  await sleep(20);
+  assert.equal(looked, 0, "nothing looked at or guessed");
+  assert.equal(client.json.filter((m) => m.type === "reply" && m.text === FRIDGE_UNCLEAR).length, 1, "said once");
   s2.close();
 });

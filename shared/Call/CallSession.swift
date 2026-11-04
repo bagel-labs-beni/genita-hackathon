@@ -1,4 +1,6 @@
 import AVFoundation
+import Combine
+import CoreImage
 import Foundation
 import Observation
 import os
@@ -12,13 +14,14 @@ enum CallCue: Equatable {
     case interrupted    // S09-X, held 1.2 s
     case reconnecting   // S09-R
     case answerFailed   // S09-F, with Try again
+    case micOff         // the user turned the mic off mid-call: "Stopped" (motion card 2), same slot as the listening pill
     case micBlocked     // E02 stand-in until the permission sheet lands
 
     enum Link: Equatable { case idle, connecting, live, reconnecting }
 
     /// One slot, highest priority first: failure and reconnect > interrupted > talking/listening.
     static func derive(link: Link, phase: Phase, playing: Bool, awaitingFirstAudio: Bool, micOn: Bool,
-                       interruptedHold: Bool, answerFailed: Bool, micDenied: Bool) -> CallCue {
+                       interruptedHold: Bool, answerFailed: Bool, micDenied: Bool, micStopped: Bool = false) -> CallCue {
         switch link {
         case .reconnecting: return .reconnecting
         case .idle, .connecting: return .none
@@ -32,7 +35,7 @@ enum CallCue: Equatable {
         case .thinking: return .thinking
         case .speaking: return awaitingFirstAudio ? .thinking : .speaking
         case .interrupted: return .interrupted
-        case .listening: return micOn ? .listening : .none
+        case .listening: return micOn ? .listening : micStopped ? .micOff : .none
         }
     }
 }
@@ -52,6 +55,16 @@ struct CallEndpoint {
 
     /// The deployed server (AWS CloudFront → EC2, deploy/aws). Local runs set GENITA_SERVER_URL.
     static let defaultURL = "wss://d72kt0jfmscyj.cloudfront.net/v1/session"
+
+    /// MV-01 GATE-A: `/v1/session?device=&owner=&epoch=` — the server plays audio (and hears the mic) only on the owner.
+    static func gated(_ url: URL, device: ConversationDevice, owner: ConversationDevice, epoch: Int) -> URL {
+        guard var c = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
+        var items = (c.queryItems ?? []).filter { !["device", "owner", "epoch"].contains($0.name) }
+        items += [URLQueryItem(name: "device", value: device.serverName), URLQueryItem(name: "owner", value: owner.serverName),
+                  URLQueryItem(name: "epoch", value: String(max(0, epoch)))]
+        c.queryItems = items
+        return c.url ?? url
+    }
 
     static func current(environment: [String: String] = ProcessInfo.processInfo.environment, defaults: UserDefaults = .standard) -> CallEndpoint {
         let raw = environment["GENITA_SERVER_URL"] ?? defaults.string(forKey: "genita.server.url") ?? defaultURL
@@ -91,6 +104,8 @@ enum CallStop: Equatable {
     private(set) var link: CallCue.Link = .idle
     private(set) var phase: Phase = .listening
     private(set) var micOn = false
+    /// The user switched the mic off during this call (not yet back on): the pill says "Stopped" instead of vanishing.
+    private(set) var micStopped = false
     private(set) var micDenied = false
     private(set) var cameraOn = false
     /// D22: the next camera start faces back (the self view was double-tapped while the camera was off)
@@ -99,7 +114,8 @@ enum CallStop: Equatable {
     private(set) var cameraFront = true
     private(set) var cameraDenied = false
     private(set) var mode: ConversationMode = .chat { didSet { finds.interpreting = mode == .interpret } }
-    private(set) var playing = false
+    /// demo S3: the camera masks wait for the companion's answer to finish playing (CameraBoxes.Hold)
+    private(set) var playing = false { didSet { if oldValue, !playing { finds.boxes.companionStopped(nil) } } }
     private(set) var awaitingFirstAudio = false
     private(set) var interruptedHold = false
     private(set) var answerFailed = false
@@ -135,19 +151,40 @@ enum CallStop: Equatable {
     @ObservationIgnored var onCompanionNamed: ((String) -> Void)?
     /// A recovered authenticated call is also an opportunity to retry missing handoff identity.
     @ObservationIgnored var onConnected: (() -> Void)?
+    /// GATE-A: the server's `ownership` on the call socket (a gated call hears every change of owner).
+    @ObservationIgnored var onServerOwnership: ((OwnershipClaim) -> Void)?
     @ObservationIgnored var routeInterpretAudio: ((Data, InterpretBoard.Route, Int) -> Void)?
     @ObservationIgnored var flushRoutedAudio: (() -> Void)?
     @ObservationIgnored private var routed: Set<Int> = []
 
     var cue: CallCue {
         CallCue.derive(link: link, phase: phase, playing: playing, awaitingFirstAudio: awaitingFirstAudio, micOn: micOn,
-                       interruptedHold: interruptedHold, answerFailed: answerFailed, micDenied: micDenied)
+                       interruptedHold: interruptedHold, answerFailed: answerFailed, micDenied: micDenied, micStopped: micStopped)
     }
     var canFlipCamera: Bool { cameraOn && camera.canFlip }
     var cameraSession: AVCaptureSession { camera.session }
 
     /// F10-U-SHEET: result cards of this call and the sheet's state.
     let finds = FindsModel()
+
+    /// Live captions r01: the user's words and the reply's, from server events; drawn by CallCaptionLayer every tick.
+    @ObservationIgnored private var captions = LiveCaptions()
+    nonisolated static func captionClock() -> Double { ProcessInfo.processInfo.systemUptime * 1000 }
+    /// One display tick of the captions: the local mic level (nil while the mic is off) and the reply's playhead.
+    func captionFrame(now: Double = CallController.captionClock()) -> LiveCaptions.Frame {
+        if tts == .device { captions.markDevice() }
+        var playhead: Double?
+        if let id = captions.reply?.utteranceId {
+            // stopped here first (face tap, local barge-in): freeze at the words already heard, never show the rest
+            if cancelled.contains(id) { captions.cut(utteranceId: id, now: now) }
+            else if !routed.contains(id) { playhead = audio.playbackPositionMs(utteranceId: id) }
+        }
+        return captions.frame(now: now, level: micOn ? inputLevel : nil, playheadMs: playhead)
+    }
+    #if DEBUG
+    /// Review renders only (Mac CI capture): a finished turn on screen.
+    func reviewCaptions(_ c: LiveCaptions) { captions = c }
+    #endif
 
     @ObservationIgnored let camera = CallCamera()
     /// PERC-2: face crops for the server's perception, only while `ready.perception` is true.
@@ -173,6 +210,7 @@ enum CallStop: Equatable {
     @ObservationIgnored private var speechEndAt: Date?
     @ObservationIgnored private var userAudioEndAt: Date?
     @ObservationIgnored private var firstFrame: String?
+    @ObservationIgnored private var firstFrameUnclear = false
     @ObservationIgnored private var reconnectSince: Date?
     @ObservationIgnored private var reconnectTask: Task<Void, Never>?
     @ObservationIgnored private var holdTask: Task<Void, Never>?
@@ -204,6 +242,8 @@ enum CallStop: Equatable {
     @ObservationIgnored private var faceLoad: Task<Void, Never>?
     /// a face set download is in flight (from prepareFace or showFace)
     @ObservationIgnored private var faceLoading = false
+    /// one face set request is on the wire now (not the pause between retries): S09's wait stage holds the orb for it
+    private(set) var faceFetching = false
     /// which load `faceLoading` belongs to (AU-25 × #524)
     @ObservationIgnored private var faceLoadGeneration = 0
     /// the account the load in flight is for
@@ -356,7 +396,11 @@ enum CallStop: Equatable {
         playing = false; awaitingFirstAudio = false; reconnectSince = nil
         phase = .listening
         connect()
-        if !micOn && (Self.micWasOn || mode == .interpret) { toggleMic() }
+        // on for interpretation only (not the user's own choice): not saved, off again when it ends (audit TR-01)
+        if !micOn && (Self.micWasOn || mode == .interpret) {
+            if !Self.micWasOn { micOnForInterpret = true }
+            toggleMic(forInterpret: !Self.micWasOn)
+        }
     }
 
     /// The turns of this call (last 20 go into every reconnect's `start`). The Mac keeps them across a move
@@ -366,7 +410,9 @@ enum CallStop: Equatable {
     func end() {
         capturePermissions.invalidate()
         userEnded = true
+        micOnForInterpret = false   // a new call starts from the user's own mic choice (Codex #596)
         graceTask?.cancel(); graceTask = nil; micBeforeBackground = false
+        micHeldForPreview = false
         reconnectTask?.cancel(); pingTask?.cancel(); holdTask?.cancel(); profileChipTask?.cancel(); profileChip = nil; askingChipTask?.cancel(); askingChip = nil
         socket?.close()
         socket = nil
@@ -374,7 +420,7 @@ enum CallStop: Equatable {
         audio.stop()
         camera.stop()
         perception.stop(); perceptionOn = false
-        micOn = false; cameraOn = false; playing = false; link = .idle
+        micOn = false; micStopped = false; cameraOn = false; playing = false; link = .idle
         reconnectSince = nil; cancelled = []; seqToUtterance = [:]; lookedUp = []; findsCount = 0
         routed = []; interpretBoard = InterpretBoard(companionName: companionName); uplink.callFraming = false
         restFace()
@@ -416,7 +462,7 @@ enum CallStop: Equatable {
         if activity == .active, let grace = graceTask {
             grace.cancel(); graceTask = nil
             // interpretation keeps its mic too (its screen has no mic button)
-            if !userEnded, micBeforeBackground, !micOn { toggleMic() }
+            if !userEnded, micBeforeBackground, !micOn { toggleMic(forInterpret: micOnForInterpret) }
             micBeforeBackground = false
         }
     }
@@ -427,6 +473,7 @@ enum CallStop: Equatable {
     var inBackgroundGrace: Bool { graceTask != nil }
 
     private func suspendCapture() {
+        micHeldForPreview = false // a suspend wins over a Settings preview: the mic stays off after the clip (Codex P2)
         guard !userEnded else { return }
         if micOn { setMic(false) }
         if cameraOn { toggleCamera() }
@@ -447,6 +494,14 @@ enum CallStop: Equatable {
         }
     }
 
+    /// `{"type":"ownership","owner":"iphone"|"mac","epoch":N}` from the call socket; nil for anything else (or a release).
+    nonisolated static func serverOwnership(_ text: String) -> OwnershipClaim? {
+        guard text.contains("\"ownership\""), let data = text.data(using: .utf8),
+              let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any], o["type"] as? String == "ownership",
+              let owner = ConversationDevice(serverName: o["owner"] as? String), let epoch = o["epoch"] as? Int, epoch > 0 else { return nil }
+        return OwnershipClaim(owner: owner, epoch: epoch)
+    }
+
     /// GATE-A (AU-82): the companion is heard only on the device that holds the conversation. Audio and `say` lines
     /// that reach this iPhone after the conversation moved to the Mac (the rest of a reply, a search card's line)
     /// are dropped here. The Mac closes its call when the conversation leaves it. Nothing plays while a call is
@@ -462,6 +517,22 @@ enum CallStop: Equatable {
 
     // MARK: user actions
 
+    /// This app's device and its view of who holds the conversation (the handoff coordinator's state).
+    nonisolated static var gateDevice: ConversationDevice {
+        #if os(iOS)
+        .phone
+        #else
+        .mac
+        #endif
+    }
+    private var gateOwnership: ConversationOwnership {
+        #if os(iOS)
+        PhoneHandoff.shared.ownership.state
+        #else
+        MacHandoff.shared.ownership.state
+        #endif
+    }
+
     private var ownsConversation: Bool {
         #if os(iOS)
         PhoneHandoff.shared.ownership.isOwner
@@ -470,12 +541,19 @@ enum CallStop: Equatable {
         #endif
     }
 
-    func toggleMic() {
-        if micOn { setMic(false); Self.micWasOn = false; return }
+    /// The mic was turned on by Interpretation, not by the user (audit TR-01): not saved, turned off when it ends.
+    private(set) var micOnForInterpret = false
+
+    /// The user's mic button (and B12 restore): their own choice — saved, and never turned off by Interpretation
+    /// ending. Interpretation / Hold to talk call `toggleMic(forInterpret: true)`.
+    func toggleMic(forInterpret: Bool = false) {
+        if !forInterpret { micOnForInterpret = false }
+        if micOn { setMic(false); Self.micWasOn = false; micOnForInterpret = false; micStopped = true; return }
         guard !userEnded, ownsConversation else { return }
+        micStopped = false
         micDenied = false
         #if DEBUG
-        if fixture != nil { setMic(true); Self.micWasOn = true; return }
+        if fixture != nil { setMic(true); if !micOnForInterpret { Self.micWasOn = true }; return }
         #endif
         let generation = capturePermissions.generation
         Self.requestMicrophone { [weak self] granted in
@@ -527,7 +605,8 @@ enum CallStop: Equatable {
     private func applyCapturePermission(_ answer: CapturePermissionRequests.Answer) {
         switch answer.media {
         case .microphone:
-            if answer.granted { setMic(true); Self.micWasOn = true } else { micDenied = true }
+            // on for interpretation only: the user's own mic choice (B12) stays as it was
+            if answer.granted { setMic(true); if !micOnForInterpret { Self.micWasOn = true } } else { micDenied = true; micOnForInterpret = false }
         case .camera:
             // a back-camera request that didn't start the camera doesn't carry over to the next camera-on (Codex P2)
             guard answer.granted else { startCameraBack = false; cameraDenied = true; return }
@@ -586,11 +665,13 @@ enum CallStop: Equatable {
         if on {
             interpretBoard.active = true
             interpretBoard.companionName = companionName
-            // the rail (and its mic button) is hidden while interpreting; interpretation needs the mic
-            if !micOn { toggleMic() }
+            // the rail (and its mic button) is hidden while interpreting; interpretation needs the mic — turned on for
+            // it only: not saved as the user's choice, and off again when it ends (audit TR-01)
+            if !micOn && !micOnForInterpret { micOnForInterpret = true; toggleMic(forInterpret: true) }
         } else {
             if interpretBoard.holding { socket?.send(.hold(on: false)) }
             interpretBoard = InterpretBoard(companionName: companionName)
+            if micOnForInterpret { micOnForInterpret = false; if micOn { setMic(false) } }
         }
     }
 
@@ -598,7 +679,7 @@ enum CallStop: Equatable {
     func setHold(_ on: Bool) {
         guard interpretBoard.holding != on else { return }
         interpretBoard.holding = on
-        if on && !micOn { toggleMic() }
+        if on && !micOn { micOnForInterpret = true; toggleMic(forInterpret: true) }
         socket?.send(.hold(on: on))
     }
 
@@ -643,13 +724,53 @@ enum CallStop: Equatable {
         return url.count > 10 && url.count <= 2000 ? url : nil
     }
 
+    /// D63: while a batch of masks is on screen, compare the live camera with the frame they were found on, 4 times a
+    /// second (`CameraMotion` v2: blurred 32 × 18 thumbnail, best small shift, 2 hits in a row to hide, 2 settled to
+    /// show). Hand shake keeps them; a real move fades them until the picture lines up again. Ends with the batch,
+    /// a new look, a flip or the camera going off. #676's hold decides when they go for good.
+    @ObservationIgnored private var boxMotionTask: Task<Void, Never>?
+    /// the batch the running watch belongs to: more items on the same frame keep it (and its hide) going
+    @ObservationIgnored private var boxMotionKey: (findId: String, frame: Int, epoch: Int)?
+    @ObservationIgnored private let motionContext = CIContext(options: [.cacheIntermediates: false])
+    private func watchBoxMotion(_ b: ServerEvent.ObserveBoxes) {
+        guard CameraMotion.enabled else { return }
+        // only a batch the preview actually took (a late one from before a flip is ignored and keeps the watch)
+        guard cameraOn, finds.boxes.findId == b.findId, let entry = finds.entries.first(where: { $0.id == b.findId }),
+              entry.frames.indices.contains(b.frame) else { return }
+        let boxes = finds.boxes
+        let findId = b.findId, frame = b.frame, epoch = boxes.epoch
+        if let k = boxMotionKey, k.findId == findId, k.frame == frame, k.epoch == epoch, boxMotionTask != nil { return }
+        boxMotionTask?.cancel()
+        boxMotionKey = (findId, frame, epoch)
+        let jpeg = entry.frames[frame]
+        let context = motionContext
+        boxMotionTask = Task { [weak self] in
+            // image work off the main actor (Codex r1): the blur, the render and the shift search
+            let analysed = await Task.detached(priority: .utility, operation: { CameraMotion.thumb(jpeg: jpeg, context: context) }).value
+            var detector = CameraMotion.Detector()
+            while !Task.isCancelled, let analysed {
+                guard let self, self.cameraOn, boxes.findId == findId, boxes.epoch == epoch else { break }
+                if boxes.visible, let image = self.camera.latestImage() {
+                    let m = await Task.detached(priority: .utility) { CameraMotion.thumb(image, context: context).map { CameraMotion.match(analysed, $0) } }.value
+                    // the batch may have changed while it was measured
+                    guard !Task.isCancelled, boxes.findId == findId, boxes.epoch == epoch else { break }
+                    if let m { boxes.setMisaligned(detector.feed(m)) }
+                }
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+            // the watch ended (new look, flip, camera off): never leave a batch hidden by a stale reading
+            if !Task.isCancelled, boxes.findId == findId { boxes.setMisaligned(false) }
+            if let self, let k = self.boxMotionKey, k.findId == findId, k.frame == frame, k.epoch == epoch { self.boxMotionTask = nil; self.boxMotionKey = nil }
+        }
+    }
+
     /// IC-4 Look again: drop the card, take a fresh frame, ask the same words again (frames go with the next turn).
     func lookAgain() {
         let question = finds.lookAgain() ?? lastUserText
         guard let text = question else { return }
-        if cameraOn, let frame = camera.snapshotBase64() {
-            finds.latestFrames = [frame]
-            socket?.send(.frames(.init(images: [frame])))
+        if cameraOn, let shot = camera.snapshot() {
+            finds.latestFrames = [shot.base64]
+            socket?.send(.frames(.init(images: [shot.base64], unclear: shot.unclear ? true : nil)))
         }
         socket?.send(.text(.init(text: text, frames: nil)))
     }
@@ -657,6 +778,15 @@ enum CallStop: Equatable {
     func dismissMicBlocked() { micDenied = false }
     /// E01/E02 sheet closed (Mac).
     func dismissDenied() { micDenied = false; cameraDenied = false }
+
+    /// Settings → Voice preview during a call (11/4): the clip isn't in the echo canceller's reference, so the mic
+    /// rests while it plays and opens again after. The user's own toggle (and `micWasOn`) is left as it was.
+    private var micHeldForPreview = false
+    func holdMicForPreview(_ hold: Bool) {
+        if hold, micOn, !micHeldForPreview { micHeldForPreview = true; setMic(false) }
+        // reconnecting too: its `start.mic` follows micOn (Codex re-review P2)
+        else if !hold, micHeldForPreview { micHeldForPreview = false; if !userEnded, ownsConversation, link != .idle { setMic(true) } }
+    }
 
     private func setMic(_ on: Bool) {
         if on {
@@ -669,7 +799,9 @@ enum CallStop: Equatable {
                 return
             }
             #endif
-            guard audio.openMic() else { micDenied = true; return }
+            // AU-56: permission is granted here; a mic that won't open (input busy, a route glitch) is not a denial,
+            // so no E02 "turn it on in Settings". The button stays off and a tap tries again.
+            guard audio.openMic() else { log.error("mic would not open (input unavailable)"); return }
             micOn = true
             socket?.send(.audioStart)
         } else {
@@ -727,7 +859,10 @@ enum CallStop: Equatable {
             self.lost(closure)
         }
         let endpoint = fixedEndpoint ?? .current()
-        socket.connect(url: endpoint.url, token: endpoint.token)
+        // MV-01 GATE-A: the call opts into the server's audio gate as this device, with its own last known owner
+        // (the server applies a newer one, like presence `hello`, so a stale server owner never strands the call)
+        let known = gateOwnership
+        socket.connect(url: CallEndpoint.gated(endpoint.url, device: Self.gateDevice, owner: known.owner, epoch: known.epoch), token: endpoint.token)
     }
 
     private func lost(_ closure: CallSocket.Closure) {
@@ -775,6 +910,7 @@ enum CallStop: Equatable {
     // MARK: server events
 
     func handle(_ text: String) {
+        if let claim = Self.serverOwnership(text) { onServerOwnership?(claim) }
         guard let event = try? ServerEvent.decode(text) else {
             log.error("undecodable event: \(text.prefix(120), privacy: .public)")
             return
@@ -783,6 +919,7 @@ enum CallStop: Equatable {
     }
 
     func handle(_ event: ServerEvent) {
+        captions.apply(event, now: Self.captionClock())   // live captions r01 (LiveCaptions.swift): reads events, changes nothing here
         switch event {
         case let .ready(r):
             // The new server session numbers utterances and audio sequences from the start again.
@@ -804,14 +941,18 @@ enum CallStop: Equatable {
             firstFrame = nil
             emotion = nil
             holdTask?.cancel()
+            // a reconnect while interpreting keeps the language pair (the bubbles were the old session's) — losing it
+            // dropped the user's held reply (audit TR-01 NET); the start below carried the pair back to the server
+            let keep = interpretBoard
             interpretBoard = InterpretBoard(companionName: companionName)
+            if keep.active { interpretBoard.active = true; interpretBoard.source = keep.source; interpretBoard.app = keep.app; interpretBoard.user = keep.user; interpretBoard.other = keep.other }
             link = .live
             if r.sessionId != sessionId {
                 // the old session's searches died with it: no result comes on this one (AU-62, AU-72)
                 if sessionId != nil { finds.interrupted() }
                 // A new session counts utterances from the start: ids of the old one mean nothing now.
                 faceIdBase = faceIdMax + 1
-                cancelled = []; routed = []; seqToUtterance = [:]; faceAudio = [:]; facePending = []; faceDeviceMs = [:]
+                cancelled = []; routed = []; seqToUtterance = [:]; faceAudio = [:]; facePending = []; faceDeviceMs = [:]; faceWall = [:]; faceWallEnd = 0
             }
             start?.greetAfterMs = nil   // D21: only the very first connect waits; a reconnect doesn't greet again
             sessionId = r.sessionId
@@ -833,21 +974,24 @@ enum CallStop: Equatable {
         case .speechStart:
             answerFailed = false
             finds.userStartedTalking()
-            if cameraOn, let frame = camera.snapshotBase64() {
-                firstFrame = frame
-                finds.latestFrames = [frame]
-                socket?.send(.frames(.init(images: [frame])))
+            if cameraOn, let shot = camera.snapshot() {
+                firstFrame = shot.base64
+                firstFrameUnclear = shot.unclear
+                finds.latestFrames = [shot.base64]
+                socket?.send(.frames(.init(images: [shot.base64], unclear: shot.unclear ? true : nil)))
             } else {
                 // a question asked with the camera off has no frames: an earlier question's never ride along (AU-75)
                 finds.latestFrames = []
             }
         case .speechEnd:
             speechEndAt = Date()
-            if cameraOn, let frame = camera.snapshotBase64() {
+            if cameraOn, let shot = camera.snapshot() {
                 // Two frames, ~start and ~end of the question, replace the single one sent at speech start.
-                let images = [firstFrame, frame].compactMap { $0 }
+                let images = [firstFrame, shot.base64].compactMap { $0 }
+                // D59: unclear only when every frame of the question is (one good look is enough to try)
+                let unclear = shot.unclear && (firstFrame == nil || firstFrameUnclear)
                 finds.latestFrames = images
-                socket?.send(.frames(.init(images: images)))
+                socket?.send(.frames(.init(images: images, unclear: unclear ? true : nil)))
             }
             firstFrame = nil
         case let .transcript(t):
@@ -878,6 +1022,7 @@ enum CallStop: Equatable {
             }
         case let .utteranceCancelled(c):
             cancelled.insert(c.utteranceId)
+            faceWall[c.utteranceId] = nil
             face?.cancel(utteranceId: faceId(c.utteranceId))
             faceAudio = faceAudio.filter { $0.value.utteranceId != c.utteranceId }
             facePending.removeAll { $0.utterance == c.utteranceId }
@@ -907,10 +1052,17 @@ enum CallStop: Equatable {
         case .interpretPair, .interpretBubble:
             interpretBoard.companionName = companionName
             interpretBoard.apply(event)
+            // the pair goes into the start a reconnect sends, so the new session knows it (iPhone starts without options)
+            if case .interpretPair = event, mode == .interpret, let other = interpretBoard.other {
+                var o = start?.interpret ?? InterpretOptions(source: interpretBoard.source, app: interpretBoard.app)
+                o.other = other
+                start?.interpret = o
+            }
         case let .lipChanged(l):
             lip = l.lip
         case .findStarted, .findProgress, .findItems, .observeBoxes, .findCreated, .findImage, .findFailed:
             finds.apply(event)
+            if case let .observeBoxes(b) = event { watchBoxMotion(b) }
         case let .replyDelta(d):
             // Text shapes the mouth until (or unless) the audio brings word timings.
             if !cancelled.contains(d.utteranceId), !routed.contains(d.utteranceId) {
@@ -931,6 +1083,8 @@ enum CallStop: Equatable {
             start?.persona.name = n.name   // a reconnect's start carries the new name too
             interpretBoard.companionName = n.name
             onCompanionNamed?(n.name)
+            // IC-01 step 7 (AU-52): the rename gets the same "Noted" confirmation as other in-call corrections
+            showProfileChip("Noted: I'm \(n.name) now")
         case let .profileUpdated(p):
             // CC-1 "Updated: …" / "Noted: …" (it answers the GK-1 question, so that chip goes)
             askingChip = nil; askingChipTask?.cancel()
@@ -948,6 +1102,8 @@ enum CallStop: Equatable {
         case let .backchannel(b):
             // convo P1 #345: the server's soft "mm-hm" in the companion's own voice, played beside (never as) a reply
             if let audio = b.audio, let pcm = Data(base64Encoded: audio) { self.audio.playCue(pcm: pcm) }
+            // 11/4 watch together (#613): "inhale" = the instant nonverbal reaction — the brows lift with the breath
+            if b.kind == "inhale" { face?.flashBrows() }
         }
     }
 
@@ -969,18 +1125,19 @@ enum CallStop: Equatable {
             let pcm = AudioFrameHeader.payload(of: data)
             feedFace(utterance) { $0.handle(audio: e, pcm: pcm) }
         }
+        noteFaceWall(utterance, bytes: data.count - GenitaProtocol.frameHeaderBytes)
         #if DEBUG
         if let playbackSink { playbackSink(AudioFrameHeader.payload(of: data), utterance); return }
         #endif
         audio.enqueue(pcm: AudioFrameHeader.payload(of: data), utteranceId: utterance)
     }
 
-    /// `profile.updated` chip: 2.5 s (PROTOCOL.md). Debug UI tests on slow simulators can lengthen it (GENITA_PROFILE_CHIP_MS).
+    /// `profile.updated` chip: 2.4 s (D103; PROTOCOL.md said 2.5). Debug UI tests on slow simulators can lengthen it (GENITA_PROFILE_CHIP_MS).
     static var profileChipMs: Int {
         #if DEBUG
         if let ms = ProcessInfo.processInfo.environment["GENITA_PROFILE_CHIP_MS"].flatMap(Int.init) { return ms }
         #endif
-        return 2500
+        return 2400   // D103: Noted holds 2.4 s
     }
 
     /// GK-1 time on screen. Debug UI tests can change it (GENITA_ASKING_CHIP_MS).
@@ -1063,6 +1220,7 @@ enum CallStop: Equatable {
 
     private func playbackStarted(_ utteranceId: Int) {
         playingUtterance = utteranceId
+        finds.boxes.companionStarted(utteranceId)
         playing = true
         awaitingFirstAudio = false
         let now = Date()
@@ -1083,6 +1241,7 @@ enum CallStop: Equatable {
 
     private func utterancePlayed(_ utteranceId: Int) {
         voice.forget(utteranceId)
+        finds.boxes.companionStopped(utteranceId)
         if playingUtterance == utteranceId { playingUtterance = nil }
         playing = audio.isPlaying
         flushFacePending()
@@ -1095,7 +1254,24 @@ enum CallStop: Equatable {
     // MARK: face (L4)
 
     /// Shows this face set (nil → the still). The driver reads the speaker's playhead for the mouth.
-    func useFace(_ set: FaceSet?, key: String?, owner: String? = nil, reduceMotion: Bool) {
+    /// A renderer built (and its rest frame drawn) off the main thread, for `useFace` (face plan item 5).
+    struct PreparedFace: @unchecked Sendable {
+        let renderer: FaceRenderer
+        let poster: CGImage?
+        let seed: UInt64
+        let reduceMotion: Bool
+        /// one renderer for the live face and its poster (FlowMorph set up once, not twice)
+        /// `key` = the face set's cache key: its seed (`CompanionFace.seed(forKey:)`) is the disk poster's too
+        static func build(_ set: FaceSet, key: String?, reduceMotion: Bool) async -> PreparedFace {
+            await Task.detached(priority: .userInitiated) {
+                let seed = CompanionFace.seed(forKey: key)
+                let renderer = FaceRenderer(faceSet: set, outputSize: CompanionFace.outputSize(for: set), seed: seed, reduceMotion: reduceMotion)
+                return PreparedFace(renderer: renderer, poster: renderer.render(at: 0, lip: .rest), seed: seed, reduceMotion: reduceMotion)
+            }.value
+        }
+    }
+
+    func useFace(_ set: FaceSet?, key: String?, owner: String? = nil, reduceMotion: Bool, prepared: PreparedFace? = nil) {
         face?.stop()
         faceKey = key
         faceOwner = owner
@@ -1107,41 +1283,108 @@ enum CallStop: Equatable {
         guard let set else { face = nil; return }
         let size = CompanionFace.outputSize(for: set)
         // one seed for the live face and its poster: same overscan and motion, so the poster → live step doesn't jump
-        let seed = UInt64.random(in: 1...UInt64.max)
+        // face plan item 1: from the face key (the motion starts still at t = 0 either way, see AliveMotion)
+        let seed = prepared?.seed ?? CompanionFace.seed(forKey: key)
         faceSeed = seed
         posterReduceMotion = nil
-        let driver = FaceDriver(faceSet: set, outputSize: size, reduceMotion: reduceMotion, seed: seed)
+        let driver = prepared.map { FaceDriver(renderer: $0.renderer, reduceMotion: reduceMotion) }
+            ?? FaceDriver(faceSet: set, outputSize: size, reduceMotion: reduceMotion, seed: seed)
         driver.playbackClock = { [weak self, weak driver] in
             guard let self, let driver else { return nil }
             self.flushFacePending()
             guard let id = driver.currentUtteranceId else { return nil }
-            return self.audio.playbackPositionMs(utteranceId: id - self.faceIdBase)
+            return self.faceClockMs(utterance: id - self.faceIdBase)
         }
         face = driver
         if faceOnScreen && faceAnimates { driver.start() }
         if !faceAnimates { renderFaceStill(set, size: size, for: driver) }
         // iPhone too since build 8: the generated face's rest frame shows before it moves (no upload-photo flash)
-        renderFacePoster(set, size: size, seed: seed, reduceMotion: reduceMotion, for: driver)
+        if let prepared, prepared.reduceMotion == reduceMotion, let poster = prepared.poster {
+            posterReduceMotion = reduceMotion
+            facePoster = poster
+            posterShown(poster, key: key, reduceMotion: reduceMotion)
+        } else {
+            renderFacePoster(set, size: size, seed: seed, reduceMotion: reduceMotion, for: driver)
+        }
     }
 
     /// The live renderer's settings (seed, reduce motion → same overscan and motion), at rest, off the main thread.
     private func renderFacePoster(_ set: FaceSet, size: CGSize, seed: UInt64, reduceMotion: Bool, for driver: FaceDriver) {
         posterReduceMotion = reduceMotion
         Task { [weak self] in
-            let image = await Task.detached(priority: .utility) {
+            // userInitiated (#645): the poster is the first picture of the face the call waits on (the wait stage)
+            let image = await Task.detached(priority: .userInitiated) {
                 FaceRenderer(faceSet: set, outputSize: size, seed: seed, reduceMotion: reduceMotion).render(at: 0, lip: .rest)
             }.value
             // a newer draw (reduce motion changed meanwhile) wins
             guard let self, self.face === driver, self.posterReduceMotion == reduceMotion else { return }
             self.facePoster = image
+            if let image { self.posterShown(image, key: self.faceKey, reduceMotion: reduceMotion) }
+        }
+    }
+
+    /// Face plan item 2: the rest frame goes to Caches next to its set (PNG, keyed by account + manifest and the
+    /// reduce-motion setting), so the next launch shows it before the set is built again. Review keys write nothing.
+    private func posterShown(_ image: CGImage, key: String?, reduceMotion: Bool) {
+        faceTiming?.mark("poster")
+        guard let key else { return }
+        let root = makeFaceLoader().cacheRoot
+        Task.detached(priority: .utility) { CompanionFaceLoader.savePoster(image, root: root, key: key, reduceMotion: reduceMotion) }
+    }
+
+    /// Face plan items 2 + 6: what the loader has before its final answer, for the account this load is for — the
+    /// saved rest frame of the account's last set (only while nothing of the face is up yet), then a drawable set
+    /// (from Caches, or the first download without the expression stills). True = it is on screen.
+    private func useEarlyFace(_ early: CompanionFaceLoader.Early, owner: String?, timing: FaceLoadTiming) async -> Bool {
+        guard !Task.isCancelled, owner == Self.tokenSubject(currentEndpoint.token) else { return false }
+        switch early {
+        case let .poster(_, image):
+            guard face == nil, facePoster == nil else { return false }
+            faceOwner = owner
+            posterReduceMotion = faceReduceMotion
+            facePoster = image
+            return true
+        case let .face(key, set):
+            if face != nil, faceKey == key { return true }
+            let prepared = await PreparedFace.build(set, key: key, reduceMotion: faceReduceMotion)
+            guard !Task.isCancelled, owner == Self.tokenSubject(currentEndpoint.token) else { return false }
+            timing.mark("renderer")
+            useFace(set, key: key, owner: owner, reduceMotion: faceReduceMotion, prepared: prepared)
+            watchFirstFrame(timing)
+            return true
+        }
+    }
+
+    /// While the face's reply is still audible (at most a minute): swapping the driver then would drop its timeline.
+    private func waitUntilNothingPlays() async {
+        for _ in 0..<600 {
+            guard !Task.isCancelled, playing else { return }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+    }
+
+    /// #645 part 1: the load's `face.timing` line goes out once the face has drawn its first frame and the load is over.
+    @ObservationIgnored private var faceTiming: FaceLoadTiming?
+    @ObservationIgnored private var faceFirstFrameWatch: AnyCancellable?
+    private func watchFirstFrame(_ timing: FaceLoadTiming) {
+        guard let face, !timing.has("firstFrame") else { return }
+        let log = self.log
+        faceFirstFrameWatch = face.$frame.compactMap { $0 }.first().sink { _ in
+            timing.mark("firstFrame")
+            if let line = timing.lineOnce(needing: ["firstFrame", "done"]) { log.info("\(line, privacy: .public)") }
         }
     }
 
     /// Same presence (Mac, 11/3): load the companion's face set while the conversation is still on the iPhone, so
     /// the face that arrives here already moves on its first frame. Nothing animates until `showFace`.
-    func prepareFace(reduceMotion: Bool) {
+    /// `keepTrying` (Mac, face plan item 3): a face set that is still being made (or a failed request) is tried again
+    /// every `faceRetryInterval` off screen too, so it is ready when the conversation arrives.
+    func prepareFace(reduceMotion: Bool, keepTrying: Bool = false) {
         guard !CompanionFace.clipLoopFace, !faceOnScreen else { return }
         faceReduceMotion = reduceMotion
+        faceKeepTrying = keepTrying
+        // #645: a prefetch already in flight for this account (PREP-1c) keeps going into S07
+        if faceLoading, faceLoadOwner == Self.tokenSubject(currentEndpoint.token) { return }
         cancelFaceLoad()
         faceLoad = Task { [weak self] in await self?.loadFace() }
     }
@@ -1162,6 +1405,49 @@ enum CallStop: Equatable {
         faceAudio = [:]
         facePending = []
         faceDeviceMs = [:]
+        faceWall = [:]; faceWallEnd = 0
+    }
+
+    // MARK: face clock fallback (DEMO P0 11/4)
+
+    /// When each reply's audio should be heard by the wall clock: its first chunk starts when it arrives or when the
+    /// reply before it ends, whichever is later. Server utterance id → (start, ms received), system uptime seconds.
+    @ObservationIgnored private var faceWall: [Int: (start: TimeInterval, ms: Double)] = [:]
+    @ObservationIgnored private var faceWallEnd: TimeInterval = 0
+    @ObservationIgnored private var faceClockFellBack = false
+    /// the wall clock trails the chunk's arrival by about the player's output latency
+    static let faceWallLatencyMs = 60.0
+
+    private func noteFaceWall(_ utterance: Int, bytes: Int) {
+        guard bytes > 0 else { return }
+        let now = ProcessInfo.processInfo.systemUptime, ms = PCM.durationMs(bytes: bytes)
+        if var e = faceWall[utterance] {
+            e.ms += ms; faceWall[utterance] = e
+            faceWallEnd = max(faceWallEnd, e.start + e.ms / 1000)
+        } else {
+            let start = max(now, faceWallEnd)
+            faceWall[utterance] = (start, ms)
+            faceWallEnd = start + ms / 1000
+            if faceWall.count > 16 { faceWall = faceWall.filter { $0.key >= utterance - 4 } }
+        }
+    }
+
+    /// The face's clock for a reply: the player's playhead; when the player has none for audio that is playing (TF 331
+    /// 16:00: the engine graph broke on a reconfiguration and the face froze while the voice went on), the wall clock
+    /// of that reply's audio, so the mouth, the expressions and the speech sway still move with it.
+    func faceClockMs(utterance: Int, now: TimeInterval = ProcessInfo.processInfo.systemUptime) -> Double? {
+        let player = audio.playbackPositionMs(utteranceId: utterance)
+        guard let e = faceWall[utterance] else { return player }
+        let wall = (now - e.start) * 1000 - Self.faceWallLatencyMs
+        // the player's own clock wins whenever it has one that agrees the reply has started (or not yet, by both)
+        if let player, player >= 0 || wall < 1000 { return player }
+        guard wall >= 0, wall <= e.ms + 1000 else { return player }
+        if !faceClockFellBack {
+            faceClockFellBack = true
+            let head = player.map { String(Int($0)) } ?? "nil"
+            log.error("FACE_CLOCK player playhead \(head, privacy: .public) while audio plays; face follows the wall clock")
+        }
+        return wall
     }
 
     /// The id the face driver sees for a server utterance id (grows across sessions).
@@ -1222,6 +1508,7 @@ enum CallStop: Equatable {
         // Another account (or signed out) never sees the face set loaded for the one before.
         if face != nil, Self.tokenSubject(currentEndpoint.token) != faceOwner { useFace(nil, key: nil, reduceMotion: reduceMotion) }
         faceOnScreen = true
+        if face == nil { facePrepRetried = false }
         #if DEBUG
         faceDebugShows += 1
         #endif
@@ -1253,6 +1540,10 @@ enum CallStop: Equatable {
         faceLoad = nil
         faceLoading = false
         faceLoadGeneration += 1
+        faceFetching = false
+        faceRetryNap?.cancel()
+        faceRetryNap = nil
+        faceRetryNow = false
     }
 
     func setFaceReduceMotion(_ on: Bool) {
@@ -1270,6 +1561,11 @@ enum CallStop: Equatable {
     /// AU-25 · S09-P (D28): a call that starts before the face set is made checks again this often while the call
     /// screen is up, so the mouth starts moving in that same call once prep finishes (or the network comes back).
     @ObservationIgnored var faceRetryInterval: Duration = .seconds(5)
+    /// the retry wait in flight (`faceSetReady` cancels it) and whether the next try skips the wait
+    @ObservationIgnored private var faceRetryNap: Task<Void, Never>?
+    @ObservationIgnored private var faceRetryNow = false
+    /// Mac same presence: keep retrying off screen (`prepareFace(keepTrying:)`)
+    @ObservationIgnored private var faceKeepTrying = false
     #if DEBUG
     /// UI-test diagnostics for the face pipeline (why a call shows the still instead of the face)
     var faceDebugShows = 0
@@ -1294,10 +1590,31 @@ enum CallStop: Equatable {
         faceLoading = true
         faceLoadOwner = Self.tokenSubject(currentEndpoint.token)
         defer { if faceLoadGeneration == generation { faceLoading = false } }
-        while await loadFaceOnce() {
-            try? await Task.sleep(for: faceRetryInterval)
-            guard !Task.isCancelled, faceOnScreen, face == nil else { return }
+        func once() async -> Bool {
+            faceFetching = true
+            defer { if faceLoadGeneration == generation { faceFetching = false } }
+            return await loadFaceOnce()
         }
+        while await once() {
+            // face plan item 3: `faceSetReady` (prep just finished) cuts this wait short
+            if !faceRetryNow {
+                let interval = faceRetryInterval
+                let nap = Task<Void, Never> { do { try await Task.sleep(for: interval) } catch {} }
+                faceRetryNap = nap
+                await nap.value
+                if faceRetryNap == nap { faceRetryNap = nil }
+            }
+            faceRetryNow = false
+            guard !Task.isCancelled, faceOnScreen || faceKeepTrying, face == nil else { return }
+        }
+    }
+
+    /// Prep says the face set is made (S09-P polling, PREP-1c): a load waiting out its retry interval asks again now
+    /// instead of up to 5 s later. A request on the wire that comes back "not yet" goes again at once as well.
+    func faceSetReady() {
+        guard faceLoading, face == nil else { return }
+        faceRetryNow = true
+        faceRetryNap?.cancel()
     }
 
     private func makeFaceLoader() -> CompanionFaceLoader {
@@ -1307,12 +1624,31 @@ enum CallStop: Equatable {
         return CompanionFaceLoader(endpoint: currentEndpoint)
     }
 
-    /// One load. True = no face yet but one may still come (prep still running, or offline): try again.
+    /// One prep retry per time the call screen shows (DEMO P0): a failed face set is asked for again, not forever.
+    @ObservationIgnored private var facePrepRetried = false
+    @ObservationIgnored private var lastFaceState = ""
+    /// Device Console (`FACE_STATE …`, subsystem ai.genita): why a call shows the photo instead of the moving face.
+    private func faceState(_ state: String) {
+        guard state != lastFaceState else { return }
+        lastFaceState = state
+        log.notice("FACE_STATE \(state, privacy: .public)")
+    }
+
+    /// One load. True = no face yet but one may still come (prep still running or retried, or offline): try again.
     private func loadFaceOnce() async -> Bool {
         #if DEBUG
         faceDebugAttempts += 1
         #endif
         let owner = Self.tokenSubject(currentEndpoint.token)
+        let timing = FaceLoadTiming()
+        faceTiming = timing
+        // a saved poster put up for another account's load has no face to be swapped by: it goes now
+        if face == nil, facePoster != nil, faceOwner != owner { facePoster = nil }
+        let early: CompanionFaceLoader.EarlyConsumer = { [weak self] e in await self?.useEarlyFace(e, owner: owner, timing: timing) ?? false }
+        defer {
+            timing.mark("done")
+            if let line = timing.lineOnce(needing: ["firstFrame", "done"]) { log.info("\(line, privacy: .public)") }
+        }
         do {
             let outcome: CompanionFaceLoader.Outcome
             #if DEBUG
@@ -1321,21 +1657,45 @@ enum CallStop: Equatable {
                 let key = "dir:" + dir
                 outcome = key == faceKey ? .unchanged : .loaded(key: key, set: try await Task.detached { try FaceSet(directory: URL(fileURLWithPath: dir)) }.value)
             } else {
-                outcome = try await makeFaceLoader().load(currentKey: faceKey)
+                outcome = try await makeFaceLoader().load(currentKey: faceKey, posterReduceMotion: faceReduceMotion, timing: timing, early: early)
             }
             #else
-            outcome = try await makeFaceLoader().load(currentKey: faceKey)
+            outcome = try await makeFaceLoader().load(currentKey: faceKey, posterReduceMotion: faceReduceMotion, timing: timing, early: early)
             #endif
             guard !Task.isCancelled else { return false }
             switch outcome {
             case .unchanged: return false
-            case .none: if face != nil { useFace(nil, key: nil, reduceMotion: faceReduceMotion) }; return false
+            // (a saved poster shown before /prep answered goes too: that face is gone or being made again)
+            case .none:
+                faceState("none")
+                if face != nil || facePoster != nil { useFace(nil, key: nil, reduceMotion: faceReduceMotion) }; return false
             case .pending:
-                if face != nil { useFace(nil, key: nil, reduceMotion: faceReduceMotion) }
-                return faceOnScreen
+                faceState("pending")
+                if face != nil || facePoster != nil { useFace(nil, key: nil, reduceMotion: faceReduceMotion) }
+                return faceOnScreen || faceKeepTrying
+            case .failed:
+                // DEMO P0 (11/4): a failed face set used to leave the photo frozen for the whole call. Ask the server
+                // to make it again (once per time the call screen shows), then keep checking; it swaps in when made.
+                faceState("failed")
+                if face != nil || facePoster != nil { useFace(nil, key: nil, reduceMotion: faceReduceMotion) }
+                if faceOnScreen || faceKeepTrying, !facePrepRetried {
+                    facePrepRetried = true
+                    do { try await makeFaceLoader().retryPrep(); faceState("retry_sent") }
+                    catch { log.error("face set retry: \(String(describing: error), privacy: .public)") }
+                }
+                return !Task.isCancelled && (faceOnScreen || faceKeepTrying)
             case let .loaded(key, set):
+                faceState("loaded")
                 log.info("face set \(key, privacy: .public): \(set.patches.count) mouth shapes; \(set.notes.joined(separator: "; "), privacy: .public)")
-                useFace(set, key: key, owner: owner, reduceMotion: faceReduceMotion)
+                // face plan item 5: the renderer (FlowMorph) is built once, off the main thread, and draws the poster
+                let prepared = await PreparedFace.build(set, key: key, reduceMotion: faceReduceMotion)
+                guard !Task.isCancelled else { return false }
+                timing.mark("renderer")
+                // item 6: the full set replaces its partial one between replies, so a reply being heard keeps its mouth
+                if faceKey == key + CompanionFaceLoader.partialSuffix { await waitUntilNothingPlays() }
+                guard !Task.isCancelled else { return false }
+                useFace(set, key: key, owner: owner, reduceMotion: faceReduceMotion, prepared: prepared)
+                watchFirstFrame(timing)
                 return false
             }
         } catch {
@@ -1345,7 +1705,7 @@ enum CallStop: Equatable {
             #if DEBUG
             faceDebugLastError = String(describing: error)
             #endif
-            return !Task.isCancelled && faceOnScreen && face == nil
+            return !Task.isCancelled && (faceOnScreen || faceKeepTrying) && face == nil
         }
     }
 

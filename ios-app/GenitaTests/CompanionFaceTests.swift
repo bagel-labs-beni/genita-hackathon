@@ -63,6 +63,31 @@ import XCTest
         XCTAssertEqual(face.timeline.sample(atMs: 900).openness, 0, "after the received audio there is no sound")
     }
 
+    /// DEMO P0 (11/4 16:00, TF 331): the voice played but the face froze. The face's clock was only the player node's
+    /// playhead, and the playhead was nil once the engine graph broke (Mac log: AUVoiceProcessor -10875 on a
+    /// reconfiguration). Now the face follows the wall clock of the reply's audio, so the mouth, the expressions
+    /// and the sway move with the voice.
+    func testTheFaceKeepsAClockWhenThePlayerHasNone() throws {
+        let (call, face, _) = try callWithFace()   // the test player never plays: its playhead is always nil
+        call.handle(#"{"type":"reply.delta","utteranceId":7,"text":"Oh wow, that looks great"}"#)
+        call.handle(audio(7, seq: 3, durationMs: 2000))
+        let t0 = ProcessInfo.processInfo.systemUptime
+        call.handle(binary: frame(seq: 3, pcm(ms: 2000)))
+        XCTAssertEqual(face.currentUtteranceId, 7)
+        let lat = CallController.faceWallLatencyMs
+        XCTAssertEqual(try XCTUnwrap(call.faceClockMs(utterance: 7, now: t0 + 0.5)), 500 - lat, accuracy: 30, "half a second in")
+        XCTAssertEqual(try XCTUnwrap(call.faceClockMs(utterance: 7, now: t0 + 1.5)), 1500 - lat, accuracy: 30)
+        XCTAssertNil(call.faceClockMs(utterance: 7, now: t0 + 4), "long after the reply: no clock (the mouth rests)")
+        XCTAssertGreaterThan(face.timeline.sample(atMs: 500 - lat).openness, 0.1, "the mouth is open at that clock")
+        Thread.sleep(forTimeInterval: 0.25)
+        XCTAssertNotNil(face.playbackClock(), "the driver gets a clock while the reply plays (it had none before)")
+
+        // the next reply queues behind this one on the wall clock too
+        call.handle(audio(8, seq: 4, durationMs: 400))
+        call.handle(binary: frame(seq: 4, pcm(ms: 400)))
+        XCTAssertEqual(try XCTUnwrap(call.faceClockMs(utterance: 8, now: t0 + 2.2)), 200 - lat, accuracy: 30)
+    }
+
     func testWordTimingsInTheAudioEventShapeTheMouth() throws {
         let (call, face, _) = try callWithFace()
         call.handle(audio(8, seq: 1, words: #"[{"w":"mama","s":0,"e":400}]"#))
@@ -304,7 +329,9 @@ import XCTest
         let other = CallController()
         other.faceRetryInterval = .milliseconds(50)
         made.value = false
-        other.faceLoaderOverride = { CompanionFaceLoader(endpoint: $0, cacheRoot: cache, fetch: fetch) }
+        // its own cache: the set saved above would come from disk first (face plan item 2) and never ask /prep
+        let otherCache = tempDir()
+        other.faceLoaderOverride = { CompanionFaceLoader(endpoint: $0, cacheRoot: otherCache, fetch: fetch) }
         other.showFace(reduceMotion: true, animate: false)
         try await Task.sleep(for: .milliseconds(200))
         other.hideFace()
@@ -312,6 +339,45 @@ import XCTest
         let after = prepCalls.value
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertEqual(prepCalls.value, after, "hidden: polling stops")
+        call.hideFace()
+    }
+
+    /// DEMO P0 (11/4 16:00, TF 331 "the face doesn't move while it speaks"): a companion whose face set failed kept
+    /// the photo frozen for the whole call. Now the call asks the server to make it again (once), keeps checking, and
+    /// swaps the moving face in when it's made.
+    func testAFailedFaceSetIsAskedForAgainAndArrivesInThatCall() async throws {
+        let saved = CallEndpoint.userToken
+        defer { CallEndpoint.userToken = saved }
+        CallEndpoint.userToken = { "tok" }
+        let (_, ready) = try serverManifest()
+        let failed = Data(#"{"status":"failed","face":null}"#.utf8)
+        let (readyFetch, _) = stubServer(prep: ready)
+        let (failedFetch, _) = stubServer(prep: failed)
+        let made = Box(false), retries = Box(0), prepCalls = Box(0)
+        let fetch: CompanionFaceLoader.Fetch = { req in
+            if req.url?.path == "/v1/companion/prep/retry", req.httpMethod == "POST" {
+                XCTAssertEqual(req.value(forHTTPHeaderField: "Authorization"), "Bearer tok")
+                retries.value += 1
+                return (Data(#"{"status":"running"}"#.utf8), HTTPURLResponse(url: req.url!, statusCode: 202, httpVersion: nil, headerFields: nil)!)
+            }
+            if req.url?.path == "/v1/companion/prep" { prepCalls.value += 1 }
+            return try await (made.value ? readyFetch : failedFetch)(req)
+        }
+        let cache = tempDir()
+        let call = CallController()
+        call.faceRetryInterval = .milliseconds(50)
+        call.faceLoaderOverride = { CompanionFaceLoader(endpoint: $0, cacheRoot: cache, fetch: fetch) }
+
+        call.showFace(reduceMotion: true, animate: false)
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertNil(call.face)
+        XCTAssertEqual(retries.value, 1, "a failed face set is asked for again once, not on every check")
+        XCTAssertGreaterThan(prepCalls.value, 2, "and the call keeps checking for it")
+
+        made.value = true   // the retried prep finished mid-call
+        for _ in 0..<1800 where call.face == nil { try await Task.sleep(for: .milliseconds(100)) }
+        XCTAssertNotNil(call.face, "the moving face arrives in the same call")
+        XCTAssertEqual(retries.value, 1)
         call.hideFace()
     }
 
@@ -354,7 +420,7 @@ import XCTest
         guard case .none = try await CompanionFaceLoader(endpoint: endpoint, cacheRoot: tempDir(), fetch: bad).load(currentKey: nil) else { return XCTFail("an unreadable face is no face") }
         let failed = Data(#"{"status":"failed","face":null}"#.utf8)
         let (gaveUp, _) = stubServer(prep: failed)
-        guard case .none = try await CompanionFaceLoader(endpoint: endpoint, cacheRoot: tempDir(), fetch: gaveUp).load(currentKey: nil) else { return XCTFail("failed prep: stop asking") }
+        guard case .failed = try await CompanionFaceLoader(endpoint: endpoint, cacheRoot: tempDir(), fetch: gaveUp).load(currentKey: nil) else { return XCTFail("failed prep: the call may ask again") }
     }
 
     func testLoaderNeverSendsTheTokenToAnotherHost() async throws {

@@ -16,24 +16,40 @@ struct CameraStage: View {
     let statusRect: CGRect
 
     var body: some View {
+        let lift = self.lift
+        // the overlay moves with the picture: screen rects (floor, obstacles) are `lift` lower in its space
+        let obstacles = [CameraBoxes.menuRect(grid: grid), statusRect, CameraBoxes.railRect(grid: grid, sheet: call.finds.state),
+                         CameraBoxes.pipRect(view: size, top: topInset, sheetHalf: call.finds.state == .half || call.finds.state == .rising)]
         ZStack {
             CallInk.ink
-            preview
+            preview.offset(y: -lift)
             // r01 `.camtop`: 136 pt dim so the status bar and the menu button read on any scene
             VStack(spacing: 0) {
                 LinearGradient(colors: [CallInk.dim, .clear], startPoint: .top, endPoint: .bottom).frame(height: 136 + topInset)
                 Spacer(minLength: 0)
             }.allowsHitTesting(false)
-            CameraBoxOverlay(boxes: call.finds.boxes, mirrored: mirrored, topInset: grid.labelFloor, avoid: noSeeRect,
+            CameraBoxOverlay(boxes: call.finds.boxes, mirrored: mirrored, topInset: grid.labelFloor + lift, avoid: noSeeRect?.offsetBy(dx: 0, dy: lift),
                              // demo S3 option (c): labels keep clear of the menu button, the status line and the self-view PiP
-                             labelObstacles: [CameraBoxes.menuRect(grid: grid), statusRect, CameraBoxes.railRect(grid: grid, sheet: call.finds.state),
-                                              CameraBoxes.pipRect(view: size, top: topInset, sheetHalf: call.finds.state == .half || call.finds.state == .rising)])
+                             labelObstacles: obstacles.map { $0.offsetBy(dx: 0, dy: lift) })
+                .offset(y: -lift)
         }
+        .animation(.smooth(duration: 0.45), value: lift)
         .frame(width: size.width, height: size.height).clipped()
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Your camera")
         .accessibilityValue(call.cameraFront ? "front" : "back")
         .accessibilityIdentifier("cameraStage")
+    }
+
+    /// Demo S3: while the masks are held over a searching / peek sheet (148 pt), the picture and its masks move up
+    /// together so the lowest mask clears the sheet (CameraBoxes.stageLift); back down when they fade.
+    private var lift: CGFloat {
+        let b = call.finds.boxes, state = call.finds.state
+        guard b.holding, b.visible, state == .searching || state == .peek else { return 0 }
+        // only what the overlay draws (a box above the HUD floor is left out there, so it can't hold the lift back)
+        let rects = b.boxes.map { CameraBoxes.rect($0.box, frame: b.frameSize, in: size, mirrored: mirrored) }
+            .filter { !CameraBoxes.aboveView($0, topInset: grid.labelFloor) }
+        return CameraBoxes.stageLift(boxes: rects, sheetTop: size.height - state.height, viewHeight: size.height, floor: grid.labelFloor)
     }
 
     /// FT-NOSEE card (24, 124): boxes under it are left out.
@@ -89,8 +105,10 @@ struct CameraBoxOverlay: View {
                            labelAt: origins[d.item.id])
                 }
             }
-            .opacity(boxes.visible ? 1 : 0)
+            // D63: the phone really moved since the analysed frame → off in 150 ms, back when it lines up again
+            .opacity(boxes.visible && !boxes.misaligned ? 1 : 0)
             .animation(.fade, value: boxes.visible)
+            .animation(.easeOut(duration: 0.15), value: boxes.misaligned)
             .animation(.fade, value: boxes.highlighted)
         }
         .allowsHitTesting(false)

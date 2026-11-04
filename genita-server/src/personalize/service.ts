@@ -14,7 +14,7 @@
 import type { SparkRequest } from "../meta/spark.ts";
 import { sparkJson } from "../meta/spark.ts";
 import { backgroundJson } from "../meta/sparkOpen.ts";
-import { isDislike, looksLikeInjection, redactSensitive, styleProfileText, type DisplayRow, type Finding, type StyleCard } from "../prep/importProfile.ts";
+import { isDislike, toStyleCard, looksLikeInjection, redactSensitive, styleProfileText, type DisplayRow, type Finding, type StyleCard } from "../prep/importProfile.ts";
 import type { PrepStore } from "../prep/store.ts";
 import { EYEBROWS, SOURCES, SPARK_STORY_IDS, STORY_IDS, buildStoryRequest, cardTexts, interimCard, optimisticCard, toStory, type SparkStoryId, type Story, type StoryCard, type StoryId, type UnknownItem } from "./story.ts";
 import { PROFILE_FIELDS, mergeUpdates, type AppliedUpdate, type ProfileField, type ProfileUpdate } from "./merge.ts";
@@ -194,13 +194,41 @@ export class Personalize {
   }
 
   /** Read-modify-write the latest card under the user's lock. fn returns null = no change. */
+  /** per user: bumped by forgetAll, so an import that started before it never writes the old profile back */
+  private readonly gens = new Map<string, number>();
+  generation(userId: string): number { return this.gens.get(userId) ?? 0; }
+  /** users whose last profile event in this process was "Forget all of this" (a call whose profile read times out uses no profile, never the app's old copy) */
+  private readonly forgotten = new Set<string>();
+  isForgotten(userId: string): boolean { return this.forgotten.has(userId); }
+
+  /**
+   * "Forget all of this" (AU-92): what Genita knows about them — the import, HISY, corrections, insights, call growth —
+   * goes; the companion and the account stay. The row becomes an empty `forgotten` marker inside the per-user lock:
+   * queued corrections / story writes find nothing to update, an import that started before is refused (generation),
+   * and a call gets the empty profile, never an app's or another device's old copy.
+   */
+  async forgetAll(userId: string): Promise<void> {
+    await this.serial(userId, async () => {
+      this.gens.set(userId, this.generation(userId) + 1);
+      this.forgotten.add(userId);
+      await this.store.putStyle(userId, { ...toStyleCard(null, "import"), forgotten: true, importedAt: this.now().toISOString() });
+    });
+    this.storyFailedAt.delete(userId);
+    for (const k of [...this.lastSave.keys()]) if (k.startsWith(`${userId}\u0000`)) this.lastSave.delete(k);
+    this.log("profile.forgot_all", {});
+  }
+
   private async update<T>(userId: string, fn: (card: StyleCard) => Promise<{ card: StyleCard; out: T } | null> | { card: StyleCard; out: T } | null): Promise<T | null> {
     return this.serial(userId, async () => {
       const card = await this.store.getStyle(userId);
       if (!card) return null;
+      // forgotten (AU-92): new things they say after it are learned onto the empty profile; what was said before it is
+      // dropped by the merge (an update older than the card's importedAt — the forget's time — belongs to the old
+      // profile), and story writes check the generation (Codex #583 r11)
       const r = await fn(card);
       if (!r) return null;
-      await this.store.putStyle(userId, storedStyle(r.card));
+      const learned = card.forgotten && Object.values(r.card.sections ?? {}).some((v) => Array.isArray(v) && v.length > 0);
+      await this.store.putStyle(userId, storedStyle(learned ? { ...r.card, forgotten: undefined } : r.card));
       return r.out;
     });
   }
@@ -242,10 +270,18 @@ export class Personalize {
   }
 
   /** Replace the user's style (import, N1–N3) under the same lock as every other write.
-   *  → the card's importedAt (the SUM insight report of this import is saved only onto this card) */
-  async replaceStyle(userId: string, card: StyleCard): Promise<string> {
+   *  → the card's importedAt (the SUM insight report of this import is saved only onto this card)
+   *  `signal`: checked again inside the lock, right before the write — a cancelled import that waited for the lock
+   *  never lands (AU-16). */
+  async replaceStyle(userId: string, card: StyleCard, since?: number, signal?: AbortSignal): Promise<string> {
     const at = this.now().toISOString();
-    await this.serial(userId, () => this.store.putStyle(userId, storedStyle({ ...card, importedAt: at })));
+    await this.serial(userId, async () => {
+      if (signal?.aborted) throw new PersonalizeError(499, "import_cancelled");
+      // an import that started before "Forget all of this" never brings the old profile back (AU-92)
+      if (since !== undefined && since !== this.generation(userId)) throw new PersonalizeError(409, "profile_forgotten", "The profile was cleared while this was reading.");
+      await this.store.putStyle(userId, storedStyle({ ...card, importedAt: at }));
+      this.forgotten.delete(userId);
+    });
     return at;
   }
 
@@ -270,17 +306,20 @@ export class Personalize {
   }
 
   /** The paste's story is still being written after the import answered: GET story waits for it instead of writing another. */
-  trackLate(userId: string, job: Promise<{ raw: unknown; ms: number } | null>): void {
+  trackLate(userId: string, job: Promise<{ raw: unknown; ms: number } | null>, since = this.generation(userId)): void {
+    // written from a paste of generation `since` (the import's start): after "Forget all of this" it never lands (AU-92)
     const j = job
-      .then((r) => (r ? this.attachLate(userId, r) : undefined))
+      .then((r) => (r ? this.attachLate(userId, r, since) : undefined))
       .catch(() => {})
       .finally(() => { if (this.storyJobs.get(userId) === j) this.storyJobs.delete(userId); });
     this.storyJobs.set(userId, j);
   }
 
   /** Save a story that landed after the import response went out (only if the card has none yet). */
-  async attachLate(userId: string, r: { raw: unknown; ms: number }): Promise<void> {
+  async attachLate(userId: string, r: { raw: unknown; ms: number }, since?: number): Promise<void> {
     await this.update(userId, (card) => {
+      // checked in the per-user lock, where forgetAll bumps the generation
+      if (since !== undefined && since !== this.generation(userId)) return null;
       if (card.story) return null;
       const next = this.withStory(card, r);
       // corrected before the paste's story landed: the story was written from the old text
@@ -307,8 +346,9 @@ export class Personalize {
     const running = this.storyJobs.get(userId);
     if (running) return running;
     const job = (async () => {
+      const gen = this.generation(userId);   // "Forget all of this" while Spark writes: never saved (AU-92)
       const card = await this.store.getStyle(userId);
-      if (!card) return;
+      if (!card || card.forgotten) return;
       const need = Personalize.needsWrite(card);
       if (!need) return;
       const only = need === "all" ? undefined : need;
@@ -317,6 +357,7 @@ export class Personalize {
       const raw = await this.timedJson<unknown>(buildStoryRequest({ card, summary: await this.summaryLines(userId) }, only));
       const ms = Math.round(performance.now() - t0);
       await this.update(userId, (latest) => {
+        if (gen !== this.generation(userId)) return null;
         const prev = latest.story?.version === 2 ? latest.story : undefined;
         const { cards, topics } = toStory(raw as { cards?: unknown }, latest, prev?.cards, only);
         // the profile changed while Spark wrote: what was written may be old → stays stale, the next read rewrites it
@@ -376,7 +417,7 @@ export class Personalize {
   /** GET /v1/profile/story?wait=s — `processing` if not written within the wait. */
   async story(userId: string, waitMs = 0): Promise<{ status: "ready" | "processing" | "none"; source?: StyleCard["source"]; cards: StoryCard[]; ms?: number }> {
     let card = await this.store.getStyle(userId);
-    if (!card) return { status: "none", cards: [] };
+    if (!card || card.forgotten) return { status: "none", cards: [] };
     this.replayPending(userId, card);
     const failed = this.storyFailedAt.get(userId);
     const backoff = failed !== undefined && Date.now() - failed < STORY_BACKOFF_MS && !this.storyJobs.has(userId);
@@ -392,6 +433,7 @@ export class Personalize {
   // ───────────── "That's not me" (C1–C3) ─────────────
 
   async correct(userId: string, body: Record<string, unknown>): Promise<{ card: StoryCard | null; ack: string; changed: string[]; profile: string; rows: DisplayRow[] }> {
+    const gen = this.generation(userId);   // a forget while this reads: it is not saved (Codex #583 r12)
     const cardId = body.cardId as StoryId;
     if (!STORY_IDS.includes(cardId)) throw new PersonalizeError(400, "bad_correction", "unknown card");
     const rawItems = body.items === undefined || body.items === null ? [] : body.items;
@@ -414,7 +456,7 @@ export class Personalize {
     // itself is never stored, shown or replayed (Codex r7) — the marked lines still go
     if (text && isForgetRequest(text)) {
       this.notifyForget(userId);
-      await this.rememberForget(userId, before, forgetTarget(text));
+      await this.rememberForget(userId, before, forgetTarget(text), gen);
       if (!items.length) {
         const latest = (await this.store.getStyle(userId)) ?? before;
         this.log("profile.corrected", { card: cardId, ms: Math.round(performance.now() - t0), apply: "forget" });
@@ -433,13 +475,15 @@ export class Personalize {
     // profile updates and rewords the card in the background (queued per user, newest wins by asOf).
     const card = optimisticCard(shown, items, text);
     // the save is kept (pendingCorrections) before the answer: a Spark outage or a restart replays it later
-    await this.update(userId, (c) => {
+    const saved = await this.update(userId, (c) => {
+      if (gen !== this.generation(userId)) return null;
       const pending = [...(c.pendingCorrections ?? []), { cardId, items, text, asOf }].slice(-20);
       if (c.story?.version !== 2) return { card: { ...c, pendingCorrections: pending }, out: true };
       const cards = card ? c.story.cards.map((x) => (x.id === cardId ? card : x)) : c.story.cards.filter((x) => x.id !== cardId);
       // not marked stale here: a story read before Spark merged would reword it from the old profile
       return { card: { ...c, pendingCorrections: pending, story: { ...c.story, cards } }, out: true };
     });
+    if (!saved) return { card: null, ack: ACK, changed: [], profile: "", rows: [] };   // forgotten meanwhile: nothing kept
     this.lastSave.set(`${userId}\u0000${cardId}`, asOf);
     this.queued.add(`${userId}\u0000${asOf}`);
     this.queueCorrection(userId, () => this.applyCorrection(userId, cardId, items, text, asOf, shown, texts), `${userId}\u0000${asOf}`);
@@ -608,6 +652,8 @@ export class Personalize {
    */
   async startCall(userId: string, opts: { plan?: boolean } = {}): Promise<CallStart | null> {
     const pendingCard = await this.store.getStyle(userId);
+    // forgotten (AU-92): the call knows nothing about them, whatever copy the app sends
+    if (pendingCard?.forgotten) return { profile: "", taste: [] };
     if (pendingCard?.pendingCorrections?.length) this.replayPending(userId, pendingCard);
     if (opts.plan === false) {
       const stored = await this.store.getStyle(userId);
@@ -644,14 +690,23 @@ export class Personalize {
    * profile's own words the request named — those passed every filter once, so no new detail ("asthma when
    * running") is stored or sent on (Codex r5–r7). Returns whether anything was kept.
    */
-  private async rememberForget(userId: string, card: StyleCard, target: string): Promise<{ applied: AppliedUpdate[]; kept: string } | null> {
+  private async rememberForget(userId: string, card: StyleCard, target: string, gen?: number): Promise<{ applied: AppliedUpdate[]; kept: string } | null> {
     const keys = avoidKeys([{ text: target, forget: true }]);
     // the "not me" list's own words count too: a fact only stored in a correction ("I collect fountain pens.") is
     // still forgettable, and scrubRemoved then takes it off the list (Codex r4 P1)
-    const deniedLines = (card.insights?.denied ?? []).flatMap((d) => [d.claim, d.correction ?? ""]).filter(Boolean);
-    // …and the report's own traits (claim, receipts, chips, how I'll use it): a fact only the report holds (Codex r6 P1)
-    const reportLines = (card.insights?.observations ?? []).flatMap((o) => [o.claim, o.use_in_call, ...o.evidence.map((e) => e.quote), ...(o.chips ?? []).map((c) => c.label)]).filter(Boolean);
-    const lines = [...Object.values(card.sections ?? {}).flatMap((l) => (l as Array<{ text: string }>).map((f) => f.text)), ...deniedLines, ...reportLines];
+    // ...with the picks / items a "not me" stood on (Codex #581 r14: "forget about spicy" after a "not me" on Spicy)
+    const deniedLines = (card.insights?.denied ?? []).flatMap((d) => [d.claim, d.correction ?? "", ...(d.picks ?? []), ...(d.items ?? [])]).filter(Boolean);
+    // and what only the report says about them (an observation's claim, call line, quotes, chips): "forget leather
+    // accessories" must find it there too (Codex #581 r7)
+    const ins = card.insights;
+    const insightLines = ins ? [
+      ...ins.observations.flatMap((o) => [o.claim, o.use_in_call, ...o.evidence.map((e) => e.quote), ...(o.chips ?? []).map((c) => c.label)]),
+      // every report line scrubRemoved cleans: headline, usage, type, chain, strengths, watch-outs, mix, learning (Codex #581 r8)
+      ins.headline, ins.usage, ins.type?.name, ins.type?.line, ...(ins.type?.signature ?? []),
+      ins.chain?.you_are, ins.chain?.so_you, ins.chain?.so_ill,
+      ...ins.strengths.map((x) => x.text), ...ins.watchouts.flatMap((w) => [w.text, w.fix]), ...ins.mix.map((m) => m.evidence.quote), ...ins.learning.map((l) => l.label),
+    ].filter((x): x is string => !!x) : [];
+    const lines = [...Object.values(card.sections ?? {}).flatMap((l) => (l as Array<{ text: string }>).map((f) => f.text)), ...deniedLines, ...insightLines];
     const named = [...new Set(keys.flatMap((k) => k.keys).filter((stem) => lines.some((t) => keyWords(t).includes(stem))))];
     const words = [...new Set(lines.flatMap((t) => (t.match(/[\p{L}\p{N}-]{3,}/gu) ?? []).filter((w) => named.includes(w.toLowerCase().slice(0, 5)))))].map((w) => w.toLowerCase());
     const kept = words.join(" ").slice(0, 80);
@@ -660,6 +715,8 @@ export class Personalize {
     let applied: AppliedUpdate[] = [];
     const targetKeys = keys.flatMap((k) => k.keys);
     await this.update(userId, (c) => {
+      // read before "Forget all of this": never written onto what came after (Codex #583 r13)
+      if (gen !== undefined && gen !== this.generation(userId)) return null;
       // the profile lines the request is about go now (more than half of the request's words are in the line), so
       // the sheet's "forget that …" really removes it without waiting for Spark (Codex r8); "asthma when running"
       // does not take "Likes running." with it
@@ -685,16 +742,19 @@ export class Personalize {
    * One user line in a call. `asked` = the companion just asked this call's question: the line is always
    * checked for an answer ("Noted: …"); otherwise only lines that look like a correction reach Spark ("Updated: …").
    */
-  async voiceCorrection(userId: string, line: string, lastAssistant?: string, signal?: AbortSignal, asked?: UnknownItem | null): Promise<VoiceUpdate | null> {
+  async voiceCorrection(userId: string, line: string, lastAssistant?: string, signal?: AbortSignal, asked?: UnknownItem | null, since?: number): Promise<VoiceUpdate | null> {
     const forgetting = isForgetRequest(line);
     // A short request ("Forget it.") normally has no correction work, but it
     // still must clear volatile insights before this early return.
     if (forgetting) this.notifyForget(userId);
     if (!asked && !mightBeCorrection(line)) return null;
+    // when it was said and under which profile: captured before any await (Codex #583 r12)
+    const asOf = this.now().toISOString();
+    const gen = since ?? this.generation(userId);
+    if (gen !== this.generation(userId)) return null;   // said before "Forget all of this", run after it
     const card = await this.store.getStyle(userId);
     if (!card) return null;
     const t0 = performance.now();
-    const asOf = this.now().toISOString();
     let forgot: { applied: AppliedUpdate[]; kept: string } | null = null;
     // "forget that …": its target is kept out of everything from now on, whatever Spark makes of the line
     // checked on the whole line too: stripping punctuation can hide an email ("alice@example com", Codex P1)
@@ -702,7 +762,7 @@ export class Personalize {
       const target = forgetTarget(line);
       // a sensitive target (health, money, …) is never stored or sent on: the memory filters drop it anyway (Codex P1)
       // a target with a number in it (an address, a phone, an account) is never kept, whatever its shape
-      forgot = await this.rememberForget(userId, card, target);
+      forgot = await this.rememberForget(userId, card, target, gen);
     }
     // removed already: the call's profile and taste follow now, even if Spark has nothing more to change (Codex r9)
     const forgotUpdate = async (): Promise<VoiceUpdate | null> => {
@@ -717,6 +777,7 @@ export class Personalize {
     const updates = [...(answer ? [answer] : []), ...toCorrectionUpdates(raw, { allowRemove: FORGET.test(line) })].map((u) => ({ ...u, asOf }));
     if (!updates.length || signal?.aborted) { this.log("profile.voice_checked", { applied: 0, ms: Math.round(performance.now() - t0) }); return signal?.aborted ? null : forgotUpdate(); }
     const out = await this.update(userId, (latest) => {
+      if (gen !== this.generation(userId)) return null;   // said before "Forget all of this"
       const m = mergeUpdates(latest, updates, this.now().toISOString());
       if (!m.applied.length) return null;
       if (answer && m.applied.some((a) => a.answers === answer.answers) && m.card.growth) m.card.growth = { ...m.card.growth, asked: m.card.growth.asked.map((a) => (a.item === asked!.item ? { ...a, answered: true } : a)) };

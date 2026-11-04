@@ -40,6 +40,17 @@ struct CompanionCallPlan: Equatable {
         self.faceURL = (scene?.isEmpty ?? true) ? nil : scene
     }
 
+    /// The server renamed the companion in a call (`companion.named`): the plan follows, so the next start
+    /// carries the stored name, not the one this Mac fetched earlier (D53).
+    func renamed(_ newName: String) -> CompanionCallPlan {
+        let clean = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return self }
+        var copy = self
+        copy.name = clean
+        copy.start.persona.name = clean
+        return copy
+    }
+
     /// `sceneUrl` on the server's host when it's a path.
     func faceURL(base: URL) -> URL? {
         guard let faceURL else { return nil }
@@ -143,7 +154,8 @@ enum ProductPicks {
     }
 
     private static func basis(_ card: FindCard) -> String? {
-        guard let e = card.evidence else { return nil }
+        // product cards only: an outfit card's evidence (taste + occasion, CW-02) never replaces its why / how lines
+        guard card.kind == .product, let e = card.evidence else { return nil }
         let style = e.style.trimmingCharacters(in: .whitespaces)
         let parts = [style.isEmpty ? "" : "“\(style)”", e.situation.trimmingCharacters(in: .whitespaces)].filter { !$0.isEmpty }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")

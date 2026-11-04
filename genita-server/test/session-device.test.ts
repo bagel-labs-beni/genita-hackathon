@@ -13,6 +13,8 @@ import type { AsrEvent } from "../src/meta/transcribe.ts";
 import type { SparkStreamEvent } from "../src/meta/spark.ts";
 import type { TtsChunk } from "../src/tts/types.ts";
 import { speechLang } from "../src/text/language.ts";
+// hold cap B (11/4) made the 1.4 s beat land inside these timing tests (they pin exact say/narration lines): off here
+process.env.GENITA_HOLD_CAP_MS = "0";
 
 const config: Config = {
   metaKey: "x",
@@ -271,4 +273,19 @@ test("speechLang maps text + language name to a BCP-47 tag", () => {
   assert.equal(speechLang("Hola.", "Spanish"), "es-ES");
   assert.equal(speechLang("Bonjour.", "fr-CA"), "fr-CA");
   assert.equal(speechLang("Hello.", "Unrecognized language"), "en-US");
+});
+
+test("hold cap B (11/4): a short complete line the end-of-turn hold kept open is answered with no beat on top", async () => {
+  const prev = process.env.GENITA_HOLD_CAP_MS;
+  delete process.env.GENITA_HOLD_CAP_MS;
+  try {
+    const { asr, client, session } = setup();
+    await session.onClientText(JSON.stringify({ type: "start", persona }));
+    asr.fire({ type: "speechStart", turnId: 0 });
+    asr.fire({ type: "speechEnd", turnId: 0 });
+    asr.fire({ type: "speechComplete", turnId: 0, text: "I got the job" });
+    await client.waitFor((m) => m.type === "reply");
+    assert.ok(!client.of("say").some((s) => /^(?:Mm|Yeah|Ooh)\.$/.test(String(s.text))), "no beat");
+    session.close();
+  } finally { if (prev !== undefined) process.env.GENITA_HOLD_CAP_MS = prev; }
 });

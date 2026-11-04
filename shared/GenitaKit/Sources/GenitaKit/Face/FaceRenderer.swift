@@ -55,6 +55,12 @@ public final class FaceRenderer: @unchecked Sendable {
     /// (default on); tools force it (FaceRender FACE_MOUTH_INTERIOR=0 renders build 6).
     nonisolated(unsafe) public static var mouthInterior: Bool? = nil
     private var browTracker = BrowFlash.Tracker()
+    private var timedBrows = BrowFlash.Timed()
+    /// Watch "inhale" backchannel (#613): the brows lift once (0.3 s) starting at render time `t` (the clock `render(at:)`
+    /// gets), with or without a reply playing. No-op on faces without a brow band (animals) and with Reduce Motion.
+    public func flashBrows(at t: Double) { lock.lock(); timedBrows.trigger(at: t); lock.unlock() }
+    /// This face has a brow band to lift (tests).
+    var hasBrowBand: Bool { browMask != nil }
     /// Brow band and the eye cut-out (image coordinates, y up) from the eye line and the mouth centre: the brows sit
     /// 0.3 of the eye→mouth distance above the eyes, capped at 0.12 face widths (11/4: the face box takes in hair, so
     /// a band hung from its top lifted the hairline, not the brows). The brow ellipse ends above the eye cut-out.
@@ -164,6 +170,8 @@ public final class FaceRenderer: @unchecked Sendable {
     public var expressionStillWeights: [FaceExpression: Double] { lock.lock(); defer { lock.unlock() }; return stills.shown.mapValues(\.band) }
     /// Laugh events on lip-rig faces play as `smileopen` (demo setting; the laugh warp fights the rig).
     nonisolated(unsafe) public static var laughAsSmileOpen = true
+    /// The next frame starts the alive motion still again and eases it in (`AliveMotion.restartRun`).
+    public func restartMotion() { lock.lock(); motion.restartRun(); lock.unlock() }
     /// Cancel / barge-in: drop the mouth's smoothing and held shapes so it rests on the next frame (an expression
     /// on screen relaxes smoothly; its reply's events are dropped).
     public func resetMouth() { lock.lock(); flowMorph?.reset(); stills.cancel(); browTracker = BrowFlash.Tracker(); lock.unlock() }
@@ -179,6 +187,8 @@ public final class FaceRenderer: @unchecked Sendable {
         self.reduceMotion = reduceMotion
         rng = SplitMix64(seed: seed)
         motion = AliveMotion(seed: seed)
+        // build 10: no frame sway unless the served map asks (`alive.sway`); a missing or old map never brings it back
+        motion.swayGain = 0
         if let a = faceSet.flow?.map.alive ?? (faceSet.flow?.kind == "human" ? FlowMap.Alive() : nil) {
             motion.headGain = a.headGain; motion.nodGain = a.nodGain
             motion.rollGain = a.rollGain ?? a.headGain; motion.nodWidth = a.nodWidth; motion.cameraGain = a.camera
@@ -407,10 +417,12 @@ public final class FaceRenderer: @unchecked Sendable {
 
         // 4b. brow flash (11/4): stressed words lift the brows ~0.2 of their gap for 0.3 s — the band is moved up rigidly
         // through a soft mask (no warp of the eyes; 0–2 per sentence)
-        if Self.browFlash, !reduceMotion, stillsTotal < 0.15, let bm = browMask, let ctx = context {
+        if Self.browFlash, !reduceMotion, stillsTotal < 0.15, let bm = browMask {
             let w: Double = { lock.lock(); defer { lock.unlock() }
-                return browTracker.weight(atMs: ctx.audioMs - lipLookaheadMs, phonemes: ctx.timeline.phonemeTimings,
-                                      audioRevision: ctx.timeline.receivedAudioEndMs, loudness: { ctx.timeline.loudness(atMs: $0) }) }()
+                let timed = timedBrows.weight(at: t)   // the watch inhale (render clock)
+                guard let ctx = context else { return timed }
+                return max(timed, browTracker.weight(atMs: ctx.audioMs - lipLookaheadMs, phonemes: ctx.timeline.phonemeTimings,
+                                      audioRevision: ctx.timeline.receivedAudioEndMs, loudness: { ctx.timeline.loudness(atMs: $0) })) }()
             if w > 0.01 {
                 let lifted = img.clampedToExtent().transformed(by: CGAffineTransform(translationX: 0, y: browLift * CGFloat(w))).cropped(to: extent)
                 let f = CIFilter.blendWithAlphaMask()
@@ -425,16 +437,9 @@ public final class FaceRenderer: @unchecked Sendable {
         // resolution: the frame so far (mouth, jaw, blink included) is cut into head, body and
         // background layers that move separately, so the mouth rides the head and never slides.
         let out = CGRect(origin: .zero, size: outputSize)
-        let scale = max(outputSize.width / extent.width, outputSize.height / extent.height) * (reduceMotion ? 1 : AliveMotion.overscan)
-        var fill = CGAffineTransform(a: scale, b: 0, c: 0, d: scale,
-                                     tx: (outputSize.width - extent.width * scale) / 2, ty: (outputSize.height - extent.height * scale) / 2)
-        if framingZoom > 1.001 {
-            // zoom about the framing point where it already sits on screen (inside the image: no edge shows)
-            let c = CGPoint(x: framingCenter.x - extent.minX, y: framingCenter.y - extent.minY).applying(fill)
-            fill = fill.concatenating(CGAffineTransform(translationX: -c.x, y: -c.y))
-                .concatenating(CGAffineTransform(scaleX: framingZoom, y: framingZoom))
-                .concatenating(CGAffineTransform(translationX: c.x, y: c.y))
-        }
+        // (one transform with `framedScene`, so the call scene shown before the face set lands sits on these pixels)
+        let fill = Self.fillTransform(still: extent.size, output: outputSize, zoom: framingZoom,
+                                      center: CGPoint(x: framingCenter.x - extent.minX, y: framingCenter.y - extent.minY), reduceMotion: reduceMotion)
         let filled = img.clampedToExtent().transformed(by: fill)
         guard !reduceMotion else { return filled.cropped(to: out) }
         var m = motionState(at: t, open: open, face: Self.ciRect(faceSet.faceBox, height: h))
@@ -564,8 +569,9 @@ public final class FaceRenderer: @unchecked Sendable {
     static func framing(_ set: FaceSet) -> (zoom: CGFloat, center: CGPoint) {
         let f = set.faceBox, H = Double(set.pixelSize.height)
         let fh = Double(f.height) / max(1, H)
-        let fr = set.flow?.map.framing
-        let human = (set.flow?.kind ?? "human") == "human"
+        // the manifest's kind and map framing, also when the flow didn't load (server `framing` uses them; Codex P2)
+        let fr = set.mapFraming
+        let human = (set.framingKind ?? "human") == "human"
         var z = fr?.zoom ?? (human || fh <= 0 ? 1 : min(1.35, max(1, 0.35 / fh)))
         z = z.isFinite ? min(2, max(1, z)) : 1
         let cy = fr?.cy.map { $0 * H } ?? (Double(f.midY) - 0.1 * Double(f.height))

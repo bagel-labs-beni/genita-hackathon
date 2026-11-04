@@ -64,12 +64,28 @@ import XCTest
 
     func testNewResultDoesNotTakeTheCardYouRead() {
         let m = FindsModel()
+        m.followsNewSearch = false
         m.apply(started("a")); m.apply(created("a")); m.force(.half)
         m.apply(started("b"))
         XCTAssertEqual(m.state, .half); XCTAssertEqual(m.page, 0)
         m.apply(created("b"))
         XCTAssertEqual(m.page, 0); XCTAssertNotNil(m.newFind)
         m.viewNewFind(); XCTAssertEqual(m.page, 1); XCTAssertNil(m.newFind)
+    }
+
+    /// P1-12: on the Mac the sheet stays open while she talks, so the search she just asked for takes the sheet.
+    func testMacSheetFollowsTheNewSearchInsteadOfABannerOnly() async throws {
+        let m = FindsModel()
+        m.followsNewSearch = true
+        m.apply(started("a")); m.apply(created("a")); m.force(.full)
+        m.apply(started("b"))
+        XCTAssertEqual(m.state, .searching, "the new search shows, not nothing until a banner")
+        XCTAssertEqual(m.current?.id, "b")
+        m.apply(created("b"))
+        XCTAssertEqual(m.state, .rising); XCTAssertNil(m.newFind, "its card rises, no New · View banner")
+        try await Task.sleep(for: .milliseconds(600))
+        XCTAssertEqual(m.state, .half); XCTAssertEqual(m.current?.id, "b")
+        XCTAssertEqual(m.cardCount, 2, "the first card stays in the pager")
     }
 
     func testItemsAndImagesUpdateTheCard() throws {
@@ -396,6 +412,7 @@ import XCTest
         XCTAssertEqual(FindCardPage.halfCameraHeight(titleRow: 53), 132, "one-line title: r03 picture, unchanged")
         let twoLines: CGFloat = 87 // "Kimchi fried rice / with tofu and egg" + subtitle
         XCTAssertLessThanOrEqual(40 + 44 + 3 * 8 + twoLines + FindCardPage.halfCameraHeight(titleRow: twoLines) + 44, 344, "chips whole")
-        XCTAssertEqual(FindCardPage.halfCameraHeight(titleRow: 200), 88, "never smaller than 88")
+        XCTAssertEqual(FindCardPage.halfCameraHeight(titleRow: 104), 88, "88 while it fits")
+        XCTAssertEqual(FindCardPage.halfCameraHeight(titleRow: 200), 0, "big text: no picture in the half sheet, chips whole")
     }
 }

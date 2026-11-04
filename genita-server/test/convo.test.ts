@@ -15,7 +15,7 @@ import type { SparkRequest, SparkStreamEvent } from "../src/meta/spark.ts";
 
 const v1 = process.env.GENITA_CONVO_V1 !== "0";
 /** a hold beat line (audio only), HOLD_BEATS without tags */
-const BEAT = /^(?:Mm\.|Ooh\.|Yeah\.|Okay, so\.|Hmm\.|Mm-hm\.)$/;
+const BEAT = /^(?:Mm\.|Ooh\.|Yeah\.)$/;
 const none = { camera: false, userText: "" };
 
 // ───────────── sentence guard ─────────────
@@ -1903,4 +1903,185 @@ test("intel eval 11/4 forget in call: after 'forget I said that' the pointed-at 
   assert.doesNotMatch(next, /happy birthday|forget I said/);
   assert.equal(session.forgetAsked, true);
   session.close();
+});
+
+test("intel eval 11/4 task hints: a plan ask gets the work-it-out line, an unknown 'him' gets ask-who, chit-chat gets neither", { skip: !v1 }, async () => {
+  const { client, session, calls } = setup(["<teasing> Pack first, ten minutes."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
+  const say = async (text: string) => { const n = calls.length; await session.onClientText(JSON.stringify({ type: "text", text })); await client.waitFor((m) => m.type === "reply" && m.final === true && calls.length > n); return calls.at(-1)!.instructions ?? ""; };
+  assert.doesNotMatch(await say("lol hi"), /Work it out for real|who they mean/);
+  assert.match(await say("i have 45 minutes before i leave, need to shower, eat and pack. go"), /Work it out for real/);
+  assert.match(await say("should i text him or not"), /who they mean/);
+  session.close();
+});
+
+test("hold cap B (Chelsea 11/4): 1400 ms by default with the short 'Mm. / Yeah. / Ooh.' set", async () => {
+  const { holdCapMs, HOLD_CAP_DEFAULT_MS, HOLD_BEATS } = await import("../src/session/session.ts");
+  assert.equal(HOLD_CAP_DEFAULT_MS, 1400);
+  assert.equal(holdCapMs({}), 1400);
+  assert.equal(holdCapMs({ GENITA_HOLD_CAP_MS: "0" }), 0, "0 still turns it off");
+  assert.equal(holdCapMs({ GENITA_HOLD_CAP_MS: "junk" }), 1400);
+  assert.deepEqual(HOLD_BEATS.map((b) => b.replace(/<[^>]*>\s*/g, "")), ["Mm.", "Ooh.", "Yeah."]);
+  assert.ok(!HOLD_BEATS.some((b) => /\bAw\b/i.test(b)));
+});
+
+test("hold cap B turn-taking (default 1400 ms): a quick answer gets no beat, a slow one exactly one, a new line from the user cancels the beat", { skip: !v1 }, async (t) => {
+  const prev = process.env.GENITA_HOLD_CAP_MS;
+  delete process.env.GENITA_HOLD_CAP_MS;
+  t.after(() => { if (prev !== undefined) process.env.GENITA_HOLD_CAP_MS = prev; });
+  let wait = 900;
+  const client = new Client();
+  const session = new Session("capB", client, {
+    config, openAsr: () => { throw new Error("no asr"); },
+    async *spark(_req, { signal }): AsyncGenerator<SparkStreamEvent> {
+      await new Promise((r) => setTimeout(r, wait));
+      if (signal?.aborted) return;
+      yield { type: "text", delta: "<warm> Sure. Pasta it is, twenty minutes." };
+      yield { type: "done", responseId: "r", text: "", status: "completed" };
+    },
+    async *tts() {},
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  const beats = () => client.json.filter((m) => m.type === "say" && BEAT.test(String(m.text))).length;
+  // a short complete line answered under 1.4 s: no beat
+  await session.onClientText(JSON.stringify({ type: "text", text: "what's for dinner?" }));
+  await client.waitFor((m) => m.type === "reply" && m.final === true, 5000);
+  assert.equal(beats(), 0, "no beat on a quick answer");
+  // a slow answer (2.6 s): exactly one beat in the pause
+  client.json.length = 0;
+  wait = 2600;
+  await session.onClientText(JSON.stringify({ type: "text", text: "and what about dessert, something chocolate maybe" }));
+  await client.waitFor((m) => m.type === "reply" && m.final === true, 8000);
+  assert.equal(beats(), 1, "one beat per pause");
+  // the user talks again before the cap: the first reply is dropped with no beat over them, the next pause gets at most one
+  client.json.length = 0;
+  wait = 2600;
+  await session.onClientText(JSON.stringify({ type: "text", text: "wait" }));
+  await new Promise((r) => setTimeout(r, 600));
+  const atInterrupt = beats();
+  await session.onClientText(JSON.stringify({ type: "text", text: "actually make it vanilla" }));
+  await client.waitFor((m) => m.type === "reply" && m.final === true, 8000);
+  assert.equal(atInterrupt, 0, "no beat before the cap, while they were still talking");
+  assert.ok(beats() <= 1, `at most one beat (got ${beats()})`);
+  session.close();
+});
+
+test("Codex #664 r1: a slow reply to a real crisis line gets no hold beat ahead of the help", { skip: !v1 }, async (t) => {
+  const prev = process.env.GENITA_HOLD_CAP_MS;
+  process.env.GENITA_HOLD_CAP_MS = "100";
+  t.after(() => { if (prev === undefined) delete process.env.GENITA_HOLD_CAP_MS; else process.env.GENITA_HOLD_CAP_MS = prev; });
+  const client = new Client();
+  const session = new Session("capCrisis", client, {
+    config, openAsr: () => { throw new Error("no asr"); },
+    async *spark(): AsyncGenerator<SparkStreamEvent> {
+      await new Promise((r) => setTimeout(r, 900));
+      yield { type: "text", delta: "<sad> I'm really glad you told me. Please call or text 988 right now." };
+      yield { type: "done", responseId: "r", text: "", status: "completed" };
+    },
+    async *tts() {},
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "I want to kill myself." }));
+  await client.waitFor((m) => m.type === "reply" && m.final === true, 8000);
+  assert.ok(!client.json.some((m) => m.type === "say" && BEAT.test(String(m.text))), "no beat before the help");
+  session.close();
+});
+
+test("Codex #664 r2: medical / danger emergencies get no hold beat", async () => {
+  const { NO_BEAT_EMERGENCY } = await import("../src/session/session.ts");
+  for (const t of ["I can't breathe. My chest feels tight.", "someone is following me", "I think I'm having a heart attack", "my throat is closing"]) assert.ok(NO_BEAT_EMERGENCY.test(t), t);
+  for (const t of ["what's for dinner?", "tell me about octopuses", "I had a long day"]) assert.ok(!NO_BEAT_EMERGENCY.test(t), t);
+});
+
+test("demo S4: asked which to wear, a neutral undertone / color-season note is advice; a looks judgment still is not", async () => {
+  const { guardSentence } = await import("../src/convo/guard.ts");
+  const ask = "Which one looks better on me, the white one or the black one? It's for the Halloween party tonight.";
+  assert.equal(guardSentence("You have warm undertones, so dark brown shoes or leather accessories will pull it together.", { camera: true, userText: ask }), null);
+  assert.equal(guardSentence("With your warm skin tone, the black one with dark brown shoes works.", { camera: true, userText: ask }), null);
+  assert.equal(guardSentence("Your skin is glowing, the black one wins.", { camera: true, userText: ask }), "appearance");
+  assert.equal(guardSentence("You look so pretty in the black one.", { camera: true, userText: ask }), "appearance");
+  assert.equal(guardSentence("Your warm skin tone looks great.", { camera: true, userText: "how was your day" }), "appearance", "no style ask: still a comment on them");
+});
+
+test("Codex #675 r1: a body judgment next to 'warm undertones' is still an appearance line; 'explain the word outfit' is no style ask", async () => {
+  const { guardSentence } = await import("../src/convo/guard.ts");
+  assert.equal(guardSentence("Your body is too fat for that dress, even with warm undertones.", { camera: true, userText: "Which outfit should I wear?" }), "appearance");
+  assert.equal(guardSentence("You have warm undertones, so dark brown shoes or leather accessories will pull it together.", { camera: true, userText: "Which one looks better on me, the white one or the black one?" }), null);
+});
+
+test("Codex #675 r2: 'your skin is wrinkled' next to undertones is still appearance; 'what goes with mashed potatoes' is no style ask", async () => {
+  const { guardSentence } = await import("../src/convo/guard.ts");
+  assert.equal(guardSentence("Your skin is wrinkled despite your warm undertones.", { camera: true, userText: "Which outfit should I wear?" }), "appearance");
+  assert.equal(guardSentence("Your warm skin tone works well with black.", { camera: true, userText: "What goes with mashed potatoes?" }), "appearance");
+  assert.equal(guardSentence("Your warm skin tone works well with black.", { camera: true, userText: "What goes with this black dress?" }), null);
+});
+test("Codex #675 r3: a verdict on the skin tone itself, or a non-clothes 'which one is better', gets no color exception", async () => {
+  const { guardSentence } = await import("../src/convo/guard.ts");
+  assert.equal(guardSentence("Your skin tone is blotchy and uneven.", { camera: true, userText: "Which outfit should I wear?" }), "appearance");
+  assert.equal(guardSentence("Your warm skin tone is dull.", { camera: true, userText: "Which one is better for learning Python?" }), "appearance");
+  assert.equal(guardSentence("You have warm undertones, so dark brown shoes or leather accessories will pull it together.", { camera: true, userText: "Which one looks better on me, the white one or the black one?" }), null);
+});
+
+test("Codex #664 r3 P1: breathing / break-in variants get no hold beat (regex + slow Session reply)", { skip: !v1 }, async (t) => {
+  const { NO_BEAT_EMERGENCY } = await import("../src/session/session.ts");
+  for (const s of ["My baby has stopped breathing.", "Someone is breaking into my house.", "he isn't breathing", "someone broke into our apartment", "there's a guy in my house", "my dad collapsed and won't wake up", "Someone's in my house.", "somebody's following me", "they're trying to break in"]) assert.ok(NO_BEAT_EMERGENCY.test(s), s);
+  for (const s of ["take a deep breath with me", "I love breakfast", "tell me a story about a fireplace"]) assert.ok(!NO_BEAT_EMERGENCY.test(s), s);
+  const prev = process.env.GENITA_HOLD_CAP_MS;
+  process.env.GENITA_HOLD_CAP_MS = "100";
+  t.after(() => { if (prev === undefined) delete process.env.GENITA_HOLD_CAP_MS; else process.env.GENITA_HOLD_CAP_MS = prev; });
+  for (const line of ["My baby has stopped breathing.", "Someone is breaking into my house.", "Someone's in my house."]) {
+    const client = new Client();
+    const session = new Session("capEmerg", client, {
+      config, openAsr: () => { throw new Error("no asr"); },
+      async *spark(): AsyncGenerator<SparkStreamEvent> {
+        await new Promise((r) => setTimeout(r, 900));
+        yield { type: "text", delta: "<sad> Call nine one one right now." };
+        yield { type: "done", responseId: "r", text: "", status: "completed" };
+      },
+      async *tts() {},
+    });
+    await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+    await session.onClientText(JSON.stringify({ type: "text", text: line }));
+    await client.waitFor((m) => m.type === "reply" && m.final === true, 8000);
+    assert.ok(!client.json.some((m) => m.type === "say" && BEAT.test(String(m.text))), `no beat before the help: ${line}`);
+    session.close();
+  }
+});
+
+test("Codex #664 r3 P2: the same hold beat never plays twice in a row, even when recent replies rule out two beats", { skip: !v1 }, async (t) => {
+  const prev = process.env.GENITA_HOLD_CAP_MS;
+  process.env.GENITA_HOLD_CAP_MS = "100";
+  t.after(() => { if (prev === undefined) delete process.env.GENITA_HOLD_CAP_MS; else process.env.GENITA_HOLD_CAP_MS = prev; });
+  const replies = ["<warm> Mm, that sounds cozy.", "<curious> Ooh, tell me more.", "<warm> Sure, here it is.", "<warm> Sure, one more."];
+  let n = 0;
+  const client = new Client();
+  const session = new Session("capRepeat", client, {
+    config, openAsr: () => { throw new Error("no asr"); },
+    async *spark(): AsyncGenerator<SparkStreamEvent> {
+      const k = n++;
+      if (k >= 2) await new Promise((r) => setTimeout(r, 900));
+      yield { type: "text", delta: replies[k] ?? "<warm> Sure." };
+      yield { type: "done", responseId: "r", text: "", status: "completed" };
+    },
+    async *tts() {},
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  const beatsSaid: string[] = [];
+  for (const text of ["a cozy night in", "what else", "and a recipe please", "one more recipe please"]) {
+    client.json.length = 0;
+    await session.onClientText(JSON.stringify({ type: "text", text }));
+    await client.waitFor((m) => m.type === "reply" && m.final === true, 8000);
+    beatsSaid.push(...client.json.filter((m) => m.type === "say" && BEAT.test(String(m.text))).map((m) => String(m.text)));
+  }
+  assert.ok(beatsSaid.length >= 2, `two slow turns each got a beat (${beatsSaid.join(",")})`);
+  for (let i = 1; i < beatsSaid.length; i++) assert.notEqual(beatsSaid[i], beatsSaid[i - 1], beatsSaid.join(","));
+  session.close();
+});
+
+test("Codex #675 r4 P2: 'skin tone needs evening out' is a verdict; a website color ask gets no color exception", async () => {
+  const { guardSentence } = await import("../src/convo/guard.ts");
+  assert.equal(guardSentence("Your skin tone needs evening out, so wear the black dress.", { camera: true, userText: "Which outfit should I wear?" }), "appearance");
+  assert.equal(guardSentence("Your skin tone's awful, so wear the black dress.", { camera: true, userText: "Which outfit should I wear?" }), "appearance");
+  assert.equal(guardSentence("Your warm skin tone works well with black.", { camera: true, userText: "Which color works better for my website, black or white?" }), "appearance");
+  assert.equal(guardSentence("With your warm skin tone, the black one with dark brown shoes works.", { camera: true, userText: "Which color looks better on me, black or white?" }), null);
 });

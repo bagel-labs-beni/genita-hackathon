@@ -48,6 +48,12 @@ public final class FaceDriver: ObservableObject {
     private var linkTarget: DisplayLinkTarget?
     #else
     private var timer: Timer?
+    /// Mac CPU (MA-04, ≤ 30 %): the face renders at 24 fps only while the companion talks; listening it moves
+    /// slowly enough for 12 fps; a window the user can't see renders nothing (resumes on the next visible tick).
+    public var visible = true
+    public static let macTalkingFPS = 24.0
+    public static let macListeningFPS = 12.0
+    private var lastRenderAt = 0.0
     #endif
 
     public init(faceSet: FaceSet, outputSize: CGSize, reduceMotion: Bool = false, seed: UInt64 = UInt64.random(in: 1...UInt64.max)) {
@@ -55,6 +61,16 @@ public final class FaceDriver: ObservableObject {
         lookaheadMs = renderer.lipLookaheadMs
         aheadMs = renderer.lipAheadMs
         self.reduceMotion = reduceMotion
+    }
+
+    /// A renderer built off the main thread (its `FlowMorph` setup is the expensive part; face plan item 5). It must
+    /// not be used elsewhere once handed over: from here on it lives on this driver's render queue.
+    public init(renderer: FaceRenderer, reduceMotion: Bool) {
+        self.renderer = renderer
+        lookaheadMs = renderer.lipLookaheadMs
+        aheadMs = renderer.lipAheadMs
+        self.reduceMotion = reduceMotion
+        renderer.reduceMotion = reduceMotion
     }
 
     // MARK: events
@@ -111,6 +127,16 @@ public final class FaceDriver: ObservableObject {
         queue.async { r.addExpression(e, utteranceId: utteranceId) }
     }
 
+    /// Watch "inhale" backchannel (#613): the brows go up once (0.3 s) now, on the render clock — no reply needed.
+    /// Ignored while a reply is playing (the server doesn't send it then; the talking face keeps its own brows).
+    /// Returns whether the flash was started.
+    @discardableResult public func flashBrows() -> Bool {
+        if currentUtteranceId != nil, playbackClock() != nil { return false }
+        let r = renderer, t = now()
+        queue.async { r.flashBrows(at: t) }
+        return true
+    }
+
     public func setEmotion(_ emotion: String?) {
         let r = renderer, t = now()
         queue.async { r.setEmotion(emotion, at: t) }
@@ -139,7 +165,32 @@ public final class FaceDriver: ObservableObject {
         return queue.sync { renderer.render(at: t, lip: lip) }
     }
 
+    private var running: Bool {
+        #if os(iOS)
+        link != nil
+        #else
+        timer != nil
+        #endif
+    }
+
+    /// What the display link draws at this playhead: the mouth (with its lookahead), the expression stills and the
+    /// speech sway all read the same audio clock. nil playhead → the face at rest (alive motion still runs).
+    private func liveInputs(playbackMs ms: Double?) -> (LipFrame, LipFrame?, LipContext?) {
+        let lip = ms.map { timeline.sample(atMs: $0 + lookaheadMs) } ?? .rest
+        let ahead = aheadMs > 0 ? ms.map { timeline.sample(atMs: $0 + lookaheadMs + aheadMs) } : nil
+        let ctx = ms.map { LipContext(audioMs: $0 + lookaheadMs, timeline: timeline) }
+        return (lip, ahead, ctx)
+    }
+
+    /// One frame exactly as the live display link draws it (tests): mouth, expressions and alive motion.
+    public func renderLiveFrame(at t: Double, playbackMs: Double?) -> CGImage? {
+        let (lip, ahead, ctx) = liveInputs(playbackMs: playbackMs)
+        return queue.sync { renderer.render(at: t, lip: lip, ahead: ahead, lipContext: ctx) }
+    }
+
     public func start() {
+        // face plan item 1: the first live frame is the rest frame (the poster / framed scene), then the motion eases in
+        if !running { let r = renderer; queue.async { r.restartMotion() } }
         #if os(iOS)
         guard link == nil else { return }
         let target = DisplayLinkTarget { [weak self] in self?.tick() }
@@ -180,11 +231,18 @@ public final class FaceDriver: ObservableObject {
 
     private func tick() {
         guard !rendering else { return }   // drop a frame rather than queue them up
+        #if os(macOS)
+        guard visible else { return }
+        let nowT = CACurrentMediaTime()
+        // talking = a reply's audio is playing now (the utterance id stays set after it ends)
+        let talking = currentUtteranceId != nil && playbackClock() != nil
+        let fps = talking ? Self.macTalkingFPS : Self.macListeningFPS
+        guard nowT - lastRenderAt >= 1 / fps - 0.004 else { return }
+        lastRenderAt = nowT
+        #endif
         rendering = true
         let ms = currentUtteranceId == nil ? nil : playbackClock()
-        let lip = ms.map { timeline.sample(atMs: $0 + lookaheadMs) } ?? .rest
-        let ahead = aheadMs > 0 ? ms.map { timeline.sample(atMs: $0 + lookaheadMs + aheadMs) } : nil
-        let ctx = ms.map { LipContext(audioMs: $0 + lookaheadMs, timeline: timeline) }
+        let (lip, ahead, ctx) = liveInputs(playbackMs: ms)
         let r = renderer, t = now()
         queue.async { [weak self] in
             let image = r.render(at: t, lip: lip, ahead: ahead, lipContext: ctx)

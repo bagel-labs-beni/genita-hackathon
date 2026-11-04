@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreText
 import PhotosUI
 import UniformTypeIdentifiers
 
@@ -249,8 +250,30 @@ import UniformTypeIdentifiers
         }()
         DesignShape(node: card).designSlot(card, width: width, top: top)
         ForEach(texts.filter { $0.id != title.id && $0.y < 700 && ($0.y < 319 || $0.y >= 617) }) { n in
-            DesignText(node: n).designSlot(n, width: width, top: top)
+            if stage == .paste, model.importRetryNote, n.characters?.hasPrefix("Paste the full response") == true {
+                // AU-15 (춘식이 F2): back from a failed background import — the subtitle itself says so, same slot, no shift
+                let line = n.lineHeight ?? 24
+                HStack(alignment: .top, spacing: 6) {
+                    Circle().fill(Color(red: 251 / 255, green: 227 / 255, blue: 180 / 255)).frame(width: 18, height: 18)
+                        .overlay(Text("!").font(TypeStyle.body(12, .bold)).foregroundStyle(Color(red: 138 / 255, green: 75 / 255, blue: 0)))
+                        .padding(.top, max(0, (line - 18) / 2))
+                    Text("That one didn’t come through. Paste it again below.")
+                        .font(TypeStyle.body(n.fontSize ?? 18, .medium))
+                        .lineSpacing(max(0, line - (UIFont(name: "PretendardVariable-Medium", size: n.fontSize ?? 18)?.lineHeight ?? line)))
+                        .foregroundStyle(Color(red: 138 / 255, green: 75 / 255, blue: 0))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .designSlot(n, width: width, top: top)
+                .transition(.opacity)
+                .accessibilityElement(children: .combine).accessibilityIdentifier("importRetryNote")
+            } else {
+                DesignText(node: n).designSlot(n, width: width, top: top)
+            }
         }
+        .animation(.easeInOut(duration: 0.2), value: model.importRetryNote)
+        // a new paste or an edit brings the usual subtitle back (200 ms crossfade above)
+        .onChange(of: model.setup.response) { _, _ in if model.importRetryNote { model.importRetryNote = false } }
         let body = texts.first { $0.y == 319 }!
         if stage == .prompt {
             // ui-deferred: the prompt fades at both scroll edges (20 pt under the header, 32 pt at the bottom), never a hard cut.
@@ -287,8 +310,23 @@ import UniformTypeIdentifiers
             }.buttonStyle(.plain).position(x: width / 2, y: cardBottom + 78).accessibilityIdentifier("skipImport")
         } else {
             let editorHeight = max(1, min(card.h - 76, keyboardTop - body.y - top - 8))
-            ReferenceEditor(text: stage == .preferences ? .constant(model.styleText) : $model.setup.response, node: body, editable: stage == .paste, placeholder: "Paste the profile your AI wrote for you...")
-                .frame(width: body.w + width - 390, height: editorHeight).position(x: body.x + (body.w + width - 390) / 2, y: body.y + top + editorHeight / 2).accessibilityIdentifier(stage == .paste ? "responseInput" : "profileResult")
+            // I02 / I04 (TF 331): a long reply scrolled up under "Your AI’s response" and the Paste pill with a hard cut. Same
+            // edges as I01's prompt (#485): the editor starts 20 pt higher with a 20 pt top fade (the text still rests where it
+            // did), and the card's 44 pt header band is opaque over the scrolled text, with the label redrawn on it.
+            let fadeTop = ScrollEdgeFade.top
+            let editorTop = body.y - fadeTop
+            ReferenceEditor(text: stage == .preferences ? .constant(model.styleText) : $model.setup.response, node: body, editable: stage == .paste, placeholder: "Paste the profile your AI wrote for you...",
+                            topInset: fadeTop)
+                .frame(width: body.w + width - 390, height: editorHeight + fadeTop)
+                .scrollEdgeFade(top: fadeTop, bottom: 0)
+                .position(x: body.x + (body.w + width - 390) / 2, y: editorTop + top + (editorHeight + fadeTop) / 2).accessibilityIdentifier(stage == .paste ? "responseInput" : "profileResult")
+            UnevenRoundedRectangle(topLeadingRadius: (card.radius ?? 16) - 1, topTrailingRadius: (card.radius ?? 16) - 1).fill(card.fill?.color ?? .white)
+                .frame(width: card.w + width - 390 - 2, height: ScrollEdgeFade.header - 1)
+                .position(x: card.x + (card.w + width - 390) / 2, y: card.y + top + 1 + (ScrollEdgeFade.header - 1) / 2)
+                .allowsHitTesting(false).accessibilityHidden(true)
+            if let label = texts.first(where: { $0.characters == (stage == .paste ? "Your AI’s response" : "Your preferences") }) {
+                DesignText(node: label).designSlot(label, width: width, top: top).accessibilityHidden(true)
+            }
             if stage == .paste {
                 // I02 one tap: paste the reply straight from the clipboard (system paste button, no permission prompt)
                 PasteButton(payloadType: String.self) { strings in
@@ -339,7 +377,8 @@ import UniformTypeIdentifiers
     @ViewBuilder func processing(width: CGFloat, top: CGFloat, shift: CGFloat = 0) -> some View {
         // the reading block (title, line, bar, %) follows the orb down by `shift`; the heading stays
         ForEach(texts.filter { $0.id != title.id && $0.y < 650 }) { n in
-            DesignText(node: n, text: n.characters == "62%" ? "\(Int(progress * 100))%" : nil).designSlot(n, width: width, top: top + (n.y >= Self.readingBlockTop ? shift : 0))
+            let fit = Self.processingLine(n, width: width, percent: "\(Int(progress * 100))%")
+            DesignText(node: fit.node, text: fit.text).designSlot(fit.node, width: width, top: top + (n.y >= Self.readingBlockTop ? shift : 0))
         }
         let track = nodes.first { $0.name == "Rectangle 305" }!
         let fill = nodes.first { $0.name == "Rectangle 306" }!
@@ -347,6 +386,33 @@ import UniformTypeIdentifiers
         DesignShape(node: track).frame(width: trackWidth, height: track.h).position(x: (width + 1) / 2, y: track.y + top + shift + track.h / 2)
         let fillWidth = referenceViewport ? fill.w : trackWidth * CGFloat(progress)
         DesignShape(node: fill).frame(width: fillWidth, height: fill.h).position(x: 59 + fillWidth / 2, y: fill.y + top + shift + fill.h / 2)
+    }
+
+    /// I03 reading-block text: "62%" is live; a line that doesn't fit its slot (SE 375: "Picking up your preferences and
+    /// communication style." in 280 pt) gets a second line instead of being cut, with its last two words kept together.
+    /// At 390 the Figma line stays one line.
+    static func processingLine(_ n: DesignNode, width: CGFloat, percent: String) -> (node: DesignNode, text: String?) {
+        if n.characters == "62%" { return (n, percent) }
+        guard let chars = n.characters, !chars.contains("\n"), chars.split(separator: " ").count > 2 else { return (n, nil) }
+        var text = chars
+        if let r = text.range(of: " ", options: .backwards) { text.replaceSubrange(r, with: "\u{00A0}") }
+        // the slot width DesignPlacement gives this node
+        let margin = 390 - n.x - n.w
+        let w = n.w >= 240 && margin >= 20 && n.x >= 20 ? max(1, width - n.x - margin) : n.w
+        let lineHeight = n.lineHeight ?? n.font.lineHeight
+        let measured = NSMutableAttributedString(attributedString: n.attributed(text))
+        measured.removeAttribute(.paragraphStyle, range: NSRange(location: 0, length: measured.length))   // as ExactDesignLabel lays it out
+        let typesetter = CTTypesetterCreateWithAttributedString(measured)
+        var lines = 0, start = 0
+        while start < text.utf16.count {
+            let count = CTTypesetterSuggestLineBreak(typesetter, start, Double(w + 0.5))
+            guard count > 0 else { break }
+            lines += 1; start += count
+        }
+        guard lines > 1 else { return (n, nil) }
+        var tall = n
+        tall.h = max(n.h, ceil(CGFloat(lines) * lineHeight))
+        return (tall, text)
     }
 
     /// I03 spacing (Chelsea 11/4, deviates from the Figma soul-orb node): the orb's frame starts 24 pt under the subtitle
@@ -481,30 +547,8 @@ import UniformTypeIdentifiers
     /// until the server answers (and in the reference snapshot) the curated four per look are drawn greyed
     var voiceList: [OnboardingClient.CompanionVoice] { player.voices.isEmpty ? VoicePlayer.fallback(kind: model.setup.imageType) : player.voices }
     func voiceCard(_ v: OnboardingClient.CompanionVoice, index i: Int, waking: Bool) -> some View {
-        let playing = player.playing == v.id
-        let picked = model.setup.voice == i
-        let detail = playing ? "Playing · \(v.blurb)" : picked ? "Selected · \(v.blurb)" : v.blurb
-        let detailColor = playing ? Color(red: 0, green: 99.0 / 255, blue: 159.0 / 255) : Palette.secondary // D1: picked and idle both #737373
-        return ZStack {
-            RoundedRectangle(cornerRadius: 12).fill(.white)
-                // Figma voice.json: 1 pt #E3E3E3 edge (white card on #FDFDFD had no visible edge on device, design review 11/4)
-                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(picked || playing ? Color("Ink") : Color(red: 0xE3 / 255, green: 0xE3 / 255, blue: 0xE3 / 255), lineWidth: picked || playing ? 1.5 : 1))
-            Button { player.stop(); selectVoice(i) } label: { Color.clear.contentShape(Rectangle()) }.disabled(waking)
-                .accessibilityLabel("\(v.name), \(detail)").accessibilityAddTraits(picked ? .isSelected : []).accessibilityIdentifier("voice\(i)")
-            VStack(alignment: .leading, spacing: 4) {
-                Text(v.name).font(.custom("PretendardVariable-SemiBold", fixedSize: 18)).foregroundStyle(Color("Ink"))
-                Text(detail).font(.custom("PretendardVariable-Medium", fixedSize: 12)).foregroundStyle(detailColor)
-            }.padding(.leading, 21).padding(.top, 13).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).allowsHitTesting(false)
-            Button { selectVoice(i); player.preview(v, client: model.onboarding) } label: {
-                ZStack {
-                    Circle().fill(Color("Ink")).frame(width: 32, height: 32)
-                    if playing { HStack(spacing: 4) { RoundedRectangle(cornerRadius: 1).frame(width: 3, height: 11); RoundedRectangle(cornerRadius: 1).frame(width: 3, height: 11) }.foregroundStyle(.white) }
-                    else if player.fetching == v.id { ProgressView().controlSize(.small).tint(.white) }
-                    else { Image(systemName: "play.fill").font(.system(size: 11)).foregroundStyle(.white).offset(x: 1) }
-                }.frame(width: 44, height: 44)
-            }.disabled(waking).accessibilityLabel(playing ? "Stop \(v.name)" : "Play \(v.name)").accessibilityIdentifier("play\(i)")
-                .frame(maxWidth: .infinity, alignment: .trailing).padding(.trailing, 14)
-        }.opacity(waking ? 0.5 : 1).buttonStyle(.plain)
+        VoiceCardView(voice: v, index: i, picked: model.setup.voice == i, playing: player.playing == v.id, fetching: player.fetching == v.id, waking: waking,
+                      onSelect: { player.stop(); selectVoice(i) }, onPlay: { selectVoice(i); player.preview(v, client: model.onboarding) })
     }
     func selectVoice(_ i: Int) {
         guard i < player.voices.count else { return }   // greyed placeholders are never picked
@@ -637,7 +681,7 @@ struct ReferenceEditor: UIViewRepresentable {
         let hint = UILabel(); hint.tag = 19; hint.numberOfLines = 0
         hint.attributedText = node.attributed(placeholder, color: UIColor(white: 0.55, alpha: 1)); hint.isUserInteractionEnabled = false
         hint.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(hint)
-        NSLayoutConstraint.activate([hint.leadingAnchor.constraint(equalTo: view.leadingAnchor), hint.topAnchor.constraint(equalTo: view.topAnchor), hint.widthAnchor.constraint(equalTo: view.widthAnchor)])
+        NSLayoutConstraint.activate([hint.leadingAnchor.constraint(equalTo: view.leadingAnchor), hint.topAnchor.constraint(equalTo: view.topAnchor, constant: topInset), hint.widthAnchor.constraint(equalTo: view.widthAnchor)])
         view.keyboardDismissMode = .onDrag
         view.alwaysBounceVertical = true
         return view

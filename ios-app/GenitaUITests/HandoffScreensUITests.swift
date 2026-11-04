@@ -102,6 +102,50 @@ final class HandoffScreensUITests: XCTestCase {
         app.buttons["pairingNotNow"].tap()
         XCTAssertFalse(app.staticTexts["Paired with your Mac."].waitForExistence(timeout: 1))
     }
+    /// CRASH-1 / MOVE-2 (TF 331, 11/4 14:25): P01 opened from the drawer during a call, taps where ⋮ and Interpret sit
+    /// under it, then a pull down. The app must stay up, every way out must close the sheet, and the call keeps going.
+    func testPairingSheetFromTheDrawerClosesEveryWayAndTheCallStays() {
+        let app = open([])
+        func openPairing() {
+            XCTAssertTrue(app.buttons["openMenu"].waitForExistence(timeout: 10))
+            app.buttons["openMenu"].tap()
+            let settings = app.buttons["settings"], move = app.buttons["moveToMac"]
+            XCTAssertTrue(move.waitForExistence(timeout: 5))
+            // drawer rows: 44 pt or more, no overlapping hit rects (the Settings tap that landed on Move to Mac)
+            XCTAssertGreaterThanOrEqual(settings.frame.height, 44)
+            XCTAssertGreaterThanOrEqual(move.frame.height, 44)
+            XCTAssertFalse(settings.frame.intersects(move.frame), "Settings \(settings.frame) / Move to Mac \(move.frame)")
+            move.tap()
+            XCTAssertTrue(app.staticTexts["Pair with your Mac."].waitForExistence(timeout: 5))
+        }
+        func closed(_ how: String) {
+            XCTAssertTrue(app.staticTexts["Pair with your Mac."].waitForNonExistence(timeout: 3), "\(how) closes P01")
+            XCTAssertEqual(app.state, .runningForeground, "\(how): the app is still up")
+            XCTAssertTrue(app.buttons["cameraToggle"].waitForExistence(timeout: 3), "\(how): the call is still there")
+        }
+        // 1. the device QA's taps: where ⋮ is (under the sheet) — nothing reaches the call; then the pull down
+        openPairing()
+        XCTAssertTrue(app.buttons["pairingCancel"].isHittable, "MOVE-2: a visible way out")
+        capture(app, "P01-cancel")
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.91)).tap()
+        XCTAssertFalse(app.otherElements["moreSheet"].waitForExistence(timeout: 1), "⋮ under the sheet takes no tap")
+        XCTAssertTrue(app.staticTexts["Pair with your Mac."].exists)
+        let sheetTop = app.staticTexts["Pair with your Mac."].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        sheetTop.press(forDuration: 0.05, thenDragTo: sheetTop.withOffset(CGVector(dx: 0, dy: 260)))
+        closed("pull down")
+        // 2. a tap on the dimmed call above the sheet (the number pad lifts the sheet: aim above its title, Codex #679)
+        openPairing()
+        Thread.sleep(forTimeInterval: 1)
+        let title = app.staticTexts["Pair with your Mac."].frame
+        app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 90, dy: max(120, title.minY - 140))).tap()
+        closed("tap outside")
+        XCTAssertFalse(app.otherElements["moreSheet"].exists, "the outside tap only closed the sheet")
+        // 3. Cancel, after a half-entered code
+        openPairing()
+        app.typeText("48")
+        app.buttons["pairingCancel"].tap()
+        closed("Cancel")
+    }
     func testMoveStatusLine() {
         // MV-1 and MV-E are the call's status line, not a system alert.
         var app = open(["--handoff-state", "mv1"])

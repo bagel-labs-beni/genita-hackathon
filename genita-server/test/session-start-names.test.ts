@@ -119,3 +119,22 @@ test("AU-53 (Codex P2): a first input that races the lookup still ends on the st
   const last = prompt(sparkCalls.at(-1)!);
   assert.match(last, /Max/);
 });
+
+test("D42: no start.user.name and no saved one (a Mac-only account) → the account's name is the user's name in the prompt", async (t) => {
+  const { client, session, sparkCalls } = setup({ accountName: async () => "Summer" });
+  t.after(() => session.close());
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false, user: { timeZone: "Asia/Seoul" } }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "hi" }));
+  await client.waitFor((m) => m.type === "reply");
+  assert.match(prompt(sparkCalls[0]), /The user's name is Summer/);
+});
+
+test("D42: a name the app sent wins over the account's name", async (t) => {
+  const { client, session, sparkCalls } = setup({ accountName: async () => "Summer Lee" });
+  t.after(() => session.close());
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false, user: { name: "Sum" } }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "hi" }));
+  await client.waitFor((m) => m.type === "reply");
+  assert.match(prompt(sparkCalls[0]), /The user's name is Sum\b/);
+  assert.doesNotMatch(prompt(sparkCalls[0]), /Summer Lee/);
+});

@@ -222,6 +222,21 @@ struct FaceDriverTests {
         #expect(meanDiff(bytes(d.renderFrame(at: 1, playbackMs: 300)), rest) == 0)
     }
 
+    /// watch "inhale" (#613): ignored while a reply plays (watch lane: the app must not stack it on the talking face)
+    @Test func anInhaleIsIgnoredWhileAReplyPlays() throws {
+        let d = FaceDriver(faceSet: animalSet, outputSize: CGSize(width: 90, height: 160), seed: 5)
+        var playing: Double? = nil
+        d.playbackClock = { playing }
+        #expect(d.flashBrows())                     // idle: brows go up
+        guard case let .replyDelta(delta) = try event(#"{"type":"reply.delta","utteranceId":4,"text":"hi"}"#) else { Issue.record("decode"); return }
+        d.handle(replyDelta: delta)
+        #expect(d.flashBrows())                     // a reply was announced but nothing plays yet
+        playing = 300
+        #expect(!d.flashBrows())                    // the reply is playing
+        d.cancel(utteranceId: 4)
+        #expect(d.flashBrows())                     // barge-in / done: back to idle
+    }
+
     @Test func alignerTimingsReachTheMouth() throws {
         let driver = FaceDriver(faceSet: animalSet, outputSize: CGSize(width: 90, height: 160), seed: 1)
         func audio(_ id: Int) throws -> ServerEvent.Audio {
@@ -369,8 +384,11 @@ struct MouthQualityTests {
         #expect(maxOff < 9)
         #expect(maxStep < 0.6)
         #expect(maxRoll < 2.0)
-        let a = FaceRenderer(faceSet: animalSet, outputSize: CGSize(width: out, height: 960), seed: 7).motionTransforms(at: 4.2, open: 0)
-        let b = FaceRenderer(faceSet: animalSet, outputSize: CGSize(width: out, height: 960), seed: 8).motionTransforms(at: 4.2, open: 0)
+        // seeded: same frames in time order (every run starts still, AliveMotion.settleSeconds), different seeds differ
+        let ra = FaceRenderer(faceSet: animalSet, outputSize: CGSize(width: out, height: 960), seed: 7)
+        let rb = FaceRenderer(faceSet: animalSet, outputSize: CGSize(width: out, height: 960), seed: 8)
+        for i in 0..<105 { _ = ra.motionTransforms(at: Double(i) / 25, open: 0); _ = rb.motionTransforms(at: Double(i) / 25, open: 0) }
+        let a = ra.motionTransforms(at: 4.2, open: 0), b = rb.motionTransforms(at: 4.2, open: 0)
         #expect(a.head != b.head)
     }
 
@@ -452,12 +470,40 @@ struct MouthQualityTests {
 
     /// codex P2: the cap holds in on-screen pixels for any output shape (a tall output fills by height) — through the
     /// renderer's own scale.
-    @Test func theSwayCapHoldsOnATallOutput() {
-        let face = faceCI(animalSet)
+    /// the flow fixture (an animal) with the served `alive.sway` (nil = no `alive` block) and, optionally, another kind
+    private func flowSet(sway: Double?, kind: String? = nil) throws -> FaceSet {
+        let dir = Bundle.module.url(forResource: "face-flow-animal", withExtension: nil, subdirectory: "Fixtures")!
+        var m = try JSONDecoder().decode(FaceManifest.self, from: Data(contentsOf: dir.appendingPathComponent("manifest.json")))
+        if let sway { var a = FlowMap.Alive(); a.sway = sway; m.flow?.map?.alive = a }
+        if let kind { m.flow?.kind = kind }
+        return try FaceSet(manifest: m) { try Data(contentsOf: dir.appendingPathComponent(($0 as NSString).lastPathComponent)) }
+    }
+
+    /// Build 10 (Chelsea: "the person moving left and right is distracting"): with no `alive` block, one without
+    /// `sway`, or `sway` 0, the frame never translates, rolls or scales — person, animal, or no flow at all.
+    @Test func noServedSwayMeansAStillFrame() throws {
+        let noSway = try JSONDecoder().decode(FlowMap.Alive.self, from: Data(#"{"headX": 0, "headRoll": 0, "lockY": true}"#.utf8))
+        #expect(noSway.sway == 0)
+        #expect(FlowMap.Alive().sway == 0)
+        for set in [animalSet, try flowSet(sway: nil), try flowSet(sway: nil, kind: "human"), try flowSet(sway: 0), try flowSet(sway: 0, kind: "human")] {
+            let r = FaceRenderer(faceSet: set, outputSize: CGSize(width: 540, height: 960), seed: 4)
+            var worst = 0.0
+            for i in 0..<250 {
+                let cam = r.motionTransforms(at: Double(i) / 25, open: (i % 12) < 4 ? 0.9 : 0.1).camera
+                worst = max(worst, abs(Double(cam.tx)) + abs(Double(cam.ty)) + abs(Double(cam.b)) + abs(Double(cam.a) - 1))
+            }
+            #expect(worst < 1e-9)
+        }
+    }
+
+    @Test func theSwayCapHoldsOnATallOutput() throws {
+        let set = try flowSet(sway: 2)   // a served sway (an animal: halved and smoothed); build 10 serves 0
+        let face = faceCI(set)
         for size in [CGSize(width: 540, height: 1280), CGSize(width: 540, height: 960), CGSize(width: 960, height: 540)] {
-            let r = FaceRenderer(faceSet: animalSet, outputSize: size, seed: 4)
+            let still = FaceRenderer(faceSet: animalSet, outputSize: size, seed: 4).screenScale   // no framing zoom
+            #expect(abs(still - max(size.width / animalSet.pixelSize.width, size.height / animalSet.pixelSize.height) * AliveMotion.overscan) < 1e-6)
+            let r = FaceRenderer(faceSet: set, outputSize: size, seed: 4)
             let s = r.screenScale
-            #expect(abs(s - max(size.width / animalSet.pixelSize.width, size.height / animalSet.pixelSize.height) * AliveMotion.overscan) < 1e-6)
             let pts = [CGPoint(x: face.minX, y: face.minY), CGPoint(x: face.maxX, y: face.minY), CGPoint(x: face.minX, y: face.maxY),
                        CGPoint(x: face.maxX, y: face.maxY), CGPoint(x: face.midX, y: face.midY)]
             var worst: CGFloat = 0
@@ -601,6 +647,39 @@ struct BrowFlashTests {
         // same phonemes, new audio, 10 ms later: vowel 0 (onset −0.06 s) is no longer stressed, nothing has started
         #expect(tr.weight(atMs: -90, phonemes: ph, audioRevision: 900, loudness: later) == 0)
         #expect(tr.weight(atMs: 250, phonemes: ph, audioRevision: 900, loudness: later) == 1)   // vowel 2's flash
+    }
+
+    /// 11/4 watch "inhale" (#613): a time-driven flash — up within 0.1 s, held, down by 0.3 s (≤ 0.5 s), once.
+    @Test func anInhaleFlashesTheBrowsOnceOnTheRenderClock() {
+        var b = BrowFlash.Timed()
+        #expect(b.weight(at: 5) == 0)
+        b.trigger(at: 10)
+        #expect(b.weight(at: 9.9) == 0)
+        #expect(b.weight(at: 10.05) > 0 && b.weight(at: 10.05) < 1)
+        #expect(b.weight(at: 10.15) == 1)
+        #expect(b.weight(at: 10.29) > 0)
+        #expect(b.weight(at: 10.31) == 0)
+        #expect(b.onset == nil)                                  // done: it does not come back
+        #expect(b.weight(at: 10.15) == 0)
+        b.trigger(at: 20); _ = b.weight(at: 20.1)
+        #expect(b.weight(at: 3) == 0 && b.onset == nil)          // a clock that goes back drops it
+        #expect(BrowFlash.rise + BrowFlash.hold + BrowFlash.fall <= 0.5)
+    }
+
+    /// The renderer lifts the brow band for an inhale without any reply playing (no lip context).
+    @Test func anInhaleLiftsTheBrowsWithoutAReply() {
+        let size = CGSize(width: 180, height: 320)
+        let a = FaceRenderer(faceSet: animalSet, outputSize: size, seed: 3), b = FaceRenderer(faceSet: animalSet, outputSize: size, seed: 3)
+        #expect(a.hasBrowBand)
+        b.flashBrows(at: 1.0)
+        let still = bytes(a.render(at: 1.15, lip: .rest)), lifted = bytes(b.render(at: 1.15, lip: .rest))
+        #expect(meanDiff(still, lifted) > 0.01)
+        // after the flash both render the same frame again
+        #expect(meanDiff(bytes(a.render(at: 1.6, lip: .rest)), bytes(b.render(at: 1.6, lip: .rest))) < 1e-9)
+        // Reduce Motion: no lift
+        let c = FaceRenderer(faceSet: animalSet, outputSize: size, seed: 3, reduceMotion: true), d = FaceRenderer(faceSet: animalSet, outputSize: size, seed: 3, reduceMotion: true)
+        d.flashBrows(at: 1.0)
+        #expect(meanDiff(bytes(c.render(at: 1.15, lip: .rest)), bytes(d.render(at: 1.15, lip: .rest))) < 1e-9)
     }
 
     @Test func aClockJumpBackForgetsTheOldFlashes() {

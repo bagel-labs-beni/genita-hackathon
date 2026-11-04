@@ -265,6 +265,9 @@ export type StyleCard = {
   updatedAt?: string;
   /** when this profile was imported (or made from N1–N3): call analyses older than this are dropped */
   importedAt?: string;
+  /** "Forget all of this" (AU-92): an emptied profile kept as a marker — the call uses it (empty) instead of an app's old
+   * copy, stale writes are refused, GET /v1/import says none. A new import / N1–N3 replaces it. */
+  forgotten?: true;
   /** lines removed by corrections, with when (an older analysis can't bring them back), last 40 */
   /** forget = from a "forget that …" (its target words are kept out loosely: any of them) */
   removed?: Array<{ text: string; at: string; field?: string; forget?: true }>;
@@ -458,7 +461,7 @@ export const SKIP_REPLIES: Record<string, string> = {
   "Start with the answer": "Start with the answer, then explain.",
   "Ask me questions": "Ask me questions to understand first.",
 };
-const SKIP_AVOID: Record<string, string> = {
+export const SKIP_AVOID_TEXT: Record<string, string> = {
   "unasked advice": "Don't give advice I didn't ask for.",
   "too many questions": "Don't ask too many questions.",
   "jokes when i'm serious": "No jokes when I'm being serious.",
@@ -487,7 +490,7 @@ const N3_GROUPS = ["clothes", "food", "chats"] as const;
 type N3Group = (typeof N3_GROUPS)[number];
 interface N3Answers { like: string[]; no: string[] }
 /** The chat chips' "no" in the user's words (Figma HISY-S3 lines); anything else becomes "Avoid: X". */
-const N3_CHATS_NO: Record<string, string> = {
+export const N3_CHATS_NO: Record<string, string> = {
   "unasked advice": "No advice you didn't ask for.",
   "talk about looks": "No comments on your looks.",
   "lots of questions": "Don't ask too many questions.",
@@ -532,7 +535,7 @@ export function skipStyleCard(body: unknown): { ok: true; card: StyleCard } | { 
   if (n3.food.no.length) taste.push(f(`Dislikes ${lower(n3.food.no).join(", ")}.`));
   const communication = n3.chats.like.length ? [f(`Likes ${lower(n3.chats.like).join(", ")} in our chats.`)] : [];
   const boundaries = [
-    ...avoid.map((a) => f(SKIP_AVOID[a.toLowerCase()] ?? `Avoid: ${a}`)),
+    ...avoid.map((a) => f(SKIP_AVOID_TEXT[a.toLowerCase()] ?? `Avoid: ${a}`)),
     ...n3.chats.no.map((a) => f(N3_CHATS_NO[a.toLowerCase()] ?? `Avoid: ${a}`)),
   ].slice(0, SKIP_MAX_ITEMS);
   const raw: ImportRaw = {

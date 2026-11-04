@@ -173,13 +173,21 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
     if (m === "GET" && p === "/v1/import/prompt") return send(res, 200, { prompt: IMPORT_PROMPT, chars: IMPORT_PROMPT.length });
 
     if (m === "POST" && p === "/v1/import") {
+      const gen = d.personalize?.generation(user);   // before the body arrives (Codex #583 r17)
       const body = await readJson(req);
-      const job = importStyle(d, user, body.text);
+      // AU-16: the app cancelled (I03 Cancel) or went away: the import stops and nothing is saved. A background
+      // import (202) is meant to outlive the request.
+      const ac = new AbortController();
+      if (body.background !== true) res.on("close", () => { if (!res.writableFinished) ac.abort(); });
+      const job = importStyle(d, user, body.text, gen, body.background === true ? undefined : ac.signal);
       if (body.background === true) {
-        importJobs.set(user, { status: "processing" });
+        const state = { status: "processing" as const };
+        importJobs.set(user, state);
+        // only this job's own entry: "Forget all of this" (AU-92) or a newer import took the slot meanwhile
+        const mine = () => importJobs.get(user) === state;
         job.then(
-          () => importJobs.delete(user),
-          (err) => importJobs.set(user, { status: "failed", error: err instanceof PrepError ? err.code : "import_failed" }),
+          () => { if (mine()) importJobs.delete(user); },
+          (err) => { if (mine()) importJobs.set(user, { status: "failed", error: err instanceof PrepError ? err.code : "import_failed" }); },
         );
         d.log("import.backgrounded", {});
         return send(res, 202, { status: "processing" });
@@ -192,12 +200,19 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
     }
 
     if (m === "POST" && p === "/v1/import/skip") {
+      // before the body is read: a "Forget all of this" while it arrives refuses it (Codex #583 r17)
+      const gen = d.personalize?.generation(user);
       const skipBody = await readJson(req);
       const r = skipStyleCard(skipBody);
       if (!r.ok) throw new PrepError(400, "bad_skip", "Pick up to 8 short answers.");
       const picks = picksFromSkip(skipBody);
       if (picks.length) r.card.picks = picks;
-      if (d.personalize) await d.personalize.replaceStyle(user, r.card);
+      if (d.personalize) {
+        try { await d.personalize.replaceStyle(user, r.card, gen); } catch (err) {
+          if (err instanceof PersonalizeError) throw new PrepError(err.status, err.code, err.message);
+          throw err;
+        }
+      }
       else await d.store.putStyle(user, storedStyle(r.card));
       d.insights?.fromSkip(user);
       d.log("import.skipped", { item_count: r.card.itemCount, partial: r.card.partial });
@@ -208,7 +223,7 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
       const j = importJobs.get(user);
       if (j) return send(res, 200, j);
       const style = await d.store.getStyle(user);
-      return send(res, 200, style ? { status: "ready", style, profile: styleProfileText(style) } : { status: "none" });
+      return send(res, 200, style && !style.forgotten ? { status: "ready", style, profile: styleProfileText(style) } : { status: "none" });
     }
 
     if (m === "POST" && p === "/v1/companion/image") {
@@ -465,6 +480,17 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
       const w = Number(url.searchParams.get("wait") ?? 0);
       const waitMs = Number.isFinite(w) ? Math.round(Math.min(STORY_WAIT_MAX_S, Math.max(0, w)) * 1000) : 0;
       return send(res, 200, await d.personalize.story(user, waitMs));
+    }
+
+    // About you → "Forget all of this" (AU-92): what Genita knows about them goes, the companion stays
+    if (m === "DELETE" && p === "/v1/profile") {
+      if (!d.personalize) throw new PrepError(404, "not_found");
+      if (!allowCorrect(user)) throw new PrepError(429, "rate_limited", "try again in a minute");
+      await d.personalize.forgetAll(user);
+      importJobs.delete(user);   // a background import still reading: GET /v1/import says none, its result is refused
+      // call memory, live calls, cards made from the old taste; a failure answers 502 and a retry runs it all again
+      await d.onProfileForgotten?.(user);
+      return send(res, 200, { ok: true });
     }
 
     if (m === "PATCH" && p === "/v1/profile") {

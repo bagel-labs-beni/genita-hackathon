@@ -32,6 +32,10 @@ public struct FaceAnchors: Equatable, Sendable {
     public var nose: CGPoint
     /// mouth box: left / right ends at its middle height, top and bottom
     public var mouthL: CGPoint, mouthR: CGPoint, mouthT: CGFloat, mouthB: CGFloat
+    /// false when the check answer had no SAM eye / mouth boxes (an animal or a character the detector didn't read):
+    /// the feature positions above are then placeholders, and `FaceMesh.make` draws the oval rim only (D28, scenario
+    /// "points come from Meta only": no made-up eyes, nose or mouth)
+    public var hasFeatures = true
 }
 
 /// A design revision of the net: point names, the rules that place them, and the fixed triangles.
@@ -108,6 +112,14 @@ public struct FaceMesh: Equatable, Sendable {
     public static func make(outline raw: [[Double]]?, points: FacePoints?, headBox: ImageHeadBox?,
                             layout: FaceNetLayout = .r02) -> FaceMesh? {
         guard let anchors = anchors(outline: raw, points: points, headBox: headBox) else { return nil }
+        // no eye / mouth boxes from Meta: the head oval only — 12 rim points joined in a ring, no feature points, no faces
+        guard anchors.hasFeatures else {
+            let rim = (0..<12).map { i -> CGPoint in
+                let d = Double(i) * 30 * Double.pi / 180
+                return CGPoint(x: min(1, max(0, anchors.cx + anchors.rx * sin(d))), y: min(1, max(0, anchors.cy - anchors.ry * cos(d))))
+            }
+            return FaceMesh(points: rim, triangles: [], edges: (0..<12).map { Edge($0, ($0 + 1) % 12) })
+        }
         let all = layout.place(anchors).map { CGPoint(x: min(1, max(0, $0.x)), y: min(1, max(0, $0.y))) }
         var seen = Set<[Int]>()
         let tris = layout.tris.filter { $0.count == 3 && $0.allSatisfy { $0 < all.count } && seen.insert($0.sorted()).inserted }
@@ -121,7 +133,7 @@ public struct FaceMesh: Equatable, Sendable {
 
     /// r02's inputs from the check answer. The oval: SAM's face outline (centre = its centroid, radii = its extent);
     /// if the mask reached into the hair, its top is cut to eye line − 0.34 × face height. No outline: an oval in the
-    /// lower SAM head box. No eye / mouth boxes: the r02 human layout's proportions inside the oval.
+    /// lower SAM head box. No eye / mouth boxes: the oval rim only (`hasFeatures` false).
     static func anchors(outline raw: [[Double]]?, points: FacePoints?, headBox: ImageHeadBox?) -> FaceAnchors? {
         let pts = { (list: [[Double]]?) -> [CGPoint] in
             (list ?? []).compactMap { $0.count == 2 && (0...1).contains($0[0]) && (0...1).contains($0[1]) ? CGPoint(x: $0[0], y: $0[1]) : nil }
@@ -181,11 +193,12 @@ public struct FaceMesh: Equatable, Sendable {
             return FaceAnchors(cx: cx, cy: cy, rx: rx, ry: ry, eyeL: eyeL, eyeR: eyeR, nose: tip,
                                mouthL: mouthL, mouthR: mouthR, mouthT: lips.map(\.y).min()!, mouthB: lips.map(\.y).max()!)
         }
-        // r02 human layout, relative to its oval: eyes at 35.5 % of the face height, nose 57 %, mouth 74 %
+        // no eye / mouth boxes: the oval only. The r02 human proportions stay as placeholders (eyes at 35.5 % of the face
+        // height, nose 57 %, mouth 74 %) but are never drawn (`hasFeatures` false, D28)
         return FaceAnchors(cx: cx, cy: cy, rx: rx, ry: ry,
                            eyeL: [at(-0.61, 0.355), at(-0.23, 0.355)], eyeR: [at(0.25, 0.355), at(0.61, 0.355)],
                            nose: at(0, 0.57), mouthL: at(-0.33, 0.74), mouthR: at(0.29, 0.74),
-                           mouthT: top + fh * 0.69, mouthB: top + fh * 0.81)
+                           mouthT: top + fh * 0.69, mouthB: top + fh * 0.81, hasFeatures: false)
     }
 
     /// Small faces read as a blob under r02: on a card smaller than 90 pt of face, or with two points closer than

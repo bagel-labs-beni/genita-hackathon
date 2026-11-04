@@ -14,10 +14,20 @@ import type { CompanionRecord } from "./store.ts";
 
 const sceneMime = (b: Buffer) => (b.readUInt32BE(0) === 0x89504e47 ? "image/png" : b[0] === 0xff && b[1] === 0xd8 ? "image/jpeg" : "image/webp");
 
-/** A ready face with a flow block made before the silhouette mask. */
-export function needsReflow(c: CompanionRecord): boolean {
+/**
+ * The mask version this face should have: 2 (the SAM face silhouette, 11/4) for everyone; 3 for animals when ops turn on
+ * the chin band (CA-06 dog: the silhouette ended under the mouth, so the jaw and chin fur could not move) with
+ * GENITA_FACE_REFLOW_ANIMAL_CHIN=1 — off by default: Chelsea / integration trigger that re-flow.
+ */
+export function reflowTarget(c: CompanionRecord, env: Record<string, string | undefined> = process.env): number {
+  const animal = c.type === "animal";
+  return animal && (env.GENITA_FACE_REFLOW_ANIMAL_CHIN ?? "").trim() === "1" ? 3 : 2;
+}
+
+/** A ready face with a flow block older than its target mask version. */
+export function needsReflow(c: CompanionRecord, env: Record<string, string | undefined> = process.env): boolean {
   const f = c.prep.steps.face;
-  return f?.status === "done" && !!f.face?.flow && (f.face.flow.maskVersion ?? 1) < 2;
+  return f?.status === "done" && !!f.face?.flow && (f.face.flow.maskVersion ?? 1) < reflowTarget(c, env);
 }
 
 export type ReflowResult = { status: "done" | "skipped" | "failed"; reason?: string; silhouette?: boolean; ms?: number };
@@ -25,6 +35,7 @@ export type ReflowResult = { status: "done" | "skipped" | "failed"; reason?: str
 export async function reflowFace(d: PrepDeps, c: CompanionRecord, signal?: AbortSignal): Promise<ReflowResult> {
   const t0 = performance.now();
   if (!needsReflow(c)) return { status: "skipped", reason: "up to date" };
+  const target = reflowTarget(c);
   if (!d.python) return { status: "skipped", reason: "no python (GENITA_PYFLOW)" };
   const face = c.prep.steps.face!.face!;
   const scene = await d.store.getAsset(c.userId, c.id, "neutral");
@@ -45,7 +56,7 @@ export async function reflowFace(d: PrepDeps, c: CompanionRecord, signal?: Abort
     put: (asset, bytes) => d.store.putAsset(c.userId, c.id, asset, bytes),
     // codex P1: a new asset generation next to the old one — the live manifest never points at half-written files,
     // and apps that cache by asset URL fetch the new mask (the old files stay until the companion is deleted)
-    assetSuffix: "_g2",
+    assetSuffix: `_g${target}`,
     nose: async () => {
       const boxes = await media.samDetect(d.metaKey, url, samPrompt(c.type, "nose"), signal);
       return size && boxes[0] ? normBox(boxes[0], size) : null;
@@ -59,7 +70,7 @@ export async function reflowFace(d: PrepDeps, c: CompanionRecord, signal?: Abort
     signal,
   });
   if (!flow) return { status: "failed", reason: "faceflow" };
-  if ((flow.maskVersion ?? 1) < 2) return { status: "failed", reason: "SAM face silhouette unavailable (kept the old flow)" };
+  if ((flow.maskVersion ?? 1) < target) return { status: "failed", reason: "SAM face silhouette unavailable (kept the old flow)" };
   // one patch: only this companion, only if it is still the same ready face (a re-prep in between wins)
   let swapped = false;
   await d.store.patchCompanion(c.userId, (x) => {

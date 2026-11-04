@@ -49,6 +49,9 @@ jobs:
           for _ in $(seq 1 20); do curl -sf http://127.0.0.1:8788/healthz && curl -sf http://127.0.0.1:8789/healthz && curl -sf http://127.0.0.1:8790/healthz && break; sleep 0.5; done
 
       - name: iOS build, unit tests, call screen states
+        # SWIFT_OPTIMIZATION_LEVEL=-O: GenitaKit compiles into the app target, and its face set build (pixel loops)
+        # runs 15-20x slower at -Onone than optimized (face-animal + flow on a Mac: 14.9 s vs 0.9 s), so CI timings didn't reflect the app.
+        # The Debug configuration (DEBUG fixtures, testability) stays.
         run: |
           xcodebuild test \
             -project ios-app/Genita.xcodeproj -scheme Genita \
@@ -68,12 +71,17 @@ jobs:
             -only-testing:GenitaUITests/UpdateBannerUITests \
             -only-testing:GenitaUITests/OnboardingUITests \
             -only-testing:GenitaUITests/InsightReportUITests \
+            -only-testing:GenitaUITests/InsightHeaderUITests \
             -only-testing:GenitaUITests/QASamplePhotoUITests \
             -only-testing:GenitaUITests/CompanionKindsUITests \
+            -only-testing:GenitaUITests/LaunchRoutingUITests \
+            -only-testing:GenitaUITests/ImportFailBannerUITests \
+            -only-testing:GenitaUITests/VoiceSettingsUITests \
             -skip-testing:GenitaUITests/OnboardingUITests/testV03MotionHuman \
             -skip-testing:GenitaUITests/OnboardingUITests/testV03MotionAnimal \
             -skip-testing:GenitaUITests/OnboardingUITests/testV03MotionCharacter \
             -resultBundlePath build-output/ios.xcresult \
+            SWIFT_OPTIMIZATION_LEVEL=-O \
             CODE_SIGNING_ALLOWED=NO | grep -E "^Test Suite|^Test Case .*(passed|failed|skipped)|Executed [0-9]+ test|error:|\*\* (TEST|BUILD)|FACE_FPS=" | cut -c1-240
           exit "${PIPESTATUS[0]}"
 

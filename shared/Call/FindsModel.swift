@@ -59,7 +59,17 @@ struct FindEntry: Identifiable, Equatable {
 @MainActor @Observable final class FindsModel {
     // DEBUG fixtures (FindsFixture state 25) set the pill/say on the shown card, so the setter is not private
     var entries: [FindEntry] = []
-    var state: SheetState = .idle
+    var state: SheetState = .idle {
+        didSet {
+            if state != .peek { heldAtPeek = nil }
+            if state != .rising && state != .half { autoRaised = nil }
+        }
+    }
+    /// Demo S3: the card that waits at peek while its camera masks are held (the half sheet would cover them);
+    /// it rises when they fade. Anything that moves the sheet off peek lets go of it.
+    @ObservationIgnored private var heldAtPeek: String?
+    /// The card that rose by itself when it landed, and when (masks that come right after it fold it back to peek).
+    @ObservationIgnored private var autoRaised: (id: String, at: ContinuousClock.Instant)?
     /// Index into `entries` of the card on screen.
     var page = 0
     /// Ingredient chip the user tapped (its camera box lights up; r03 #4/#5).
@@ -82,11 +92,25 @@ struct FindEntry: Identifiable, Equatable {
     private(set) var undoState: SheetState?
     /// Boxes on the live camera preview (F5-U-CAM, CAM-H).
     let boxes = CameraBoxes()
+
+    init() {
+        boxes.onHoldEnded = { [weak self] in self?.boxesHoldEnded() }
+        boxes.onHoldStarted = { [weak self] id in self?.boxesHoldStarted(id) }
+    }
     /// FT-NOSEE: a small card on the camera says what the companion cannot see and asks to move the camera. Never a guess.
     private(set) var noSee: NoSeeCheck?
     @ObservationIgnored private var noSeeTask: Task<Void, Never>?
     @ObservationIgnored private var risingTask: Task<Void, Never>?
     @ObservationIgnored private var toastTask: Task<Void, Never>?
+
+    /// P1-12: a search the user starts while a card is open takes the sheet (searching → its card) instead of a banner.
+    /// The Mac sheet never folds to peek while she talks (reading or not), so its refine searches showed only the
+    /// banner; the iPhone keeps r03 #11 (its sheet folds to peek when she starts talking).
+    #if os(macOS)
+    var followsNewSearch = true
+    #else
+    var followsNewSearch = false
+    #endif
 
     /// Interpretation is on: "Ask about this" would be translated to the other person, so asking is off.
     var interpreting = false
@@ -112,12 +136,16 @@ struct FindEntry: Identifiable, Equatable {
         switch event {
         case let .findStarted(s):
             boxEpoch[s.findId] = boxes.epoch
+            boxes.ackUtterance[s.findId] = s.utteranceId
             let frames = latestFrames.compactMap { Data(base64Encoded: $0) }
             entries.append(FindEntry(id: s.findId, kind: s.kind, utteranceId: s.utteranceId, searchTitle: s.title, searchDetail: s.detail, frames: frames, question: latestQuestion))
             // these frames belong to this find now: a later find (camera off by then) must not pick them up (AU-75)
             latestFrames = []
-            // folded to peek (the user started talking) is not reading: the new search shows (FD-02 refine, AU-69)
-            if state == .idle || state == .dismissed || state == .searching || state == .peek {
+            // folded to peek (the user started talking) is not reading: the new search shows (FD-02 refine, AU-69).
+            // Mac (P1-12): the sheet stays open while she talks, so a new search she just asked for takes the sheet
+            // instead of waiting behind a "New · View" banner.
+            if state == .idle || state == .dismissed || state == .searching || state == .peek
+                || (followsNewSearch && [.rising, .half, .full].contains(state)) {
                 page = entries.count - 1
                 state = .searching
                 undoState = nil
@@ -142,8 +170,13 @@ struct FindEntry: Identifiable, Equatable {
             // only frames the card shows (fridge camera, outfit crops) stay on the phone; a product or link card shows none (AU-75)
             if let e = entries.first(where: { $0.id == c.findId }), card.camera != nil || !card.options.isEmpty { persistFrames(e.id, e.frames) }
             guard let index = entries.firstIndex(where: { $0.id == c.findId }) else { return }
-            if state == .searching && page == index {
+            if state == .searching && page == index && boxes.holding && boxes.findId == c.findId {
+                // demo S3: the masks are up until the companion has named what she sees; the card waits at peek
+                state = .peek
+                heldAtPeek = c.findId
+            } else if state == .searching && page == index {
                 state = .rising
+                autoRaised = (c.findId, ContinuousClock.now)
                 risingTask?.cancel()
                 risingTask = Task { [weak self] in
                     try? await Task.sleep(for: .milliseconds(420))
@@ -223,8 +256,37 @@ struct FindEntry: Identifiable, Equatable {
     }
     func pipTapped() { if state == .full { state = .half } }
 
+    /// Anything the user does on the card: a card they're using is never folded back for late masks (Codex r2).
+    private func userActed() { autoRaised = nil }
+
+    /// Masks landed just after their card rose by itself (the server runs the recipe and SAM side by side): within 3 s
+    /// and before the user touched it, the card folds back to peek and waits for them like a card that came second.
+    private func boxesHoldStarted(_ findId: String) {
+        guard let a = autoRaised, a.id == findId, current?.id == findId, state == .rising || state == .half,
+              !touching, selectedItem == nil, newFind == nil, ContinuousClock.now - a.at < .seconds(3) else { return }
+        risingTask?.cancel()
+        state = .peek
+        heldAtPeek = findId
+    }
+
+    /// The held masks faded: the card that waited at peek rises as it would have (searching → rising → half).
+    private func boxesHoldEnded() {
+        guard let id = heldAtPeek else { return }
+        heldAtPeek = nil
+        guard state == .peek, current?.id == id, !touching else { return }
+        state = .rising
+        risingTask?.cancel()
+        risingTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(420))
+            guard let self, !Task.isCancelled, self.state == .rising else { return }
+            self.state = .half
+        }
+    }
+
     /// The user started talking. Conversation comes first; reading full or touching the sheet keeps it.
     func userStartedTalking() {
+        // a card waiting at peek for the masks stays folded: the user is talking now
+        heldAtPeek = nil
         guard state == .half, !touching else { return }
         state = .peek
     }
@@ -305,6 +367,7 @@ struct FindEntry: Identifiable, Equatable {
     }
 
     func viewNewFind() {
+        userActed()
         guard let id = newFind, let i = entries.firstIndex(where: { $0.id == id }) else { return }
         page = i
         newFind = nil
@@ -314,6 +377,7 @@ struct FindEntry: Identifiable, Equatable {
     }
 
     func showPage(_ i: Int) {
+        userActed()
         guard entries.indices.contains(i), entries[i].card != nil else { return }
         page = i
         selectedItem = nil
@@ -329,6 +393,7 @@ struct FindEntry: Identifiable, Equatable {
     }
 
     func toggleSave() {
+        userActed()
         guard let f = current else { return }
         let id = f.id
         let want = !f.saved
@@ -385,6 +450,7 @@ struct FindEntry: Identifiable, Equatable {
 
     /// "Talk about this on a call": the card stays up over the call, questions are about it from here on.
     func talkAboutThis() {
+        userActed()
         guard entries.indices.contains(page) else { return }
         entries[page].reopened = false
         // the server learns which card: questions in the call are about it, even one from an earlier call (AU-70)
@@ -399,18 +465,21 @@ struct FindEntry: Identifiable, Equatable {
 
     /// "+" → added (✓); tap again to take it off the list.
     func toggleAdded(_ itemId: String, in findId: String) {
+        userActed()
         var set = addedItems[findId] ?? []
         if set.contains(itemId) { set.remove(itemId) } else { set.insert(itemId) }
         addedItems[findId] = set
     }
 
     func tapItem(_ item: FindItem) {
+        userActed()
         selectedItem = selectedItem == item.id ? nil : item.id
         boxes.highlight(selectedItem == nil ? nil : item.name)
     }
 
     /// "맞아?" answer (IC-3).
     func confirm(_ item: FindItem, yes: Bool) {
+        userActed()
         guard let f = current else { return }
         send(.findConfirm(.init(findId: f.id, itemId: item.id, yes: yes)))
         selectedItem = nil
@@ -418,6 +487,7 @@ struct FindEntry: Identifiable, Equatable {
     }
 
     func toggleStep(_ index: Int) {
+        userActed()
         guard let f = current else { return }
         var set = doneSteps[f.id] ?? []
         if set.contains(index) { set.remove(index) } else { set.insert(index) }
@@ -426,6 +496,7 @@ struct FindEntry: Identifiable, Equatable {
 
     /// "Ask about this": the question goes out as the user's words, about this card.
     func ask(_ text: String) {
+        userActed()
         guard canAsk, let f = current else { return }
         send(.text(.init(text: text, frames: nil, findId: f.id)))
     }
@@ -451,7 +522,9 @@ struct FindEntry: Identifiable, Equatable {
 
     func callEnded() {
         interrupted()
+        heldAtPeek = nil
         boxes.clear()
+        boxes.ackUtterance = [:]
         risingTask?.cancel(); toastTask?.cancel()
         state = .idle
         browser = nil

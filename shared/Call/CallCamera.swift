@@ -67,6 +67,28 @@ import UniformTypeIdentifiers
         return Self.jpeg(image)?.base64EncodedString()
     }
 
+    /// The latest frame as a base64 JPEG plus whether it is too dark / blurry to see anything (D59).
+    func snapshot() -> (base64: String, unclear: Bool)? {
+        guard isOn else { return nil }
+        #if DEBUG
+        if let fixture {
+            let image = CIImage(cgImage: fixture)
+            return Self.jpeg(image).map { ($0.base64EncodedString(), FrameQuality.unclear(image)) }
+        }
+        #endif
+        guard let image = worker.latest(), let jpeg = Self.jpeg(image) else { return nil }
+        return (jpeg.base64EncodedString(), FrameQuality.unclear(image))
+    }
+
+    /// D63: the newest frame as it is (no JPEG), for the mask motion check.
+    func latestImage() -> CIImage? {
+        guard isOn else { return nil }
+        #if DEBUG
+        if let fixture { return CIImage(cgImage: fixture) }
+        #endif
+        return worker.latest()
+    }
+
     /// PERC-2: the latest frame for the perception face crop, only if it came from the front camera (iPhone).
     /// The frame carries its own camera, so a flip or a quick off/on can never pass a rear-camera face as the user's.
     func latestFrontImage() -> CIImage? {

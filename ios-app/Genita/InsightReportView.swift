@@ -50,8 +50,34 @@ enum InsightCopy {
         if t.lowercased().hasPrefix(prefix.lowercased()) { t = String(t.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces) }
         return t.prefix(1).uppercased() + t.dropFirst()
     }
+    /// The type name at full width: one line from 44 pt down to 26 pt; past that, two balanced lines (smaller than
+    /// 26 only if a half still doesn't fit). Never three.
+    static func fitTitle(_ text: String, width: CGFloat, max maxSize: CGFloat = 44, floor: CGFloat = 26) -> (text: String, size: CGFloat) {
+        func w(_ s: String, _ size: CGFloat) -> CGFloat {
+            (s as NSString).size(withAttributes: [.font: HISYSerifText.font(size), .kern: -0.35]).width
+        }
+        let avail = max(1, width - 2)
+        let one = w(text, maxSize)
+        if one <= avail { return (text, maxSize) }
+        let scaled = (maxSize * avail / one).rounded(.down)
+        if scaled >= floor { return (text, scaled) }
+        // two lines: the space that makes the longer half shortest
+        let words = text.split(separator: " ").map(String.init)
+        guard words.count > 1 else { return (text, max(12, scaled)) }
+        var best = (text, CGFloat.greatestFiniteMagnitude)
+        for i in 1..<words.count {
+            let a = words[..<i].joined(separator: " "), b = words[i...].joined(separator: " ")
+            let m = max(w(a, floor), w(b, floor))
+            if m < best.1 { best = (a + "\n" + b, m) }
+        }
+        let size = best.1 <= avail ? floor : (floor * avail / best.1).rounded(.down)
+        return (best.0, size)
+    }
+
     static func quote(_ e: InsightEvidence, ai: String?) -> String {
-        e.source == "answer" ? "You picked “\(e.quote)”" : "“\(e.quote)”" + (e.source == "import" ? " · \(ai ?? "your reply")" : " · our call")
+        // the server's label for answers: "You picked" / "You said no to" (AU-22). Which AI wrote a paste is never
+        // known for sure (the I01 button isn't proof): no source label rather than a guess ("· Claude" on TF 331)
+        e.source == "answer" ? "\(e.sourceLabel.isEmpty ? "You picked" : e.sourceLabel) “\(e.quote)”" : "“\(e.quote)”" + (e.source == "chat" ? " · our call" : "")
     }
 }
 
@@ -78,7 +104,8 @@ struct InsightReportView: View {
                 InsightInk.canvas.ignoresSafeArea()
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 0) {
-                        header.padding(.top, 62)
+                        // the avatar row top at the safe area + 16 pt (no blank band above it, designer 11/4)
+                        header.padding(.top, 16)
                         if let report { content(report, width: w - 48) } else { loading }
                         Color.clear.frame(height: showsCTA ? 170 : 40)
                     }
@@ -99,6 +126,13 @@ struct InsightReportView: View {
                     .ignoresSafeArea(edges: .top).transition(.opacity)
                 }
                 if showsCTA {
+                    // back to the questions (춘식이 11/4): the nav row's chevron, x 24, 44 pt touch — over the title bar too
+                    Button { model.back() } label: {
+                        Image(resource: "reference-back").resizable().frame(width: 8.8, height: 15.8).frame(width: 44, height: 44).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).accessibilityLabel("Back to questions").accessibilityIdentifier("insightBack")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .padding(.leading, 6).padding(.top, 10)
                     // 150 pt fade to the screen's bottom edge (through the home-indicator inset), opaque from 45 %
                     LinearGradient(stops: [.init(color: InsightInk.canvas.opacity(0), location: 0), .init(color: InsightInk.canvas, location: 0.45)], startPoint: .top, endPoint: .bottom)
                         .frame(height: 150).offset(y: safe.safeAreaInsets.bottom).allowsHitTesting(false)
@@ -125,17 +159,36 @@ struct InsightReportView: View {
     private var header: some View {
         HStack(spacing: 12) {
             Group {
-                // the companion's face (its generated scene), never the uploaded photo (AU-24); else the initial
-                if let data = model.sceneImageData, let img = UIImage(data: data) {
+                // the same face as NM01 / PREP-1: the call scene → the V02 polished photo → the orb. Never the raw upload
+                // (AU-24), never an initial (TF 331 showed "J")
+                if let data = model.sceneImageData ?? model.polishedImage, let img = UIImage(data: data) {
                     Image(uiImage: img).resizable().scaledToFill()
                 } else {
-                    Circle().fill(InsightInk.blueSoft).overlay(Text(String(name.prefix(1)).uppercased()).insightText(15, .semibold, line: 20, color: InsightInk.blueText))
+                    // no face yet: the orb on the call stage's dark ground (a light orb on white read as a smudge,
+                    // designer 11/4); the art has a wide transparent margin, so a 30 pt frame drawn 1.5× is a ~30 pt globe
+                    ZStack {
+                        RadialGradient(colors: [Color(red: 0x1A / 255, green: 0x1C / 255, blue: 0x20 / 255), Color(red: 0x0B / 255, green: 0x0B / 255, blue: 0x0B / 255)],
+                                       center: .center, startRadius: 0, endRadius: 22)
+                        Image(resource: "reference-orb-round").resizable().scaledToFit().frame(width: 30, height: 30).scaleEffect(1.5)
+                    }
+                    .accessibilityIdentifier("insightHeaderOrb")
                 }
             }
-            .frame(width: 40, height: 40).clipShape(Circle()).accessibilityHidden(true)
+            .frame(width: 44, height: 44).clipShape(Circle()).accessibilityHidden(true)
+            // the scene may still be on the server (prep started at V01): fetch it like PREP-1 does
+            .task(id: model.prep?.sceneURL) { if model.sceneImageData == nil { await model.loadScene() } }
             VStack(alignment: .leading, spacing: 0) {
                 Text(name).insightText(15, .semibold, line: 20)
-                Text("Here’s my read on you.").insightText(13, line: 18, color: InsightInk.mute)
+                if model.insightReport?.refreshing == true {
+                    // the answers are in; the traits are being rewritten with them (demo P0 11/4)
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.mini).tint(InsightInk.blue)
+                        Text("Adding your answers…").insightText(13, line: 18, color: InsightInk.mute)
+                    }
+                    .accessibilityElement(children: .combine).accessibilityIdentifier("insightRefreshing")
+                } else {
+                    Text("Here’s my read on you.").insightText(13, line: 18, color: InsightInk.mute)
+                }
             }
         }
         .accessibilityElement(children: .combine)
@@ -209,22 +262,18 @@ struct InsightReportView: View {
         VStack(alignment: .leading, spacing: 0) {
             // no traits yet: "SO FAR" (YOU'RE + "You gave me a good start." read as "You're you gave me…")
             label(r.type == nil && r.observations.isEmpty ? "SO FAR" : "YOU’RE", blue: true)
-            HStack(alignment: .top, spacing: 12) {
-                Group {
-                    if let type = r.type {
-                        HISYTitle(text: type.name.hasSuffix(".") ? type.name : type.name + ".", size: 44, line: 48)
-                    } else {
-                        HISYTitle(text: InsightCopy.keepLast(r.headline), size: 34, line: 39)
-                    }
+            // Chelsea 11/4: no orb; the type name on ONE line at full width (serif shrinks from 44 to a 26 pt floor), two
+            // balanced lines only past the floor, never three. Shown at once: no delayed fade, so no blank band.
+            Group {
+                if let type = r.type {
+                    let fit = InsightCopy.fitTitle(type.name.hasSuffix(".") ? type.name : type.name + ".", width: width)
+                    HISYTitle(text: fit.text, size: fit.size, line: (fit.size * 48 / 44).rounded())
+                } else {
+                    HISYTitle(text: InsightCopy.keepLast(r.headline), size: 34, line: 39)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .opacity(appeared ? 1 : 0).offset(y: appeared || reduceMotion ? 0 : 12)
-                .animation(.easeOut(duration: 0.28).delay(0.2), value: appeared)
-                .accessibilityAddTraits(.isHeader)
-                // the orb art has a wide transparent margin: drawn 1.5× so the globe itself is ~92 pt
-                Image(resource: "reference-orb-round").resizable().scaledToFit().frame(width: 92, height: 92).scaleEffect(1.5)
-                    .scaleEffect(appeared || reduceMotion ? 1 : 0.85).accessibilityHidden(true)
             }
+            .frame(width: width, alignment: .leading)
+            .accessibilityAddTraits(.isHeader)
             .padding(.top, 8)
             if let type = r.type {
                 Text(InsightCopy.keepLast(type.line)).insightText(17, line: 24, color: InsightInk.body).padding(.top, 12)
@@ -289,7 +338,15 @@ struct InsightReportView: View {
                         .accessibilityElement(children: .combine)
                     }
                 }
-                .padding(.bottom, 16)
+                .padding(.bottom, 4)
+                if showsCTA {
+                    // PRD "SUM Cancel": back to the first question, answers kept (춘식이 11/4)
+                    Button { model.returnTo(model.setup.depth.path.dropFirst().first ?? .help) } label: {
+                        Text("Change my answers").insightText(15, .medium, line: 20, color: InsightInk.blueText).frame(minHeight: 44).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).accessibilityIdentifier("insightChangeAnswers")
+                    .padding(.bottom, 8)
+                }
             }
         }
         .overlay(alignment: .top) { Rectangle().fill(InsightInk.line).frame(height: 1) }

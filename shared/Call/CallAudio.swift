@@ -1,5 +1,9 @@
 import AVFoundation
+import AudioToolbox
 import os
+#if os(iOS)
+import UIKit
+#endif
 
 /// F4-L10 · Call audio: echo-cancelled mic → PCM s16le 24 kHz 80 ms frames, and a playback queue for the
 /// companion's PCM chunks that can be flushed at once (barge-in).
@@ -52,6 +56,8 @@ import os
     /// Convo P1 #345: a soft listening cue ("mm-hm") played beside the reply queue — never a reply, never counted
     /// in `isPlaying`, never flushed by barge-in bookkeeping. Same engine, so it goes through echo cancellation.
     private var cuePlayer = AVAudioPlayerNode()
+    /// iPhone: the limiter between the reply player and the mixer (CallOutputLevel); nil on the Mac
+    private var outputStage: AVAudioUnitEffect?
     private let playFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Double(GenitaProtocol.sampleRate), channels: 1, interleaved: false)!
     private var engineHasMic = false
     private var pipeline: MicPipeline?
@@ -67,6 +73,14 @@ import os
     /// needs voice processing, a route change) moves what is left of them to the new player (AU-48).
     private var scheduled: [PlaybackCarry.Entry<AVAudioPCMBuffer>] = []
     private var observers: [NSObjectProtocol] = []
+    /// DEMO P0 11/4: the mic's health check while it is on (see `MicStall`).
+    private var micWatch: Timer?
+    /// the mic's sample rate under voice processing (0 = no mic)
+    private var micRate: Double = 0
+    private var micOpenedAt: TimeInterval = 0
+    private var lastMicHeal: TimeInterval = 0
+    /// heals in a row that brought no buffer (backoff, Codex #705 P2)
+    private var micHeals = 0
     private let log = Logger(subsystem: "ai.thebeni.genita", category: "call-audio")
 
     init() {}
@@ -79,7 +93,9 @@ import os
     }
 
     func stop() {
-        flush()
+        flush(restart: false)
+        micWatch?.invalidate()
+        micWatch = nil
         micOpen = false
         pipeline?.enabled = false
         if engineHasMic { engine.inputNode.removeTap(onBus: 0) }
@@ -98,16 +114,56 @@ import os
     /// Call after permission is granted. Returns false if no input is available.
     @discardableResult func openMic() -> Bool {
         if micOpen { return true }
-        if !engineHasMic { buildEngine(withMic: true) }
+        // DEMO P0 11/4: an input that stopped delivering (an engine kept alive through playback) is rebuilt, so turning
+        // the mic off and on always gives a working one
+        let now = ProcessInfo.processInfo.systemUptime
+        if !engineHasMic || MicStall.stalled(now: now, lastBuffer: pipeline?.lastBufferUptime, since: -.infinity) {
+            buildEngine(withMic: true)
+        }
         guard engineHasMic else { return false }
         if voiceProcessing { engine.inputNode.isVoiceProcessingInputMuted = false }
         micOpen = true
         pipeline?.enabled = true
+        micOpenedAt = now
+        micHeals = 0
+        watchMic()
         return true
+    }
+
+    /// DEMO P0 11/4 (TF 331: the first turn was answered, then the user's voice never reached the server again while
+    /// the pill said Listening). While the mic is on, a tap that has delivered nothing for `MicStall.thresholdS`, or a
+    /// voice-processing input left muted, is healed: the call's session category is set again and the engine rebuilt
+    /// with the mic. Only between replies (a reply still queued is never put at risk by a rebuild, Codex #705 P1: the
+    /// user's next turn comes after it anyway), and with a growing gap while heals bring nothing (`MicStall.gap`).
+    private func watchMic() {
+        guard micWatch == nil else { return }
+        micWatch = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkMic() }
+        }
+    }
+
+    private func checkMic() {
+        guard micOpen else { micWatch?.invalidate(); micWatch = nil; return }
+        if voiceProcessing, engineHasMic, engine.inputNode.isVoiceProcessingInputMuted {
+            log.error("mic: voice-processing input was muted while on; unmuting")
+            engine.inputNode.isVoiceProcessingInputMuted = false
+        }
+        let now = ProcessInfo.processInfo.systemUptime
+        let stalled = engineHasMic ? MicStall.stalled(now: now, lastBuffer: pipeline?.lastBufferUptime, since: max(micOpenedAt, lastMicHeal)) : true
+        if !stalled { micHeals = 0; return }
+        guard queuedBuffers == 0, now - lastMicHeal >= MicStall.gap(afterHeals: micHeals) else { return }
+        lastMicHeal = now
+        micHeals += 1
+        log.error("mic: no input for \(MicStall.thresholdS, privacy: .public)s while on (running=\(self.engine.isRunning, privacy: .public), heal \(self.micHeals, privacy: .public)); resetting the session and rebuilding the engine")
+        configureSession()
+        buildEngine(withMic: true)
+        if !engineHasMic { log.error("mic: rebuild found no input") }
     }
 
     func closeMic() {
         guard micOpen else { return }
+        micWatch?.invalidate()
+        micWatch = nil
         micOpen = false
         pipeline?.enabled = false
         if voiceProcessing { engine.inputNode.isVoiceProcessingInputMuted = true }
@@ -124,8 +180,7 @@ import os
         guard !floats.isEmpty, let buffer = AVAudioPCMBuffer(pcmFormat: playFormat, frameCapacity: AVAudioFrameCount(floats.count)) else { return }
         buffer.frameLength = AVAudioFrameCount(floats.count)
         floats.withUnsafeBufferPointer { buffer.floatChannelData![0].update(from: $0.baseAddress!, count: floats.count) }
-        if !engine.isRunning { try? engine.start() }
-        guard engine.isRunning else { log.error("engine not running; chunk dropped"); return }
+        guard ensureRunning(), Self.ready(player, in: engine) else { log.error("engine not running; chunk dropped"); return }
         let begin = schedule(buffer, utteranceId: utteranceId)
         if utteranceStart[utteranceId] == nil { utteranceStart[utteranceId] = begin }
         outputSpans.append(OutputSpan(start: begin, levels: VoiceLevel.steps(floats, stepSamples: OutputSpan.stepSamples)))
@@ -134,7 +189,7 @@ import os
 
     /// Puts one buffer at the end of the player's queue; returns the sample time it starts at.
     @discardableResult private func schedule(_ buffer: AVAudioPCMBuffer, utteranceId: Int) -> AVAudioFramePosition {
-        if !player.isPlaying { player.play() }
+        if !player.isPlaying { play(player) }
         let begin = max(scheduledEnd, nowSample() ?? 0)
         scheduledEnd = begin + AVAudioFramePosition(buffer.frameLength)
         let gen = generation
@@ -161,10 +216,9 @@ import os
               let buffer = AVAudioPCMBuffer(pcmFormat: playFormat, frameCapacity: AVAudioFrameCount(floats.count)) else { return }
         buffer.frameLength = AVAudioFrameCount(floats.count)
         floats.withUnsafeBufferPointer { buffer.floatChannelData![0].update(from: $0.baseAddress!, count: floats.count) }
-        if !engine.isRunning { try? engine.start() }
-        guard engine.isRunning else { return }
+        guard ensureRunning(), Self.ready(cuePlayer, in: engine) else { return }
         pipeline?.silence(for: Double(floats.count) / playFormat.sampleRate + 0.3)
-        if !cuePlayer.isPlaying { cuePlayer.play() }
+        if !cuePlayer.isPlaying { play(cuePlayer) }
         cuePlayer.scheduleBuffer(buffer, at: nil, options: .interrupts, completionHandler: nil)
     }
 
@@ -192,7 +246,11 @@ import os
     }
 
     /// Stop now and drop everything queued (utterance.cancelled, disconnect, background).
-    func flush() {
+    func flush() { flush(restart: true) }
+
+    /// `restart`: the player is left running for the next chunk (not when the call stops: TF 331 CRASH-1 played here
+    /// from a background expiry).
+    private func flush(restart: Bool) {
         stopCue()
         generation += 1
         if player.engine != nil { player.stop() }   // before start() the node has no engine
@@ -203,7 +261,7 @@ import os
         scheduled.removeAll()
         outputSpans.removeAll()
         scheduledEnd = 0
-        if engine.isRunning { player.play() }
+        if restart { play(player) }
         releaseMicIfIdle()
     }
 
@@ -242,12 +300,13 @@ import os
 
     /// Rebuilds the graph. With the mic, voice processing (AEC) is turned on first; if the platform refuses
     /// (some simulators), the mic still works without it and `voiceProcessing` says so.
-    private func buildEngine(withMic: Bool) {
+    private func buildEngine(withMic: Bool, retry: Bool = true, carried: ([PlaybackCarry.Entry<AVAudioPCMBuffer>], [Int: AVAudioFramePosition])? = nil) {
         // AU-48: what is still to be heard survives the rebuild (the greeting goes on when the mic turns on)
         // the render clock runs ahead of the speaker by the output latency: only what reached the speaker was heard
-        let latency = AVAudioFramePosition((engine.outputNode.presentationLatency * playFormat.sampleRate).rounded())
-        let carry = PlaybackCarry.remaining(scheduled, playedTo: nowSample().map { max(0, $0 - max(0, latency)) })
-        let startOf = utteranceStart
+        // + the loudness stage's lookahead (Codex #702 P2): what is still inside the limiter was not heard either
+        let latency = AVAudioFramePosition(((engine.outputNode.presentationLatency + (outputStage?.latency ?? 0)) * playFormat.sampleRate).rounded())
+        let carry = carried?.0 ?? PlaybackCarry.remaining(scheduled, playedTo: nowSample().map { max(0, $0 - max(0, latency)) })
+        let startOf = carried?.1 ?? utteranceStart
         scheduled.removeAll()
         generation += 1
         if engineHasMic { engine.inputNode.removeTap(onBus: 0) }
@@ -262,6 +321,7 @@ import os
         queuedByUtterance.removeAll()
         engineHasMic = false
         voiceProcessing = false
+        micRate = 0
         pipeline = nil
         if withMic {
             let input = engine.inputNode
@@ -272,6 +332,7 @@ import os
                 log.error("voice processing unavailable: \(error.localizedDescription, privacy: .public)")
             }
             let format = input.outputFormat(forBus: 0)
+            micRate = format.sampleRate
             if format.sampleRate > 0, format.channelCount > 0 {
                 let pipeline = MicPipeline(input: format, meter: inputMeter)
                 pipeline.enabled = micOpen
@@ -285,15 +346,52 @@ import os
                 engineHasMic = true
             }
         }
-        engine.attach(player)
-        engine.connect(player, to: engine.mainMixerNode, format: playFormat)
-        engine.attach(cuePlayer)
-        engine.connect(cuePlayer, to: engine.mainMixerNode, format: playFormat)
-        cuePlayer.volume = 0.6
+        outputStage = Self.connectPlayback(player: player, cue: cuePlayer, in: engine, format: playFormat)
+        // DEMO P0 11/4 (Mac 331 log 16:06:57): with voice processing on, the VP unit refuses to initialize when its
+        // client-side input and output formats differ ("client-side input and output formats do not match",
+        // -10875: mic 48 kHz, speaker 44.1 kHz) — the engine never starts, the mic is dead and the pill still says
+        // Listening. The mixer → speaker leg now runs at the mic's sample rate; the output unit converts for the device.
+        if engineHasMic, voiceProcessing {
+            let out = Self.vpOutputFormat(micRate: micRate, outputChannels: engine.outputNode.inputFormat(forBus: 0).channelCount)
+            if let out { engine.connect(engine.mainMixerNode, to: engine.outputNode, format: out) }
+        }
         engine.prepare()
-        do { try engine.start(); player.play() } catch { log.error("engine start: \(error.localizedDescription, privacy: .public)") }
-        log.info("engine built mic=\(self.engineHasMic) aec=\(self.voiceProcessing)")
+        var started = false
+        if Self.mayStartAudio() {
+            do { try engine.start(); play(player); started = true } catch {
+                log.error("engine start failed mic=\(withMic, privacy: .public) aec=\(self.voiceProcessing, privacy: .public) micRate=\(self.micRate, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            }
+        }
+        log.info("engine built mic=\(self.engineHasMic, privacy: .public) aec=\(self.voiceProcessing, privacy: .public) running=\(started, privacy: .public) micRate=\(self.micRate, privacy: .public) out=\(self.engine.outputNode.inputFormat(forBus: 0).sampleRate, privacy: .public)")
+        if !started, withMic, retry, Self.mayStartAudio() {
+            // the VP unit of the engine just dropped may still hold the device for a moment: one fresh try, with
+            // what is still to be heard carried into it (Codex #705 P1: never reported as played)
+            buildEngine(withMic: true, retry: false, carried: (carry, startOf))
+            return
+        }
         resume(carry, startOf: startOf)
+    }
+
+    /// The reply player → (iPhone: the loudness stage) → main mixer; the cue goes straight to the mixer, quietly.
+    /// Returns the loudness stage, nil on the Mac (its path is unchanged).
+    @discardableResult static func connectPlayback(player: AVAudioPlayerNode, cue: AVAudioPlayerNode, in engine: AVAudioEngine,
+                                                   format: AVAudioFormat) -> AVAudioUnitEffect? {
+        engine.attach(player)
+        #if os(iOS)
+        let limiter = CallOutputLevel.makeLimiter()
+        engine.attach(limiter)
+        engine.connect(player, to: limiter, format: format)
+        engine.connect(limiter, to: engine.mainMixerNode, format: format)
+        CallOutputLevel.configure(limiter)
+        let stage: AVAudioUnitEffect? = limiter
+        #else
+        engine.connect(player, to: engine.mainMixerNode, format: format)
+        let stage: AVAudioUnitEffect? = nil
+        #endif
+        engine.attach(cue)
+        engine.connect(cue, to: engine.mainMixerNode, format: format)
+        cue.volume = 0.6
+        return stage
     }
 
     /// Schedules the carried buffers on the new player, the first one cut where the old player stopped, and keeps
@@ -313,6 +411,13 @@ import os
         for id in completeUtterances { checkDone(id) }
     }
 
+    /// DEMO P0 11/4: the mixer → speaker format under voice processing: the mic's sample rate (the VP unit needs its
+    /// client-side input and output at one rate), the speaker's channel count (1 or 2). nil = leave the default.
+    nonisolated static func vpOutputFormat(micRate: Double, outputChannels: AVAudioChannelCount) -> AVAudioFormat? {
+        guard micRate > 0 else { return nil }
+        return AVAudioFormat(standardFormatWithSampleRate: micRate, channels: min(2, max(1, outputChannels)))
+    }
+
     private static func tail(of buffer: AVAudioPCMBuffer, from skip: AVAudioFramePosition) -> AVAudioPCMBuffer? {
         let left = AVAudioFrameCount(max(0, AVAudioFramePosition(buffer.frameLength) - skip))
         guard left > 0, let out = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: left),
@@ -325,6 +430,48 @@ import os
     private func releaseMicIfIdle() {
         guard engineHasMic, !micOpen, queuedBuffers == 0 else { return }
         buildEngine(withMic: false)
+    }
+
+    // MARK: safe start (TF 331 CRASH-1)
+
+    /// iOS takes the audio away from an app without the audio background mode: in the background nothing starts
+    /// (the 14:25 crash played from a background-task expiry, the call hanging up).
+    static func mayStartAudio() -> Bool {
+        #if os(iOS)
+        return UIApplication.shared.applicationState != .background
+        #else
+        return true
+        #endif
+    }
+
+    /// The node can play: on this engine, connected to an output, the engine running.
+    static func ready(_ node: AVAudioPlayerNode, in engine: AVAudioEngine) -> Bool {
+        guard let owner = node.engine, owner === engine, engine.isRunning else { return false }
+        return !engine.outputConnectionPoints(for: node, outputBus: 0).isEmpty
+    }
+
+    /// Starts the engine for a chunk or a cue when it stopped (an interruption, a route change it did not rebuild for).
+    /// A node that lost its connection gets a fresh graph first. Never in the background.
+    private func ensureRunning() -> Bool {
+        guard Self.mayStartAudio() else { return false }
+        if engine.isRunning, Self.ready(player, in: engine) { return true }
+        if player.engine !== engine || engine.outputConnectionPoints(for: player, outputBus: 0).isEmpty {
+            buildEngine(withMic: engineHasMic)
+        } else if !engine.isRunning {
+            do { try engine.start() } catch { log.error("engine restart: \(error.localizedDescription, privacy: .public)") }
+        }
+        return engine.isRunning
+    }
+
+    /// play() raises an Objective-C exception (uncatchable in Swift, SIGABRT) when the engine is stopped or the node
+    /// is detached: only a ready node plays, and one that raises anyway is logged instead of taking the app down.
+    @discardableResult private func play(_ node: AVAudioPlayerNode) -> Bool {
+        guard Self.mayStartAudio(), Self.ready(node, in: engine) else { return false }
+        if let e = GenitaCatchObjC({ node.play() }) {
+            log.error("player.play raised \(e.name.rawValue, privacy: .public): \(e.reason ?? "", privacy: .public)")
+            return false
+        }
+        return true
     }
 
     private func observe() {
@@ -354,6 +501,44 @@ import os
         #endif
     }
 }
+
+#if os(iOS)
+/// TF 331 (CEO, iPhone): the companion was too quiet in a call. Measured 11/4 on the live voice (Seamless, speaker 72,
+/// post off): -16.5 to -19.9 LUFS, peaks -0.5 to -3.3 dBFS, so the server has no headroom left to turn it up. The loss
+/// is on the phone: voice processing (echo cancellation, `.voiceChat`) plays the far end at call level on the
+/// loudspeaker. So the reply goes through Apple's peak limiter with a pre-gain: those clips rendered through this graph
+/// went from -17.7 to -12.8 LUFS (+5 LU) with the sample peak held at 0 dBFS, no clipping. The device voice (DeviceVoice
+/// renders into `enqueue`) gets the same stage. The limiter sits before the output unit, so the echo canceller's
+/// reference already has the gain in it and still removes the companion's voice from the mic.
+enum CallOutputLevel {
+    /// dB added before the limiter (AUPeakLimiter pre-gain, range -40…40)
+    static let preGainDB: AudioUnitParameterValue = 8
+    static let attackSeconds: AudioUnitParameterValue = 0.005
+    static let decaySeconds: AudioUnitParameterValue = 0.05
+
+    static func makeLimiter() -> AVAudioUnitEffect {
+        AVAudioUnitEffect(audioComponentDescription: AudioComponentDescription(
+            componentType: kAudioUnitType_Effect, componentSubType: kAudioUnitSubType_PeakLimiter,
+            componentManufacturer: kAudioUnitManufacturer_Apple, componentFlags: 0, componentFlagsMask: 0))
+    }
+
+    static func configure(_ limiter: AVAudioUnitEffect) {
+        set(limiter, AudioUnitParameterID(kLimiterParam_PreGain), preGainDB)
+        set(limiter, AudioUnitParameterID(kLimiterParam_AttackTime), attackSeconds)
+        set(limiter, AudioUnitParameterID(kLimiterParam_DecayTime), decaySeconds)
+    }
+
+    static func value(_ limiter: AVAudioUnitEffect, _ id: AudioUnitParameterID) -> AudioUnitParameterValue {
+        var v: AudioUnitParameterValue = 0
+        AudioUnitGetParameter(limiter.audioUnit, id, AudioUnitScope(kAudioUnitScope_Global), 0, &v)
+        return v
+    }
+
+    private static func set(_ limiter: AVAudioUnitEffect, _ id: AudioUnitParameterID, _ v: AudioUnitParameterValue) {
+        AudioUnitSetParameter(limiter.audioUnit, id, AudioUnitScope(kAudioUnitScope_Global), 0, v, 0)
+    }
+}
+#endif
 
 /// Converts whatever the input node delivers (often 48 kHz float, sometimes several channels under voice
 /// processing) to 24 kHz mono s16 and cuts 80 ms frames. Runs on the audio thread only.
@@ -392,7 +577,13 @@ final class MicPipeline: @unchecked Sendable {
         if input.channelCount > 1 { converter?.channelMap = [0] }
     }
 
+    private var _lastBufferUptime: TimeInterval?
+    /// When the input tap last delivered a buffer (system uptime), muted or not; nil before the first.
+    var lastBufferUptime: TimeInterval? { lock.withLock { _lastBufferUptime } }
+
     func process(_ buffer: AVAudioPCMBuffer) -> [Data] {
+        let at = ProcessInfo.processInfo.systemUptime
+        lock.withLock { _lastBufferUptime = at }
         guard let converter, enabled else { return [] }
         let ratio = output.sampleRate / buffer.format.sampleRate
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 32
@@ -419,6 +610,21 @@ final class MicPipeline: @unchecked Sendable {
         }
         if resumed { onSpeechDuringCue?() }
         return frames
+    }
+}
+
+/// DEMO P0 11/4: is the mic's input tap stalled? It delivers a buffer every ~20 ms while the engine runs.
+enum MicStall {
+    /// no buffer for this long while the mic is on = stalled
+    static let thresholdS: TimeInterval = 1.5
+    /// the least time between two heals (a rebuild takes a moment to deliver its first buffer)
+    static let healGapS: TimeInterval = 3
+    /// the gap before the next heal after `afterHeals` that brought nothing: 3, 6, 12, 24, then every 30 s
+    static func gap(afterHeals n: Int) -> TimeInterval { min(30, healGapS * pow(2, Double(max(0, n - 1)))) }
+    /// `since`: when the current input was opened or last rebuilt (it gets `thresholdS` to deliver its first buffer).
+    static func stalled(now: TimeInterval, lastBuffer: TimeInterval?, since: TimeInterval) -> Bool {
+        let last = max(lastBuffer ?? -.infinity, since)
+        return now - last > thresholdS
     }
 }
 

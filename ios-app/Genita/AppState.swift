@@ -77,8 +77,13 @@ struct SavedSetup: Codable {
     var accountId: String?
     /// The judge account's ready-made companion (server `demo: true`), labelled "Demo companion"
     var companionDemo: Bool?
+    /// ISO date the companion was made (`GET /v1/companion` createdAt), for Settings "Together N days" (D99)
+    var companionSince: String?
+    /// AU-92 fail closed: "Forget all of this" was asked but the server hasn't confirmed it yet — the local copy is
+    /// already gone and the request is sent again (on launch, and on the next try)
+    var forgetPending: Bool?
     enum CodingKeys: String, CodingKey { case stage, name, response, depth, voice, answers, boundaries, presence, presenceCardIDs, hasOnboarded,
-        companionName, imageId, imageType, styleRows, styleProfile, stylePartial, companionCreated, voiceId, voiceName, deviceVoice, skipInterests, skipReplies, skipAvoid, skipLikes, skipSent, skipOwner, firstCallPending, serverPersona, accountId, companionDemo, importAI }
+        companionName, imageId, imageType, styleRows, styleProfile, stylePartial, companionCreated, voiceId, voiceName, deviceVoice, skipInterests, skipReplies, skipAvoid, skipLikes, skipSent, skipOwner, firstCallPending, serverPersona, accountId, companionDemo, companionSince, importAI, forgetPending }
 
 }
 /// A launch response belongs to the token and authentication lifetime that requested it.
@@ -161,8 +166,11 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     var sceneFresh = false   // both observed: a view that drew the placeholder redraws when trust arrives (Codex P2)
     var sceneTrusted: Bool { sceneCompanionConfirmed || sceneFresh }
     /// Until `/prep` answers (no `sceneKey` yet) the saved scene counts only for this account.
+    /// Face plan item 2 (11/4): the signed-in account's own saved scene shows at once on a relaunch, before `/me` and
+    /// `/companion` answer (they took 0.5–1.1 s, with a placeholder meanwhile). It is always a generated scene, never
+    /// the upload; if the server's companion turns out to be another one, `adoptServerCompanion` drops it then.
     var sceneImageData: Data? {
-        guard sceneTrusted else { return nil }
+        guard sceneTrusted || setup.accountId != nil else { return nil }
         return sceneImage.flatMap { saved in
             if let key = sceneKey { return saved.key == key ? saved.data : nil }
             return saved.key.hasPrefix(sceneOwner) ? saved.data : nil
@@ -186,6 +194,8 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     var storyChanged: [String: [String]] = [:]
     /// HISY page: 0 = opener (HISY-0 / S0), 1…n = the cards, n + 1 = HISY-7 "Now give me a face."
     var hisyPage = 0
+    /// "Forget all of this" count (AU-92): a story / correction answer asked before it is never applied
+    var profileForgets = 0
     /// SUM insight report (Chelsea 11/4, 춘식이 r02 R1): what Genita noticed. Transient, read again with GET /v1/profile/insights.
     var insightReport: InsightReport?
     var insightLoading = false
@@ -197,6 +207,10 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     @ObservationIgnored var insightAnswersTask: Task<Void, Never>?
     /// verdicts one after another (a later answer never brings back a removed trait)
     @ObservationIgnored var insightVerdictTask: Task<String?, Never>?
+    /// AU-15: the import failed after "Continue in the background" — the banner over the current onboarding screen
+    var importFailedQuietly = false
+    /// AU-15: back on I02 from the banner — the one-line "That one didn't come through." note over the title
+    var importRetryNote = false
     @ObservationIgnored var importTask: Task<Void, Never>?
     @ObservationIgnored var companionTask: Task<Void, Never>?
     /// `409 reset_in_progress` on create: this many more tries, this far apart (tests shorten it)
@@ -255,8 +269,15 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
             applyReviewFixture(stage: reviewStage, variant: ProcessInfo.processInfo.environment["GENITA_REVIEW_VARIANT"] ?? "")
         }
         #endif
+        #if os(iOS) // serverWired / beforeSignIn live in the iOS-only OnboardingFlow (Codex P1: GenitaMac shares this file)
+        launchRouting = serverWired && onboarding.auth.token != nil && Self.beforeSignIn.contains(setup.stage)
+        #endif
     }
     var stage: Stage { setup.stage }
+    /// LG-03 (TF 331 P1): a saved session while the saved screen is A01/A02 (a judge's ready-made companion, an
+    /// account that never onboarded on this phone): the root shows the dark launch ground until `routeOnLaunch`
+    /// decides, so a signed-in person never sees A02 for the second `/me` takes.
+    var launchRouting = false
     /// {name} everywhere: what NM01 saved (or the server renamed in a call, `companion.named`). Never a hard-coded "Jin".
     var companionDisplayName: String {
         let n = CompanionName.clean(setup.companionName ?? "")
@@ -326,7 +347,8 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     /// CS01 "Not now", an expired session (4401) or sign-out: A02, and a restart stays there.
     func signedOut() {
         invalidateOnboardingWork()
-        flowError = nil
+        // AU-18: an I02 "Please sign in again." from the old session doesn't follow into the next one
+        flowError = nil; importError = nil
         authGeneration += 1
         signInRouting?.cancel(); signInRouting = nil
         onHandoffAccountChange?(nil)
@@ -341,8 +363,9 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     func signedIn(userId: String? = nil, consented: Bool, qaSamplePhotos: Bool = false) {
         invalidateOnboardingWork()
         accountDeletedNotice = false
-        // an error from the signed-out session must not follow into the new one (QA build 5: N3 kept "Please sign in again.")
-        flowError = nil
+        // an error from the signed-out session must not follow into the new one (QA build 5: N3 kept "Please sign in again.";
+        // AU-18: I02's import error too)
+        flowError = nil; importError = nil
         authGeneration += 1
         self.qaSamplePhotos = qaSamplePhotos
         signInRouting?.cancel(); signInRouting = nil
@@ -435,7 +458,7 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
         var s = setup
         s.companionName = nil; s.imageId = nil; s.imageType = nil; s.imageData = nil
         s.companionCreated = nil; s.voice = nil; s.voiceId = nil; s.voiceName = nil
-        s.serverPersona = nil; s.companionDemo = nil; s.firstCallPending = nil
+        s.serverPersona = nil; s.companionDemo = nil; s.companionSince = nil; s.firstCallPending = nil
         s.answers = [:]; s.boundaries = []; s.presence = []; s.presenceCardIDs = nil
         s.hasOnboarded = false
         s.stage = .image
@@ -508,14 +531,25 @@ extension AppState {
         // SUM insight report review (R1): GENITA_REVIEW_VARIANT=insight / insight-empty
         #if os(iOS)
         if reviewStage == .summary, variant.hasPrefix("insight") {
-            insightReport = InsightFixture.report(empty: variant == "insight-empty")
+            insightReport = InsightFixture.report(empty: variant == "insight-empty", longName: variant == "insight-long", longerName: variant == "insight-long2")
             setup.importAI = "ChatGPT"
             setup.name = "Summer"
         }
         #endif
+        // AU-15 review: GENITA_REVIEW_VARIANT=import-failed shows the background-import failure banner on that screen
+        if variant == "import-failed" { importFailedQuietly = true }
         if variant == "image" || reviewStage == .conversation || reviewStage == .connecting,
            let url = Bundle.main.url(forResource: "companion", withExtension: "png") { setup.imageData = try? Data(contentsOf: url) }
         else { setup.imageData = nil }
+        // R1 header face order (scene → V02 polished → orb): insight-scene has both (the scene must win), insight-polished
+        // only the polished photo
+        if reviewStage == .summary, variant == "insight-scene" || variant == "insight-polished" {
+            polishedImage = Bundle.main.url(forResource: "review-character", withExtension: "jpg").flatMap { try? Data(contentsOf: $0) }
+            if variant == "insight-scene", let url = Bundle.main.url(forResource: "companion", withExtension: "png"), let data = try? Data(contentsOf: url) {
+                sceneFresh = true
+                sceneImage = (key: sceneOwner + "review", data: data)
+            }
+        }
         // photo polish review: GENITA_REVIEW_VARIANT=polished shows V02-T confirming the polished picture (two "Try again" left)
         if reviewStage == .imageCheck, variant == "polished" || variant == "polished-last" {
             if let url = Bundle.main.url(forResource: "companion", withExtension: "png") { setup.imageData = try? Data(contentsOf: url); polishedImage = setup.imageData }

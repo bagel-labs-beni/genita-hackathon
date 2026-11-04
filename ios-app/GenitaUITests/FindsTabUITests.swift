@@ -155,7 +155,7 @@ final class FindsTabUITests: XCTestCase {
         XCTAssertTrue(["live", "poster"].contains(face.value as? String ?? ""), "generated layer on the call; probe: \(probe.exists ? probe.label : "-")")
     }
 
-    /// Boxes pop on the live preview, then fade (the board's 4 s).
+    /// Boxes pop on the live preview, then fade (demo S3: held up to 12 s when nobody speaks, CameraBoxes.Hold).
     func testBoxesOverLivePreviewThenFade() throws {
         let app = launch(camera.merging(["GENITA_FINDS_STATE": "30"]) { $1 })
         XCTAssertTrue(any(app, "cameraStage").waitForExistence(timeout: 25), "camera is the stage")
@@ -163,6 +163,8 @@ final class FindsTabUITests: XCTestCase {
         Thread.sleep(forTimeInterval: 1.2) // pop 240 ms + 60 ms steps
         capture(app, "cam-H-boxes")
         Thread.sleep(forTimeInterval: 4.5)
+        capture(app, "cam-H-held-5s")
+        Thread.sleep(forTimeInterval: 8)
         capture(app, "cam-H-faded")
     }
 
@@ -177,6 +179,25 @@ final class FindsTabUITests: XCTestCase {
             capture(app, name)
             app.terminate()
         }
+    }
+
+    /// Demo S3 (s3-b9 a/b): the counter masks stay up while the recipe card lands; the card waits at peek and the
+    /// picture moves up so the lowest mask (garlic) clears it. Nobody speaks here, so they fade at the 12 s cap and the card rises.
+    func testS3MasksHeldOverPeekCard() throws {
+        let app = launch(camera.merging(["GENITA_FINDS_STATE": "35", "GENITA_FIXTURE_CAMERA": "bundle:finds-frame-counter-0", "GENITA_SAM_MASKS_UI": "1"]) { $1 })
+        XCTAssertTrue(any(app, "cameraStage").waitForExistence(timeout: 25), "camera is the stage")
+        let sheet = any(app, "findsSheet")
+        XCTAssertTrue(sheet.waitForExistence(timeout: 15))
+        var end = Date().addingTimeInterval(15)
+        while Date() < end, sheet.value as? String != "peek" { Thread.sleep(forTimeInterval: 0.25) }
+        Thread.sleep(forTimeInterval: 1.0)   // the stage's 0.45 s lift + the masks' pop
+        capture(app, "s3-masks-held-peek")
+        XCTAssertEqual(sheet.value as? String, "peek", "the card waits at peek while the masks are up")
+        end = Date().addingTimeInterval(20)
+        while Date() < end, sheet.value as? String != "half" { Thread.sleep(forTimeInterval: 0.5) }
+        Thread.sleep(forTimeInterval: 0.8)
+        capture(app, "s3-masks-faded-card-up")
+        XCTAssertEqual(sheet.value as? String, "half", "then it rises")
     }
 
     /// An ingredient chip is pressed: its box is lit, the others step back, the scene dims.

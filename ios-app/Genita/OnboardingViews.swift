@@ -8,6 +8,12 @@ struct RootView: View {
     var body: some View {
         NavigationStack {
             Group {
+                if model.launchRouting {
+                    // LG-03: signed in, routing not decided yet → the dark ground the splash hands to, never A01/A02.
+                    // It lasts until routeOnLaunch ends (its requests time out on their own); a slow network gets a
+                    // quiet spinner after 2 s instead of the sign-in screen (Codex P2)
+                    LaunchRoutingView()
+                } else {
                 switch model.stage {
                 // PRD A01 → A02: after the launch splash (A01) the static welcome doesn't wait for a tap; it hands
                 // straight to A02 under the splash (QA Appetize build 7: stuck 90 s+, no cue to tap). UI tests
@@ -28,13 +34,35 @@ struct RootView: View {
                 case .connecting: ConnectingView(model: model)
                 case .conversation: ConversationView(model: model)
                 }
+                }
             }.toolbar(.hidden, for: .navigationBar)
+                // AU-15: a background import failed — told on whatever onboarding screen is up (not on I01–I03, the call)
+                .overlay(alignment: .top) {
+                    if model.importFailedQuietly, ImportFailBanner.shows(on: model.stage) {
+                        ImportFailBanner(onPaste: { model.pasteImportAgain() }, onDismiss: { model.importFailedQuietly = false })
+                            .transition(.opacity.combined(with: .move(edge: .top)))
+                    }
+                }
+                .animation(.easeOut(duration: 0.22), value: model.importFailedQuietly)
                 // F1-L7 / F12: /me picks the first screen (consent, name, onboarding step, or straight to the call)
                 .task { await model.routeOnLaunch() }
                 .font(TypeStyle.body()).background(Color("Canvas"))
         }.tint(Color("Ink"))
     }
 }
+/// LG-03: the dark launch ground while a signed-in launch is routed; a small spinner once it takes a while.
+private struct LaunchRoutingView: View {
+    @State private var slow = false
+    var body: some View {
+        ZStack {
+            CallInk.ink.ignoresSafeArea()
+            if slow { ProgressView().tint(CallInk.onInk).transition(.opacity) }
+        }
+        .accessibilityElement().accessibilityLabel("Opening").accessibilityIdentifier("launchRouting")
+        .task { try? await Task.sleep(for: .seconds(2)); withAnimation(.easeOut(duration: 0.3)) { slow = true } }
+    }
+}
+
 /// V04 · the companion voices the server offers (11/2: SeamlessM4T v2 on our GPU, D3). The list, the preview
 /// clips and the pick all go through genita-server; the phone's own voices are only the silent offline fallback
 /// for calls (`deviceFallbackKey`) and never show here.
@@ -101,7 +129,9 @@ struct RootView: View {
     }
 
     /// Play (or stop) one clip. A 503 / offline turns the list grey instead of showing an error.
-    func preview(_ voice: OnboardingClient.CompanionVoice, client: OnboardingClient) {
+    /// `keepSession`: Settings → Voice during a call (11/4) plays on the call's own audio session instead of switching
+    /// it to .playback (which would stop the call's mic and echo canceller).
+    func preview(_ voice: OnboardingClient.CompanionVoice, client: OnboardingClient, keepSession: Bool = false) {
         if playing == voice.id || fetching == voice.id { stop(); return }
         stop()
         fetching = voice.id
@@ -110,8 +140,10 @@ struct RootView: View {
                 let data: Data
                 if let hit = cache[voice.id] { data = hit } else { data = try await client.voicePreview(id: voice.id); cache[voice.id] = data }
                 guard !Task.isCancelled, fetching == voice.id else { return }
-                try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
-                try? AVAudioSession.sharedInstance().setActive(true)
+                if !keepSession {
+                    try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+                    try? AVAudioSession.sharedInstance().setActive(true)
+                }
                 let p = try AVAudioPlayer(data: data)
                 p.delegate = self
                 // UI tests run on a simulator with no audio route: play() can say no there, the clip length still drives the state

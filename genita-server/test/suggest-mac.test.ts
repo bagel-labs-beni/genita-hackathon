@@ -297,3 +297,86 @@ test("Codex #423 final: a guard drops the Mac sentence (camera off, 'you look gr
   assert.match(reply.text, /\bMac\b/);
   s.close();
 });
+
+test("demo S4 rehearsal leak (1/6): after the move-to-Mac sentence, an outfit pick from memory is dropped; the 'I want to see it' line stays", async () => {
+  const { deps, sink, events } = setup(() => true);
+  deps.spark = async function* () {
+    yield { type: "text", delta: "Jin here, just move this call to your Mac so I can see the full outfit. I want to see it all. Pretty sure that black top plus the dark brown shoes is still the move for tonight." };
+    yield { type: "done", responseId: "r", text: "", status: "completed" };
+  };
+  const s = new Session("p9", sink, deps);
+  await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  await s.onClientText(JSON.stringify({ type: "text", text: ASK }));
+  await waitFor(() => events.some((e) => e.type === "reply" && (e as { final?: boolean }).final === true));
+  const text = (events.filter((e) => e.type === "reply").at(-1) as { text: string }).text;
+  assert.match(text, /move this call to your Mac/);
+  assert.match(text, /I want to see it all/);
+  assert.doesNotMatch(text, /black top|still the move/);
+  s.close();
+});
+
+test("Codex #675 r1: a sentence that asks to move to the Mac is never dropped as an early pick", async () => {
+  const { deps, sink, events } = setup(() => true);
+  deps.spark = async function* (): AsyncGenerator<SparkStreamEvent> {
+    yield { type: "text", delta: "Your Mac is open. I'd go with moving this call to your Mac so I can see the whole outfit." };
+    yield { type: "done", responseId: "r", text: "", status: "completed" };
+  };
+  const s = new Session("p10", sink, deps);
+  await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  await s.onClientText(JSON.stringify({ type: "text", text: ASK }));
+  await waitFor(() => events.some((e) => e.type === "reply" && (e as { final?: boolean }).final === true));
+  const reply = String((events.filter((e) => e.type === "reply").at(-1) as { text?: string }).text);
+  assert.match(reply, /moving this call to your Mac/);
+  s.close();
+});
+
+test("Codex #675 r2: emergency help and a move ask in other words are never dropped as an early pick", async () => {
+  const { EARLY_PICK } = await import("../src/session/session.ts");
+  assert.ok(EARLY_PICK.test("I'd say call 911 immediately."), "the pick regex alone would match");
+  const { deps, sink, events } = setup(() => true);
+  deps.spark = async function* (): AsyncGenerator<SparkStreamEvent> {
+    yield { type: "text", delta: "Your Mac is open. I'd say call 911 immediately. I'd say we move the call over there so I can see it all." };
+    yield { type: "done", responseId: "r", text: "", status: "completed" };
+  };
+  const s = new Session("p11", sink, deps);
+  await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  await s.onClientText(JSON.stringify({ type: "text", text: ASK }));
+  await waitFor(() => events.some((e) => e.type === "reply" && (e as { final?: boolean }).final === true));
+  const reply = String((events.filter((e) => e.type === "reply").at(-1) as { text?: string }).text);
+  assert.match(reply, /call 911/);
+  assert.match(reply, /move the call over there/);
+  s.close();
+});
+test("Codex #675 r3: 'get somewhere safe' and 'transfer the call to it' are never dropped as an early pick", async () => {
+  const { deps, sink, events } = setup(() => true);
+  deps.spark = async function* (): AsyncGenerator<SparkStreamEvent> {
+    yield { type: "text", delta: "Your Mac is open. I'd say get somewhere safe right now. I'd say transfer the call to it so I can see the outfit." };
+    yield { type: "done", responseId: "r", text: "", status: "completed" };
+  };
+  const s = new Session("p12", sink, deps);
+  await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  await s.onClientText(JSON.stringify({ type: "text", text: ASK }));
+  await waitFor(() => events.some((e) => e.type === "reply" && (e as { final?: boolean }).final === true));
+  const reply = String((events.filter((e) => e.type === "reply").at(-1) as { text?: string }).text);
+  assert.match(reply, /somewhere safe/);
+  assert.match(reply, /transfer the call/);
+  s.close();
+});
+test("Codex #675 r4 P1: 'call nine one one' and 'move your call there' are never dropped; only a real clothing pick is", async () => {
+  const { deps, sink, events } = setup(() => true);
+  deps.spark = async function* (): AsyncGenerator<SparkStreamEvent> {
+    yield { type: "text", delta: "Your Mac is open. I'd say call nine one one immediately. I'd say move your call there. I'd say look for the camera button. I'd say tap the white camera button at the top. I'd go with the black dress." };
+    yield { type: "done", responseId: "r", text: "", status: "completed" };
+  };
+  const s = new Session("p13", sink, deps);
+  await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  await s.onClientText(JSON.stringify({ type: "text", text: ASK }));
+  await waitFor(() => events.some((e) => e.type === "reply" && (e as { final?: boolean }).final === true));
+  const reply = String((events.filter((e) => e.type === "reply").at(-1) as { text?: string }).text);
+  assert.match(reply, /call nine one one immediately/);
+  assert.match(reply, /move your call there/);
+  assert.match(reply, /look for the camera button/);
+  assert.match(reply, /tap the white camera button at the top/);
+  assert.doesNotMatch(reply, /black dress/);
+  s.close();
+});

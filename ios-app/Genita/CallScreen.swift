@@ -9,6 +9,8 @@ enum CallInk {
     static let ink = Color(red: 17 / 255, green: 17 / 255, blue: 17 / 255)
     static let onInk = Color(red: 253 / 255, green: 253 / 255, blue: 253 / 255)
     static let pill = Color(red: 17 / 255, green: 17 / 255, blue: 17 / 255).opacity(0.84)
+    /// S09 wait pill (춘식이 11/4 re-check): rgba(30,30,32,.82) — #111 at .84 vanished on the #0E0F11 wait ground
+    static let waitPill = Color(red: 30 / 255, green: 30 / 255, blue: 32 / 255).opacity(0.82)
     static let blueOnInk = Color(red: 84 / 255, green: 193 / 255, blue: 1)
     static let mute = Color(red: 115 / 255, green: 115 / 255, blue: 115 / 255)
     static let handle = Color(red: 219 / 255, green: 219 / 255, blue: 219 / 255)
@@ -49,11 +51,15 @@ struct CompanionFaceView: View {
     /// The face set's rest frame (CallController.facePoster): the generated face in the call's crop, drawn over the
     /// upload still as soon as it exists, so the call never opens on the original photo and then jumps.
     var poster: CGImage? = nil
+    /// Face plan item 1: the call scene drawn in the face set's crop (`FaceRenderer.framedScene`), in place of `still`:
+    /// the poster and the live face that follow land on its pixels. Never the upload photo.
+    var framedStill: CGImage? = nil
     var lip: LipSource = .none
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         ZStack {
-            if let still { still.resizable().scaledToFill() } else { CallInk.ink }
+            if let framedStill { Image(decorative: framedStill, scale: 1).resizable().scaledToFill() }
+            else if let still { still.resizable().scaledToFill() } else { CallInk.ink }
             if let poster { Image(decorative: poster, scale: 1).resizable().scaledToFill() }
             if let face {
                 // S09-P (D28, AU-25): a face set that lands mid-call fades in over the still once (the reveal)
@@ -68,7 +74,7 @@ struct CompanionFaceView: View {
         // layers as separate elements the identifier matched several of them, and UI tests read the still's value
         // even after the face had landed ("still" on b9-3…b9-6; probe run 41745964955: "multiple matching elements")
         .accessibilityElement(children: .ignore)
-        .accessibilityValue(Self.layer(face: face != nil, poster: poster != nil, still: still != nil))
+        .accessibilityValue(Self.layer(face: face != nil, poster: poster != nil, still: still != nil || framedStill != nil))
     }
     /// What's on top, for UI tests: live (the talking face) > poster (its rest frame) > still (scene / fixture) > ground.
     static func layer(face: Bool, poster: Bool, still: Bool) -> String { face ? "live" : poster ? "poster" : still ? "still" : "ground" }
@@ -117,6 +123,8 @@ struct CallCueView: View {
     let name: String
     /// PF-1: a Finds status line ("On it…", "Found two for you.") shown in the same pill instead of the call cue
     var findsText: String? = nil
+    /// S09 wait stage: "Getting {name} ready" with a spinner until the generated face is here (춘식이 11/4)
+    var waitingText: String? = nil
     var retry: () -> Void = {}
     var openSettings: () -> Void = {}
     /// HUD r01 A: the room on the menu row (between the menu button and its mirror). A "{name} is …" line that would
@@ -154,7 +162,9 @@ struct CallCueView: View {
             .padding(.leading, CallPillMetrics.leading).padding(.trailing, content.action == nil ? CallPillMetrics.trailing : CallPillMetrics.trailingWithAction)
             .padding(.vertical, CallPillMetrics.vertical)
             .frame(minHeight: CallPillMetrics.height)
-            .background(CallInk.pill, in: RoundedRectangle(cornerRadius: CallPillMetrics.radius))
+            .background(waiting ? CallInk.waitPill : CallInk.pill, in: RoundedRectangle(cornerRadius: CallPillMetrics.radius))
+            // 춘식이 11/4: a hairline so the pill keeps its shape on the dark wait stage (barely there over a face)
+            .overlay(RoundedRectangle(cornerRadius: CallPillMetrics.radius).strokeBorder(.white.opacity(0.12), lineWidth: 0.5).allowsHitTesting(false))
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.updatesFrequently)
             .accessibilityIdentifier("callCue")
@@ -164,9 +174,11 @@ struct CallCueView: View {
     }
 
     private struct Content { let icon: AnyView; let text: String; let action: (title: String, run: () -> Void)? }
+    private var waiting: Bool { Self.showsWaiting(cue: cue, findsText: findsText, waitingText: waitingText) }
 
     /// Card 1's live icon for the three conversation states; reconnecting, alerts and the Finds line keep theirs.
     private var motionIcon: MotionPillIconKind? {
+        if Self.showsWaiting(cue: cue, findsText: findsText, waitingText: waitingText) { return nil }
         if findsText != nil, cue != .reconnecting, cue != .answerFailed { return nil }
         return switch cue {
         case .listening, .interrupted: .listening
@@ -182,18 +194,30 @@ struct CallCueView: View {
         guard let rowWidth else { return full }
         return pillWidth(text: full) <= rowWidth ? full : short
     }
+    /// S09 wait stage: "Getting {name} ready" when it fits on the row, else "Getting ready" (a long name never runs
+    /// off the screen; Codex P3)
+    static func waitingLine(name: String, rowWidth: CGFloat) -> String {
+        let full = "Getting \(name) ready"
+        return pillWidth(text: full, icon: CueSpinner.waitSize) <= rowWidth ? full : "Getting ready"
+    }
     private static func textWidth(_ text: String) -> CGFloat {
         let font = UIFont(name: "PretendardVariable-Medium", size: 14) ?? .systemFont(ofSize: 14, weight: .medium)
         return ceil((text as NSString).size(withAttributes: [.font: font]).width)
     }
-    /// The pill's width for a line (icon counted at its widest, the 20 pt alert). With a button: + 7 + 8 + title + 8.
-    static func pillWidth(text: String, action: String? = nil) -> CGFloat {
-        let base = CallPillMetrics.leading + 20 + CallPillMetrics.iconSpacing + textWidth(text)
+    /// The pill's width for a line (icon counted at its widest, the 20 pt alert; the wait line's spinner is 13). With a button: + 7 + 8 + title + 8.
+    static func pillWidth(text: String, action: String? = nil, icon: CGFloat = 20) -> CGFloat {
+        let base = CallPillMetrics.leading + icon + CallPillMetrics.iconSpacing + textWidth(text)
         guard let action else { return base + CallPillMetrics.trailing }
         return base + CallPillMetrics.iconSpacing + 16 + textWidth(action)
     }
     /// What the pill says: the Finds line (PF-1) unless the call is reconnecting or the answer failed, else the cue.
-    static func line(cue: CallCue, name: String, findsText: String?, rowWidth: CGFloat?) -> (text: String, action: String?)? {
+    /// S09 wait stage: "Getting {name} ready" holds the pill until the face is here, under Finds and the
+    /// reconnect / failure / mic lines (those need the person).
+    static func showsWaiting(cue: CallCue, findsText: String?, waitingText: String?) -> Bool {
+        waitingText != nil && findsText == nil && cue != .reconnecting && cue != .answerFailed && cue != .micBlocked
+    }
+    static func line(cue: CallCue, name: String, findsText: String?, rowWidth: CGFloat?, waitingText: String? = nil) -> (text: String, action: String?)? {
+        if showsWaiting(cue: cue, findsText: findsText, waitingText: waitingText), let waitingText { return (waitingText, nil) }
         if let findsText, cue != .reconnecting, cue != .answerFailed { return (findsText, nil) }
         return switch cue {
         case .none: nil
@@ -201,16 +225,21 @@ struct CallCueView: View {
         case .thinking: (nameLine(name, "thinking", short: "Thinking", rowWidth: rowWidth), nil)
         case .speaking: (nameLine(name, "talking", short: "Talking", rowWidth: rowWidth), nil)
         case .interrupted: ("Stopped. Go ahead.", nil)
+        case .micOff: ("Stopped", nil)
         case .reconnecting: ("Reconnecting…", nil)
         case .answerFailed: ("Couldn’t get an answer.", "Try again")
         case .micBlocked: ("Microphone is off for Genita.", "Settings")
         }
     }
     /// The measured pill width of what it shows now; nil = nothing to show.
-    static func width(cue: CallCue, name: String, findsText: String?, rowWidth: CGFloat?) -> CGFloat? {
-        line(cue: cue, name: name, findsText: findsText, rowWidth: rowWidth).map { pillWidth(text: $0.text, action: $0.action) }
+    static func width(cue: CallCue, name: String, findsText: String?, rowWidth: CGFloat?, waitingText: String? = nil) -> CGFloat? {
+        let icon = showsWaiting(cue: cue, findsText: findsText, waitingText: waitingText) ? CueSpinner.waitSize : 20
+        return line(cue: cue, name: name, findsText: findsText, rowWidth: rowWidth, waitingText: waitingText).map { pillWidth(text: $0.text, action: $0.action, icon: icon) }
     }
     private var content: Content? {
+        if Self.showsWaiting(cue: cue, findsText: findsText, waitingText: waitingText), let waitingText {
+            return Content(icon: AnyView(CueSpinner(size: CueSpinner.waitSize, line: 1.6, track: 0.30, head: .white)), text: waitingText, action: nil)
+        }
         guard let line = Self.line(cue: cue, name: name, findsText: findsText, rowWidth: rowWidth) else { return nil }
         let showingFinds = findsText != nil && cue != .reconnecting && cue != .answerFailed
         let icon: AnyView
@@ -218,7 +247,9 @@ struct CallCueView: View {
             switch cue {
             case .none, .speaking: icon = AnyView(CueWave())
             case .listening, .interrupted: icon = AnyView(CueDot())
-            case .thinking, .reconnecting: icon = AnyView(CueSpinner())
+            case .micOff: icon = AnyView(Circle().fill(CallInk.onInk.opacity(0.5)).frame(width: 8, height: 8).frame(width: 20, height: 20))
+            case .thinking: icon = AnyView(CueThinkingDots())
+            case .reconnecting: icon = AnyView(CueSpinner())
             case .answerFailed, .micBlocked: icon = AnyView(CueAlert())
             }
         }
@@ -284,8 +315,33 @@ struct ProfileChipView: View {
     }
 }
 
+/// The Listening dot breathes (card 1, 1.4 s). Still under Reduce Motion / UI tests / flag `motionDetails` off (rollback).
 private struct CueDot: View {
-    var body: some View { Circle().fill(CallInk.blueOnInk).frame(width: 8, height: 8) }
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        let live = MotionDetails.live(reduceMotion: reduceMotion)
+        TimelineView(.animation(paused: !live)) { ctx in
+            let s = !live ? 1 : (1 - cos(ctx.date.timeIntervalSinceReferenceDate / MotionCall.breathSeconds * 2 * .pi)) / 2
+            Circle().fill(CallInk.blueOnInk).frame(width: 8, height: 8).scaleEffect(0.8 + 0.35 * s).opacity(0.55 + 0.45 * s)
+        }
+    }
+}
+
+/// "is thinking": three dots in a wave (card 1, 1.2 s, 0.15 s apart), not a spinner. Still dots under Reduce Motion / UI tests / flag off.
+private struct CueThinkingDots: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        let live = MotionDetails.live(reduceMotion: reduceMotion)
+        TimelineView(.animation(paused: !live)) { ctx in
+            let t = ctx.date.timeIntervalSinceReferenceDate
+            HStack(spacing: 3) {
+                ForEach(0..<3, id: \.self) { i in
+                    let lift = !live ? 0.5 : max(0, sin((t - Double(i) * MotionCall.waveStagger) / MotionCall.waveSeconds * 2 * .pi))
+                    Circle().fill(CallInk.onInk).frame(width: 4, height: 4).offset(y: -3 * lift).opacity(0.45 + 0.55 * lift)
+                }
+            }.frame(width: 20, height: 20)
+        }
+    }
 }
 
 struct CueAlert: View {
@@ -293,12 +349,18 @@ struct CueAlert: View {
 }
 
 struct CueSpinner: View {
+    /// S09 wait pill (춘식이 11/4 re-check): 13 pt, 1.6 pt stroke, white 30 % track, #FFF head
+    static let waitSize: CGFloat = 13
+    var size: CGFloat = 16
+    var line: CGFloat = 2
+    var track: Double = 0.32
+    var head = CallInk.onInk
     @State private var turn = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
-        Circle().stroke(CallInk.onInk.opacity(0.32), lineWidth: 2)
-            .overlay(Circle().trim(from: 0, to: 0.25).stroke(CallInk.onInk, style: StrokeStyle(lineWidth: 2, lineCap: .round)).rotationEffect(.degrees(turn ? 360 : 0)))
-            .frame(width: 16, height: 16)
+        Circle().stroke(Color.white.opacity(track), lineWidth: line)
+            .overlay(Circle().trim(from: 0, to: 0.25).stroke(head, style: StrokeStyle(lineWidth: line, lineCap: .round)).rotationEffect(.degrees(turn ? 360 : 0)))
+            .frame(width: size, height: size)
             .onAppear { if !reduceMotion && !CallMotion.reviewStill { withAnimation(.linear(duration: 0.9).repeatForever(autoreverses: false)) { turn = true } } }
     }
 }
@@ -327,7 +389,7 @@ struct CallToggleGlass: View {
     let on: Bool
     var body: some View {
         ZStack {
-            CallGlassControl(icon: icon, size: CallHUDGrid.button)
+            CallGlassControl(icon: icon, size: CallHUDGrid.button, off: !on)
             if on {
                 Circle().fill(CallInk.onInk)
                 if let url = Bundle.main.url(forResource: icon, withExtension: "png"), let image = UIImage(contentsOfFile: url.path) {
@@ -379,9 +441,6 @@ struct CallMoreSheet: View {
                 call.setInterpreting(on)
                 if on { close() }
             }
-            if textChatEnabled {
-                row("text.bubble", "Text chat", "Same conversation, in writing", id: "moreTextChat", enabled: openTextChat != nil) { close(); openTextChat?() }
-            }
             let n = max(call.finds.cardCount, call.findsCount)
             row("bookmark", "Finds", n == 0 ? "Nothing looked up yet" : n == 1 ? "1 thing I looked up" : "\(n) things I looked up", id: "moreFinds", enabled: openFinds != nil) { close(); openFinds?() }
             if pasteHasLink && call.mode != .interpret {
@@ -395,6 +454,8 @@ struct CallMoreSheet: View {
             row("camera", "Flip camera", call.cameraOn ? "Switch front and back" : "Turn your camera on first", id: "moreFlip", enabled: call.canFlipCamera) { call.flipCamera() }
             row("laptopcomputer", "Move to Mac", moveToMacSubtitle, id: "moreMoveToMac") { close(); moveToMac() }
             if let report { row("flag", "Report", "A reply or picture that's wrong", id: "moreReport") { close(); report() } }
+            // D40 / MORE-B1 (AU-51): Text chat is always the last row, greyed and inert until the flag turns it on
+            row("text.bubble", "Text chat", "Same conversation, in writing", id: "moreTextChat", enabled: textChatEnabled && openTextChat != nil) { close(); openTextChat?() }
         }
         .padding(.top, 28).padding(.horizontal, 16).padding(.bottom, 40)
         .frame(maxWidth: .infinity)

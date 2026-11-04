@@ -95,12 +95,14 @@ struct PresenceState: Equatable {
 }
 
 /// Where `/v1/presence` is. Same keys as the call client (`GENITA_SERVER_URL` / defaults
-/// `genita.server.url`, which point at `/v1/session`) and the same session token.
+/// `genita.server.url`, which point at `/v1/session`), the same default (the deployed server) and the same session token.
+/// TF 331: the fallback was ws://127.0.0.1:8787, and only the Mac registers `genita.server.url`, so the iPhone's presence
+/// never reached the server (no proximity, no Continue here when the Mac took the call).
 struct PresenceEndpoint: Equatable {
     var url: URL
     var token: String?
     static func current(device: ConversationDevice, environment: [String: String] = ProcessInfo.processInfo.environment, defaults: UserDefaults = .standard) -> PresenceEndpoint? {
-        let raw = environment["GENITA_PRESENCE_URL"] ?? defaults.string(forKey: "genita.presence.url") ?? environment["GENITA_SERVER_URL"] ?? defaults.string(forKey: "genita.server.url") ?? "ws://127.0.0.1:8787/v1/session"
+        let raw = environment["GENITA_PRESENCE_URL"] ?? defaults.string(forKey: "genita.presence.url") ?? environment["GENITA_SERVER_URL"] ?? defaults.string(forKey: "genita.server.url") ?? CallEndpoint.defaultURL  // a fresh install talks to the deployed server, like the call (#289 F5)
         guard var c = URLComponents(string: raw), let scheme = c.scheme, ["ws", "wss"].contains(scheme) else { return nil }
         if c.path.hasSuffix("/v1/session") { c.path = String(c.path.dropLast("/v1/session".count)) + "/v1/presence" }
         else if !c.path.hasSuffix("/v1/presence") { c.path = (c.path.hasSuffix("/") ? String(c.path.dropLast()) : c.path) + "/v1/presence" }
@@ -202,15 +204,7 @@ final class ServerOwnershipLink: NSObject, ObservableObject, URLSessionWebSocket
                 switch result {
                 case let .success(.string(text)):
                     if let data = text.data(using: .utf8), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                        self.onMessage?(object)
-                        if let event = PresenceEvent(object) {
-                            switch event {
-                            case let .ownership(_, _, trigger): self.lastOwnershipTrigger = trigger
-                            case .claimResult: self.lastOwnershipTrigger = nil
-                            default: break
-                            }
-                            for effect in PresenceState.reduce(&self.state, event, me: self.device) { self.onEffect?(effect) }
-                        }
+                        self.handle(object)
                     }
                     self.receive(task, gen)
                 case .success:
@@ -221,6 +215,21 @@ final class ServerOwnershipLink: NSObject, ObservableObject, URLSessionWebSocket
             }
         }
     }
+    /// One server message: proximity reads it first (`onMessage`), then the ownership reducer.
+    private func handle(_ object: [String: Any]) {
+        onMessage?(object)
+        guard let event = PresenceEvent(object) else { return }
+        switch event {
+        case let .ownership(_, _, trigger): lastOwnershipTrigger = trigger
+        case .claimResult: lastOwnershipTrigger = nil
+        default: break
+        }
+        for effect in PresenceState.reduce(&state, event, me: device) { onEffect?(effect) }
+    }
+    #if DEBUG
+    /// Checks only (mac-app/Tools/login-item): a message as if it came from the server socket.
+    func reviewReceive(_ object: [String: Any]) { handle(object) }
+    #endif
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
         guard webSocketTask === task else { return }
         backoff = 1

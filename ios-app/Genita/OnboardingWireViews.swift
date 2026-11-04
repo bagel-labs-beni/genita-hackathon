@@ -326,14 +326,11 @@ struct CompanionNameView: View {
                 // NM01-E / NM01-0 (153:2, 154:2): the field gets a 1.5 pt ink border while typing
                 RoundedRectangle(cornerRadius: 12).fill(Color(white: 0.9333))
                     .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(CallInk.ink, lineWidth: focused ? 1.5 : 0))
-                if model.suggestingName && (model.setup.companionName ?? "").isEmpty {
-                    ProgressView().accessibilityLabel("Suggesting a name")
-                } else {
-                    TextField("Their name", text: name).font(TypeStyle.body(20, .medium)).multilineTextAlignment(.center)
-                        .textContentType(.name).autocorrectionDisabled().submitLabel(.done).focused($focused)
-                        .frame(width: 220).accessibilityIdentifier("companionNameInput")
-                        .onSubmit { if model.validCompanionName { model.saveCompanionName() } }
-                }
+                // empty with its placeholder until the user types or taps "Use {name}" (never pre-filled, TF 331)
+                TextField("Their name", text: name).font(TypeStyle.body(20, .medium)).multilineTextAlignment(.center)
+                    .textContentType(.name).autocorrectionDisabled().submitLabel(.done).focused($focused)
+                    .frame(width: 220).accessibilityIdentifier("companionNameInput")
+                    .onSubmit { if model.validCompanionName { model.saveCompanionName() } }
                 if !(model.setup.companionName ?? "").isEmpty {
                     Button { model.setup.companionName = ""; focused = true } label: {
                         Image(systemName: "xmark.circle").font(.system(size: 18)).foregroundStyle(CallInk.mute).frame(width: 44, height: 44)
@@ -354,6 +351,7 @@ struct CompanionNameView: View {
             }
         }
         .onAppear { model.suggestName() }
+        .task { await model.followSceneUntilShown() }   // the generated face in the circle as soon as it exists
     }
 
     @ViewBuilder private var avatar: some View {
@@ -704,6 +702,8 @@ struct BringingView: View {
         .task(id: s.phase == .ready) {
             // PREP-1c: no button, "Saying hi…", then S07 by itself
             guard s.phase == .ready else { return }
+            // #645: start fetching the face set now, not at S07, so the first call's wait stage is short
+            CallController.shared.prepareFace(reduceMotion: still)
             // the call opens on the made face, not the uploaded photo (no face swap inside S09)
             await model.waitForScene()
             try? await Task.sleep(for: .seconds(PrepStyle.crossfadeSeconds + PrepStyle.readyHoldSeconds))

@@ -56,8 +56,11 @@ final class CallScreenUITests: XCTestCase {
         XCTAssertEqual(menu.minX, app.frame.width - moreRect.maxX, accuracy: 1, "one side margin")
         XCTAssertEqual(app.buttons["micToggle"].label, "Turn microphone off")
         XCTAssertTrue(waitCue("Jin is thinking"), "thinking"); capture("S09-thinking")
+        // live captions r01 CAP-3: the final transcript with its check (shot only: the recorded session runs on its own clock)
+        capture("CAP-3-heard")
         XCTAssertTrue(waitCue("Jin is talking"), "S09-S"); capture("S09-S-speaking")
-        XCTAssertTrue(waitCue("Stopped. Go ahead."), "S09-X"); capture("S09-X-interrupted")
+        Thread.sleep(forTimeInterval: 0.6); capture("CAP-4-reply")   // CAP-4: the reply's words at the playhead, the user's line dim
+        XCTAssertTrue(waitCue("Stopped. Go ahead."), "S09-X"); capture("S09-X-interrupted")   // CAP-X3: the reply frozen, dimmed
         XCTAssertTrue(waitCue("Listening", timeout: 15), "S09-X returns to Listening after the hold")
         XCTAssertTrue(waitCue("Jin is talking"), "second reply")
         XCTAssertTrue(waitCue("Couldn’t get an answer."), "S09-F"); capture("S09-F-answer-failed")
@@ -83,7 +86,9 @@ final class CallScreenUITests: XCTestCase {
         }
         XCTAssertTrue(moreSheet.waitForExistence(timeout: 5))
         capture("MORE-B2-sheet")
-        XCTAssertFalse(app.buttons["moreTextChat"].exists, "Text chat stays hidden while the bundled app-config flag is false")
+        // D40 / MORE-B1 (AU-51): Text chat is shown greyed, last, and does nothing while the app-config flag is false
+        XCTAssertTrue(app.buttons["moreTextChat"].exists)
+        XCTAssertFalse(app.buttons["moreTextChat"].isEnabled, "Text chat is greyed out")
         XCTAssertFalse(app.buttons["moreFlip"].isEnabled, "Flip camera needs the camera on")
         // INT-0: switching interpretation on closes the sheet and shows INT-1 over the face
         app.buttons["moreInterpret"].tap()
@@ -99,6 +104,71 @@ final class CallScreenUITests: XCTestCase {
 
     /// HUD r01 A + Codex P2: a 20-character companion name (NM01's limit) says "Thinking" / "Talking" on the menu row
     /// instead of running "{name} is thinking" into the menu button.
+    /// S09 wait stage (춘식이 11/4): until the face is here the orb holds its place on the radial ground and the pill
+    /// says "Getting Jin ready"; on arrival the orb steps back and the pill turns to the live cue.
+    /// GENITA_WAIT_STAGE=12 holds the wait for 12 s on this unwired build (its fixture still would otherwise be there at
+    /// once). Review still: the PNG orb at rest, so the app goes idle for the queries (the live orb and the breathing
+    /// never let it — run 41760520646 missed the whole 6 s hold); the arrival is then Reduce Motion's 250 ms crossfade.
+    func testWaitStageThenArrival() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launchEnvironment = [
+            "GENITA_REVIEW_STAGE": "conversation",
+            "GENITA_SERVER_URL": "ws://127.0.0.1:8788/v1/session",
+            "GENITA_FIXTURE_SCRIPT": "none",
+            "GENITA_CALL_AUTOMIC": "1",
+            "GENITA_WAIT_STAGE": "12",
+            "GENITA_REVIEW_STILL": "1",
+            "GENITA_FACE_SET_DIR": URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+                .appending(path: "shared/GenitaKit/Tests/GenitaKitTests/Fixtures/face-animal").path,
+        ]
+        app.launch()
+        let stage = app.descendants(matching: .any)["callWaitStage"]
+        let cue = app.descendants(matching: .any).matching(identifier: "callCue").firstMatch
+        func capture(_ name: String) {
+            let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "call-" + name; shot.lifetime = .keepAlways; add(shot)
+        }
+        XCTAssertTrue(stage.waitForExistence(timeout: 10), "the wait stage holds the face's place")
+        XCTAssertTrue(cue.waitForExistence(timeout: 5))
+        XCTAssertEqual(cue.label, "Getting Jin ready")
+        capture("S09-wait-stage")
+        // arrival: the orb steps back (300 ms) and the face clears (520 ms)
+        let end = Date().addingTimeInterval(20)
+        while Date() < end, stage.exists, (stage.value as? String) != "leaving" { Thread.sleep(forTimeInterval: 0.02) }
+        // (the "arriving" frame is testWaitStageArrivingFrame: a capture here waits for the step back to settle)
+        XCTAssertTrue(stage.waitForNonExistence(timeout: 3), "the orb is gone after its step back")
+        Thread.sleep(forTimeInterval: 0.5)
+        capture("S09-wait-arrived")
+        XCTAssertNotEqual(cue.label, "Getting Jin ready", "the pill turns to the live cue")
+    }
+
+    /// S09 wait stage "arriving" review frame (춘식이 11/4 re-check: the old capture was byte-identical to "arrived",
+    /// since XCUITest captures only once animations settle). DEBUG GENITA_WAIT_FREEZE=1 holds the arrival at its
+    /// ~150 ms midpoint: the orb at 1.06 half faded, the face veil blur half way.
+    func testWaitStageArrivingFrame() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launchEnvironment = [
+            "GENITA_REVIEW_STAGE": "conversation",
+            "GENITA_SERVER_URL": "ws://127.0.0.1:8788/v1/session",
+            "GENITA_FIXTURE_SCRIPT": "none",
+            "GENITA_CALL_AUTOMIC": "1",
+            "GENITA_WAIT_STAGE": "6",
+            "GENITA_WAIT_FREEZE": "1",
+            "GENITA_REVIEW_STILL": "1",
+            "GENITA_FACE_SET_DIR": URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+                .appending(path: "shared/GenitaKit/Tests/GenitaKitTests/Fixtures/face-animal").path,
+        ]
+        app.launch()
+        let stage = app.descendants(matching: .any)["callWaitStage"]
+        XCTAssertTrue(stage.waitForExistence(timeout: 10), "the wait stage holds the face's place")
+        let end = Date().addingTimeInterval(20)
+        while Date() < end, (stage.value as? String) != "leaving" { Thread.sleep(forTimeInterval: 0.1) }
+        XCTAssertEqual(stage.value as? String, "leaving", "the face arrived and the stage holds its midpoint")
+        Thread.sleep(forTimeInterval: 0.6)
+        let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "call-S09-wait-arriving"; shot.lifetime = .keepAlways; add(shot)
+    }
+
     func testLongNameShortensOnTheRow() throws {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting"]

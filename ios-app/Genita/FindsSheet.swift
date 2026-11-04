@@ -25,6 +25,8 @@ enum FindsInk {
 /// this call (`Reason.from`). VoiceOver reads them as one "Why this: …" line.
 struct FindReasonChips: View {
     let reasons: [FindCard.Reason]
+    /// CW-02 (춘식이 11/4): an outfit's occasion, last in the same flow — the grey "what you said" chip
+    var occasion: (text: String, accessibilityLabel: String)? = nil
     var body: some View {
         // wraps: each chip reads whole (two short chips usually share a line)
         ChipLayout(spacing: 6) {
@@ -34,8 +36,17 @@ struct FindReasonChips: View {
                 Text(r.text).font(TypeStyle.body(13, .medium)).foregroundStyle(call ? CallInk.mute : FindsInk.blueText).lineLimit(1).truncationMode(.tail).frame(maxWidth: 260)
                     .padding(.horizontal, 10).frame(height: 26).background(call ? FindsInk.skip : FindsInk.blueSoft, in: Capsule())
             }
+            if let occasion {
+                // capped at the content width (390 pt screen − 2 × 38 margin − 2 × 12 padding): ChipLayout proposes no width,
+                // so the cap is what makes a long occasion end in "…" on one line (Codex #625 r6)
+                Text(occasion.text).font(TypeStyle.body(12, .medium)).foregroundStyle(CallInk.ink).lineLimit(1).truncationMode(.tail)
+                    .frame(maxWidth: 290, alignment: .leading).fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 12).padding(.vertical, 4).background(FindsInk.skip, in: RoundedRectangle(cornerRadius: 12))
+                    .accessibilityIdentifier("outfitOccasion")
+            }
         }.frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityElement(children: .ignore).accessibilityLabel("Why this: " + reasons.map(\.text).joined(separator: ", "))
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel([reasons.isEmpty ? nil : "Why this: " + reasons.map(\.text).joined(separator: ", "), occasion?.accessibilityLabel].compactMap { $0 }.joined(separator: ". "))
             .accessibilityIdentifier("findReasons")
     }
 }
@@ -435,6 +446,8 @@ struct FindCardPage: View {
     private var finds: FindsModel { call.finds }
     /// The title row's measured height (title, subtitle, reason chips): the half sheet sizes the camera picture from it.
     @State private var titleRowHeight: CGFloat = 0
+    /// The ingredient chip row is scrolled to its end (no right-edge fade then).
+    @State private var chipsAtEnd = false
     /// Motion card 5: one selection haptic per chip tap.
     @State private var chipTaps = 0
     /// Motion card 6: counts saves (not unsaves) — the bookmark pops, a shine crosses the card, one success haptic.
@@ -524,7 +537,9 @@ struct FindCardPage: View {
                         .findsRise(2)
                 }
                 // D48 ③: why this fits you — 1–2 chips from the user's own taste lines (not on link cards)
-                if card.kind != .link, let reasons = card.reasons, !reasons.isEmpty { FindReasonChips(reasons: Array(reasons.prefix(2))).padding(.top, 8).findsRise(2) }
+                // CW-02 (춘식이 11/4): an outfit's occasion goes last in the same chip flow (blue taste chips, then grey)
+                let reasons = card.kind == .link ? [] : Array((card.reasons ?? []).prefix(2))
+                if !reasons.isEmpty || card.occasionChip != nil { FindReasonChips(reasons: reasons, occasion: card.occasionChip).padding(.top, 8).findsRise(2) }
             }.frame(maxWidth: .infinity, alignment: .leading)
             if card.kind != .link, let hero = card.hero {
                 FindPicture(image: hero, resolve: call.findsURL, showFailText: false).frame(width: 56, height: 56).clipShape(RoundedRectangle(cornerRadius: 12))
@@ -555,9 +570,10 @@ struct FindCardPage: View {
     }
 
     @ViewBuilder private var recipe: some View {
-        if let cam = card.camera {
+        let camHeight = full ? 196 : (entry.reopened ? (card.title.count <= 17 ? 196 : 130) : halfCameraHeight)
+        if let cam = card.camera, camHeight > 0 {
             CameraFrame(frame: entry.frames.indices.contains(cam.frame) ? entry.frames[cam.frame] : nil, camera: cam, items: card.items, selected: finds.selectedItem,
-                        checking: entry.checking, height: full ? 196 : (entry.reopened ? (card.title.count <= 17 ? 196 : 130) : halfCameraHeight))
+                        checking: entry.checking, height: camHeight)
                 .findsRise(3)
         }
         chipRow.findsRise(4)
@@ -568,7 +584,12 @@ struct FindCardPage: View {
     /// Half sheet (344 pt page, scrolling off): the picture gives way so the ingredient chips show whole under a
     /// two-line title. 344 − 40 top − 44 header − 3 × 8 spacing − 44 chips = 192 for title row + picture; 132 at most
     /// (r03), 88 at least. Before: "Kimchi fried rice / with tofu and egg" cut the chip row in half (UI sweep 11/3).
-    static func halfCameraHeight(titleRow: CGFloat) -> CGFloat { min(132, max(88, 192 - titleRow)) }
+    /// With accessibility text sizes the title row alone can take the room (AX-L: 3-line title, Appetize build 7): when 88
+    /// no longer fits, the half sheet drops the picture (it is in the full sheet) so the ingredient chips stay whole.
+    static func halfCameraHeight(titleRow: CGFloat) -> CGFloat {
+        let room = 192 - titleRow
+        return room >= 88 ? min(132, room) : 0
+    }
     private var halfCameraHeight: CGFloat { titleRowHeight > 0 ? Self.halfCameraHeight(titleRow: titleRowHeight) : 132 }
 
     // r03 `.chiprow`: missing first (blue, +), then what you have (white, ✓); maybe = faded "?"
@@ -579,7 +600,16 @@ struct FindCardPage: View {
             }.padding(.horizontal, 38)
         }
         .scrollIndicators(.hidden)
+        .onScrollGeometryChange(for: Bool.self) { g in g.contentOffset.x + g.containerSize.width >= g.contentSize.width - 1 } action: { _, end in chipsAtEnd = end }
         .padding(.horizontal, -38)
+        // the row runs off the sheet's edge: a 24 pt fade says "more", not a hard cut ("✓ Green or", design review 11/4);
+        // none once scrolled to the end
+        .mask {
+            HStack(spacing: 0) {
+                Color.black
+                LinearGradient(colors: [.black, .black.opacity(chipsAtEnd ? 1 : 0)], startPoint: .leading, endPoint: .trailing).frame(width: 24)
+            }
+        }
         .findsHaptic(.selection, trigger: chipTaps) // motion card 5: one selection tick per tap
         .accessibilityElement(children: .contain).accessibilityLabel("Ingredients")
     }
@@ -696,10 +726,10 @@ struct FindCardPage: View {
                 .accessibilityLabel(option.label + (option.picked ? ", my pick" : ""))
             }
         }.padding(.top, 4)
-        if !card.why.isEmpty {
+        if !card.whyLines.isEmpty {
             Text("Why").font(TypeStyle.body(12, .medium)).foregroundStyle(CallInk.mute).padding(.top, 8)
             VStack(alignment: .leading, spacing: 8) {
-                ForEach(card.why, id: \.self) { line in
+                ForEach(card.whyLines, id: \.self) { line in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Circle().fill(CallInk.ink).frame(width: 4, height: 4).offset(y: -4)
                         Text(line).font(TypeStyle.body(16)).foregroundStyle(CallInk.ink).fixedSize(horizontal: false, vertical: true)

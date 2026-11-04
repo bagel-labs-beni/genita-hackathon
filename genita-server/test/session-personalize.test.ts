@@ -166,7 +166,8 @@ test("a failing personalize dep never breaks the call", async () => {
   await s.session.onClientText(JSON.stringify({ type: "start", persona, user: { profile: "- Taste: Loves cilantro." } }));
   assert.ok(s.client.json.some((m) => m.type === "ready"));
   await say(s, "Actually I don't like mushrooms anymore.", 1);
-  assert.match(s.sparkCalls[0].instructions!, /Loves cilantro/, "falls back to the app's profile");
+  // fail closed (lead 11/4, AU-92): the app's copy may hold what they asked to forget
+  assert.doesNotMatch(s.sparkCalls[0].instructions!, /Loves cilantro/, "never the app's copy when the store fails");
   s.session.close();
   await sleep(10);
 });
@@ -694,4 +695,40 @@ test("Codex #401 r2 P1: the question's TTS fails after watch together attached â
   assert.doesNotMatch(String(reply.text), /weekends/i);
   assert.ok(!s.client.json.some((m) => m.type === "say" && /weekends/i.test(String(m.text))));
   s.session.close();
+});
+
+test("AU-92 r4: a profile read that timed out lands later â€” applied (with Finds) unless 'Forget all of this' came in between", { timeout: 15_000 }, async () => {
+  let gen = 0;
+  const slow = (profile: string) => setup({
+    async startCall() { await sleep(1700); return { profile, taste: [] }; },
+    generation: () => gen,
+  });
+  // landed, same generation: applied
+  const a = slow("How the user wants to be treated:\n- Taste: Late but fine.");
+  await a.session.onClientText(JSON.stringify({ type: "start", persona, user: { profile: "- Taste: App copy." } }));
+  await sleep(1900);
+  await say(a, "Hi.", 1);
+  assert.match(a.sparkCalls.at(-1)!.instructions!, /Late but fine/);
+  a.session.close();
+  // forgotten in between: the old read never lands
+  const b = slow("How the user wants to be treated:\n- Taste: Old secret.");
+  await b.session.onClientText(JSON.stringify({ type: "start", persona, user: { profile: "" } }));
+  gen = 1;
+  await sleep(1900);
+  await say(b, "Hi.", 1);
+  assert.doesNotMatch(b.sparkCalls.at(-1)!.instructions!, /Old secret/);
+  b.session.close();
+  await sleep(10);
+});
+
+test("AU-92 r6: an interpretation start still takes the server's profile, so a switch to chat never uses the app's old copy", { timeout: 15_000 }, async () => {
+  const s = setup({ async startCall() { return { profile: "", taste: [] }; } });
+  await s.session.onClientText(JSON.stringify({ type: "start", persona, mode: "interpret", user: { profile: "- Taste: Old secret." } }));
+  await sleep(50);
+  await s.session.onClientText(JSON.stringify({ type: "mode", mode: "chat" }));
+  await sleep(50);
+  await say(s, "Hi.", 1);
+  assert.doesNotMatch(s.sparkCalls.at(-1)!.instructions!, /Old secret/);
+  s.session.close();
+  await sleep(10);
 });

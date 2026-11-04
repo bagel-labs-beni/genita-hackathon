@@ -72,7 +72,9 @@ final class MotionDemoOnboardingUITests: XCTestCase {
         primary.tap()
         let name = app.textFields["companionNameInput"]
         XCTAssertTrue(name.waitForExistence(timeout: 10))
-        expectation(for: NSPredicate(format: "value != %@ AND value != %@", "", "Name"), evaluatedWith: name); waitForExpectations(timeout: 10)
+        XCTAssertTrue(app.buttons["useSuggestedName"].waitForExistence(timeout: 10), "NM01 opens empty: Use {name}")
+        app.buttons["useSuggestedName"].tap()
+        expectation(for: NSPredicate(format: "value != %@ AND value != %@ AND value != %@", "", "Name", "Their name"), evaluatedWith: name); waitForExpectations(timeout: 10)
         primary.tap()
         // D01 Quick start (skippers' default) → help → relationship → presence → SUM
         XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Quick start'")).firstMatch.waitForExistence(timeout: 10))

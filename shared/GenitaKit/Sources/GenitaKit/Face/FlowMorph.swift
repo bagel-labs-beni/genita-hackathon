@@ -149,6 +149,12 @@ public struct FlowMap: Codable, Equatable, Sendable {
     }
     public struct Snap2D: Codable, Equatable, Sendable {
         public var hold: Int?; public var minHold: Int?; public var closedBelow: Double; public var rules: [SnapRule]; public var `default`: String
+        /// 11/4 CA-06 / CA-07: drawn mouths in the character's own style — only the mouth changes (no second muzzle
+        /// outline), its inside a flat dark shape in the line colour (no realistic teeth / tongue). nil / 1 = on, 0 = off.
+        public var flat: Double? = nil
+        /// the big shapes (prep `big`, e.g. WD / EE): from closed or a round shape they pass through the default (medium)
+        /// shape for one hold first, and back (critic 11/4: "snaps from the closed line to a huge blob, no in-between")
+        public var big: [String]? = nil
     }
     public var snap: Snap2D? = nil
     /// People: cheeks and the nasolabial fold follow the mouth corners (one frame late), corners are
@@ -194,8 +200,9 @@ public struct FlowMap: Codable, Equatable, Sendable {
         public var camera = 0.0
         /// 11/3 pm: the person never moves vertically against the locked still (false = the old nod / drift / breathing)
         public var lockY = true
-        /// 11/4: speech-coupled rigid head sway gain (AliveMotion.swayGain); 0 = the still head
-        public var sway = 1.0
+        /// 11/4: speech-coupled rigid head sway gain (AliveMotion.swayGain); 0 = the still head. Build 10 (Chelsea: the
+        /// side-to-side move is distracting): a map without `sway` is still — only a served `sway` > 0 turns it on.
+        public var sway = 0.0
         public init() {}
         enum CodingKeys: String, CodingKey { case headGain, nodGain, cheekGain, lipLifePx, rollGain, nodWidth, headX, headRoll, nodPx, camera, lockY, sway }
         public init(from decoder: Decoder) throws {
@@ -332,6 +339,22 @@ public struct FlowMap: Codable, Equatable, Sendable {
         }
     }
     public var framing: Framing? = nil
+    /// Animals (prep `chinWarp`, 11/4 CA-06: "the jaw barely moves, the chin fur stays like a patch"): the lower jaw and
+    /// chin fur below the lower lip move down with the opening, `px` (at 540 px frame width) at full opening, following
+    /// it through a `springMs` low-pass; full across the mouth, fading out over `sideW` face widths beside it.
+    public struct ChinWarp: Codable, Equatable, Sendable {
+        public var px = 7.0, springMs = 170.0, sideW = 0.2
+        public init() {}
+        enum CodingKeys: String, CodingKey { case px, springMs, sideW }
+        public init(from decoder: Decoder) throws {
+            self.init()
+            guard let c = try? decoder.container(keyedBy: CodingKeys.self) else { return }   // a block of the wrong shape keeps its defaults
+            if let v = try? c.decodeIfPresent(Double.self, forKey: .px), v.isFinite { px = min(20, max(0, v)) }
+            if let v = try? c.decodeIfPresent(Double.self, forKey: .springMs), v.isFinite { springMs = min(1000, max(0, v)) }
+            if let v = try? c.decodeIfPresent(Double.self, forKey: .sideW), v.isFinite { sideW = min(1, max(0.02, v)) }
+        }
+    }
+    public var chinWarp: ChinWarp? = nil
     /// Skin around the mouth (11/3 Chelsea: "still a bit botox around the mouth"), still px at 960 high
     /// unless noted. All 0 = off; values come from the human lane.
     public struct Perioral: Codable, Equatable, Sendable {
@@ -599,6 +622,28 @@ final class FlowMorph: @unchecked Sendable {
             let v = Self.rgb(img, crop: CGRect(x: 0, y: 0, width: img.width, height: img.height), width: width, height: height)
             lm[key] = stride(from: 0, to: v.count, by: 3).map { v[$0] / 255 }
         }
+        // 11/4 CA-06 (p9 "OH": a fold on the cheek beside the pursed lips): the round keys' flows do not carry the closed
+        // mouth's corners (and their smile crease) far enough in, so the warped closed face left the crease beside the
+        // lips. People on the rig with the mouth-inside fix: round keys (O, OH, U, WQ) show their own skin over the closed
+        // mouth's corners (soft ellipses, 0.3 × 0.16 mouth widths).
+        if data.kind == "human", data.map.rig != nil, FaceRenderer.mouthInterior ?? data.map.rig?.interior ?? false,
+           let mouth, data.roi.width > 0, data.roi.height > 0, mouth.width > 0 {
+            let wd = width, ht = height
+            let kxs = Double(wd) / Double(data.roi.width), kys = Double(ht) / Double(data.roi.height)
+            let mx0 = (Double(mouth.minX) - Double(data.roi.minX)) * kxs, mx1 = (Double(mouth.maxX) - Double(data.roi.minX)) * kxs
+            let my = (Double(mouth.midY) - Double(data.roi.minY)) * kys, mw = mx1 - mx0
+            let rx = 0.3 * mw, ry = max(3, 0.16 * mw)
+            var g = [Float](repeating: 0, count: wd * ht)
+            for y in max(0, Int(my - ry))..<min(ht, Int(my + ry) + 1) { for x in 0..<wd {
+                var v = 0.0
+                for cx in [mx0, mx1] {
+                    let dx = (Double(x) - cx) / rx, dy = (Double(y) - my) / ry, r = (dx * dx + dy * dy).squareRoot()
+                    let u = min(1, max(0, (1 - r) / 0.6)); v = max(v, u * u * (3 - 2 * u))
+                }
+                g[y * wd + x] = Float(v)
+            } }
+            for k in ["O", "OH", "U", "WQ"] { if let v = lm[k] { var o = v; for i in o.indices { o[i] = max(o[i], g[i]) }; lm[k] = o } }
+        }
         lipPix = lm
         // v29 teeth fade: bright, unsaturated pixels inside the lip hull are teeth
         var tm: [String: [Float]] = [:]
@@ -627,7 +672,7 @@ final class FlowMorph: @unchecked Sendable {
         if Self.chinStop, let face, data.roi.height > 0 {
             let kys = Double(height) / Double(data.roi.height)
             // the open keys drop the lower lip and jaw below the neutral chin line: leave room for that (codex P2)
-            let chin = (Double(face.maxY) + Self.jawRoom * Double(face.height) - Double(data.roi.minY)) * kys
+            let chin = (Self.chinLine(data: data, face: face, mouth: mouth) - Double(data.roi.minY)) * kys
             let feather = max(2, 0.05 * Double(face.height) * kys)
             let top = chin - feather
             for y in 0..<height where Double(y) > top {
@@ -641,7 +686,7 @@ final class FlowMorph: @unchecked Sendable {
         if Self.chinStop, let face, let mouth, data.roi.width > 0, data.roi.height > 0 {
             let kxs = Double(width) / Double(data.roi.width), kys = Double(height) / Double(data.roi.height)
             let top = (Double(mouth.minY) - Double(mouth.height) - Double(data.roi.minY)) * kys
-            let bottom = (Double(face.maxY) + Self.jawRoom * Double(face.height) - Double(data.roi.minY)) * kys
+            let bottom = (Self.chinLine(data: data, face: face, mouth: mouth) - Double(data.roi.minY)) * kys
             let cx = (Double(mouth.midX) - Double(data.roi.minX)) * kxs, cy = (top + bottom) / 2
             let rx = max(4, 0.36 * Double(face.width) * kxs), ry = max(4, (bottom - top) / 2)
             for y in 0..<height { for x in 0..<width {
@@ -653,6 +698,14 @@ final class FlowMorph: @unchecked Sendable {
         }
         maskW = mw
         order = data.keys
+        if data.map.drive == "snap", (data.map.snap?.flat ?? 1) >= 0.5, let mouth, data.roi.width > 0, data.roi.height > 0 {
+            let kxs = Double(width) / Double(data.roi.width), kys = Double(height) / Double(data.roi.height)
+            let mb = CGRect(x: (Double(mouth.minX) - Double(data.roi.minX)) * kxs, y: (Double(mouth.minY) - Double(data.roi.minY)) * kys,
+                            width: Double(mouth.width) * kxs, height: Double(mouth.height) * kys)
+            for (k, p) in keyPix {
+                if let r = Self.flatten2D(key: p, neutral: neutral, mask: mw, width: width, height: height, mouth: mb) { keyPix[k] = r.pix; snapRegion[k] = r.region }
+            }
+        }
         let lit = data.kind == "human" && data.map.rig != nil && (FaceRenderer.mouthInterior ?? data.map.rig?.interior ?? false)
         var mx: (cx: Float, hw: Float)? = nil
         if lit, let mouth, data.roi.width > 0 {
@@ -691,6 +744,25 @@ final class FlowMorph: @unchecked Sendable {
         } else { cheekRig = nil }
         if let face { faceNorm = min(1.2, max(0.6, 356 / max(1, Double(face.height) * 960 / Double(neutralStill.height)))) }
         nkF = data.nk; knF = data.kn
+        // chin warp (animals on the open drive): per flow cell weight, still rows y down
+        if let cw = data.map.chinWarp, data.map.drive == "open", cw.px > 0, let face, let mouth,
+           data.flowSize.w > 0, data.flowSize.h > 0, data.roi.width > 0, data.roi.height > 0 {
+            let fw = data.flowSize.w, fh = data.flowSize.h
+            let yTop = Double(mouth.midY), yLip = Double(mouth.maxY)
+            let yEnd = Self.chinLine(data: data, face: face, mouth: mouth), yFade = yLip + 0.6 * max(1, yEnd - yLip)
+            let cx = Double(mouth.midX), hw = 0.6 * Double(mouth.width), side = max(1, 1.5 * cw.sideW * Double(face.width))
+            func ss(_ a: Double, _ b: Double, _ v: Double) -> Double { let u = min(1, max(0, (v - a) / max(1e-6, b - a))); return u * u * (3 - 2 * u) }
+            var w = [Float](repeating: 0, count: fw * fh)
+            for j in 0..<fh { for i in 0..<fw {
+                let x = Double(data.roi.minX) + (Double(i) + 0.5) / Double(fw) * Double(data.roi.width)
+                let y = Double(data.roi.minY) + (Double(j) + 0.5) / Double(fh) * Double(data.roi.height)
+                let vy = ss(yTop, yLip, y) * (1 - ss(yFade, yEnd, y))
+                let vx = 1 - ss(hw, hw + side, abs(x - cx))
+                w[j * fw + i] = Float(vy * vx)
+            } }
+            chinWarpW = w
+            chinWarpPx = Float(cw.px * workScale * Double(neutralStill.width) / 540)
+        }
         let v2p = data.map.motionV2 ?? (data.kind == "human" ? MotionV2Params() : nil)
         stillH = Double(neutralStill.height)
         if let mouth {
@@ -804,6 +876,17 @@ final class FlowMorph: @unchecked Sendable {
     private var periD: [(Double, Double)]? = nil
     private var periA: (open: Double, ee: Double, round: Double, mbp: Double) = (0, 0, 0, 0)
     private var periLoud = 0.0, periT: Double?
+    /// Where the blend stops below the face (still px, y down): the face box's bottom + `jawRoom`. Animals with a chin
+    /// warp: at least 2.5 mouth heights under the mouth — prep keeps that band in the blend for animals (maskVersion 3);
+    /// an animal's face box often ends at the mouth, which cut the moving chin off in a hard line.
+    static func chinLine(data: FaceFlowData, face: CGRect, mouth: CGRect?) -> Double {
+        let base = Double(face.maxY) + jawRoom * Double(face.height)
+        guard data.map.chinWarp != nil, data.map.drive == "open", let mouth else { return base }
+        return max(base, Double(mouth.maxY) + 2.5 * Double(mouth.height))
+    }
+    /// Animal chin warp: weight per flow cell, working px at full opening, low-passed opening and its clock.
+    private var chinWarpW: [Float] = [], chinWarpPx: Float = 0
+    private var chinO = 0.0, chinT: Double?
 
     // MARK: amounts
 
@@ -1111,21 +1194,168 @@ final class FlowMorph: @unchecked Sendable {
         return resolve(sn.default)
     }
 
+    /// 2D flat mouths: per key, where the drawn mouth replaces the still (0…1, ROI px).
+    private var snapRegion: [String: [Float]] = [:]
+
+    /// 11/4 CA-06 / CA-07 (2D bear: a second muzzle arc and a realistic, smudged inside on the big mouths): each drawn
+    /// key keeps only its mouth — the dark / coloured blob around the mouth box, closed over its teeth, grown a little,
+    /// plus the closed mouth's own line — and the inside of that blob becomes one flat dark tone from the drawing's ink.
+    /// Returns the restyled key pixels and the region where they replace the still.
+    static func flatten2D(key p: [Float], neutral n: [Float], mask: [Float], width w: Int, height h: Int,
+                          mouth: CGRect) -> (pix: [Float], region: [Float])? {
+        guard p.count == w * h * 3, n.count == p.count, mask.count == w * h, mouth.width > 1 else { return nil }
+        func lum(_ a: [Float], _ i: Int) -> Float { (a[i * 3] + a[i * 3 + 1] + a[i * 3 + 2]) / 3 }
+        // paper and ink from the still inside the blend mask
+        var ls: [Float] = []
+        for i in 0..<(w * h) where mask[i] > 0.5 { ls.append(lum(n, i)) }
+        guard ls.count > 50 else { return nil }
+        ls.sort()
+        let paper = ls[ls.count / 2], ink = ls[ls.count / 20]
+        guard paper - ink > 30 else { return nil }
+        var inkC: (Float, Float, Float) = (0, 0, 0), inkN: Float = 0
+        for i in 0..<(w * h) where mask[i] > 0.5 && lum(n, i) <= ink + 8 { inkC.0 += n[i * 3]; inkC.1 += n[i * 3 + 1]; inkC.2 += n[i * 3 + 2]; inkN += 1 }
+        if inkN > 0 { inkC = (inkC.0 / inkN, inkC.1 / inkN, inkC.2 / inkN) }
+        let flat = (min(255, inkC.0 * 1.15 + 12), min(255, inkC.1 * 1.15 + 8), min(255, inkC.2 * 1.15 + 8))
+        // the key's mouth blob: dark or coloured pixels inside an ellipse about the mouth box
+        let cx = Float(mouth.midX), cy = Float(mouth.midY), rx = Float(mouth.width) * 1.6, ry = Float(mouth.width) * 1.1
+        var blob = [Bool](repeating: false, count: w * h)
+        for y in 0..<h { for x in 0..<w {
+            let dx = (Float(x) - cx) / rx, dy = (Float(y) - cy) / ry
+            guard dx * dx + dy * dy <= 1 else { continue }
+            let i = y * w + x, mx = max(p[i * 3], p[i * 3 + 1], p[i * 3 + 2]), mn = min(p[i * 3], p[i * 3 + 1], p[i * 3 + 2])
+            let sat = mx > 0 ? (mx - mn) / mx : 0
+            // the mouth's inside: coloured (brown / red / pink) or as dark as a filled ink area — not pencil strokes
+            blob[i] = sat > 0.2 || lum(p, i) < ink + 0.15 * (paper - ink)
+        } }
+        func dilate(_ a: [Bool], _ r: Int) -> [Bool] {
+            var o = a
+            for y in 0..<h { for x in 0..<w where !a[y * w + x] {
+                var hit = false
+                for dy in -r...r where !hit { let yy = y + dy; guard yy >= 0, yy < h else { continue }
+                    for dx in -r...r where dx * dx + dy * dy <= r * r { let xx = x + dx; if xx >= 0, xx < w, a[yy * w + xx] { hit = true; break } } }
+                o[y * w + x] = hit
+            } }
+            return o
+        }
+        func erode(_ a: [Bool], _ r: Int) -> [Bool] { dilate(a.map { !$0 }, r).map { !$0 } }
+        // only the strokes connected to the mouth (a second muzzle arc drawn in a key is left out) …
+        var comp = [Bool](repeating: false, count: w * h), queue: [Int] = []
+        let seed = mouth.insetBy(dx: -mouth.width * 0.15, dy: -mouth.height * 0.5)
+        // codex P1: a mouth box off the ROI must not build an inverted range (crash) — clamp both ends
+        func span(_ lo: CGFloat, _ hi: CGFloat, _ n: Int) -> Range<Int> {
+            let a = min(n, max(0, Int(lo))), b = max(a, min(n, Int(hi) + 1)); return a..<b
+        }
+        for y in span(seed.minY, seed.maxY, h) { for x in span(seed.minX, seed.maxX, w) where blob[y * w + x] {
+            comp[y * w + x] = true; queue.append(y * w + x)
+        } }
+        var qi = 0
+        while qi < queue.count {
+            let i = queue[qi]; qi += 1
+            let x = i % w, y = i / w
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let xx = x + dx, yy = y + dy
+                guard xx >= 0, xx < w, yy >= 0, yy < h else { continue }
+                let j = yy * w + xx
+                if blob[j], !comp[j] { comp[j] = true; queue.append(j) }
+            }
+        }
+        guard comp.contains(true) else { return nil }
+        // … plus the key's ink outline right around it, with everything that outline encloses (teeth, tongue) filled
+        let near = dilate(comp, 4)
+        var shape = comp
+        for i in 0..<(w * h) where near[i] && lum(p, i) < paper - 0.5 * (paper - ink) { shape[i] = true }
+        func fillHoles(_ a: [Bool]) -> [Bool] {
+            var outside = [Bool](repeating: false, count: w * h), q: [Int] = []
+            for x in 0..<w { for y in [0, h - 1] where !a[y * w + x] && !outside[y * w + x] { outside[y * w + x] = true; q.append(y * w + x) } }
+            for y in 0..<h { for x in [0, w - 1] where !a[y * w + x] && !outside[y * w + x] { outside[y * w + x] = true; q.append(y * w + x) } }
+            var k = 0
+            while k < q.count {
+                let i = q[k]; k += 1
+                let x = i % w, y = i / w
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    let xx = x + dx, yy = y + dy
+                    guard xx >= 0, xx < w, yy >= 0, yy < h else { continue }
+                    let j = yy * w + xx
+                    if !a[j], !outside[j] { outside[j] = true; q.append(j) }
+                }
+            }
+            return outside.map { !$0 }
+        }
+        let closed = fillHoles(shape)
+        // the flat inside: everything enclosed except the outline's own ink (kept from the key)
+        var inner = [Bool](repeating: false, count: w * h)
+        let core = erode(closed, 2)
+        for i in 0..<(w * h) where core[i] || (closed[i] && !(lum(p, i) < paper - 0.5 * (paper - ink) && !comp[i])) { inner[i] = closed[i] }
+        let r = 2
+        // the closed mouth's own line (the still's ink in the mouth box) must be covered too — with paper, not with whatever
+        // the key drew there (a key's extra cheek arcs showed through)
+        var region = dilate(closed, r)
+        var paperC: (Float, Float, Float) = (paper, paper, paper), pn: Float = 0, pc: (Float, Float, Float) = (0, 0, 0)
+        for i in 0..<(w * h) where mask[i] > 0.5 && abs(lum(n, i) - paper) < 6 { pc.0 += n[i * 3]; pc.1 += n[i * 3 + 1]; pc.2 += n[i * 3 + 2]; pn += 1 }
+        if pn > 0 { paperC = (pc.0 / pn, pc.1 / pn, pc.2 / pn) }
+        var eraseLine = [Bool](repeating: false, count: w * h)
+        let mb = mouth.insetBy(dx: -mouth.width * 0.2, dy: -mouth.height * 0.6)
+        for y in span(mb.minY, mb.maxY, h) { for x in span(mb.minX, mb.maxX, w) where lum(n, y * w + x) < paper - 0.35 * (paper - ink) {
+            eraseLine[y * w + x] = true
+        } }
+        eraseLine = dilate(eraseLine, 2)
+        for i in 0..<(w * h) where eraseLine[i] && !region[i] { region[i] = true }
+        region = dilate(region, 2)
+        guard region.contains(true) else { return nil }
+        // soft region edge (box blur 1 px) and the flat inside
+        var soft = [Float](repeating: 0, count: w * h)
+        for y in 0..<h { for x in 0..<w {
+            var s: Float = 0, c: Float = 0
+            for dy in -1...1 { let yy = y + dy; guard yy >= 0, yy < h else { continue }
+                for dx in -1...1 { let xx = x + dx; guard xx >= 0, xx < w else { continue }; s += region[yy * w + xx] ? 1 : 0; c += 1 } }
+            soft[y * w + x] = s / c
+        } }
+        var o = p
+        let shapeBand = dilate(closed, r)
+        for i in 0..<(w * h) where eraseLine[i] && !shapeBand[i] { o[i * 3] = paperC.0; o[i * 3 + 1] = paperC.1; o[i * 3 + 2] = paperC.2 }
+        // flat inside that keeps the key's own pencil grain (±10 %), and a pencil outline in the drawing's ink around it
+        let ringIn = erode(closed, 2)
+        for i in 0..<(w * h) where inner[i] {
+            let g = 0.9 + 0.2 * min(1, lum(p, i) / max(1, paper))
+            var c = (flat.0 * g, flat.1 * g, flat.2 * g)
+            if !ringIn[i] { c = (inkC.0, inkC.1, inkC.2) }
+            o[i * 3] = c.0; o[i * 3 + 1] = c.1; o[i * 3 + 2] = c.2
+        }
+        return (o, soft)
+    }
+
     private func render2D(_ lip: LipFrame, at t: Double, frame: Int) -> CGImage {
         let sn = data.map.snap
         recentOpen.append(lip.openness); if recentOpen.count > 16 { recentOpen.removeFirst() }
         if frame % max(1, sn?.hold ?? 2) == 0 {
             var k = snapShape(lip)
             if k != snapKey, snapHeld < (sn?.minHold ?? 2) { k = snapKey }
+            // in-between: closed (or a small shape) ↔ a big shape goes through the medium default shape for one hold
+            if (sn?.flat ?? 1) >= 0.5, let sn, k != snapKey, let mid = resolve(sn.default), k != mid, snapKey != mid {
+                let big = Set((sn.big ?? ["WD", "EE"]).compactMap { resolve($0) })
+                let into = k.map { big.contains($0) } ?? false, outOf = snapKey.map { big.contains($0) } ?? false
+                if into != outOf { k = mid }
+            }
             if k != snapKey { snapHeld = 0 }
             snapKey = k
         }
         snapHeld += 1
         lastAmounts = Dictionary(uniqueKeysWithValues: order.map { ($0, $0 == snapKey ? Float(1) : 0) })
         let src = snapKey.flatMap { keyPix[$0] } ?? neutral
+        let region = snapKey.flatMap { snapRegion[$0] }
         var out = [UInt8](repeating: 0, count: width * height * 4)
         for i in 0..<(width * height) {
-            let m = maskW[i], o = i * 4
+            let o = i * 4
+            var m = maskW[i]
+            if let rg = region {
+                // outside the drawn mouth the still's own pixels (no second muzzle line); inside, the restyled key
+                let a = rg[i]
+                let r = src[i * 3] * a + neutral[i * 3] * (1 - a), g = src[i * 3 + 1] * a + neutral[i * 3 + 1] * (1 - a), b = src[i * 3 + 2] * a + neutral[i * 3 + 2] * (1 - a)
+                out[o] = UInt8(min(255, max(0, r * m)).rounded()); out[o + 1] = UInt8(min(255, max(0, g * m)).rounded())
+                out[o + 2] = UInt8(min(255, max(0, b * m)).rounded()); out[o + 3] = UInt8(min(255, max(0, 255 * m)).rounded())
+                continue
+            }
+            m = maskW[i]
             out[o] = UInt8(min(255, max(0, src[i * 3] * m)).rounded())
             out[o + 1] = UInt8(min(255, max(0, src[i * 3 + 1] * m)).rounded())
             out[o + 2] = UInt8(min(255, max(0, src[i * 3 + 2] * m)).rounded())
@@ -1273,6 +1503,17 @@ final class FlowMorph: @unchecked Sendable {
             let jy = Float(px * (sin(w * 2.9 + 1.9) * 0.6 + sin(w * 4.1 + 0.3) * 0.4))
             for q in stride(from: 0, to: n2, by: 2) { gn[q] += jx; gn[q + 1] += jy }
         }
+        // animals: the lower jaw and chin fur move down with the opening (sample from above = content moves down)
+        if !chinWarpW.isEmpty, chinWarpW.count == fw * fh, let cw = data.map.chinWarp {
+            var o = 0.0
+            for st in data.map.jaw?.steps ?? [] { if let j = order.firstIndex(of: st.key) { o += Double(am[j]) * st.value } }
+            o = min(1, max(0, o))
+            let dtC = chinT.map { t - $0 } ?? 0
+            chinT = t
+            if dtC <= 0 || dtC > 0.5 { chinO = o } else { chinO += (o - chinO) * (cw.springMs > 0 ? 1 - exp(-dtC * 1000 / cw.springMs) : 1) }
+            let d = chinWarpPx * Float(chinO)
+            if d > 0.01 { for c in 0..<(fw * fh) { gn[2 * c + 1] -= d * chinWarpW[c] } }
+        }
         let gnGeo = gn
         // Living lips (rig): loudness × a smooth random field inside the lips, re-drawn every frame,
         // plus a matching highlight shimmer (texture life, not geometry).
@@ -1407,7 +1648,7 @@ final class FlowMorph: @unchecked Sendable {
         }
         // 11/4 (p6 regression in #539): near the mouth's corners the opaque teeth layer drew the key's own inside where a
         // prep mask leaked past the corner (grey spots on the cheek; v44 had whitened them). People with the mouth-inside
-        // fix: the teeth layer fades out from 0.6 to 0.82 of the closed mouth's half-width — the corners show the
+        // fix: the teeth layer fades out from 0.45 to 0.7 of the closed mouth's half-width — the corners show the
         // cross-blended keys (their own lips / inside) instead.
         let cornerFade: (cx: Float, hw: Float)? = interiorOn ? rigMouth.map { (Float($0.midX), max(1, Float($0.width / 2))) } : nil
         for y in 0..<h {
@@ -1503,14 +1744,16 @@ final class FlowMorph: @unchecked Sendable {
                         }
                         al = min(1, al * tl.s)
                         if let cf = cornerFade {
-                            let u = min(1, max(0, (abs(px - cf.cx) / cf.hw - 0.6) / 0.22))
+                            let u = min(1, max(0, (abs(px - cf.cx) / cf.hw - 0.45) / 0.25))
                             al *= 1 - u * u * (3 - 2 * u)
                         }
                         if al > 0.002 {
                             var c = Self.bilinear3(tl.key, w, h, px + dk.0, tY + dk.1)
                             if tl.lit < 1 {
+                                // the teeth layer gives way to what lies under it (the blended keys' own narrow gap): darkening it
+                                // drew a grey, doubled band over the keys' own teeth (critic 11/4)
                                 let k = 1 - (1 - tl.lit) * (tl.inside.map { Self.bilinear1($0, w, h, px + dk.0, tY + dk.1) } ?? 1)
-                                c = (c.0 * k, c.1 * k, c.2 * k)
+                                c = (c.0 * k + r * (1 - k), c.1 * k + g * (1 - k), c.2 * k + b * (1 - k))
                             }
                             // v60b: the key's thin upper-teeth band reads a little brighter (bright pixels only, above the gap)
                             if let ow = openW, tY < ow.yc {
@@ -1749,6 +1992,20 @@ final class FlowMorph: @unchecked Sendable {
                     // same light as the skin: keep the luminance, lean the colour 8 % toward the skin's tint
                     let l = (c.0 + c.1 + c.2) / 3, a = 0.08 * toothy
                     c = (c.0 + (l * tint.0 - c.0) * a, c.1 + (l * tint.1 - c.1) * a, c.2 + (l * tint.2 - c.2) * a)
+                }
+                // 11/4 CA-06 (p6, dim photo): a black void reads as a cut-out hole — the darkest inside takes a warm red-brown
+                // from the skin's own light, a little lighter toward the tongue, keeping its relative shading; not at the corners
+                if let sk = skin {
+                    // the ring around a round key's opening is its lips (darker than skin): reference the brighter of the two
+                    let sm = max((sk.0 + sk.1 + sk.2) / 3, 150)
+                    let l0 = (c.0 + c.1 + c.2) / 3, fL = 0.3 * sm
+                    if l0 < fL, fL > 1 {
+                        // darker under the upper lip, lighter toward the tongue (a real open mouth has a gradient, not a void)
+                        let rr = Float(y - top) / max(1, Float(bot - top))
+                        let g = (0.65 + 0.9 * rr * rr) * (0.85 + 0.3 * l0 / fL)
+                        let a = clip((fL - l0) / fL) * 0.85 * (1 - sstep(0.6, 0.95, dx))
+                        c = (c.0 + (sm * 0.5 * g - c.0) * a, c.1 + (sm * 0.24 * g - c.1) * a, c.2 + (sm * 0.24 * g - c.2) * a)
+                    }
                 }
                 let cav = (1 - toothy) * clip((0.35 - sat) / 0.1) * clip((thr + 25 - mx) / 20)
                 if cav > 0 {

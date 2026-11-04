@@ -175,6 +175,7 @@ export function storyInstructions(only?: SparkStoryId[]): string {
     ...ids.map((id) => CARD_GUIDE[id]),
     "headline: at most 8 words, ends with a period. items: each text is 1-2 short sentences to the user as \"you\" (e.g. \"You like a friendly tone, but you want the answer up front. Long replies lose you.\"), restating what the profile says in plain words, with the evidence of the lines behind it: explicit (they said it), observed (a repeated pattern), memory (a memory summary). A [Suggested] line is not a fact about them: never write it as one.",
     "Genita talks in English: never mention which language the user speaks or wants, in any card. A line marked \"(direction only)\" is a lean, not a fact: say it as one (\"You seem to lean toward …\") and never as their stated taste.",
+    "The items never restate the headline: the headline is the gist in a few words, each item adds what it doesn't say (a detail, an example, when it shows). Don't reuse the headline's wording in an item.",
     "promise: one short sentence starting \"So I'll\" for think and talk; \"\" for the others. evidence: the strongest evidence behind the card.",
     "Never name a personality type or trait label, never diagnose, never praise or flatter, never guess beyond the profile. If the profile has nothing for a card, return it with headline \"\", items [], tags [], help [].",
     "topics: for each still-to-confirm item, {item: copied exactly, topic: what to learn in 3-6 words (\"How chatty calls should be\"), sub: a short either/or question (\"Quiet company, or lots of talk?\")}.",
@@ -385,7 +386,14 @@ const keyWords = (t: string) => new Set((t.toLowerCase().match(/[\p{L}]{4,}/gu) 
  * Evidence for one shown line: the best label among the card's source lines it echoes. A line that only echoes
  * suggestions is not shown (null); a line that echoes nothing gets the weakest fact label behind the card.
  */
-function lineEvidence(text: string, card: StyleCard, id: SparkStoryId): Evidence | null {
+/**
+ * D19 / AU-19 (IM-01 step 4): the story is written from the paste, so a line or tag the card never kept (an injected
+ * line, an invented taste) must not come back with a fact chip. With no word in common with this card's lines:
+ *   - an observation item needs a word from SOME line of the card, else it goes;
+ *   - a taste tag needs to be said word for word in the card ("Hot pot" in "Food: hot pot."), else it goes;
+ *   - a help tile keeps the weakest-fact fallback (tiles are phrased as offers, not facts).
+ */
+function lineEvidence(text: string, card: StyleCard, id: SparkStoryId, kind: "item" | "tag" | "tile" = "item"): Evidence | null {
   const words = keyWords(text);
   const sources = SOURCES[id].flatMap((k) => card.sections?.[k] ?? []);
   const hits = sources.filter((f) => [...keyWords(f.text)].some((w) => words.has(w)));
@@ -394,8 +402,33 @@ function lineEvidence(text: string, card: StyleCard, id: SparkStoryId): Evidence
   if (factHits.length) return factHits.reduce((b, f) => (RANK[f.label] > RANK[b] ? (f.label as Evidence) : b), factHits[0].label as Evidence);
   if (hits.length) return null;
   const facts = sources.filter((f) => f.label !== "suggested" && !f.direction);
-  return facts.length ? facts.reduce((w, f) => (RANK[f.label] < RANK[w] ? (f.label as Evidence) : w), facts[0].label as Evidence) : null;
+  const weakest = facts.length ? facts.reduce((w, f) => (RANK[f.label] < RANK[w] ? (f.label as Evidence) : w), facts[0].label as Evidence) : null;
+  if (kind === "tile") return weakest;
+  if (kind === "tag") {
+    const flat = (s: string) => ` ${s.toLowerCase().replace(/[^\p{L}\p{N} ]/gu, " ").replace(/\s+/g, " ").trim()} `;
+    const t = flat(text);
+    // short tags too ("AI", "F1"), as long as the card says them as a whole word (Codex P2)
+    return t.trim().length >= 1 && sources.some((f) => flat(f.text).includes(t)) ? weakest : null;
+  }
+  const anywhere = Object.values(card.sections ?? {}).flat().some((f) => [...keyWords((f as Finding).text)].some((w) => words.has(w)));
+  return anywhere ? weakest : null;
 }
+
+// only the filler an item wraps around the headline ("You want it …"); joining, comparing, frequency and negation
+// words count, so "planning to comparing" never matches "planning and comparing" (Codex P2)
+const STOP = new Set(["a", "an", "the", "you", "your", "you're", "it", "is", "are", "be", "so", "that", "this", "i", "me", "my", "want"]);
+const contentWords = (s: string) =>
+  s.toLowerCase().replace(/[’']/g, "'").split(/[^\p{L}\p{N}']+/u).filter((w) => w.length > 0 && !STOP.has(w)).map((w) => w.replace(/(ing|ed|es|s)$/, ""));
+
+/** An item that only says the headline again: the same words in the same order, nothing added (word order kept, so
+ *  "long, not short" never matches "short, not long"; Codex P2). */
+export function restatesHeadline(headline: string, text: string): boolean {
+  const head = contentWords(headline);
+  if (head.length < 2) return false;
+  const body = contentWords(text);
+  return body.length === head.length && body.every((w, i) => w === head[i]);
+}
+
 
 function sparkCard(id: SparkStoryId, r: RawCard, card: StyleCard, best: Evidence): StoryCard | null {
   const headline = FIXED_HEADLINE[id] ?? headlineOf(r.headline);
@@ -410,6 +443,11 @@ function sparkCard(id: SparkStoryId, r: RawCard, card: StyleCard, best: Evidence
       })
       // Genita talks in English: no "casual Korean" promise on a card (QA 11/3 P2)
       .filter((i): i is StoryItem => !!i.text && !!i.evidence && !storyTextProblem(i.text) && !isLanguagePreference(i.text))
+      // a line that only says the headline again ("You decide fast comparing options." / "…once options are side by
+      // side.") adds nothing (TF 331, 3× check): two of its key words already in the headline
+      .filter((i) => { const hw = keyWords(headline); return [...keyWords(i.text)].filter((w) => hw.has(w)).length < 2; })
+      // TF 331: card 1's body said its title again; an item that only restates the headline adds nothing
+      .filter((i) => !restatesHeadline(headline, i.text))
       .slice(0, id === "lines" ? 4 : 2);
     if (!items.length) return null;
     sc.items = items;
@@ -423,19 +461,20 @@ function sparkCard(id: SparkStoryId, r: RawCard, card: StyleCard, best: Evidence
     const seen = new Set<string>();
     sc.tags = (Array.isArray(r.tags) ? (r.tags as Array<{ group?: unknown; text?: unknown; dislike?: unknown }>) : [])
       .map((t) => ({ group: (groups.includes(t?.group as string) ? t.group : "style") as StoryTag["group"], text: clean(t?.text, 40), dislike: t?.dislike === true }))
-      .filter((t) => t.text && t.text.length <= 28 && !storyTextProblem(t.text) && lineEvidence(t.text, card, id) !== null && !seen.has(t.text.toLowerCase()) && !!seen.add(t.text.toLowerCase()))
+      .filter((t) => t.text && t.text.length <= 28 && !storyTextProblem(t.text) && lineEvidence(t.text, card, id, "tag") !== null && !seen.has(t.text.toLowerCase()) && !!seen.add(t.text.toLowerCase()))
       .slice(0, 14);
     // a shopping budget the user gave is always on the card (Spark may leave it out)
     const budget = card.sections.likes.find((x) => x.label !== "suggested" && /^\s*budget:/i.test(x.text));
     const bt = budget ? budgetTag(budget.text) : "";
     if (bt && !sc.tags.some((t) => t.text.toLowerCase() === bt.toLowerCase())) sc.tags.push({ group: "style", text: bt, dislike: false });
-    if (!sc.tags.length) return null;
+    // a skip card's taste tags are the user's own picks (filled in below), so Spark's headline stays even with none of its tags
+    if (!sc.tags.length && card.source !== "skip") return null;
     if (!card.sections.likes.some((x) => x.label !== "suggested")) sc.note = NO_FAVORITES;
   }
   if (id === "help") {
     sc.help = (Array.isArray(r.help) ? (r.help as Array<{ label?: unknown; sub?: unknown; mode?: unknown }>) : [])
       .map((h) => ({ label: clean(h?.label, 48), sub: clean(h?.sub, 40), mode: h?.mode === "just_do_it" ? ("just_do_it" as const) : ("ask_first" as const) }))
-      .filter((h) => h.label && h.label.length <= 40 && !storyTextProblem(h.label) && !storyTextProblem(h.sub) && lineEvidence(`${h.label} ${h.sub}`, card, id) !== null)
+      .filter((h) => h.label && h.label.length <= 40 && !storyTextProblem(h.label) && !storyTextProblem(h.sub) && lineEvidence(`${h.label} ${h.sub}`, card, id, "tile") !== null)
       .slice(0, 3);
     if (!sc.help.length) return null;
   }

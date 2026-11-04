@@ -10,8 +10,10 @@ import { memoryPrompt, NO_PAST_LINE, plainLowMood, PRIOR_CRISIS_LINE } from "../
 import { minorLine } from "./minorBoundary.ts";
 import { cameraOffHint } from "./cameraAsk.ts";
 import { unbackedPast } from "./pastGuard.ts";
+import { unseenToHeard } from "./unseenSight.ts";
 import { crisisFollowUpFor } from "../session/session.ts";
 import { forgetInCall } from "./forgetInCall.ts";
+import { taskHint } from "./taskHints.ts";
 import type { Memory } from "../memory/repository.ts";
 import type { InputMessage, SparkRequest } from "../meta/spark.ts";
 import { SentenceSplitter } from "../text/sentences.ts";
@@ -92,6 +94,7 @@ export const adapter = {
     // P1 "This turn:" line, as session.v1Extras builds it (closeness, question rhythm, mood, landed, recall)
     const userLines = [...ctx.history.filter((h) => h.role === "user").map((h) => h.text), t.text];
     const turn = turnHints({
+      prevUser: ctx.history.filter((h) => h.role === "user").at(-1)?.text,
       callNumber: s.callNumber,
       lastReply: ctx.history.filter((h) => h.role === "assistant").at(-1)?.text,
       userText: t.text,
@@ -104,7 +107,7 @@ export const adapter = {
     const minor = minorLine(userLines);
     const turnWithMinor = minor ? (turn ? turn.replace(/^This turn: /, `This turn: ${minor} `) : `This turn: ${minor}`) : turn;
     // scripted calls send no camera frames: the session's camera-off hint for a "do I look ok?" line
-    const instructions = buildInstructions({ ...base, turn: turnWithMinor, perceptionHint: userLines.some(realCrisisSignal) ? undefined : cameraOffHint(t.text, false) ?? undefined }) + lastCallBlock(s, t.text) + memoryPrompt((s.memories ?? []).map(mem), false) + (hasPast(s) ? "" : NO_PAST_LINE);
+    const instructions = buildInstructions({ ...base, turn: turnWithMinor, task: taskHint(t.text, ctx.history, ctx.history.some((h) => h.role === "user" && realCrisisSignal(h.text)) || realCrisisSignal(t.text), s.persona.kind) ?? undefined, perceptionHint: userLines.some(realCrisisSignal) ? undefined : cameraOffHint(t.text, false, false, ctx.history.filter((h) => h.role === "user").at(-1)?.text) ?? undefined }) + lastCallBlock(s, t.text) + memoryPrompt((s.memories ?? []).map(mem), false) + (hasPast(s) ? "" : NO_PAST_LINE);
     return { instructions, input: [...msgs(ctx.history), { role: "user", content: t.text }], maxOutputTokens: 800, effort: "minimal" };
   },
 
@@ -119,6 +122,7 @@ export const adapter = {
     for (const part of parts) {
       let tts = kept.length ? part : avoidRepeatedOpener(part, recent);
       if (tts) tts = dropRepeatedName(tts, ctx.scenario.user.name, [...recent.slice(-2), ...kept]);
+      if (tts) tts = unseenToHeard(tts, false); // scripted calls send no frames
       if (tts) tts = unbackedPast(tts, { past: hasPast(ctx.scenario), userText, callText: ctx.history.map((h) => h.text).join(" ") });
       if (!tts) continue;
       if (!parseTaggedSentence(tts).displayText) continue;
