@@ -405,6 +405,12 @@ export async function startServer(
   const sessionGens = new Map<string, number>();
   /** a seeded call that opens later than this after the last one dropped is a reconnect (it says RECONNECT_LINE) */
   const RECONNECT_GAP_MS = 10_000;
+  /**
+   * Same device, not hung up, away longer than this: a return visit, not a drop (11/4 demo: quitting or relaunching
+   * the app, a Sparkle update, a server restart all end a call without a stop — it greets instead of "we got cut off").
+   * A real network drop that comes back sooner still continues with RECONNECT_LINE.
+   */
+  const SAME_DEVICE_RETURN_MS = Number(process.env.GENITA_SAME_DEVICE_RETURN_MS) > 0 ? Number(process.env.GENITA_SAME_DEVICE_RETURN_MS) : 60_000;
   function priorTurns(userId: string, self: string, revision: number, device: string): HistoryItem[] | null {
     // this call joins the conversation now (a slow first memory read can make it join after a later socket)
     sessionGens.set(self, ++nextGen);
@@ -460,8 +466,10 @@ export async function startServer(
     const hungUpThere = !!best && hungUp && fromDevice !== null && fromDevice !== device && gapMs > RECONNECT_GAP_MS;
     // Hung up on this same device and called again: a return visit (greeting + the last call's notes). A call
     // on the OTHER device still continues it, whatever order its stop and the claim arrived in (Codex 11/3).
-    if (best && (hungUpHere || hungUpThere)) {
-      log("history.not_seeded", { session: self, by: hungUpHere ? "hang_up" : "hang_up_other_device", gapMs: Math.round(gapMs) });
+    // Not hung up on this same device, but gone longer than SAME_DEVICE_RETURN_MS (app quit / relaunch / update): a return visit
+    const returnedHere = !!best && !hungUp && fromDevice === device && gapMs > SAME_DEVICE_RETURN_MS;
+    if (best && (hungUpHere || hungUpThere || returnedHere)) {
+      log("history.not_seeded", { session: self, by: hungUpHere ? "hang_up" : hungUpThere ? "hang_up_other_device" : "same_device_return", gapMs: Math.round(gapMs) });
       // ...but its last lines go along right away as "the call that just ended" (P1 FILM 11/3): the summary and
       // memories of that call are written in the background and can take longer than a quick call-back
       // a call with a forget request anywhere in it (even before the kept lines) hands over nothing raw (Codex 11/3)
