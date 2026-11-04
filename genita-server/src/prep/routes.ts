@@ -57,6 +57,7 @@ function demoSwap<T>(userId: string, fn: () => Promise<T>): Promise<T> {
 import { PersonalizeError } from "../personalize/service.ts";
 import { InsightsError } from "../insights/service.ts";
 import { picksFromSkip } from "../insights/report.ts";
+import { preferenceRows, withPreferenceRows } from "./preferenceRows.ts";
 import { getOps } from "../ops/limits.ts";
 
 const JSON_LIMIT = 256 * 1024;
@@ -164,6 +165,10 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
   /** polishes per uploaded photo (first + two "Try again"); in memory: a restart only gives a few more */
   const polishAttempts = new Map<string, number>();
 
+  /** the card as the app sees it: the six rows from the import, R1 and the saved P answers (preferenceRows.ts) */
+  const prefsOf = async (user: string) => (await d.store.getCompanion(user).catch(() => null))?.prefs ?? null;
+  const shown = async (user: string, style: StyleCard) => withPreferenceRows(style, await prefsOf(user));
+
   async function route(req: IncomingMessage, res: ServerResponse, url: URL, userId?: string) {
     const m = req.method ?? "GET";
     const p = url.pathname.replace(/\/+$/, "");
@@ -195,7 +200,7 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
         d.log("import.failed", { reason: err instanceof PrepError ? err.code : String(err).slice(0, 120) });
         throw err;
       });
-      return send(res, 200, { status: "ready", style, profile: styleProfileText(style), story: style.story?.cards ?? null });
+      return send(res, 200, { status: "ready", style: await shown(user, style), profile: styleProfileText(style), story: style.story?.cards ?? null });
     }
 
     if (m === "POST" && p === "/v1/import/skip") {
@@ -215,14 +220,14 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
       else await d.store.putStyle(user, r.card);
       d.insights?.fromSkip(user);
       d.log("import.skipped", { item_count: r.card.itemCount, partial: r.card.partial });
-      return send(res, 200, { status: "ready", style: r.card, profile: styleProfileText(r.card) });
+      return send(res, 200, { status: "ready", style: await shown(user, r.card), profile: styleProfileText(r.card) });
     }
 
     if (m === "GET" && p === "/v1/import") {
       const j = importJobs.get(user);
       if (j) return send(res, 200, j);
       const style = await d.store.getStyle(user);
-      return send(res, 200, style && !style.forgotten ? { status: "ready", style, profile: styleProfileText(style) } : { status: "none" });
+      return send(res, 200, style && !style.forgotten ? { status: "ready", style: await shown(user, style), profile: styleProfileText(style) } : { status: "none" });
     }
 
     if (m === "POST" && p === "/v1/companion/image") {
@@ -469,8 +474,11 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
       const c = await d.store.getCompanion(user);
       if (!c) throw new PrepError(404, "no_companion");
       const next = await savePrefs(d, c, b.depth, b.answers);
-      const v = companionView(next, await d.store.getStyle(user));
-      return send(res, 200, { summary: next.persona!.summary, persona: next.persona!.card, rules: next.persona!.rules, session: v.session });
+      const style = await d.store.getStyle(user);
+      const v = companionView(next, style);
+      // rows: the six preference rows now that the P flow is done (never empty, Chelsea 11/4); build 11+ reads them
+      const rows = preferenceRows(style && !style.forgotten ? style : null, next.prefs);
+      return send(res, 200, { summary: next.persona!.summary, persona: next.persona!.card, rules: next.persona!.rules, session: v.session, rows });
     }
 
     if (m === "GET" && p === "/v1/profile/story") {
@@ -500,7 +508,12 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
       if (!b || typeof b !== "object" || Array.isArray(b)) throw new PrepError(400, "bad_json");
       if (!allowCorrect(user)) throw new PrepError(429, "rate_limited", "try again in a minute");
       try {
-        return send(res, 200, await d.personalize.correct(user, b as Record<string, unknown>));
+        const r = await d.personalize.correct(user, b as Record<string, unknown>);
+        // the app replaces its rows with these: they keep the P answers' lines (preferenceRows.ts)
+        // (r.card is the HISY story card; r.rows the style card's rows after the correction, R1 from the stored card)
+        const stored = await d.store.getStyle(user).catch(() => null);
+        const base = { ...(stored && !stored.forgotten ? stored : {}), display: r.rows } as StyleCard;
+        return send(res, 200, { ...r, rows: preferenceRows(base, await prefsOf(user)) });
       } catch (err) {
         if (err instanceof PersonalizeError) throw new PrepError(err.status, err.code, err.message);
         throw err;
@@ -523,6 +536,13 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
           if (!b || typeof b !== "object" || Array.isArray(b)) throw new PrepError(400, "bad_json");
           // each write is up to two Spark calls
           if (!allowInsightWrite(user)) throw new PrepError(429, "rate_limited", "try again in a minute");
+          // no import card and no N1–N3 card (both failed, or never sent): R1 is still written, from the P answers
+          // alone (Chelsea 11/4) — an empty N1–N3 card holds it. A background import still reading keeps its slot.
+          if (d.personalize && !importJobs.has(user) && !(await d.store.getStyle(user))) {
+            const gen = d.personalize.generation(user);
+            const empty = skipStyleCard({ interests: [], avoid: [], replies: null });
+            if (empty.ok) await d.personalize.replaceStyle(user, empty.card, gen).catch((err) => d.log("insights.empty_card_failed", { reason: String(err).slice(0, 120) }));
+          }
           await ins.fromAnswers(user, b.answers);
           return send(res, 202, { status: "pending" });
         }
