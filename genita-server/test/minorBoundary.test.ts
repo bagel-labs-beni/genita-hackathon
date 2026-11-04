@@ -47,3 +47,13 @@ test("Codex #640 r9: credits / 15,000 dollars are no age, a speaker label before
   for (const t of ["I'm 16 credits short of graduating", "I'm 15,000 dollars in debt", 'My 16-year-old son: "I\'m 16, so I can drive now".']) assert.equal(minorLine([t]), null, t);
   for (const t of ["My age is 15", "I am aged 15"]) assert.ok(minorLine([t]), t);
 });
+
+test("Codex #640 r10: 'currently 16 years old' counts; kilometers / kilograms / any unit is no age", () => {
+  for (const t of ["I am currently 16 years old", "I'm turning 16 next month", "im 15 lol", "I'm 15 😅", "I'm 15 and my mom is strict", "I'm 15.", "i turn 16 in march", "I'm 15 going on 16"]) assert.ok(minorLine([t]), t);
+  for (const t of ["I'm 15 kilometers away", "I'm 15 kilograms overweight", "I'm 15 minutes late", "I'm 16 credits short of graduating", "I'm 15,000 dollars in debt", "I'm 12 hours into this shift", "I'm 14 years into my career", "I'm 15 percent sure", "I'm 15% done", "I'm 10 laps behind", "I'm 9 out of 10 tired", "I'm 15 for 20 on free throws"]) assert.equal(minorLine([t]), null, t);
+});
+
+test("Codex #640 r10 sweep: scores, streaks and half-units are no age", () => {
+  for (const t of ["I'm 16 and a half hours into this", "I'm 12 in a row", "I'm 15 and 0 this season", "I'm 15-0 this season", "I'm 15 in line", "I'm 5'2", "I'm 6 feet tall", "I'm 15 tabs deep", "I'm 10 drinks in"]) assert.equal(minorLine([t]), null, t);
+  for (const t of ["im 14 btw", "I'm 15, why?", "I'm 15 is that weird", "I'm 14 in grade 9", "I'm 16 and a half"]) assert.ok(minorLine([t]), t);
+});
