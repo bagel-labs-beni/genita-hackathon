@@ -56,3 +56,16 @@ test("Codex #547 r4: 'scratch that, I don't want to wear black, I want the red o
   assert.equal(isAnaphoricForget("forget that, i don't wanna talk about it"), true);
   assert.equal(isAnaphoricForget("forget I said that, I don't want to get into it right now."), true);
 });
+
+test("Codex #547 r5: a real crisis line is never forgotten mid-call", () => {
+  const h = [
+    { role: "user" as const, text: "I swallowed all my sleeping pills" },
+    { role: "assistant" as const, text: "Call 911 right now." },
+    { role: "user" as const, text: "forget I said that" },
+    { role: "assistant" as const, text: "Okay." },
+    { role: "user" as const, text: "Can I go to sleep now?" },
+  ];
+  const out = forgetInCall(h).map((x) => x.text);
+  assert.ok(out.includes("I swallowed all my sleeping pills"));
+  assert.ok(out.includes("Call 911 right now."));
+});

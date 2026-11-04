@@ -9,6 +9,7 @@
  * forget is the user's previous line. Pure.
  */
 import { avoidKeys, isForgetRequest, mentionsAvoided, type Removed } from "../personalize/forgotten.ts";
+import { realCrisisSignal } from "./guard.ts";
 
 type Item = { role: "user" | "assistant"; text: string };
 
@@ -64,5 +65,13 @@ export function forgetInCall<T extends Item>(history: T[], removed: Removed[] = 
       if (j >= 0 && history[j].role === "user") drop.add(j);
     }
   }
-  return history.filter((h, i) => !drop.has(i) && !(keys.length && mentionsAvoided(h.text, keys)));
+  // Codex #547 r5: a real crisis line (and the help after it) is never forgotten mid-call: "I swallowed all my sleeping
+  // pills" → "forget I said that" → "Can I go to sleep now?" must still reach Spark with the overdose (safety first)
+  for (let i = 0; i < history.length; i++) {
+    if (history[i].role !== "user" || !realCrisisSignal(history[i].text)) continue;
+    drop.delete(i);
+    if (history[i + 1]?.role === "assistant") drop.delete(i + 1);
+  }
+  const crisis = (i: number) => (history[i].role === "user" ? realCrisisSignal(history[i].text) : i > 0 && history[i - 1].role === "user" && realCrisisSignal(history[i - 1].text));
+  return history.filter((h, i) => crisis(i) || (!drop.has(i) && !(keys.length && mentionsAvoided(h.text, keys))));
 }
