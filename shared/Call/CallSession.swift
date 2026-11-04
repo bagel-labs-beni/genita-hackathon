@@ -362,7 +362,11 @@ enum CallStop: Equatable {
         playing = false; awaitingFirstAudio = false; reconnectSince = nil
         phase = .listening
         connect()
-        if !micOn && (Self.micWasOn || mode == .interpret) { toggleMic() }
+        // on for interpretation only (not the user's own choice): not saved, off again when it ends (audit TR-01)
+        if !micOn && (Self.micWasOn || mode == .interpret) {
+            if !Self.micWasOn { micOnForInterpret = true }
+            toggleMic(forInterpret: !Self.micWasOn)
+        }
     }
 
     /// The turns of this call (last 20 go into every reconnect's `start`). The Mac keeps them across a move
@@ -372,6 +376,7 @@ enum CallStop: Equatable {
     func end() {
         capturePermissions.invalidate()
         userEnded = true
+        micOnForInterpret = false   // a new call starts from the user's own mic choice (Codex #596)
         graceTask?.cancel(); graceTask = nil; micBeforeBackground = false
         reconnectTask?.cancel(); pingTask?.cancel(); holdTask?.cancel(); profileChipTask?.cancel(); profileChip = nil; askingChipTask?.cancel(); askingChip = nil
         socket?.close()
@@ -422,7 +427,7 @@ enum CallStop: Equatable {
         if activity == .active, let grace = graceTask {
             grace.cancel(); graceTask = nil
             // interpretation keeps its mic too (its screen has no mic button)
-            if !userEnded, micBeforeBackground, !micOn { toggleMic() }
+            if !userEnded, micBeforeBackground, !micOn { toggleMic(forInterpret: micOnForInterpret) }
             micBeforeBackground = false
         }
     }
@@ -476,13 +481,19 @@ enum CallStop: Equatable {
         #endif
     }
 
-    func toggleMic() {
-        if micOn { setMic(false); Self.micWasOn = false; micStopped = true; return }
+    /// The mic was turned on by Interpretation, not by the user (audit TR-01): not saved, turned off when it ends.
+    private(set) var micOnForInterpret = false
+
+    /// The user's mic button (and B12 restore): their own choice — saved, and never turned off by Interpretation
+    /// ending. Interpretation / Hold to talk call `toggleMic(forInterpret: true)`.
+    func toggleMic(forInterpret: Bool = false) {
+        if !forInterpret { micOnForInterpret = false }
+        if micOn { setMic(false); Self.micWasOn = false; micOnForInterpret = false; micStopped = true; return }
         guard !userEnded, ownsConversation else { return }
         micStopped = false
         micDenied = false
         #if DEBUG
-        if fixture != nil { setMic(true); Self.micWasOn = true; return }
+        if fixture != nil { setMic(true); if !micOnForInterpret { Self.micWasOn = true }; return }
         #endif
         let generation = capturePermissions.generation
         Self.requestMicrophone { [weak self] granted in
@@ -534,7 +545,8 @@ enum CallStop: Equatable {
     private func applyCapturePermission(_ answer: CapturePermissionRequests.Answer) {
         switch answer.media {
         case .microphone:
-            if answer.granted { setMic(true); Self.micWasOn = true } else { micDenied = true }
+            // on for interpretation only: the user's own mic choice (B12) stays as it was
+            if answer.granted { setMic(true); if !micOnForInterpret { Self.micWasOn = true } } else { micDenied = true; micOnForInterpret = false }
         case .camera:
             // a back-camera request that didn't start the camera doesn't carry over to the next camera-on (Codex P2)
             guard answer.granted else { startCameraBack = false; cameraDenied = true; return }
@@ -593,11 +605,13 @@ enum CallStop: Equatable {
         if on {
             interpretBoard.active = true
             interpretBoard.companionName = companionName
-            // the rail (and its mic button) is hidden while interpreting; interpretation needs the mic
-            if !micOn { toggleMic() }
+            // the rail (and its mic button) is hidden while interpreting; interpretation needs the mic — turned on for
+            // it only: not saved as the user's choice, and off again when it ends (audit TR-01)
+            if !micOn && !micOnForInterpret { micOnForInterpret = true; toggleMic(forInterpret: true) }
         } else {
             if interpretBoard.holding { socket?.send(.hold(on: false)) }
             interpretBoard = InterpretBoard(companionName: companionName)
+            if micOnForInterpret { micOnForInterpret = false; if micOn { setMic(false) } }
         }
     }
 
@@ -605,7 +619,7 @@ enum CallStop: Equatable {
     func setHold(_ on: Bool) {
         guard interpretBoard.holding != on else { return }
         interpretBoard.holding = on
-        if on && !micOn { toggleMic() }
+        if on && !micOn { micOnForInterpret = true; toggleMic(forInterpret: true) }
         socket?.send(.hold(on: on))
     }
 
@@ -813,7 +827,11 @@ enum CallStop: Equatable {
             firstFrame = nil
             emotion = nil
             holdTask?.cancel()
+            // a reconnect while interpreting keeps the language pair (the bubbles were the old session's) — losing it
+            // dropped the user's held reply (audit TR-01 NET); the start below carried the pair back to the server
+            let keep = interpretBoard
             interpretBoard = InterpretBoard(companionName: companionName)
+            if keep.active { interpretBoard.active = true; interpretBoard.source = keep.source; interpretBoard.app = keep.app; interpretBoard.user = keep.user; interpretBoard.other = keep.other }
             link = .live
             if r.sessionId != sessionId {
                 // the old session's searches died with it: no result comes on this one (AU-62, AU-72)
@@ -919,6 +937,12 @@ enum CallStop: Equatable {
         case .interpretPair, .interpretBubble:
             interpretBoard.companionName = companionName
             interpretBoard.apply(event)
+            // the pair goes into the start a reconnect sends, so the new session knows it (iPhone starts without options)
+            if case .interpretPair = event, mode == .interpret, let other = interpretBoard.other {
+                var o = start?.interpret ?? InterpretOptions(source: interpretBoard.source, app: interpretBoard.app)
+                o.other = other
+                start?.interpret = o
+            }
         case let .lipChanged(l):
             lip = l.lip
         case .findStarted, .findProgress, .findItems, .observeBoxes, .findCreated, .findImage, .findFailed:
