@@ -115,3 +115,8 @@ test("r2: eval adapter mirrors the opener guard and takes the turn's camera", ()
   assert.equal(adapter.post("It looks elite in that mirror.", { scenario: kitchen, history, turn, camera: true }), "It looks elite in that mirror.");
   assert.notEqual(adapter.post("It looks elite in that mirror.", { scenario: kitchen, history, turn }), "It looks elite in that mirror.");
 });
+
+test("r3: the profile block tells the model to follow the import's Rules when one applies", () => {
+  const p = buildInstructions({ persona: jin, user: { name: "Summer", profile: "Rules:\n- When I'm stressed about work: make me laugh first, then help" }, mode: "chat", style: "v1" });
+  assert.match(p, /do what its Rules say when one applies/);
+});
