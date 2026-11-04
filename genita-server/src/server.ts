@@ -453,10 +453,14 @@ export async function startServer(
     if ((best && crisisInCall) || crisisAny) { const me = sessions.get(self); if (me) me.crisisInCall = true; }
     // the three age flags as they were (Codex #640 r3: a teen phrase stays a teen phrase, an adult age can still win)
     if (best && (ageSaid.minor || ageSaid.adult || ageSaid.teen)) { const me = sessions.get(self); if (me) me.ageSaid = foldAge(me.ageSaid, ageSaid); }
+    // Demo P0 (S1, 11/4): the user hung up on the OTHER device more than RECONNECT_GAP_MS ago (a Mac rehearsal, then the
+    // iPhone a minute later). That is a new call, not a move: seeded as a silent continuation it got no greeting and no
+    // line at all. A move hangs the old device up and the new one starts within seconds, so it still continues.
+    const hungUpThere = !!best && hungUp && fromDevice !== null && fromDevice !== device && gapMs > RECONNECT_GAP_MS;
     // Hung up on this same device and called again: a return visit (greeting + the last call's notes). A call
     // on the OTHER device still continues it, whatever order its stop and the claim arrived in (Codex 11/3).
-    if (best && hungUpHere) {
-      log("history.not_seeded", { session: self, by: "hang_up" });
+    if (best && (hungUpHere || hungUpThere)) {
+      log("history.not_seeded", { session: self, by: hungUpHere ? "hang_up" : "hang_up_other_device", gapMs: Math.round(gapMs) });
       // ...but its last lines go along right away as "the call that just ended" (P1 FILM 11/3): the summary and
       // memories of that call are written in the background and can take longer than a quick call-back
       // a call with a forget request anywhere in it (even before the kept lines) hands over nothing raw (Codex 11/3)
@@ -468,8 +472,8 @@ export async function startServer(
       // the conversation carries its forget request with it to the next device (Codex 11/3 #447 r3)
       if (forgetAsked) { const me = sessions.get(self); if (me) me.forgetAsked = true; }
       // same device (a dropped call: a hang-up there never seeds) or a drop on the other device longer than
-      // RECONNECT_GAP_MS ago: "Sorry, we got cut off — where were we?". A move to the other device (live, within the
-      // gap, or after hanging up there) goes on silently: that's the handoff.
+      // RECONNECT_GAP_MS ago: "Sorry, we got cut off — where were we?". A move to the other device (live, or within
+      // the gap — a hang-up there longer ago is a return visit above) goes on silently: that's the handoff.
       if (fromDevice === device || (!hungUp && gapMs > RECONNECT_GAP_MS)) {
         const me = sessions.get(self);
         if (me) me.reconnected = true;

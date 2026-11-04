@@ -440,14 +440,25 @@ test("reconnect: the other device more than 10 s after a drop says the short lin
   assert.deepEqual(lines, [RECONNECT_LINE]);
 });
 
-test("reconnect: the other device within 10 s of a drop, or after hanging up there, goes on silently (a move)", { timeout: 30_000 }, async (t) => {
+test("reconnect: the other device within 10 s of a drop, or right after hanging up there, goes on silently (a move)", { timeout: 30_000 }, async (t) => {
   const quick = await dropAndReturn(t, { from: "mac", to: "iphone" });
   assert.ok(quick.logs.includes("history.seeded"));
   assert.ok(!quick.logs.includes("call.reconnect_line"));
   assert.deepEqual(quick.lines, []);
-  const hungUp = await dropAndReturn(t, { from: "mac", to: "iphone", hangUp: true, gapMs: 11_000 });
-  assert.ok(hungUp.logs.includes("history.seeded"));
-  assert.ok(!hungUp.logs.includes("call.reconnect_line"));
+  // Move to iPhone: the Mac's call ends with stop and the iPhone's starts within seconds
+  const moved = await dropAndReturn(t, { from: "mac", to: "iphone", hangUp: true });
+  assert.ok(moved.logs.includes("history.seeded"));
+  assert.ok(!moved.logs.includes("call.reconnect_line"));
+  assert.deepEqual(moved.lines, []);
+});
+
+test("demo P0 (S1): a call on the other device more than 10 s after hanging up there is a new call — it greets (never silence)", { timeout: 30_000 }, async (t) => {
+  const later = await dropAndReturn(t, { from: "mac", to: "iphone", hangUp: true, gapMs: 11_000 });
+  assert.ok(!later.logs.includes("history.seeded"), "not a silent continuation");
+  assert.ok(later.logs.includes("history.not_seeded"));
+  assert.ok(!later.logs.includes("call.reconnect_line"));
+  assert.ok(later.lines.length >= 1, "the greeting arrives");
+  assert.notEqual(later.lines[0], RECONNECT_LINE);
 });
 
 test("server (Codex 11/3): the Mac's stop arriving BEFORE the iPhone's claim still hands over; a stale iPhone copy never replaces the Mac's fuller one", { timeout: 20_000 }, async (t) => {
