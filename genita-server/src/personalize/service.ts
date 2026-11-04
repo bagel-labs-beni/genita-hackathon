@@ -324,7 +324,7 @@ export class Personalize {
     // "forget that …" on the sheet: like the voice path, only the profile's own words are kept; the request text
     // itself is never stored, shown or replayed (Codex r7) — the marked lines still go
     if (text && isForgetRequest(text)) {
-      await this.rememberForget(userId, before, forgetTarget(text));
+      await this.rememberForget(userId, before, forgetTarget(text), gen);
       if (!items.length) {
         const latest = (await this.store.getStyle(userId)) ?? before;
         this.log("profile.corrected", { card: cardId, ms: Math.round(performance.now() - t0), apply: "forget" });
@@ -527,7 +527,7 @@ export class Personalize {
    * profile's own words the request named — those passed every filter once, so no new detail ("asthma when
    * running") is stored or sent on (Codex r5–r7). Returns whether anything was kept.
    */
-  private async rememberForget(userId: string, card: StyleCard, target: string): Promise<{ applied: AppliedUpdate[]; kept: string } | null> {
+  private async rememberForget(userId: string, card: StyleCard, target: string, gen?: number): Promise<{ applied: AppliedUpdate[]; kept: string } | null> {
     const keys = avoidKeys([{ text: target, forget: true }]);
     const lines = Object.values(card.sections ?? {}).flatMap((l) => (l as Array<{ text: string }>).map((f) => f.text));
     const named = [...new Set(keys.flatMap((k) => k.keys).filter((stem) => lines.some((t) => keyWords(t).includes(stem))))];
@@ -538,6 +538,8 @@ export class Personalize {
     let applied: AppliedUpdate[] = [];
     const targetKeys = keys.flatMap((k) => k.keys);
     await this.update(userId, (c) => {
+      // read before "Forget all of this": never written onto what came after (Codex #583 r13)
+      if (gen !== undefined && gen !== this.generation(userId)) return null;
       // the profile lines the request is about go now (more than half of the request's words are in the line), so
       // the sheet's "forget that …" really removes it without waiting for Spark (Codex r8); "asthma when running"
       // does not take "Likes running." with it
@@ -576,7 +578,7 @@ export class Personalize {
       const target = forgetTarget(line);
       // a sensitive target (health, money, …) is never stored or sent on: the memory filters drop it anyway (Codex P1)
       // a target with a number in it (an address, a phone, an account) is never kept, whatever its shape
-      forgot = await this.rememberForget(userId, card, target);
+      forgot = await this.rememberForget(userId, card, target, gen);
     }
     // removed already: the call's profile and taste follow now, even if Spark has nothing more to change (Codex r9)
     const forgotUpdate = async (): Promise<VoiceUpdate | null> => {
