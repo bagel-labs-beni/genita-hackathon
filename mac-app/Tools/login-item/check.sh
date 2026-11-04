@@ -14,7 +14,10 @@ swiftc -parse-as-library -sdk "$SDK" -target arm64-apple-macos15.0 \
 [ "${1:-}" = "--build-only" ] || "$WORK/policy"
 [ "${1:-}" = "--policy" ] && exit 0
 sed 's/^@main struct GenitaMacApp/struct GenitaMacApp/' mac-app/GenitaMac/GenitaMacApp.swift > "$WORK/GenitaMacAppNoMain.swift"
+# CallAudio / InterpretAudioOutput catch AVAudioPlayerNode.play()'s ObjC exception through GenitaObjCCatch (as render.sh)
+clang -c -fobjc-arc -isysroot "$SDK" -target arm64-apple-macos15.0 shared/Call/GenitaObjCCatch.m -o "$WORK/GenitaObjCCatch.o"
 swiftc -parse-as-library -sdk "$SDK" -target arm64-apple-macos15.0 -D DEBUG \
+  -import-objc-header shared/Call/Genita-Bridging-Header.h "$WORK/GenitaObjCCatch.o" \
   $(ls mac-app/GenitaMac/*.swift | grep -v GenitaMacApp.swift) mac-app/GenitaMac/Interpret/*.swift "$WORK/GenitaMacAppNoMain.swift" \
   mac-app/Tools/login-item/HiddenMoveCheck.swift \
   shared/Handoff/*.swift shared/Call/*.swift $(find shared/GenitaKit/Sources/GenitaKit -name '*.swift') \
