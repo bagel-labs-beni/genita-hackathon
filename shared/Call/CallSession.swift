@@ -183,8 +183,16 @@ enum CallStop: Equatable {
             if cancelled.contains(id) { captions.cut(utteranceId: id, now: now) }
             else if !routed.contains(id) { playhead = audio.playbackPositionMs(utteranceId: id) }
         }
-        return captions.frame(now: now, level: micOn ? inputLevel : nil, playheadMs: playhead)
+        let f = captions.frame(now: now, level: micOn ? inputLevel : nil, playheadMs: playhead)
+        // TF 351: one line each time the user's row changes on screen (phase, or shown ↔ gone)
+        let shown = LiveCaptions.visibleYou(f.you, micOn: micOn).map { "\($0.phase)\($0.dim ? "-dim" : "")" } ?? "none"
+        if shown != lastCaptionYou {
+            log.info("caption.render you=\(shown, privacy: .public) reply=\(f.reply == nil ? "none" : "shown", privacy: .public) mic=\(self.micOn, privacy: .public)")
+            lastCaptionYou = shown
+        }
+        return f
     }
+    @ObservationIgnored private var lastCaptionYou = "none"
     #if DEBUG
     /// Review renders only (Mac CI capture): a finished turn on screen.
     func reviewCaptions(_ c: LiveCaptions) { captions = c }
@@ -980,6 +988,7 @@ enum CallStop: Equatable {
         case let .state(s):
             setPhase(s.state)
         case .speechStart:
+            log.info("speech.start (server heard the user) mic=\(self.micOn, privacy: .public)")
             answerFailed = false
             finds.userStartedTalking()
             if cameraOn, let shot = camera.snapshot() {
@@ -1003,6 +1012,8 @@ enum CallStop: Equatable {
             }
             firstFrame = nil
         case let .transcript(t):
+            // TF 351: is the user's speech reaching this device? (length only, never the words)
+            log.info("caption.user \(t.final ? "final" : "partial", privacy: .public) chars=\(t.text.count, privacy: .public) source=\(t.source?.rawValue ?? "-", privacy: .public) mic=\(self.micOn, privacy: .public)")
             if t.final {
                 lastUserText = t.text
                 finds.latestQuestion = t.text
