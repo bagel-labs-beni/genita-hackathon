@@ -161,7 +161,30 @@ export type PageFacts = {
   title?: string;
   image?: string;
   price?: string;
+  /** visual everything: the first content picture in the page body (an <img> with alt text or a large size, never a
+   *  logo / icon / svg / gif), for pages with no og:image */
+  inPageImage?: string;
 };
+
+const IMG_JUNK = /(?:logo|favicon|sprite|icon|badge|avatar|placeholder|spacer|blank|pixel|tracking|ads?[/_-]|banner|button)/i;
+/** Pure: the first <img> in the page that looks like a picture of the thing (alt text or ≥ 200 px, a raster file). */
+export function firstContentImage(html: string, abs: (v: string | undefined) => string | undefined): string | undefined {
+  const body = html.slice(Math.max(0, html.search(/<body[\s>]/i)));
+  for (const m of body.matchAll(/<img\b[^>]*>/gi)) {
+    const tag = m[0];
+    const attr = (k: string) => tag.match(new RegExp(`\\s${k}=["']([^"']+)["']`, "i"))?.[1];
+    const src = attr("data-src") ?? attr("data-lazy-src") ?? attr("src") ?? attr("srcset")?.split(/[\s,]+/)[0];
+    if (!src || src.startsWith("data:") || IMG_JUNK.test(src) || /\.(?:svg|gif)(?:[?#]|$)/i.test(src)) continue;
+    const w = Number.parseInt(attr("width") ?? "", 10);
+    const h = Number.parseInt(attr("height") ?? "", 10);
+    if ((Number.isFinite(w) && w < 200) || (Number.isFinite(h) && h < 150)) continue;
+    const alt = (attr("alt") ?? "").trim();
+    if (!alt && !(w >= 200)) continue;
+    const u = abs(decodeEntities(src));
+    if (u) return u;
+  }
+  return undefined;
+}
 
 function meta(html: string, key: string): string | undefined {
   const re = new RegExp(`<meta[^>]+(?:property|name|itemprop)=["']${key.replace(/[:.]/g, "\\$&")}["'][^>]*>`, "i");
@@ -241,6 +264,7 @@ export function readPageFacts(html: string, base: string): PageFacts {
   facts.price =
     formatPrice(metaPrice, meta(html, "product:price:currency") ?? meta(html, "og:price:currency")) ??
     (offer ? formatPrice(offer.price ?? offer.lowPrice, offer.priceCurrency) : undefined);
+  if (!facts.image) facts.inPageImage = firstContentImage(html, abs);
   if (facts.title) facts.title = decodeEntities(facts.title).replace(/\s+/g, " ").trim().slice(0, 120);
   return facts;
 }
@@ -254,6 +278,27 @@ export async function fetchPageFacts(url: string, signal?: AbortSignal): Promise
   const r = await safeGet(url, { maxBytes: PAGE_MAX_BYTES, accept: "text/html,application/xhtml+xml", signal });
   if (!r || r.status !== 200 || !/html/i.test(r.contentType)) return null;
   return readPageFacts(r.body.toString("utf8"), r.url);
+}
+
+/**
+ * Visual everything: Wikipedia's lead picture for a title (REST page summary; a disambiguation page or no picture →
+ * null). Same SSRF-safe reader as the pages; one fixed public host.
+ */
+export async function fetchWikiImageUrl(title: string, signal?: AbortSignal): Promise<string | null> {
+  const t = title.trim().replace(/\s+/g, "_");
+  if (!t || t.length > 80) return null;
+  const r = await safeGet(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(t)}?redirect=true`, { maxBytes: 64 * 1024, accept: "application/json", signal });
+  if (!r || r.status !== 200) return null;
+  try {
+    const j = JSON.parse(r.body.toString("utf8")) as { type?: string; thumbnail?: { source?: string }; originalimage?: { source?: string } };
+    if (j.type === "disambiguation") return null;
+    const u = j.thumbnail?.source ?? j.originalimage?.source;
+    // the thumbnail (≈330 px, small) first; an .svg drawing (a diagram or a logo) is not a photo of it
+    const path = u?.split("?")[0] ?? "";
+    return u && /^https:\/\/(?:upload|thumb)\.wikimedia\.org\//.test(u) && !/\.svg(?:$|\/)/i.test(path.replace(/\.png$/i, "")) ? u : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function fetchImage(url: string, signal?: AbortSignal): Promise<Buffer | null> {

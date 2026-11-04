@@ -17,6 +17,7 @@ import type { SamBox } from "../meta/sam.ts";
 import { Candidates, recipeSummary, toWire, type Candidate } from "./tiers.ts";
 import { LineSplitter, domainOf, isYes, lastJsonObject, parseSeenLine, str, strList } from "./parse.ts";
 import { userMessage, webActions, type FindsVendors } from "./vendors.ts";
+import { ingredientLookups, sendFoundImages, stepQuery } from "./imageFinder.ts";
 
 export type PipelineCtx = {
   findId: string;
@@ -190,6 +191,9 @@ function illustrate(ctx: PipelineCtx, jobs: { slot: string; prompt: string }[]):
   ).then(() => {});
 }
 
+
+/** visual everything: ingredient photos per fridge card (each is one web search) */
+const MAX_INGREDIENT_PHOTOS = 10;
 
 /** FD-01 step 1 'How I found this' on camera cards (Figma 151:29/54/74); never on product cards (D50). AU-76 */
 export const MODEL_CREDIT = "Muse Spark · SAM 3.1";
@@ -415,13 +419,15 @@ export async function runRecipe(ctx: PipelineCtx): Promise<PipelineResult> {
     const opened = recipe?.actions.opened.length ?? 0;
     if (sources.length) how.push(opened ? `Searched the web and read ${opened} page${opened > 1 ? "s" : ""}.` : "Searched the web; the steps come from the search results.");
     else how.push("I couldn't find a recipe page, so this is from what I know.");
-    if (ctx.images) how.push("The pictures are illustrations I made, not photos of this recipe.");
+    if (ctx.vendors.pageFacts && ctx.vendors.productImage) how.push(ctx.images ? "Photos are from the web; any drawn ones are illustrations I made." : "Photos are from the web.");
+    else if (ctx.images) how.push("The pictures are illustrations I made, not photos of this recipe.");
     const label = clockLabel(at, ctx.timeZone);
     how.push(`Boxes are drawn on your camera frame from ${label}.`);
     how.push(MODEL_CREDIT);
     card = {
       id: ctx.findId,
       kind: "recipe",
+      layout: "recipe",
       createdAt: at.toISOString(),
       eyebrow: "From your camera",
       title: sentenceCase(dish),
@@ -445,11 +451,29 @@ export async function runRecipe(ctx: PipelineCtx): Promise<PipelineResult> {
     ctx.log("find.recipe_missing", { findId: ctx.findId });
   }
 
+  // visual everything: web photos first (dish: the top recipe page's own og:image, else a web photo; each step and
+  // each ingredient: a web photo); a hero / step none was found for falls back to an illustration (when on)
   const pictures = card
-    ? illustrate(ctx, [
-        { slot: "hero", prompt: `A plated serving of ${dish}.` },
-        ...steps.map((s, i) => ({ slot: `step-${i + 1}`, prompt: `A cooking step for ${dish}: ${s}` })),
-      ])
+    ? (async () => {
+        const items = card!.items.slice(0, MAX_INGREDIENT_PHOTOS);
+        const found = await sendFoundImages(
+          ctx,
+          [
+            { slot: "hero", query: `${dish} dish`, wiki: [dish], ...(sources[0] ? { page: sources[0].url } : {}) },
+            ...steps.map((s, i) => ({ slot: `step-${i + 1}`, query: stepQuery(dish, s) })),
+            ...items.map((it) => ({ slot: `ingredient-${it.id}`, ...ingredientLookups(it.name) })),
+          ],
+          (slot, img) => {
+            if (!slot.startsWith("ingredient-")) return;
+            const c = cands.get(slot.slice("ingredient-".length));
+            if (c) c.image = img;
+          },
+        );
+        await illustrate(ctx, [
+          { slot: "hero", prompt: `A plated serving of ${dish}.` },
+          ...steps.map((s, i) => ({ slot: `step-${i + 1}`, prompt: `A cooking step for ${dish}: ${s}` })),
+        ].filter((j) => !found.has(j.slot)));
+      })()
     : Promise.resolve();
 
   // D23 ③: speak once the checks are in (or SPEAK_WAIT_MS after the card), naming only "have" items —
@@ -781,6 +805,7 @@ export async function runLink(ctx: PipelineCtx): Promise<PipelineResult> {
   const card: FindCard = {
     id: ctx.findId,
     kind: "link",
+    layout: "general",
     createdAt: new Date().toISOString(),
     eyebrow: "From your link",
     title: str(j.title, 80) || domain,

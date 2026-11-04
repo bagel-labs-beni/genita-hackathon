@@ -806,6 +806,7 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
   const card: FindCard = {
     id: ctx.findId,
     kind: "product",
+    layout: "product",
     createdAt: at.toISOString(),
     eyebrow: ctx.screen && look.length ? "From your screen" : "From what you said",
     title: cardTitle(str(j?.title, 40), products.length),
