@@ -288,8 +288,23 @@ import UniformTypeIdentifiers
             }.buttonStyle(.plain).position(x: width / 2, y: cardBottom + 78).accessibilityIdentifier("skipImport")
         } else {
             let editorHeight = max(1, min(card.h - 76, keyboardTop - body.y - top - 8))
-            ReferenceEditor(text: stage == .preferences ? .constant(model.styleText) : $model.setup.response, node: body, editable: stage == .paste, placeholder: "Paste the profile your AI wrote for you...")
-                .frame(width: body.w + width - 390, height: editorHeight).position(x: body.x + (body.w + width - 390) / 2, y: body.y + top + editorHeight / 2).accessibilityIdentifier(stage == .paste ? "responseInput" : "profileResult")
+            // I02 / I04 (TF 331): a long reply scrolled up under "Your AI’s response" and the Paste pill with a hard cut. Same
+            // edges as I01's prompt (#485): the editor starts 20 pt higher with a 20 pt top fade (the text still rests where it
+            // did), and the card's 44 pt header band is opaque over the scrolled text, with the label redrawn on it.
+            let fadeTop = ScrollEdgeFade.top
+            let editorTop = body.y - fadeTop
+            ReferenceEditor(text: stage == .preferences ? .constant(model.styleText) : $model.setup.response, node: body, editable: stage == .paste, placeholder: "Paste the profile your AI wrote for you...",
+                            topInset: fadeTop)
+                .frame(width: body.w + width - 390, height: editorHeight + fadeTop)
+                .scrollEdgeFade(top: fadeTop, bottom: 0)
+                .position(x: body.x + (body.w + width - 390) / 2, y: editorTop + top + (editorHeight + fadeTop) / 2).accessibilityIdentifier(stage == .paste ? "responseInput" : "profileResult")
+            UnevenRoundedRectangle(topLeadingRadius: (card.radius ?? 16) - 1, topTrailingRadius: (card.radius ?? 16) - 1).fill(card.fill?.color ?? .white)
+                .frame(width: card.w + width - 390 - 2, height: ScrollEdgeFade.header - 1)
+                .position(x: card.x + (card.w + width - 390) / 2, y: card.y + top + 1 + (ScrollEdgeFade.header - 1) / 2)
+                .allowsHitTesting(false).accessibilityHidden(true)
+            if let label = texts.first(where: { $0.characters == (stage == .paste ? "Your AI’s response" : "Your preferences") }) {
+                DesignText(node: label).designSlot(label, width: width, top: top).accessibilityHidden(true)
+            }
             if stage == .paste {
                 // I02 one tap: paste the reply straight from the clipboard (system paste button, no permission prompt)
                 PasteButton(payloadType: String.self) { strings in
@@ -666,7 +681,7 @@ struct ReferenceEditor: UIViewRepresentable {
         let hint = UILabel(); hint.tag = 19; hint.numberOfLines = 0
         hint.attributedText = node.attributed(placeholder, color: UIColor(white: 0.55, alpha: 1)); hint.isUserInteractionEnabled = false
         hint.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(hint)
-        NSLayoutConstraint.activate([hint.leadingAnchor.constraint(equalTo: view.leadingAnchor), hint.topAnchor.constraint(equalTo: view.topAnchor), hint.widthAnchor.constraint(equalTo: view.widthAnchor)])
+        NSLayoutConstraint.activate([hint.leadingAnchor.constraint(equalTo: view.leadingAnchor), hint.topAnchor.constraint(equalTo: view.topAnchor, constant: topInset), hint.widthAnchor.constraint(equalTo: view.widthAnchor)])
         view.keyboardDismissMode = .onDrag
         view.alwaysBounceVertical = true
         return view
