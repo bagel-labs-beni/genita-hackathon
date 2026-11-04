@@ -262,8 +262,10 @@ export class Insights {
       if (!(await stillOk())) throw new Error("insights_stale: forget or a newer write since this one started");
       return onceRaw();
     };
+    let sent: InsightInputs | undefined;
     const onceRaw = async () => {
       const inputs = await inputsForSend();
+      sent = inputs;
       return toReport(await this.json<unknown>(buildInsightRequest(inputs), AbortSignal.timeout(SPARK_TIMEOUT_MS)), inputs, { at: this.now().toISOString(), from, settings });
     };
     // a malformed JSON reply (seen 1 in 3 on 11/4) or a 5xx: once more
@@ -271,7 +273,7 @@ export class Insights {
       this.log("insights.retry", { from, message: String(err).slice(0, 120) });
       return once();
     });
-    if (r.observations.length < OBS_MIN && !inputs.quick) {
+    if (r.observations.length < OBS_MIN && !sent?.quick) {
       const again = await once().catch(() => null);
       if (again && again.observations.length > r.observations.length) r = again;
     }
@@ -287,9 +289,6 @@ export class Insights {
    */
   private reserve(userId: string): number {
     const mine = ++this.seqNext;
-    // A targeted forget does not advance `seq`: this write may finish, but it
-    // can never restore memory belonging to the generation it started in.
-    const importGeneration = this.importGeneration(userId);
     this.seq.set(userId, mine);
     return mine;
   }
@@ -297,6 +296,9 @@ export class Insights {
   private start(userId: string, from: InsightReport["from"], inputsOf: (card: StyleCard | null) => InsightInputs | null, opts: { gate?: Promise<string | null>; settings?: InsightReport["settings"]; seq?: number } = {}) {
     if (!this.enabled) return;
     const mine = opts.seq ?? this.reserve(userId);
+    // A targeted forget does not advance `seq`: this write may finish, but it
+    // can never restore memory belonging to the generation it started in.
+    const importGeneration = this.importGeneration(userId);
     const promise = (async () => {
       // import: the card isn't there yet — the paste is the source
       const card = opts.gate ? null : await this.store.getStyle(userId);
