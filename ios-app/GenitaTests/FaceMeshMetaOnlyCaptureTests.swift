@@ -1,6 +1,5 @@
 import XCTest
 import SwiftUI
-import GenitaKit
 @testable import Genita
 
 /// D28 (scenario: points come from Meta only): 3× V03 captures for the dog and the hand-drawn QA photos when the check
