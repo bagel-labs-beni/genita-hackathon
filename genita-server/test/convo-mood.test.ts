@@ -77,3 +77,17 @@ test("carry: the last call's mood fades back to the persona baseline, not to zer
   assert.deepEqual(carriedMood(null, 0, b), b, "no carried mood: the baseline");
   assert.deepEqual(carriedMood({ ...state, revision: 2 }, 0, b), b, "a Forget voids it");
 });
+
+test("#509 humor: an asked-for laugh gets the about-them bit line; 'lmao ok one more' gets a new bit, not 'same lane'", async () => {
+  const { turnHints, JOKE_LINE, JOKE_AGAIN_LINE } = await import("../src/convo/rhythm.ts");
+  assert.match(turnHints({ userText: "say something that'll make me laugh, i've had a day", remembers: false, lastReply: "hey" }) ?? "", new RegExp(JOKE_LINE.slice(0, 30)));
+  const again = turnHints({ userText: "lmao ok one more", remembers: false, lastReply: "You're a phone at one percent." }) ?? "";
+  assert.match(again, new RegExp(JOKE_AGAIN_LINE.slice(0, 30)));
+  assert.doesNotMatch(again, /stay in that lane/);
+  assert.doesNotMatch(turnHints({ userText: "I want to kill myself, make me laugh", remembers: false, lastReply: "hey" }) ?? "", /want a laugh/);
+});
+
+test("#509 humor: 'one more question' is no joke ask", async () => {
+  const { turnHints } = await import("../src/convo/rhythm.ts");
+  assert.doesNotMatch(turnHints({ userText: "haha ok one more question about the trip", remembers: false, lastReply: "Pack light." }) ?? "", /want (?:a laugh|another)/);
+});
