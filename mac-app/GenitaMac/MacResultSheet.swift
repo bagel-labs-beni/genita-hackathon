@@ -24,7 +24,9 @@ struct MacResultSheet: View {
     @State private var dragY: CGFloat = 0
 
     private var entry: FindEntry? { finds.current }
-    private var card: FindCard? { entry?.card }
+    /// b16: pictures that failed to load are taken out of the card, so no layout draws an empty box for them
+    @State private var brokenPhotos: Set<String> = []
+    private var card: FindCard? { entry?.card.map { $0.hidingPhotos(brokenPhotos) } }
 
     var body: some View {
         // a failed search has no skeleton rows: the peek height holds its title, reason and Retry / Close (b16)
@@ -47,6 +49,10 @@ struct MacResultSheet: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Finds from this call")
         .accessibilityIdentifier("macResultSheet")
+        .environment(\.macPhotoBroken) { key in
+            guard !brokenPhotos.contains(key) else { return }
+            Task { @MainActor in withAnimation(.easeOut(duration: 0.2)) { _ = brokenPhotos.insert(key) } }
+        }
         .accessibilityValue(finds.state.rawValue)
     }
 
@@ -143,7 +149,10 @@ struct MacResultSheet: View {
 
     @ViewBuilder private var results: some View {
         if let card {
-            let picks = card.kind == .product ? ProductPicks.picks(from: card) : []
+            // b16: a shop with no picture is left out while another one has one; with none, both show as text
+            let allPicks = card.kind == .product ? ProductPicks.picks(from: card) : []
+            let pictured = allPicks.filter { $0.image?.status == .ready }
+            let picks = pictured.isEmpty ? allPicks : pictured
             let hidden = max(0, 728 - finds.state.macHeight)
             let evidence = ProductPicks.evidence(from: card)
             ZStack(alignment: .bottom) {
@@ -179,7 +188,7 @@ struct MacResultSheet: View {
                         } else {
                             HStack(alignment: .top, spacing: 12) {
                                 ForEach(Array(picks.enumerated()), id: \.element.id) { i, pick in
-                                    MacProductCard(pick: pick, primary: i == 0, imageURL: pick.image.flatMap { $0.status == .ready ? $0.url : nil }.flatMap { CallController.shared.findsURL($0) }) { open(pick) }
+                                    MacProductCard(pick: pick, primary: i == 0, compact: finds.state != .full, imageURL: pick.image.flatMap { $0.status == .ready ? $0.url : nil }.flatMap { CallController.shared.findsURL($0) }) { open(pick) }
                                 }
                                 if picks.count == 1 { Spacer(minLength: 0) }
                             }.padding(.top, 16)
@@ -282,6 +291,8 @@ struct MacResultSheet: View {
 struct MacProductCard: View {
     let pick: ProductPick
     let primary: Bool
+    /// b16: half sheet — a 72 pt picture and no chips, so Open in browser clears Save to Finds
+    var compact = false
     var imageURL: URL?
     let open: () -> Void
     @State private var hover = false
@@ -292,14 +303,15 @@ struct MacProductCard: View {
     private static let outlineBlue = Color(red: 156.0 / 255, green: 211.0 / 255, blue: 245.0 / 255)
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            picture.frame(width: 151, height: 151).clipShape(RoundedRectangle(cornerRadius: 12))
+            // b16: no picture → no picture box (the hanger tile is gone)
+            if imageURL != nil { picture.frame(width: 151, height: compact ? 72 : 151).clipShape(RoundedRectangle(cornerRadius: 12)) }
             Text(pick.name).font(MacSheetInk.sans(15, .medium)).foregroundStyle(MacSheetInk.ink).lineLimit(1).padding(.top, 14)
             Text(pick.brandLine).font(MacSheetInk.sans(13)).foregroundStyle(MacSheetInk.mute).lineLimit(1).minimumScaleFactor(0.8).padding(.top, 6)
-            VStack(alignment: .leading, spacing: 6) {
+            if !compact { VStack(alignment: .leading, spacing: 6) {
                 // D4: ✦ = your style (the import), “ = what they said — PF-1's chips, no colour legend
                 if !pick.taste.isEmpty { chip(pick.taste, mark: ProductPicks.styleMark, fg: MacSheetInk.chipBlueText, bg: MacSheetInk.chipBlue).overlay(Capsule().strokeBorder(Self.outlineBlue, lineWidth: 1)).accessibilityIdentifier("macProductTaste") }
                 if !pick.situation.isEmpty { chip(pick.situation, mark: ProductPicks.saidMark, fg: MacSheetInk.ink, bg: MacSheetInk.chip).accessibilityIdentifier("macProductSituation") }
-            }.padding(.top, 10).frame(minHeight: 58, alignment: .top)
+            }.padding(.top, 10).frame(minHeight: 58, alignment: .top) }
             Button(action: open) {
                 // r01: a 36 pt pill, the first card ink, the others outlined
                 Text("Open in browser ↗").font(MacSheetInk.sans(13, .medium))
@@ -308,15 +320,21 @@ struct MacProductCard: View {
                     .background(filled ? MacSheetInk.ink : MacSheetInk.sheet, in: Capsule())
                     .overlay { if !filled { Capsule().strokeBorder(MacFindsInk.line, lineWidth: 1) } }
                     .contentShape(Capsule())
-            }.buttonStyle(.plain).onHover { hover = $0 }.padding(.top, 10)
+            }.buttonStyle(.plain).padding(.top, 10)
                 .accessibilityLabel("Open \(pick.name) in your browser").accessibilityIdentifier("macOpenInBrowser")
         }.frame(width: 151, alignment: .leading)
+        // b16: a click anywhere on the tile opens the shop (the picture and name did nothing); hovering the tile fills the pill
+        .contentShape(Rectangle())
+        .onTapGesture(perform: open)
+        .onHover { hover = $0 }
     }
 
     @ViewBuilder private var picture: some View {
         if let imageURL {
             AsyncImage(url: imageURL) { phase in
-                if let image = phase.image { Color.clear.overlay { image.resizable().scaledToFill() } } else { placeholder }
+                if let image = phase.image { Color.clear.overlay { image.resizable().scaledToFill() } }
+                else if phase.error != nil { MacBrokenPhoto(key: pick.image?.url ?? imageURL.absoluteString) }
+                else { MacShimmer(radius: 0) }
             }
         } else { placeholder }
     }
@@ -422,6 +440,22 @@ struct MacScroll<Content: View>: View {
 }
 
 // MARK: Finds r01 (board Ao82Jv1iTdDL9FtFjZR2g6): searching orb + stage line + skeleton rows, the result row list
+
+private struct MacPhotoBrokenKey: EnvironmentKey { static let defaultValue: ((String) -> Void)? = nil }
+extension EnvironmentValues {
+    /// b16: a picture that failed to load reports itself here; the sheet then drops its slot (never an empty box)
+    var macPhotoBroken: ((String) -> Void)? {
+        get { self[MacPhotoBrokenKey.self] }
+        set { self[MacPhotoBrokenKey.self] = newValue }
+    }
+}
+
+/// Reports a failed picture once it would have shown, and draws nothing meanwhile.
+struct MacBrokenPhoto: View {
+    let key: String
+    @Environment(\.macPhotoBroken) private var report
+    var body: some View { Color.clear.onAppear { report?(key) } }
+}
 
 /// r01 tokens the Mac ink set doesn't have yet (board `--blueSoft`, `--blue`, `--line`, warm tile, why grey).
 enum MacFindsInk {
@@ -559,11 +593,9 @@ struct MacRowPicture: View {
                 AsyncImage(url: url) { phase in
                     // the photo fills the slot and never sizes it (P0 build 13: a fill image grew past its frame)
                     if let image = phase.image { Color.clear.overlay { image.resizable().scaledToFill() }.transition(.opacity) }
-                    else if phase.error != nil { MacInitialTile(row: row, size: initialSize) }
+                    else if phase.error != nil { MacBrokenPhoto(key: path) }
                     else { MacShimmer(radius: 0) }
                 }
-            } else {
-                MacInitialTile(row: row, size: initialSize)
             }
         }.clipped()
     }
@@ -584,14 +616,11 @@ struct MacInitialTile: View {
 struct MacSourceLine: View {
     let row: MacFindRow
     var body: some View {
-        HStack(spacing: 6) {
-            Group {
-                if let f = row.favicon, let url = f.hasPrefix("http") ? URL(string: f) : CallController.shared.findsURL(f) {
-                    AsyncImage(url: url) { phase in
-                        if let image = phase.image { image.resizable().scaledToFit() } else { MacInitialTile(row: row, size: 16) }
-                    }.frame(width: 16, height: 16).clipShape(RoundedRectangle(cornerRadius: 4))
-                } else {
-                    MacInitialTile(row: row, size: 16)
+        // b16: the favicon only when it loads (never a letter tile in its place)
+        HStack(spacing: 0) {
+            if let f = row.favicon, let url = f.hasPrefix("http") ? URL(string: f) : CallController.shared.findsURL(f) {
+                AsyncImage(url: url) { phase in
+                    if let image = phase.image { image.resizable().scaledToFit().frame(width: 16, height: 16).clipShape(RoundedRectangle(cornerRadius: 4)).padding(.trailing, 6) }
                 }
             }
             Text(row.domain.replacingOccurrences(of: "www.", with: "")).font(MacSheetInk.sans(13)).foregroundStyle(MacSheetInk.mute).lineLimit(1)
@@ -639,7 +668,7 @@ struct MacFindRowView: View {
     var body: some View {
         Button { openRow(row) } label: {
             HStack(alignment: .top, spacing: 12) {
-                MacRowPicture(row: row).frame(width: 64, height: 64).clipShape(RoundedRectangle(cornerRadius: 12))
+                if row.picture != nil { MacRowPicture(row: row).frame(width: 64, height: 64).clipShape(RoundedRectangle(cornerRadius: 12)) }
                 VStack(alignment: .leading, spacing: 0) {
                     Text(row.title).font(MacSheetInk.sans(15.5, .semibold)).foregroundStyle(MacSheetInk.ink).lineLimit(1)
                     if let why = row.why {
@@ -652,7 +681,7 @@ struct MacFindRowView: View {
             .padding(.horizontal, 10).padding(.vertical, 12)
             .background(hover ? MacFindsInk.hover : Color.clear, in: RoundedRectangle(cornerRadius: 14))
             .overlay(alignment: .top) {
-                if divider && !hover { Rectangle().fill(MacFindsInk.line).frame(height: 1).padding(.leading, 86).padding(.trailing, 10) }
+                if divider && !hover { Rectangle().fill(MacFindsInk.line).frame(height: 1).padding(.leading, row.picture == nil ? 10 : 86).padding(.trailing, 10) }
             }
             .contentShape(RoundedRectangle(cornerRadius: 14))
         }
@@ -736,7 +765,7 @@ struct MacFindPicture<Fallback: View>: View {
             } else if let image, image.status == .ready, let path = image.url, let url = CallController.shared.findsURL(path) {
                 AsyncImage(url: url) { phase in
                     if let pic = phase.image { Color.clear.overlay { pic.resizable().scaledToFill() }.transition(.opacity) }
-                    else if phase.error != nil { fallback }
+                    else if phase.error != nil { MacBrokenPhoto(key: path) }
                     else { MacShimmer(radius: 0) }
                 }
             } else {
@@ -761,7 +790,7 @@ struct MacRecipeCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let photo {
-                MacFindPicture(image: photo) { Image(systemName: "fork.knife").font(.system(size: 34, weight: .light)).foregroundStyle(MacFindsInk.tileGlyph) }
+                MacFindPicture(image: photo) { EmptyView() }
                     .frame(maxWidth: .infinity).frame(height: 164).clipShape(RoundedRectangle(cornerRadius: 12))
                     .accessibilityLabel("Photo of \(card.title)").accessibilityIdentifier("macDishPhoto")
                     .padding(.bottom, 18)
@@ -791,16 +820,30 @@ struct MacIngredientTile: View {
     var body: some View {
         let miss = item.tier == .buy
         let amount = [item.tileAmount, item.optional == true ? "optional" : nil].compactMap { $0 }.joined(separator: " · ")
-        VStack(alignment: .leading, spacing: 0) {
-            MacFindPicture(image: item.tilePicture) {
-                Text(item.tileInitial).font(MacSheetInk.serif(24)).foregroundStyle(MacFindsInk.tileInitial)
+        Group {
+            if let pic = item.tilePicture {
+                VStack(alignment: .leading, spacing: 0) {
+                    MacFindPicture(image: pic) { EmptyView() }
+                        .frame(width: 64, height: 64).clipShape(RoundedRectangle(cornerRadius: 12))
+                        .opacity(item.tier == .maybe ? 0.55 : item.tier == .checking ? 0.5 : 1)
+                        .overlay(alignment: .topTrailing) { badge.offset(x: 5, y: -5) }
+                    Text(item.tileName).font(MacSheetInk.sans(13, .medium)).foregroundStyle(miss ? MacFindsInk.blueText : MacSheetInk.ink)
+                        .lineLimit(2).fixedSize(horizontal: false, vertical: true).padding(.top, 7)
+                    if !amount.isEmpty { Text(amount).font(MacSheetInk.sans(12)).foregroundStyle(MacSheetInk.mute).lineLimit(1) }
+                }
+            } else {
+                // b16: no photo → no tile (never a blank or letter square); the chip leads the name
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(alignment: .center, spacing: 5) {
+                        badge.scaleEffect(18.0 / 22.0).frame(width: 18, height: 18)
+                        Text(item.tileName).font(MacSheetInk.sans(13, .medium)).foregroundStyle(miss ? MacFindsInk.blueText : MacSheetInk.ink)
+                            .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                    }
+                    if !amount.isEmpty { Text(amount).font(MacSheetInk.sans(12)).foregroundStyle(MacSheetInk.mute).lineLimit(1).padding(.leading, 23) }
+                }
+                .opacity(item.tier == .maybe ? 0.55 : item.tier == .checking ? 0.5 : 1)
+                .padding(.vertical, 4)
             }
-            .frame(width: 64, height: 64).clipShape(RoundedRectangle(cornerRadius: 12))
-            .opacity(item.tier == .maybe ? 0.55 : item.tier == .checking ? 0.5 : 1)
-            .overlay(alignment: .topTrailing) { badge.offset(x: 5, y: -5) }
-            Text(item.tileName).font(MacSheetInk.sans(13, .medium)).foregroundStyle(miss ? MacFindsInk.blueText : MacSheetInk.ink)
-                .lineLimit(2).fixedSize(horizontal: false, vertical: true).padding(.top, 7)
-            if !amount.isEmpty { Text(amount).font(MacSheetInk.sans(12)).foregroundStyle(MacSheetInk.mute).lineLimit(1) }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .ignore)
@@ -842,7 +885,7 @@ struct MacStepCards: View {
             ForEach(Array(steps.enumerated()), id: \.offset) { i, step in
                 VStack(alignment: .leading, spacing: 0) {
                     if let img = step.image, img.status != .failed {
-                        MacFindPicture(image: img) { Image(systemName: "photo").font(.system(size: 28, weight: .light)).foregroundStyle(MacFindsInk.tileGlyph) }
+                        MacFindPicture(image: img) { EmptyView() }
                             .frame(maxWidth: .infinity).frame(height: 150).clipShape(RoundedRectangle(cornerRadius: 12))
                             .accessibilityLabel("Photo of step \(i + 1)")
                             .padding(.bottom, 12)
@@ -989,7 +1032,7 @@ struct MacPlaceRow: View {
     var body: some View {
         Button { if let url = ExternalLink.web(row.url) { NSWorkspace.shared.open(url) } } label: {
             HStack(alignment: .top, spacing: 12) {
-                MacRowPicture(row: row).frame(width: 64, height: 64).clipShape(RoundedRectangle(cornerRadius: 12))
+                if row.picture != nil { MacRowPicture(row: row).frame(width: 64, height: 64).clipShape(RoundedRectangle(cornerRadius: 12)) }
                 VStack(alignment: .leading, spacing: 0) {
                     Text(source.placeName).font(MacSheetInk.sans(15.5, .semibold)).foregroundStyle(MacSheetInk.ink).lineLimit(1)
                     if let p = source.place { MacPlaceMeta(place: p).padding(.top, 1) }
@@ -1004,7 +1047,7 @@ struct MacPlaceRow: View {
             .padding(.horizontal, 10).padding(.vertical, 12)
             .background(hover ? MacFindsInk.hover : Color.clear, in: RoundedRectangle(cornerRadius: 14))
             .overlay(alignment: .top) {
-                if divider && !hover { Rectangle().fill(MacFindsInk.line).frame(height: 1).padding(.leading, 86).padding(.trailing, 10) }
+                if divider && !hover { Rectangle().fill(MacFindsInk.line).frame(height: 1).padding(.leading, row.picture == nil ? 10 : 86).padding(.trailing, 10) }
             }
             .contentShape(RoundedRectangle(cornerRadius: 14))
         }

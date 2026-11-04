@@ -24,6 +24,31 @@ import XCTest
         XCTAssertLessThan(SheetState.searching.height, SheetState.half.height)
     }
 
+    /// b16: at the half sheet the product picture gives way so Open in browser sits above Save to Finds (364 pt page).
+    func testHalfProductPictureLeavesRoomForThePill() {
+        let titleRow: CGFloat = 54
+        let picture = FindCardPage.halfProductPicture(titleRow: titleRow)
+        let fixed: CGFloat = 40 + 44 + 8 + 8 + 8
+        let below: CGFloat = 8 + 20 + 4 + 20 + 8 + 44
+        XCTAssertLessThanOrEqual(fixed + titleRow + picture + below, 364, "pill above the CTA")
+        XCTAssertEqual(FindCardPage.halfProductPicture(titleRow: 300), 56, "never smaller than 56")
+        XCTAssertEqual(FindCardPage.halfProductPicture(titleRow: 0), 151, "never bigger than the square")
+    }
+
+    /// b16 "never show empty picture content": a picture that failed to load is dropped from the card, and the top
+    /// pick moves to the next row that has one (none → no hero).
+    func testBrokenPhotosAreDroppedAndTheTopPickMoves() throws {
+        let json = #"{"id":"c","kind":"unknown","layout":"general","createdAt":"","eyebrow":"","title":"t","subtitle":"","items":[],"steps":[],"options":[],"why":[],"ask":[],"sources":[{"title":"A","url":"https://a.com","domain":"a.com","image":{"slot":"source-0","status":"ready","url":"/a"}},{"title":"B","url":"https://b.com","domain":"b.com","image":{"slot":"source-1","status":"ready","url":"/b"}}],"how":[],"hero":{"slot":"hero","status":"ready","url":"/a"}}"#
+        let card = try JSONDecoder().decode(FindCard.self, from: Data(json.utf8))
+        XCTAssertEqual(card.topPick?.index, 0)
+        let hidden = card.hidingPhotos(["/a"])
+        XCTAssertNil(hidden.sources[0].image)
+        XCTAssertNil(hidden.hero, "the hero was the same broken picture")
+        XCTAssertEqual(hidden.topPick?.index, 1, "the next row with a picture leads")
+        XCTAssertEqual(card.topPick(usable: { $0.url != "/a" })?.index, 1)
+        XCTAssertNil(card.hidingPhotos(["/a", "/b"]).topPick, "no picture left: no hero, rows only")
+    }
+
     func testSearchingThenRisingThenHalf() async throws {
         let m = FindsModel()
         m.latestFrames = [Data([0xff, 0xd8]).base64EncodedString()]

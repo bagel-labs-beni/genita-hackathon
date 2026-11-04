@@ -60,6 +60,16 @@ extension Animation {
     static let fade = Animation.easeOut(duration: 0.2)
 }
 
+/// Chelsea 11/4 "never show empty picture content": a card page collects the pictures that failed to load, and every
+/// FindPicture under it draws nothing for them (no glyph, no grey box) and reports them so the page drops the slot.
+private struct FindsPhotoBrokenKey: EnvironmentKey { static let defaultValue: ((String) -> Void)? = nil }
+extension EnvironmentValues {
+    var findsPhotoBroken: ((String) -> Void)? {
+        get { self[FindsPhotoBrokenKey.self] }
+        set { self[FindsPhotoBrokenKey.self] = newValue }
+    }
+}
+
 /// Loads a card picture: "bundle:<name>" (fixtures), or a server-relative URL through the call's host.
 struct FindPicture: View {
     let image: FindImage?
@@ -69,6 +79,7 @@ struct FindPicture: View {
     /// A calm placeholder (SF Symbol) instead of "Picture didn't load" — product shots, where many shops give no picture.
     var quietGlyph: String?
     @State private var attempt = 0
+    @Environment(\.findsPhotoBroken) private var reportBroken
     var body: some View {
         // motion card 4: the picture replaces its placeholder in a 250 ms fade (flag off / UI tests: as before)
         let fades = MotionFinds.fades
@@ -104,7 +115,10 @@ struct FindPicture: View {
     }
 
     @ViewBuilder private var failed: some View {
-        if let quietGlyph {
+        if let reportBroken {
+            // the page takes the slot away; until then nothing shows (not a placeholder)
+            Color.clear.onAppear { reportBroken(image?.url ?? image?.slot ?? "") }
+        } else if let quietGlyph {
             // D4: a shop with no readable picture is a warm neutral tile (#F3F1ED) with a 34 pt line glyph (#B9B2A6), not a grey "broken" box
             ZStack {
                 FindsInk.photoMissing
@@ -261,6 +275,8 @@ struct FindsSheet: View {
     var openFinds: (() -> Void)?
     @State private var dragY: CGFloat = 0
     @State private var scrolledPage: Int?
+    /// b16: peek thumbnails that failed to load (no grey square then)
+    @State private var peekBroken: Set<String> = []
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var finds: FindsModel { call.finds }
     /// Motion card 4: the sheet rises on a spring. Full stays on the drawer curve: the 728 pt sheet is exactly the
@@ -377,8 +393,12 @@ struct FindsSheet: View {
         return ZStack(alignment: .topLeading) {
             Button { withAnimation(.drawer) { finds.tapPeek() } } label: {
                 HStack(spacing: 12) {
-                    FindPicture(image: f?.card?.hero ?? f.flatMap(firstFramePicture), resolve: call.findsURL, showFailText: false)
-                        .frame(width: 44, height: 44).clipShape(RoundedRectangle(cornerRadius: 12))
+                    // b16: the thumbnail only when the picture is there (no grey square)
+                    if let hero = f?.card?.hero, hero.status != .failed, !peekBroken.contains(hero.url ?? hero.slot) {
+                        FindPicture(image: hero, resolve: call.findsURL, showFailText: false)
+                            .frame(width: 44, height: 44).clipShape(RoundedRectangle(cornerRadius: 12))
+                            .environment(\.findsPhotoBroken) { key in Task { @MainActor in _ = peekBroken.insert(key) } }
+                    }
                     VStack(alignment: .leading, spacing: 4) {
                         Text(f?.card?.title ?? f?.searchTitle ?? "").font(TypeStyle.title(18)).foregroundStyle(CallInk.ink).lineLimit(1)
                         Text(peekSubtitle).font(TypeStyle.body(14)).foregroundStyle(CallInk.mute).lineLimit(1)
@@ -570,6 +590,16 @@ struct FindCardPage: View {
     @State private var saveTick = 0
     @Environment(\.openURL) private var openURL
     private var layout: FindCardLayout { card.cardLayout }
+    /// Pictures that failed to load on this page (by url): their slots go away (b16, never an empty picture).
+    @State private var brokenPhotos: Set<String> = []
+
+    /// The picture to draw, or nil when there is none, it failed, or it failed to load: then no slot at all.
+    private func shows(_ img: FindImage?) -> FindImage? {
+        guard let img, img.status != .failed else { return nil }
+        if brokenPhotos.contains(img.url ?? img.slot) { return nil }
+        return img
+    }
+    private func usable(_ img: FindImage) -> Bool { shows(img) != nil }
 
     var body: some View {
         ScrollViewReader { reader in
@@ -610,6 +640,10 @@ struct FindCardPage: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Find \(index + 1) of \(finds.cardCount): \(card.title)")
         .accessibilityIdentifier("findPage\(index)")
+        .environment(\.findsPhotoBroken) { key in
+            guard !brokenPhotos.contains(key) else { return }
+            Task { @MainActor in withAnimation(.fade) { _ = brokenPhotos.insert(key) } }
+        }
     }
 
     /// r03 F2: "From your fridge · Today" when reopened from Finds.
@@ -665,7 +699,7 @@ struct FindCardPage: View {
             }.frame(maxWidth: .infinity, alignment: .leading)
             // r02: the 56 pt thumbnail stays where nothing bigger shows the picture (a named dish, place, how-to and web
             // answers already draw it large)
-            if layout == .outfit || layout == .product || (layout == .recipe && card.camera != nil), let hero = card.hero {
+            if layout == .outfit || layout == .product || (layout == .recipe && card.camera != nil), let hero = shows(card.hero) {
                 FindPicture(image: hero, resolve: call.findsURL, showFailText: false).frame(width: 56, height: 56).clipShape(RoundedRectangle(cornerRadius: 12))
                     .accessibilityLabel("Illustration of \(card.title)")
                     .findsRise(3)
@@ -702,13 +736,14 @@ struct FindCardPage: View {
         let reopenedHeight: CGFloat = min(reopenedCap, reopenedRoom)
         let reopenedPicture: CGFloat = reopenedHeight >= 72 ? reopenedHeight : 0
         let camHeight: CGFloat = full ? 196 : (entry.reopened ? reopenedPicture : halfCameraHeight)
-        if let cam = card.camera, camHeight > 0 {
-            CameraFrame(frame: entry.frames.indices.contains(cam.frame) ? entry.frames[cam.frame] : nil, camera: cam, items: card.items, selected: finds.selectedItem,
+        if let cam = card.camera, camHeight > 0, entry.frames.indices.contains(cam.frame) {
+            // b16: only with the camera frame itself (no black box when the frame isn't on this phone)
+            CameraFrame(frame: entry.frames[cam.frame], camera: cam, items: card.items, selected: finds.selectedItem,
                         checking: entry.checking, height: camHeight)
                 .findsRise(3)
-        } else if let photo = card.dishPhoto, camHeight > 0 {
+        } else if card.camera == nil, let photo = shows(card.dishPhoto), camHeight > 0 {
             // r01 top-pick photo language: radius 12, 164 tall in the full sheet
-            FindPicture(image: photo, resolve: call.findsURL, showFailText: false, quietGlyph: "fork.knife")
+            FindPicture(image: photo, resolve: call.findsURL, showFailText: false)
                 .frame(height: full ? 164 : camHeight).frame(maxWidth: .infinity).clipShape(RoundedRectangle(cornerRadius: 12))
                 .accessibilityLabel("Photo of \(card.title)").accessibilityIdentifier("findDishPhoto")
                 .findsRise(3)
@@ -785,28 +820,39 @@ struct FindCardPage: View {
             chipTaps += 1
             withAnimation(.fade) { if addable { finds.toggleAdded(item.id, in: entry.id) } else { finds.tapItem(item) } }
         } label: {
-            VStack(alignment: .leading, spacing: 0) {
-                ZStack {
-                    FindsInk.photoMissing
-                    if let pic = item.tilePicture {
-                        FindPicture(image: pic, resolve: call.findsURL, showFailText: false, quietGlyph: "fork.knife")
-                    } else {
-                        Text(item.tileInitial).font(TypeStyle.title(24)).foregroundStyle(FindsInk.tileInitial)
+            if let pic = shows(item.tilePicture) {
+                VStack(alignment: .leading, spacing: 0) {
+                    FindPicture(image: pic, resolve: call.findsURL, showFailText: false)
+                        .frame(width: 64, height: 64).clipShape(RoundedRectangle(cornerRadius: 12))
+                        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(pressed ? CallInk.ink : .clear, lineWidth: 2))
+                        .opacity(item.tier == .maybe && !pressed ? 0.55 : item.tier == .checking ? 0.5 : 1)
+                        .overlay(alignment: .topTrailing) { tileBadge(item, pressed: pressed, added: added, miss: miss).offset(x: 5, y: -5) }
+                    Text(item.tileName).font(TypeStyle.body(13, .medium)).foregroundStyle(miss ? FindsInk.blueText : CallInk.ink)
+                        .lineLimit(strip ? 1 : 2).multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true).padding(.top, 7)
+                    if !strip, !amount.isEmpty {
+                        Text(amount).font(TypeStyle.body(12)).foregroundStyle(CallInk.mute).lineLimit(1)
                     }
                 }
-                .frame(width: 64, height: 64).clipShape(RoundedRectangle(cornerRadius: 12))
-                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(pressed ? CallInk.ink : .clear, lineWidth: 2))
-                .opacity(item.tier == .maybe && !pressed ? 0.55 : item.tier == .checking ? 0.5 : 1)
-                .overlay(alignment: .topTrailing) { tileBadge(item, pressed: pressed, added: added, miss: miss).offset(x: 5, y: -5) }
-                Text(item.tileName).font(TypeStyle.body(13, .medium)).foregroundStyle(miss ? FindsInk.blueText : CallInk.ink)
-                    .lineLimit(strip ? 1 : 2).multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true).padding(.top, 7)
-                if !strip, !amount.isEmpty {
-                    Text(amount).font(TypeStyle.body(12)).foregroundStyle(CallInk.mute).lineLimit(1)
+                .frame(width: strip ? 64 : nil, alignment: .leading)
+                .frame(maxWidth: strip ? 64 : .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            } else {
+                // b16: no photo → no tile at all (never a blank or letter square); the chip leads the name
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(alignment: .center, spacing: 5) {
+                        tileBadge(item, pressed: pressed, added: added, miss: miss, size: 18)
+                        Text(item.tileName).font(TypeStyle.body(13, .medium)).foregroundStyle(pressed ? CallInk.ink : miss ? FindsInk.blueText : CallInk.ink)
+                            .lineLimit(strip ? 1 : 2).multilineTextAlignment(.leading).fixedSize(horizontal: strip, vertical: true)
+                    }
+                    if !strip, !amount.isEmpty {
+                        Text(amount).font(TypeStyle.body(12)).foregroundStyle(CallInk.mute).lineLimit(1).padding(.leading, 23)
+                    }
                 }
+                .opacity(item.tier == .maybe && !pressed ? 0.55 : item.tier == .checking ? 0.5 : 1)
+                .padding(.vertical, 4)
+                .frame(maxWidth: strip ? nil : .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
-            .frame(width: strip ? 64 : nil, alignment: .leading)
-            .frame(maxWidth: strip ? 64 : .infinity, alignment: .leading)
-            .contentShape(Rectangle())
         }
         .buttonStyle(FindsChipPress())
         .accessibilityElement(children: .ignore)
@@ -818,7 +864,7 @@ struct FindCardPage: View {
 
     /// 22 pt chip on the tile's corner with a 2 pt sheet ring: + need (blue soft), ✓ added (blue), ✓ have (ink),
     /// ? maybe (white), spinner while checking.
-    private func tileBadge(_ item: FindItem, pressed: Bool, added: Bool, miss: Bool) -> some View {
+    private func tileBadge(_ item: FindItem, pressed: Bool, added: Bool, miss: Bool, size: CGFloat = 22) -> some View {
         let icon = miss ? "plus" : item.tier == .maybe ? "questionmark" : "checkmark"
         let fg: Color = miss ? FindsInk.blueText : item.tier == .maybe ? CallInk.mute : CallInk.onInk
         let bg: Color = miss ? FindsInk.blueSoft : added ? FindsInk.blueText : item.tier == .maybe || item.tier == .checking ? FindsInk.white : CallInk.ink
@@ -826,9 +872,9 @@ struct FindCardPage: View {
             Circle().fill(bg)
             if item.tier == .maybe || item.tier == .checking { Circle().strokeBorder(FindsInk.line, lineWidth: 1) }
             if item.tier == .checking { ProgressView().controlSize(.mini).tint(CallInk.mute) }
-            else { Image(systemName: icon).font(.system(size: 11, weight: .bold)).foregroundStyle(fg).findsSymbolReplace(icon) }
+            else { Image(systemName: icon).font(.system(size: size / 2, weight: .bold)).foregroundStyle(fg).findsSymbolReplace(icon) }
         }
-        .frame(width: 22, height: 22)
+        .frame(width: size, height: size)
         .background(Circle().fill(CallInk.sheet).padding(-2))
         .accessibilityHidden(true)
     }
@@ -868,8 +914,8 @@ struct FindCardPage: View {
         let now = doneButton && !done && (finds.doneSteps[entry.id] ?? []).count == i && full
         return VStack(alignment: .leading, spacing: 0) {
             Group {
-                if let img = step.image, img.status != .failed {
-                    FindPicture(image: img, resolve: call.findsURL, showFailText: false, quietGlyph: "photo")
+                if let img = shows(step.image) {
+                    FindPicture(image: img, resolve: call.findsURL, showFailText: false)
                         .frame(height: 150).frame(maxWidth: .infinity).clipShape(RoundedRectangle(cornerRadius: 12))
                         .accessibilityLabel("Photo of step \(i + 1)")
                         .padding(.bottom, 12)
@@ -904,9 +950,12 @@ struct FindCardPage: View {
         HStack(alignment: .top, spacing: 12) {
             ForEach(Array(card.options.enumerated()), id: \.offset) { _, option in
                 VStack(alignment: .leading, spacing: 4) {
-                    OptionCrop(frame: entry.frames.indices.contains(option.frame) ? entry.frames[option.frame] : nil, box: option.box, height: full ? 220 : 160)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(option.picked ? FindsInk.blueText : .clear, lineWidth: 2).padding(-4))
+                    // b16: the crop only when its camera frame is on this phone (no grey box)
+                    if entry.frames.indices.contains(option.frame) {
+                        OptionCrop(frame: entry.frames[option.frame], box: option.box, height: full ? 220 : 160)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(option.picked ? FindsInk.blueText : .clear, lineWidth: 2).padding(-4))
+                    }
                     HStack(spacing: 4) {
                         if option.picked { Image(systemName: "checkmark").font(.system(size: 12, weight: .semibold)).foregroundStyle(FindsInk.blueText) }
                         Text(option.label).font(TypeStyle.body(14, option.picked ? .medium : .regular)).foregroundStyle(option.picked ? CallInk.ink : CallInk.mute)
@@ -933,9 +982,9 @@ struct FindCardPage: View {
     // MARK: link (r03 #13 / #14)
 
     @ViewBuilder private var link: some View {
-        if card.sources.isEmpty, let hero = card.hero {
+        if card.sources.isEmpty, let hero = shows(card.hero) {
             // r02: every answer leads with its picture, r01 top-pick size
-            FindPicture(image: hero, resolve: call.findsURL, showFailText: false, quietGlyph: "photo").frame(height: 164).frame(maxWidth: .infinity).clipShape(RoundedRectangle(cornerRadius: 12))
+            FindPicture(image: hero, resolve: call.findsURL, showFailText: false).frame(height: 164).frame(maxWidth: .infinity).clipShape(RoundedRectangle(cornerRadius: 12))
                 .accessibilityLabel("Illustration for \(card.title)")
         }
         if card.page?.opened == false {
@@ -970,12 +1019,12 @@ struct FindCardPage: View {
 
     /// The rows under the top pick: every result once, in order, without the one shown big.
     private var restRows: [(offset: Int, element: FindCard.Source)] {
-        let top = card.topPick?.index
+        let top = card.topPick(usable: usable)?.index
         return card.sources.enumerated().filter { $0.offset != top }.map { (offset: $0.offset, element: $0.element) }
     }
 
     @ViewBuilder private var resultList: some View {
-        let pick = card.topPick
+        let pick = card.topPick(usable: usable)
         if let pick {
             topPick(card.sources[pick.index], index: pick.index, photo: pick.photo).findsRise(3)
         }
@@ -994,7 +1043,7 @@ struct FindCardPage: View {
         let why = Self.why(s, index: index, steps: card.steps, sourceCount: card.sources.count)
         return Button { openSource(s) } label: {
             VStack(alignment: .leading, spacing: 0) {
-                FindPicture(image: photo, resolve: call.findsURL, showFailText: false, quietGlyph: "photo")
+                FindPicture(image: photo, resolve: call.findsURL, showFailText: false)
                     .frame(height: 164).frame(maxWidth: .infinity).clipShape(RoundedRectangle(cornerRadius: 12))
                     .overlay(alignment: .topLeading) {
                         Text("Top pick").font(TypeStyle.body(12, .medium)).foregroundStyle(CallInk.ink)
@@ -1020,15 +1069,11 @@ struct FindCardPage: View {
         let why = Self.why(s, index: index, steps: card.steps, sourceCount: card.sources.count)
         return Button { openSource(s) } label: {
             HStack(alignment: .top, spacing: 12) {
-                ZStack {
-                    FindsInk.photoMissing
-                    if let img = s.image, img.status != .failed {
-                        FindPicture(image: img, resolve: call.findsURL, showFailText: false, quietGlyph: "photo")
-                    } else {
-                        Text(Self.initial(s.domain)).font(TypeStyle.body(14, .bold)).foregroundStyle(CallInk.onInk)
-                            .frame(width: 28, height: 28).background(Self.siteColor(s.domain), in: RoundedRectangle(cornerRadius: 8))
-                    }
-                }.frame(width: 64, height: 64).clipShape(RoundedRectangle(cornerRadius: 12)).accessibilityHidden(true)
+                // b16: a row with no picture is a text row (no letter tile, no empty square)
+                if let img = shows(s.image) {
+                    FindPicture(image: img, resolve: call.findsURL, showFailText: false)
+                        .frame(width: 64, height: 64).clipShape(RoundedRectangle(cornerRadius: 12)).accessibilityHidden(true)
+                }
                 VStack(alignment: .leading, spacing: 0) {
                     Text(Self.title(s)).font(TypeStyle.body(15.5, .semibold)).foregroundStyle(CallInk.ink).lineLimit(1)
                     if let why {
@@ -1040,7 +1085,7 @@ struct FindCardPage: View {
             }
             .padding(.vertical, 12).padding(.horizontal, 10)
             .overlay(alignment: .top) {
-                if divider { FindsInk.line.frame(height: 1).padding(.leading, 86).padding(.trailing, 10) }
+                if divider { FindsInk.line.frame(height: 1).padding(.leading, shows(s.image) == nil ? 10 : 86).padding(.trailing, 10) }
             }
             .contentShape(Rectangle())
         }
@@ -1051,21 +1096,16 @@ struct FindCardPage: View {
         .accessibilityIdentifier("source-\(s.domain)")
     }
 
-    /// 16 pt favicon (or the site-colour initial when there is none / it fails) + domain, 13 mute.
+    /// 16 pt favicon when it loads (b16: never a letter tile in its place) + domain, 13 mute.
     private func sourceLine(_ s: FindCard.Source) -> some View {
-        HStack(spacing: 6) {
-            ZStack {
-                Self.siteColor(s.domain)
-                Text(Self.initial(s.domain)).font(TypeStyle.body(10, .bold)).foregroundStyle(CallInk.onInk)
-                if let fav = s.favicon, let url = fav.hasPrefix("http") ? URL(string: fav) : call.findsURL(fav) {
-                    AsyncImage(url: url) { phase in
-                        switch phase {
-                        case let .success(pic): CallInk.sheet.overlay(pic.resizable().scaledToFit())
-                        default: Color.clear
-                        }
+        HStack(spacing: 0) {
+            if let fav = s.favicon, let url = fav.hasPrefix("http") ? URL(string: fav) : call.findsURL(fav) {
+                AsyncImage(url: url) { phase in
+                    if case let .success(pic) = phase {
+                        pic.resizable().scaledToFit().frame(width: 16, height: 16).clipShape(RoundedRectangle(cornerRadius: 4)).padding(.trailing, 6)
                     }
                 }
-            }.frame(width: 16, height: 16).clipShape(RoundedRectangle(cornerRadius: 4))
+            }
             Text(s.domain).font(TypeStyle.body(13)).foregroundStyle(CallInk.mute).lineLimit(1)
         }
     }
@@ -1118,7 +1158,7 @@ struct FindCardPage: View {
     // rows with the rating line and the address instead of the reason
 
     @ViewBuilder private var placeList: some View {
-        let pick = card.topPick
+        let pick = card.topPick(usable: usable)
         if let pick {
             placeTop(card.sources[pick.index], index: pick.index, photo: pick.photo).findsRise(3)
         }
@@ -1135,7 +1175,7 @@ struct FindCardPage: View {
         return VStack(alignment: .leading, spacing: 0) {
             Button { openSource(s) } label: {
                 VStack(alignment: .leading, spacing: 0) {
-                    FindPicture(image: photo, resolve: call.findsURL, showFailText: false, quietGlyph: "photo")
+                    FindPicture(image: photo, resolve: call.findsURL, showFailText: false)
                         .frame(height: 164).frame(maxWidth: .infinity).clipShape(RoundedRectangle(cornerRadius: 12))
                         .overlay(alignment: .topLeading) {
                             Text("Top pick").font(TypeStyle.body(12, .medium)).foregroundStyle(CallInk.ink)
@@ -1200,15 +1240,11 @@ struct FindCardPage: View {
         let why = Self.why(s, index: index, steps: card.steps, sourceCount: card.sources.count)
         return Button { openSource(s) } label: {
             HStack(alignment: .top, spacing: 12) {
-                ZStack {
-                    FindsInk.photoMissing
-                    if let img = s.image, img.status != .failed {
-                        FindPicture(image: img, resolve: call.findsURL, showFailText: false, quietGlyph: "photo")
-                    } else {
-                        Text(Self.initial(s.placeName)).font(TypeStyle.body(14, .bold)).foregroundStyle(CallInk.onInk)
-                            .frame(width: 28, height: 28).background(Self.siteColor(s.domain), in: RoundedRectangle(cornerRadius: 8))
-                    }
-                }.frame(width: 64, height: 64).clipShape(RoundedRectangle(cornerRadius: 12)).accessibilityHidden(true)
+                // b16: a row with no picture is a text row (no letter tile, no empty square)
+                if let img = shows(s.image) {
+                    FindPicture(image: img, resolve: call.findsURL, showFailText: false)
+                        .frame(width: 64, height: 64).clipShape(RoundedRectangle(cornerRadius: 12)).accessibilityHidden(true)
+                }
                 VStack(alignment: .leading, spacing: 0) {
                     Text(s.placeName).font(TypeStyle.body(15.5, .semibold)).foregroundStyle(CallInk.ink).lineLimit(1)
                     if let place { placeMeta(place).padding(.top, 1) }
@@ -1223,7 +1259,7 @@ struct FindCardPage: View {
             }
             .padding(.vertical, 12).padding(.horizontal, 10)
             .overlay(alignment: .top) {
-                if divider { FindsInk.line.frame(height: 1).padding(.leading, 86).padding(.trailing, 10) }
+                if divider { FindsInk.line.frame(height: 1).padding(.leading, shows(s.image) == nil ? 10 : 86).padding(.trailing, 10) }
             }
             .contentShape(Rectangle())
         }
@@ -1251,7 +1287,10 @@ struct FindCardPage: View {
     // MARK: product (PF-1b: two columns; r02: Open in browser goes straight to the shop page in the browser)
 
     @ViewBuilder private var product: some View {
-        let items = Array((card.products ?? []).prefix(2))
+        // b16: a shop with no picture is left out while another one has one; with none, both show as text
+        let all = Array((card.products ?? []).prefix(2))
+        let pictured = all.filter { shows($0.image) != nil }
+        let items = pictured.isEmpty ? all : pictured
         HStack(alignment: .top, spacing: 12) {
             ForEach(Array(items.enumerated()), id: \.element.id) { i, p in productColumn(p, primary: i == 0) }
             if items.count == 1 { Color.clear.frame(maxWidth: .infinity) }
@@ -1259,22 +1298,56 @@ struct FindCardPage: View {
         .accessibilityElement(children: .contain).accessibilityIdentifier("productView")
     }
 
+    /// Half sheet (364 pt page, no scrolling): the picture gives way so Open in browser shows above Save to Finds
+    /// (Chelsea 11/4: the pill sat under the CTA). 364 − 40 top − 44 header − 8 − title row − 8 − 8 − (8 + 20 + 4 + 20)
+    /// name + store − 8 − 44 pill = 152 − title row; 56 at least, the square (151) at most.
+    static func halfProductPicture(titleRow: CGFloat) -> CGFloat {
+        let room: CGFloat = 152 - titleRow
+        return max(56, min(151, room))
+    }
+
+    private func openProduct(_ p: FindCard.Product) {
+        // r02: straight to the shop's page in the browser (not the in-sheet one)
+        if !offline, let url = ExternalLink.web(p.url) { openURL(url) }
+    }
+
     private func productColumn(_ p: FindCard.Product, primary: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            FindPicture(image: p.image, resolve: call.findsURL, showFailText: false, quietGlyph: "hanger")
-                .aspectRatio(1, contentMode: .fit).clipShape(RoundedRectangle(cornerRadius: 12))
-                .accessibilityLabel("Picture of \(p.name)")
-            VStack(alignment: .leading, spacing: 4) {
-                Text(p.name).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.ink).lineLimit(2).multilineTextAlignment(.leading)
-                Text(p.store + " · " + (p.price ?? "Price on site")).font(TypeStyle.body(14)).foregroundStyle(CallInk.mute).lineLimit(1)
+        let pictureHeight: CGFloat? = full ? nil : Self.halfProductPicture(titleRow: titleRowHeight > 0 ? titleRowHeight : 54)
+        return VStack(alignment: .leading, spacing: 8) {
+            // b16: the picture, the name and the store open the shop too (tapping them did nothing)
+            Button { openProduct(p) } label: {
+                VStack(alignment: .leading, spacing: 8) {
+                    // b16: no picture → no picture box (the hanger tile is gone); the text and the pill stay
+                    if let img = shows(p.image) {
+                        Group {
+                            if let h = pictureHeight {
+                                FindPicture(image: img, resolve: call.findsURL, showFailText: false)
+                                    .frame(maxWidth: .infinity).frame(height: h)
+                            } else {
+                                FindPicture(image: img, resolve: call.findsURL, showFailText: false)
+                                    .aspectRatio(1, contentMode: .fit)
+                            }
+                        }.clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(p.name).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.ink).lineLimit(full ? 2 : 1).multilineTextAlignment(.leading)
+                        Text(p.store + " · " + (p.price ?? "Price on site")).font(TypeStyle.body(14)).foregroundStyle(CallInk.mute).lineLimit(1)
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
             }
-            // D4: ✦ = your style, “ = what you said (no colour legend)
-            if !p.taste.isEmpty { productChip(p.taste, mark: ProductPicks.styleMark, fg: FindsInk.blueText, bg: FindsInk.blueSoft) }
-            if !p.situation.isEmpty { productChip(p.situation, mark: ProductPicks.saidMark, fg: CallInk.ink, bg: FindsInk.skip) }
-            Button {
-                // r02: straight to the shop's page in the browser (not the in-sheet one)
-                if !offline, let url = ExternalLink.web(p.url) { openURL(url) }
-            } label: {
+            .buttonStyle(PressScale(scale: 0.98)).opacity(offline ? 0.5 : 1)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(p.name), \(p.store), \(p.price ?? "price on site")")
+            .accessibilityHint("Opens it in the browser")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityIdentifier("productCard-\(p.id)")
+            // the reason chips show in the full sheet; at half the pill comes first (it has to clear the CTA)
+            if full {
+                // D4: ✦ = your style, “ = what you said (no colour legend)
+                if !p.taste.isEmpty { productChip(p.taste, mark: ProductPicks.styleMark, fg: FindsInk.blueText, bg: FindsInk.blueSoft) }
+                if !p.situation.isEmpty { productChip(p.situation, mark: ProductPicks.saidMark, fg: CallInk.ink, bg: FindsInk.skip) }
+            }
+            Button { openProduct(p) } label: {
                 // r01: a 36 pt pill, the first card ink, the other outlined; 13 pt so it stays one line in a column
                 HStack(spacing: 4) {
                     Text("Open in browser").font(TypeStyle.body(13, .medium)).lineLimit(1).minimumScaleFactor(0.85)
@@ -1327,7 +1400,6 @@ struct FindCardPage: View {
                 ForEach(card.sources, id: \.url) { s in
                     Button { if !offline { withAnimation(.drawer) { finds.state = .full; finds.browser = s } } } label: {
                         HStack(spacing: 12) {
-                            Text(String(s.domain.prefix(1)).uppercased()).font(TypeStyle.title(14)).frame(width: 24, height: 24).background(FindsInk.skip, in: Circle())
                             VStack(alignment: .leading, spacing: 0) {
                                 Text(s.title).font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.ink).lineLimit(2).multilineTextAlignment(.leading)
                                 Text(s.domain).font(TypeStyle.body(14)).foregroundStyle(CallInk.mute)

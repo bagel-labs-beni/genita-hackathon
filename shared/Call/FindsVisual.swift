@@ -34,11 +34,14 @@ extension FindCard {
     /// else the first row whose picture landed (contract v2: `hero` can come from another row, so it never goes under
     /// row 0's name); else row 0 with `hero` when no row has a picture of its own (an older server sends #1's og:image
     /// only as `hero`). nil → rows only.
-    var topPick: (index: Int, photo: FindImage)? {
+    /// `ok`: the page's own check (b16: a picture that failed to load is skipped, the next one leads; none → no hero).
+    var topPick: (index: Int, photo: FindImage)? { topPick(usable: { _ in true }) }
+
+    func topPick(usable ok: (FindImage) -> Bool) -> (index: Int, photo: FindImage)? {
         guard !sources.isEmpty else { return nil }
-        func usable(_ i: FindImage?) -> FindImage? { i.flatMap { $0.status == .failed ? nil : $0 } }
+        func usable(_ i: FindImage?) -> FindImage? { i.flatMap { $0.status == .failed || !ok($0) ? nil : $0 } }
         if let img = usable(sources[0].image) { return (0, img) }
-        if let i = sources.indices.first(where: { sources[$0].image?.status == .ready }), let img = sources[i].image { return (i, img) }
+        if let i = sources.indices.first(where: { usable(sources[$0].image)?.status == .ready }), let img = sources[i].image { return (i, img) }
         if !sources.contains(where: { usable($0.image) != nil }), let h = usable(hero) { return (0, h) }
         return nil
     }
@@ -114,5 +117,27 @@ extension FindCard.Source {
         let t = displayTitle
         if why == nil, let r = t.range(of: " — ") { return String(t[..<r.lowerBound]) }
         return t
+    }
+}
+
+extension FindCard {
+    /// The card without the pictures that failed to load here (keyed by url, else slot): every layout then treats them
+    /// as missing and draws no box for them (b16, Chelsea 11/4 "never show empty picture content").
+    func hidingPhotos(_ broken: Set<String>) -> FindCard {
+        guard !broken.isEmpty else { return self }
+        func keep(_ i: FindImage?) -> FindImage? {
+            guard let i else { return nil }
+            return broken.contains(i.url ?? i.slot) ? nil : i
+        }
+        var c = self
+        c.hero = keep(c.hero)
+        for k in c.sources.indices { c.sources[k].image = keep(c.sources[k].image) }
+        for k in c.items.indices { c.items[k].image = keep(c.items[k].image) }
+        for k in c.steps.indices { c.steps[k].image = keep(c.steps[k].image) }
+        if var p = c.products {
+            for k in p.indices { p[k].image = keep(p[k].image) }
+            c.products = p
+        }
+        return c
     }
 }
