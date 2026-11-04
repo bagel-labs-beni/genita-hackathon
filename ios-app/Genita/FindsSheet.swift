@@ -895,7 +895,7 @@ struct FindCardPage: View {
     }
 
     private func topPick(_ s: FindCard.Source, photo: FindImage) -> some View {
-        let why = Self.why(s, index: 0, steps: card.steps)
+        let why = Self.why(s, index: 0, steps: card.steps, sourceCount: card.sources.count)
         return Button { openSource(s) } label: {
             VStack(alignment: .leading, spacing: 0) {
                 FindPicture(image: photo, resolve: call.findsURL, showFailText: false, quietGlyph: "photo")
@@ -921,7 +921,7 @@ struct FindCardPage: View {
     }
 
     private func resultRow(_ s: FindCard.Source, index: Int, divider: Bool) -> some View {
-        let why = Self.why(s, index: index, steps: card.steps)
+        let why = Self.why(s, index: index, steps: card.steps, sourceCount: card.sources.count)
         return Button { openSource(s) } label: {
             HStack(alignment: .top, spacing: 12) {
                 ZStack {
@@ -985,14 +985,17 @@ struct FindCardPage: View {
 
     /// Why this result: `why` from the server; else the " — why" tail on its title; else the matching step
     /// ("Title — why", by url, or by position); nil → no line at all (never an empty label).
-    static func why(_ s: FindCard.Source, index: Int, steps: [FindCard.Step]) -> String? {
+    static func why(_ s: FindCard.Source, index: Int, steps: [FindCard.Step], sourceCount: Int) -> String? {
         func clean(_ v: String?) -> String? {
             guard let v = v?.trimmingCharacters(in: .whitespacesAndNewlines), !v.isEmpty else { return nil }
             return v
         }
         if let w = clean(s.why) { return w }
         if let r = s.title.range(of: " — "), let w = clean(String(s.title[r.upperBound...])) { return w }
-        let step = steps.first { $0.source == s.url } ?? (steps.indices.contains(index) ? steps[index] : nil)
+        // by url, then by title, then by position only when steps and sources line up one to one
+        let t = title(s)
+        let step = steps.first { $0.source == s.url } ?? steps.first { $0.text.hasPrefix(t + " — ") }
+            ?? (steps.count == sourceCount && steps.indices.contains(index) ? steps[index] : nil)
         guard let text = clean(step?.text) else { return nil }
         if let r = text.range(of: " — ") { return clean(String(text[r.upperBound...])) }
         // a step that is only the same title says nothing new
