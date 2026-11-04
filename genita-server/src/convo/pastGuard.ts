@@ -32,11 +32,16 @@ const WHEN_PAST = /\b(?:last (?:week|month|year|night|time)|yesterday|the other 
 /** Codex #536 r2: a content word (≥3 letters) they really said in this call, and no "last week"-type time they didn't say */
 function groundedInCall(sentence: string, callText: string): boolean {
   // numbers count too (Codex #536 r3: "I'm 23." → "You told me that you're 23.")
-  const said = new Set((callText.toLowerCase().match(/[a-z']{3,}|\d+/g) ?? []));
+  // Codex #536 r4: 2-letter words too ("I'm from LA." → "You told me that you're from LA.")
+  const said = new Set((callText.toLowerCase().match(/[a-z']{2,}|\d+/g) ?? []));
   const when = sentence.match(WHEN_PAST)?.[0];
   if (when && !callText.toLowerCase().includes(when.toLowerCase())) return false;
-  return (sentence.toLowerCase().match(/[a-z']{3,}|\d+/g) ?? []).some((w) => !STOPW.has(w) && !["you", "the", "and", "got", "did", "say", "was", "are", "had", "has", "for", "but", "not", "now"].includes(w) && said.has(w));
+  return (sentence.toLowerCase().match(/[a-z']{2,}|\d+/g) ?? []).some((w) => !STOPW.has(w) && !SHORT_STOP.has(w) && said.has(w));
 }
+const SHORT_STOP = new Set("you the and got did say was are had has for but not now me my we us it is to so in on at of an or do go be up no oh ok hi he if as by am i'm i'd im it's its yes yeah".split(" "));
+// Codex #536 r4: asking about THEIR memory ("Do you remember when it started?") claims no shared past; "do you
+// remember when we…" still does
+const ASK_THEIR_MEMORY = /\b(?:do|can|could|did|if|when) you (?:still |even )?remember when\b(?![^.!?]*\b(?:we|us|i|me|my|our)\b)/giu;
 function said(re: RegExp, text: string): boolean { re.lastIndex = 0; return re.test(text); }
 
 // a habit no memory ever backs ("like usual", "as always"): cut even when the call has a past (eval v2 r2, 3/14 with memories)
@@ -61,7 +66,7 @@ export function unbackedPast(sentence: string, ctx: PastContext): string {
   }
   if (!said(STILL, user)) { STILL.lastIndex = 0; sentence = sentence.replace(STILL, "$1 "); }
   // Codex #536 P2: "You told me your interview is tomorrow" after they said it in THIS call is real, not invented
-  if (CLAIMED_RECALL.test(sentence) && !CLAIMED_RECALL.test(user) && !groundedInCall(sentence, `${ctx.callText ?? ""} ${user}`)) return "";
+  if (CLAIMED_RECALL.test(sentence.replace(ASK_THEIR_MEMORY, " ")) && !CLAIMED_RECALL.test(user) && !groundedInCall(sentence, `${ctx.callText ?? ""} ${user}`)) return "";
   if (USER_HABIT.test(user)) return sentence;
   HABIT.lastIndex = 0;
   const out = sentence.replace(HABIT, (m, offset: number, whole: string) => (RETRY_BEFORE.test(whole.slice(0, offset)) ? m : ""));

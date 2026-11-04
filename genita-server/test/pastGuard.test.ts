@@ -57,3 +57,10 @@ test("Codex #536 r3: help sentences untouched; a number said this call grounds t
   assert.equal(unbackedPast("If you remember when it started, tell the emergency services.", none("My chest hurts.")), "If you remember when it started, tell the emergency services.");
   assert.equal(unbackedPast("You told me that you're 23.", { past: false, userText: "How old am I?", callText: "I'm 23." }), "You told me that you're 23.");
 });
+
+test("Codex #536 r4: a question about their memory stays; a 2-letter place they said grounds the recall", () => {
+  assert.equal(unbackedPast("Do you remember when it started?", { past: false, userText: "My chest hurts." }), "Do you remember when it started?");
+  assert.equal(unbackedPast("Do you remember when we met?", { past: false, userText: "hey" }), "");
+  assert.equal(unbackedPast("You told me that you're from LA.", { past: false, userText: "Where am I from?", callText: "I'm from LA." }), "You told me that you're from LA.");
+  assert.equal(unbackedPast("You told me that you're from LA.", { past: false, userText: "Where am I from?", callText: "hi there" }), "");
+});
