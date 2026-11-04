@@ -18,6 +18,7 @@ import { Candidates, recipeSummary, toWire, type Candidate } from "./tiers.ts";
 import { LineSplitter, domainOf, isYes, lastJsonObject, parseSeenLine, str, strList } from "./parse.ts";
 import { userMessage, webActions, type FindsVendors } from "./vendors.ts";
 import { ingredientLookups, sendFoundImages, stepQuery } from "./imageFinder.ts";
+import { rowPictures } from "./general.ts";
 
 export type PipelineCtx = {
   findId: string;
@@ -821,14 +822,18 @@ export async function runLink(ctx: PipelineCtx): Promise<PipelineResult> {
     sources: [{ title: str(j.title, 120) || domain, url, domain }],
     how: [
       opened ? "Opened the page you pasted." : "Couldn't open the page you pasted. These points come from search results about it, not the page itself.",
-      ...(ctx.images ? ["The picture is an illustration I made."] : []),
+      ...(ctx.images ? ["If there is no photo from the page, the picture is an illustration I made."] : []),
     ],
     page: { url, opened },
   };
   if (!card.say) delete card.say;
   ctx.emit({ type: "find.created", findId: ctx.findId, card });
   timings.cardMs = Math.round(ctx.now() - t0);
-  await illustrate(ctx, [{ slot: "hero", prompt: str(j.picture, 120) || card.title }]);
+  // visual everything: the page's own picture (else a web photo of its title) as its row and the hero; an
+  // illustration only when none was found
+  let gotHero = false;
+  await rowPictures({ ...ctx, emit: (e) => { if (e.type === "find.image" && e.slot === "hero") gotHero = true; ctx.emit(e); } }, [{ title: card.title, url }]);
+  if (!gotHero && !ctx.signal.aborted) await illustrate(ctx, [{ slot: "hero", prompt: str(j.picture, 120) || card.title }]);
   timings.picturesMs = Math.round(ctx.now() - t0);
   return { card, timings };
 }

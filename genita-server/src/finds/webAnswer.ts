@@ -85,6 +85,7 @@ export function webAnswerCard(o: { id: string; question: string; said: string; s
   return {
     id: o.id,
     kind: "answer",
+    layout: "general",
     createdAt: (o.now ?? new Date()).toISOString(),
     eyebrow: "From the web",
     title: answerTitle(query, o.question),

@@ -6,7 +6,7 @@
  * on screen so "Ask about this" follow-ups make sense.
  */
 import { webAnswerCard, type WebSearch } from "./webAnswer.ts";
-import { applySourceImage, assessLine, runGeneral } from "./general.ts";
+import { applySourceImage, assessLine, rowPictures, runGeneral } from "./general.ts";
 import { JUDGE_TIMEOUT_MS, judgeEnabled, judgeWithin, sparkJudge, type Judge, type JudgeResult } from "./judge.ts";
 import type { Intent } from "./intent.ts";
 import { findUrl } from "./parse.ts";
@@ -544,6 +544,20 @@ export class FindsRunner {
     card.reasons = [];
     this.onEvent({ type: "find.created", findId, card });
     this.hooks.log("find.done", { findId, kind: "answer", ok: true, sources: card.sources.length });
+    // visual everything: every row gets its page's picture (else a web photo), the first is the hero
+    const abort = new AbortController();
+    const release = this.deps.store.work.track(this.owner, () => abort.abort());
+    void rowPictures(
+      {
+        findId, vendors: this.deps.vendors, signal: abort.signal, emit: (e) => this.onEvent(e), log: this.hooks.log,
+        putImage: async (slot, bytes) => {
+          if (this.purged || (this.owner && this.deps.store.work.isDeleted(this.owner))) throw new Error("account deleted");
+          await this.deps.store.work.write(this.owner, () => this.deps.store.putImage(findId, slot, bytes));
+          return `${this.deps.imageBase}/${findId}/images/${slot}`;
+        },
+      },
+      card.sources.map((s) => ({ title: s.title, url: s.url })),
+    ).catch(() => {}).finally(release);
     return findId;
   }
 

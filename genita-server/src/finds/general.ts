@@ -22,7 +22,7 @@ import { domainOf, lastJsonObject, str, strList } from "./parse.ts";
 import type { PipelineCtx, PipelineResult } from "./pipeline.ts";
 import { userMessage, type OutputItem } from "./vendors.ts";
 import { answerTitle, isBlockedSite } from "./webAnswer.ts";
-import { pagePicture, sendFoundImages, stepQuery, type ImageJob } from "./imageFinder.ts";
+import { findWebImage, pagePicture, sendFoundImages, stepQuery } from "./imageFinder.ts";
 
 /** said when the card lands (after the one-sentence answer) */
 export const GENERAL_SAY = "I put a few links up for you.";
@@ -390,36 +390,56 @@ export function cutOff<T>(run: (signal: AbortSignal) => Promise<T>, ms: number, 
   });
 }
 
+export type PictureCtx = Parameters<typeof sendFoundImages>[0];
+export type PictureRow = { title: string; url: string; address?: string };
+
 /**
- * Each result's picture (visual everything): its own og:image, else a web photo of the row (the place / page name);
- * the first row's is also the hero. Only ready pictures are sent; a row with none gets no slot. How-to steps get a
- * step-N photo each when one is found.
+ * Every row's picture (visual everything, r02 on all searches): its own og:image (else the page's first content
+ * picture), else a web photo of the row (the place / page name). `hero` is row 0's picture, or — when row 0 has
+ * none — the first other row's that lands (old builds draw hero). Only ready pictures are sent; a row with none gets
+ * no slot. How-to steps get a step-N photo each when one is found.
  */
-async function resultPictures(ctx: PipelineCtx, results: Result[], layout: FindLayout, topic: string, steps: string[]): Promise<void> {
+export async function rowPictures(ctx: PictureCtx, rows: PictureRow[], opts: { layout?: FindLayout; topic?: string; steps?: string[]; heroFromRows?: boolean } = {}): Promise<void> {
   const { pageFacts, productImage } = ctx.vendors;
   if (!pageFacts || !productImage) return;
-  const rows = results.map(async (r, i) => {
-    const slot = `source-${i}`;
-    const own = await pagePicture(ctx.vendors, r.url, ctx.signal, GENERAL_IMAGE_MS);
-    if (ctx.signal.aborted) return;
-    const query = layout === "place" ? `${r.title} ${str(r.raw?.address, 60)}`.trim() : r.title;
-    const jobs: ImageJob[] = [{ slot, query }];
-    // #1 is also the card's hero (the iPhone link layout already draws it)
-    if (i === 0) jobs.push({ slot: "hero", query });
-    if (own) {
-      for (const j of jobs) {
-        try {
-          ctx.emit({ type: "find.image", findId: ctx.findId, slot: j.slot, status: "ready", url: await ctx.putImage(j.slot, own) });
-        } catch (err) {
-          ctx.log("find.general_image_failed", { findId: ctx.findId, slot: j.slot, message: String(err).slice(0, 120) });
-        }
-      }
-      return;
+  const store = async (slot: string, bytes: Buffer) => {
+    try {
+      ctx.emit({ type: "find.image", findId: ctx.findId, slot, status: "ready", url: await ctx.putImage(slot, bytes) });
+      return true;
+    } catch (err) {
+      ctx.log("find.general_image_failed", { findId: ctx.findId, slot, message: String(err).slice(0, 120) });
+      return false;
     }
-    await sendFoundImages(ctx, jobs);
+  };
+  let heroSent = opts.heroFromRows === false;
+  let heroWait: Promise<void> = Promise.resolve();
+  const found = rows.map(async (r, i) => {
+    const own = await pagePicture(ctx.vendors, r.url, ctx.signal, GENERAL_IMAGE_MS);
+    if (ctx.signal.aborted) return null;
+    const bytes = own ?? (await findWebImage(ctx.vendors, opts.layout === "place" ? `${r.title} ${r.address ?? ""}`.trim() : r.title, ctx.signal));
+    if (!bytes || ctx.signal.aborted) {
+      if (!ctx.signal.aborted) ctx.log("find.web_image_none", { findId: ctx.findId, slot: `source-${i}` });
+      return null;
+    }
+    await store(`source-${i}`, bytes);
+    return bytes;
   });
-  const stepPics = sendFoundImages(ctx, steps.map((t, i) => ({ slot: `step-${i + 1}`, query: stepQuery(topic, t) })));
-  await Promise.all([...rows, stepPics]);
+  if (!heroSent && found.length) {
+    heroWait = (async () => {
+      // row 0 first; else whichever other row lands first
+      let bytes = await found[0];
+      if (!bytes && found.length > 1) {
+        bytes = await new Promise<Buffer | null>((resolve) => {
+          let left = found.length - 1;
+          for (const f of found.slice(1)) f.then((b) => { left--; if (b) resolve(b); else if (!left) resolve(null); }, () => { left--; if (!left) resolve(null); });
+        });
+      }
+      if (bytes && !ctx.signal.aborted && !heroSent) heroSent = await store("hero", bytes);
+    })();
+  }
+  const steps = opts.steps ?? [];
+  const stepPics = sendFoundImages(ctx, steps.map((t, i) => ({ slot: `step-${i + 1}`, query: stepQuery(opts.topic ?? "", t) })));
+  await Promise.all([...found, heroWait, stepPics]);
 }
 
 function prompt(question: string, timeZone?: string, layout: FindLayout = "general"): string {
@@ -505,7 +525,7 @@ export async function runGeneral(ctx: PipelineCtx): Promise<PipelineResult> {
   ctx.emit({ type: "find.created", findId: ctx.findId, card });
   timings.cardMs = Math.round(ctx.now() - t0);
   ctx.log("find.general", { findId: ctx.findId, results: n, traced: traced.length });
-  await resultPictures(ctx, results, layout, title, howSteps);
+  await rowPictures(ctx, results.map((r) => ({ title: r.title, url: r.url, ...(r.raw?.address ? { address: str(r.raw.address, 60) } : {}) })), { layout, topic: title, steps: howSteps });
   timings.picturesMs = Math.round(ctx.now() - t0);
   return { card, timings };
 }

@@ -8,6 +8,8 @@ import { FindsRunner } from "../src/finds/runner.ts";
 import { MemoryFindsStore } from "../src/finds/store.ts";
 import { likesFromStyle } from "../src/finds/setup.ts";
 import { checkServerEvent, type ServerEvent } from "../src/protocol.ts";
+// the shop pages' own pictures only here (the web photo fallback, findWebImage, is tested in finds-visual.test.ts)
+process.env.GENITA_FIND_WEB_IMAGES = "0";
 
 // ───────────── intent ─────────────
 

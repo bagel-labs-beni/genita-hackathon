@@ -23,7 +23,7 @@ const PAGES_PER_QUERY = 6;
 const HIT_TTL_MS = 6 * 3600_000;
 const MISS_TTL_MS = 10 * 60_000;
 const CACHE_MAX_ENTRIES = 400;
-const CACHE_MAX_BYTES = 96 * 1024 * 1024;
+const CACHE_MAX_BYTES = 64 * 1024 * 1024;
 
 export function webImagesOn(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.GENITA_FIND_WEB_IMAGES !== "0";
@@ -89,7 +89,9 @@ let active = 0;
 const waiting: Array<() => void> = [];
 const maxSearches = () => Math.max(1, Number(process.env.GENITA_FIND_WEB_IMAGE_SEARCHES) || 6);
 async function slot(signal: AbortSignal): Promise<() => void> {
-  if (active >= maxSearches()) {
+  if (active < maxSearches()) active++;
+  else {
+    // a freed slot is handed straight to the next waiter (active stays counted), so a newcomer can't jump the queue
     await new Promise<void>((resolve, reject) => {
       const go = () => { signal.removeEventListener("abort", stop); resolve(); };
       const stop = () => { const i = waiting.indexOf(go); if (i >= 0) waiting.splice(i, 1); reject(new Error("aborted")); };
@@ -97,13 +99,13 @@ async function slot(signal: AbortSignal): Promise<() => void> {
       signal.addEventListener("abort", stop, { once: true });
     });
   }
-  active++;
   let done = false;
   return () => {
     if (done) return;
     done = true;
-    active--;
-    waiting.shift()?.();
+    const next = waiting.shift();
+    if (next) next();
+    else active--;
   };
 }
 

@@ -264,3 +264,33 @@ test("firstContentImage: alt text or a large raster picture; never logos, icons,
   assert.equal(firstContentImage(`<body><img src="/big.webp" width="800" height="600"></body>`, abs), "https://p.example/big.webp");
   assert.equal(firstContentImage(`<body><img src="/x.jpg"></body>`, abs), undefined);
 });
+
+test("server-wide search cap: never more than GENITA_FIND_WEB_IMAGE_SEARCHES searches in flight", async () => {
+  process.env.GENITA_FIND_WEB_IMAGE_SEARCHES = "2";
+  try {
+    let inFlight = 0;
+    let peak = 0;
+    const base = vendors();
+    const v = { ...base, spark: async (req: Parameters<FindsVendors["spark"]>[0]) => { inFlight++; peak = Math.max(peak, inFlight); await new Promise((r) => setTimeout(r, 20)); inFlight--; return base.spark(req); } } as FindsVendors;
+    const got = await Promise.all(["a1", "a2", "a3", "a4", "a5"].map((q) => findWebImage(v, q, new AbortController().signal)));
+    assert.equal(got.filter(Boolean).length, 5);
+    assert.ok(peak >= 1 && peak <= 2, `peak ${peak}`);
+  } finally {
+    delete process.env.GENITA_FIND_WEB_IMAGE_SEARCHES;
+  }
+});
+
+test("layout on every web card: link → general, spoken-answer card → general", async () => {
+  const { webAnswerCard } = await import("../src/finds/webAnswer.ts");
+  const card = webAnswerCard({ id: "w1", question: "who won the world series", said: "The Dodgers won it.", searches: [{ query: "world series winner", urls: ["https://www.mlb.com/news/world-series"] }] });
+  assert.equal(card?.layout, "general");
+});
+
+test("rowPictures: row 0 without any picture → hero is the next row's picture (never a text-only card)", async () => {
+  const { rowPictures } = await import("../src/finds/general.ts");
+  const events: ServerEvent[] = [];
+  const v = { ...vendors({ pages: { "https://a.example/": null, "https://b.example/": "https://b.example/b.jpg" } }), spark: async () => ({ text: "OK", output: [] }) } as FindsVendors;
+  await rowPictures({ findId: "r1", vendors: v, signal: new AbortController().signal, emit: (e) => events.push(e), log: () => {}, putImage: async (s) => `/u/${s}` }, [{ title: "A", url: "https://a.example/" }, { title: "B", url: "https://b.example/" }]);
+  const slots = (events as Extract<ServerEvent, { type: "find.image" }>[]).map((e) => e.slot).sort();
+  assert.deepEqual(slots, ["hero", "source-1"]);
+});
