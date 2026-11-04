@@ -326,7 +326,9 @@ export function guardSentence(sentence: string, ctx: GuardContext): GuardClass |
   // emergency help and real crisis turns come before everything, narration included (Codex #356 P1)
   // #545 Codex r11: a help-line sentence (988, crisis line, hotline…) is protected like emergency help, before every
   // other filter (unseen, appearance, sensitive…): "You look scared so please call 988." is spoken
-  if (EMERGENCY_HELP.test(sentence) || HELP_LINE.test(sentence)) return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;
+  // Codex r12: not even an AI-denial rewrite replaces it ("No, I can't call 988 for you, but you can call or text it")
+  if (HELP_LINE.test(sentence)) return null;
+  if (EMERGENCY_HELP.test(sentence)) return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;
   // saving out loud is never said, even after real content (Codex gate P2: "Pistachio is elite. I'll save that detail quietly.")
   if (!realCrisisSignal(ctx.userText) && SAVE_TALK.some((re) => re.test(sentence.replace(/’/g, "'")))) return "save_talk";
   if (!realCrisisSignal(ctx.userText) && isNarration(sentence)) return "narration";

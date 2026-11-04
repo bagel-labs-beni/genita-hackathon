@@ -1640,3 +1640,7 @@ test("Codex r11: a help-line sentence is protected before every filter (camera o
   assert.equal(guardSentence("You look scared so please call 988.", { camera: false, userText: "I'm going to slash my throat tonight" }), null);
   assert.equal(guardSentence("Your hair looks wild, but call the crisis line now.", { camera: false, userText: "I'm going to slash my throat tonight" }), null);
 });
+
+test("Codex r12: a help-line sentence survives the AI-denial rewrite too", () => {
+  assert.equal(guardSentence("No, I can't call 988 for you, but you can call or text it right now.", { camera: false, userText: "Are you an AI? Can you call a crisis line for me? I'm going to hang myself tonight." }), null);
+});
