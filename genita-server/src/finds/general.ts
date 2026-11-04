@@ -101,37 +101,64 @@ export function coreQuestion(text: string): string {
   return t.trim();
 }
 
-/** An information question the web answers better than a chat reply. */
-export function isGeneralAsk(text: string, env: NodeJS.ProcessEnv = process.env): boolean {
-  if (env.GENITA_WEB_SEARCH === "0") return false;
-  if (!text.trim() || text.length > 400 || realCrisisSignal(text)) return false;
+/**
+ * What the line itself says: "search" (an information ask: the general card), "spoken" (a rule says talk only:
+ * crisis, small talk, feelings, about you / them, a pronoun or a thing in view without a request), or "open" (no rule
+ * either way: the find judge may look at the context and the picture, judge.ts).
+ */
+export type LineVerdict = "search" | "spoken" | "open";
+
+/** a thing in view with a request about it ("where can I get these?", "how much is this one?"): for the judge */
+const DEICTIC_REQUEST = /\b(?:where (?:can|could|do|should) (?:i|we) (?:get|buy|find|order)|what brand|how much|price|buy|order|find (?:me )?(?:one like|something like|more like))\b/;
+/** a request with nothing named ("find me some", "get one"): the runner's own follow-ups take these */
+const BARE_REQUEST = /^(?:(?:please )?(?:find|get|show|grab|pick)(?: me)? (?:some|one|a pair|a couple|them|more))\W*$/;
+const JOKE = /^(?:a |another )?(?:joke|story|fun fact|riddle)\b/;
+/** a question or a request at all ("Google is great." / "서울 날씨 좋다" are remarks) */
+const ASKS = /\?\s*$|^(?:who|what|where|when|which|how|why|is|are|was|were|do|does|did|can|could|would|will|should|any|find|get|show|recommend|suggest|tell|give|look|search|google|check|list|name)\b/;
+const LINKS_ASK = /\b(?:send me (?:the )?links?)\b|링크\s*보내/;
+
+export function assessLine(text: string, env: NodeJS.ProcessEnv = process.env): LineVerdict {
+  if (!text.trim() || text.length > 400 || realCrisisSignal(text)) return "spoken";
   // "the US" / "U.S." is a country, not "us" (lowercased below)
   const country = text.replace(/\bU\.?S\.?(?:A\b\.?)?(?![a-z])/g, "USA");
   const full = country.replace(/[‘’ʼ]/g, "'").toLowerCase();
   const t = coreQuestion(country);
-  if (NO_SEARCH.test(full)) return false;
+  if (NO_SEARCH.test(full) || LINKS_ASK.test(full)) return "spoken";
   const searchVerb = SEARCH_VERB.test(full) || SEARCH_VERB.test(t) || SEARCH_KO.test(full);
-  if (SMALL_TALK.test(t) && !searchVerb) return false;
-  if (DEICTIC.some((re) => re.test(t)) || DEICTIC_KO.test(t)) return false;
+  if ((SMALL_TALK.test(t) || JOKE.test(t) || BARE_REQUEST.test(t)) && !searchVerb) return "spoken";
+  if (DEICTIC.some((re) => re.test(t)) || DEICTIC_KO.test(t)) return DEICTIC_REQUEST.test(t) && !FEELING.test(t) ? "open" : "spoken";
   // a pronoun points back into the conversation, unless it's a dummy "it" or a spelled-out search ("look up how much it costs…")
   // ("how long does it take to get there?" still points back: "there" is in the conversation, Codex r2)
   const pronounFree = DUMMY_IT.test(t) && !/\b(?:there|here)\b/.test(t) ? t.replace(/\bit\b/, "") : t;
-  if (PRONOUN.test(pronounFree) && !(searchVerb && !LOOK_IT_UP.test(full) && words(t) >= 5)) return false;
-  if (FEELING.test(t) && !searchVerb) return false;
-  if (YOU.test(t) && !searchVerb) return false;
-  if (SELF_STATE.test(t)) return false;
-  if (SELF.test(t.replace(BENIGN_ME, "")) && !HOWTO.test(t) && !searchVerb) return false;
-  if (PERSONAL_KO.test(t) && !searchVerb) return false;
+  if (PRONOUN.test(pronounFree) && !(searchVerb && !LOOK_IT_UP.test(full) && words(t) >= 5)) return "spoken";
+  if (FEELING.test(t) && !searchVerb) return "spoken";
+  if (YOU.test(t) && !searchVerb) return "spoken";
+  if (SELF_STATE.test(t)) return "spoken";
+  if (SELF.test(t.replace(BENIGN_ME, "")) && !HOWTO.test(t) && !searchVerb) return "spoken";
+  if (PERSONAL_KO.test(t) && !searchVerb) return "spoken";
   const n = words(t);
-  if (searchVerb) return n >= 2;
+  const webOn = env.GENITA_WEB_SEARCH !== "0";
+  if (searchVerb) return n >= 2 && webOn ? "search" : "spoken";
   const question = /\?\s*$/.test(t) || WH.test(t) || IMPERATIVE.test(t);
-  if (TOPIC.test(t) && question && n >= 3) return true;
-  if (WH.test(t) && n >= 4) return true;
   const fact = t.match(SHORT_FACT);
-  if (fact && !CONTEXT_WORD.test(fact[1].replace(/[.-]+$/, ""))) return true;
-  if (TOPIC_KO.test(t) && n >= 2 && KO_ASK.test(t)) return true;
-  if (WH_KO.test(t) && n >= 3 && KO_ASK.test(t)) return true;
-  return false;
+  const search =
+    (TOPIC.test(t) && question && n >= 3) ||
+    (WH.test(t) && n >= 4) ||
+    (!!fact && !CONTEXT_WORD.test(fact[1].replace(/[.-]+$/, ""))) ||
+    (TOPIC_KO.test(t) && n >= 2 && KO_ASK.test(t)) ||
+    (WH_KO.test(t) && n >= 3 && KO_ASK.test(t));
+  if (search) return webOn ? "search" : "open";
+  // a short "what is next?" needs the conversation, not a card
+  const last = t.replace(/[?.!\s]+$/, "").split(/\s+/).at(-1) ?? "";
+  if (WH.test(t) && n <= 3 && CONTEXT_WORD.test(last)) return "spoken";
+  if (/[가-힣]/.test(t)) return KO_ASK.test(t) ? "open" : "spoken";
+  return ASKS.test(t) && n >= 2 ? "open" : "spoken";
+}
+
+/** An information question the web answers better than a chat reply. */
+export function isGeneralAsk(text: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.GENITA_WEB_SEARCH === "0") return false;
+  return assessLine(text, env) === "search";
 }
 
 /** classifyTurn's last step: a web search card, or a spoken answer only. */
