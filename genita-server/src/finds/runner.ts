@@ -306,8 +306,11 @@ export class FindsRunner {
       }
       this.lastProduct = { label: prev?.label ?? guessLabel(t.text, "Things"), question: prev ? `${prev.question} — ${t.text}` : t.text, at: now };
       const likes = this.likes;
-      const cached = prev || this.deps.productCache !== true ? null : this.cacheFor(t.text);
-      const pre = prev || cached ? null : this.takePrefetch(t.text, now);
+      // demo S5 (lead 11/4 P0): an ask with the camera on gets a fresh look at what's in view — never a saved card
+      // or a text-only prefetch (3/3 replayed "from earlier" without looking)
+      const camera = t.frames.length > 0;
+      const cached = prev || camera || this.deps.productCache !== true ? null : this.cacheFor(t.text);
+      const pre = prev || cached || camera ? null : this.takePrefetch(t.text, now);
       if (pre) this.lastProduct = { label: pre.label, question: `${pre.question} — ${t.text}`, at: now };
       run = cached ? (c) => this.replayCache(cached, c, t) : pre ? (c) => this.replayPrefetch(pre, c, t) : async (c) => {
         const r = await runProduct({ ...c, likes: await likes, recent: t.recent ?? [], previous: prev?.question, region: this.deps.shopRegion, hedge: this.deps.productHedge });
@@ -465,7 +468,8 @@ export class FindsRunner {
     const n = products.length;
     const card: FindCard = {
       ...entry.card, id: c.findId, createdAt: new Date().toISOString(), products, saved: false,
-      title: n === 1 ? `One ${shortLabel(label).toLowerCase()} pick` : `${n} ${shortLabel(label).toLowerCase()} picks`,
+      // "2 shoes picks" (demo S5): the count reads as words, the thing is in the subtitle
+      title: n === 1 ? "One pick for you" : "Two picks for you",
       subtitle: `${shortLabel(label)}, matched to your style.`,
       reasons: undefined, say: undefined, pill: undefined, status: `${n} link${n === 1 ? "" : "s"}`,
       ...(entry.card.evidence ? { evidence: { ...entry.card.evidence, situation: "" } } : {}),
@@ -517,7 +521,8 @@ export class FindsRunner {
    * the other is stopped (never "wait for the prefetch, then search").
    */
   private async replayPrefetch(p: Prefetch, c: PipelineCtx, t: TurnInput): Promise<PipelineResult> {
-    c.emit({ type: "find.started", findId: c.findId, utteranceId: c.utteranceId, kind: "product", title: SEARCH_TITLE, detail: `${shortLabel(p.label)} · searching shops` });
+    // the label of what this ask names ("shoes"), not what the prefetch guessed from the outfit ("Sweater", demo S5)
+    c.emit({ type: "find.started", findId: c.findId, utteranceId: c.utteranceId, kind: "product", title: SEARCH_TITLE, detail: `${shortLabel(guessLabel(t.text, p.label))} · searching shops` });
     type Src = { events: ServerEvent[]; listeners: Set<(e: ServerEvent) => void>; rekey: boolean; images?: Map<string, Buffer> };
     let winner: Src | null = null;
     let card: FindCard | null = null;

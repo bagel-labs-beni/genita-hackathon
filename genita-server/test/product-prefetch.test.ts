@@ -53,7 +53,7 @@ function runner(v: FindsVendors, now = () => performance.now()) {
 }
 const SAID = "Black, for sure. You have warm undertones, so dark brown shoes or leather accessories would be perfect.";
 
-test("an outfit card starts the matching shoe search in the background; a later ask reuses it (no second search)", async () => {
+test("an outfit card starts the matching shoe search in the background; a later ask with the camera off reuses it (no second search)", async () => {
   const { v, searches } = vendors(400);
   const { r, events } = runner(v);
   r.onTurn({ text: "Which one looks better on me, the white one or the black one?", frames: [FRAME, FRAME], utteranceId: 1, replyText: Promise.resolve(SAID) });
@@ -64,7 +64,8 @@ test("an outfit card starts the matching shoe search in the background; a later 
   assert.ok(!events.some((e) => e.type === "find.started" && e.kind === "product"), "nothing on screen until she asks");
   await r.settle(); await sleep(600); // the prefetch has landed by the time she asks
   const t0 = performance.now();
-  const started = r.onTurn({ text: "Can you find me some dark brown shoes that go with this?", frames: [FRAME], utteranceId: 2, replyText: Promise.resolve(null) });
+  // demo S5 (lead 11/4 P0): with the camera on the ask looks again (the next test); off, the prefetch answers
+  const started = r.onTurn({ text: "Can you find me some dark brown shoes that go with this?", frames: [], utteranceId: 2, replyText: Promise.resolve(null) });
   assert.equal(started?.kind, "product");
   await r.settle();
   assert.equal(searches.length, pre, "no second search");
@@ -292,4 +293,17 @@ test("Codex P2 (#366 r4): an exclusion, a material, a size or a brand the prefet
     await r.settle();
     assert.equal(searches.length, pre, `reused: ${ask}`);
   }
+});
+
+test("demo S5 (lead 11/4 P0): the same ask with the camera on is a fresh search that sees the picture, not the prefetch", async () => {
+  const { v, searches } = vendors(50);
+  const { r, events } = runner(v);
+  r.onTurn({ text: "Which one looks better on me, the white one or the black one?", frames: [FRAME, FRAME], utteranceId: 1, replyText: Promise.resolve(SAID) });
+  await r.settle(); await sleep(200);
+  const pre = searches.length;
+  const started = r.onTurn({ text: "Can you find me some dark brown shoes that go with this?", frames: [FRAME], utteranceId: 2, replyText: Promise.resolve(null) });
+  await r.settle();
+  assert.ok(searches.length > pre, "a second search");
+  assert.ok(searches.slice(pre).some((p) => p.includes("input_image")), "it looked at the camera");
+  assert.ok(events.some((e) => e.type === "find.created" && e.findId === started!.findId));
 });
