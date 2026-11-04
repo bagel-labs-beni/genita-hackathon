@@ -1579,21 +1579,6 @@ test("Codex #502 P1 r6: after a crisis line, later turns of the call get no gidd
   session.close();
 });
 
-test("lead 11/4 crisis number: a real crisis reply with help but no number gets the 988 line; with a number, nothing more", { skip: !v1 }, async () => {
-  const { crisisFollowUp, CRISIS_HELP_LINE, CRISIS_NUMBER_LINE } = await import("../src/session/session.ts");
-  assert.equal(crisisFollowUp(["I care about you."]), CRISIS_HELP_LINE);
-  assert.equal(crisisFollowUp(["Please call emergency services or a crisis helpline right now."]), CRISIS_NUMBER_LINE);
-  assert.equal(crisisFollowUp(["Please call or text nine eight eight right now."]), null);
-  assert.equal(crisisFollowUp(["Call 911 right now."]), null);
-  const { client, session } = setup(["<sad> I'm really glad you told me, I care about you. Please put the pills down and call emergency services or a crisis helpline right now."]);
-  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
-  await session.onClientText(JSON.stringify({ type: "text", text: "I want to kill myself" }));
-  const reply = await client.waitFor((m) => m.type === "reply" && m.final === true);
-  assert.match(String(reply.text), /crisis helpline right now\. You can call or text 988 any time/);
-  session.close();
-});
-
-
 test("#545 Codex r3 contract: help the model wrote is never deleted (detector or not); a therapy push goes only on a plainly harmless line; forced 988 only on main's real signal", { skip: !v1 }, async () => {
   for (const line of ["thinking of ending everything tonight", "cut myself while cooking to stop feeling numb", "I'm going to slash my throat tonight", "I'm going to hang myself tonight", "I'm kinda tired today"]) {
     assert.equal(guardSentence("Please call or text nine eight eight right now.", { camera: false, userText: line }), null, line);
@@ -1637,14 +1622,16 @@ test("Codex r5: a detector miss with only 'someone you trust' gets no 988; 'tire
   assert.equal(crisisFollowUpFor("My phone is dead. How do I end my contract?", ["Call your carrier's customer support hotline."]), null, "Codex r6: a customer hotline is not crisis support");
 });
 
-test("Codex r8: 'practice with someone you trust' after a crisis-word line gets no 988 line", async () => {
-  const { crisisFollowUp } = await import("../src/session/session.ts");
-  assert.equal(crisisFollowUp(["Practice with someone you trust first."]), null);
-  assert.equal(crisisFollowUp(["Please call a crisis line right now."]), (await import("../src/session/session.ts")).CRISIS_NUMBER_LINE);
-});
 
-test("Codex r9: a figurative 'lifeline' is no crisis service", async () => {
-  const { crisisFollowUp } = await import("../src/session/session.ts");
-  assert.equal(crisisFollowUp(["Your support network can be a lifeline."]), null);
-  assert.equal(crisisFollowUp(["The Suicide and Crisis Lifeline is there any time."]), (await import("../src/session/session.ts")).CRISIS_NUMBER_LINE);
+test("Codex r10: forced help is main's rule only — a reply with any help pointer gets nothing added; none at all gets the help line", { skip: !v1 }, async () => {
+  const { crisisFollowUp, CRISIS_HELP_LINE } = await import("../src/session/session.ts");
+  assert.equal(crisisFollowUp(["I care about you."]), CRISIS_HELP_LINE);
+  assert.equal(crisisFollowUp(["Please call emergency services or a crisis helpline right now."]), null);
+  assert.equal(crisisFollowUp(["That's huge, the suicide hotline is lucky to have you."]), null);
+  const { client, session } = setup(["<sad> I'm really glad you told me. Please call or text 988 right now."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "I want to kill myself" }));
+  const reply = await client.waitFor((m) => m.type === "reply" && m.final === true);
+  assert.equal(String(reply.text), "I'm really glad you told me. Please call or text 988 right now.");
+  session.close();
 });

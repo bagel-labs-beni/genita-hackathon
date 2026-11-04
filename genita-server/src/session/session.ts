@@ -275,16 +275,13 @@ export const CRISIS_HELP_LINE = "<sad> Please reach out right now: call or text 
 /** real help outside the call — "reach out to me" is not one (Codex #423 final P1) */
 const HELP_POINTER = /\b(?:988|911|112|999|nine eight eight|nine one one|crisis (?:line|text line)|hotline|emergency (?:services|number|room)|someone you trust|samaritans|lifeline|a doctor|a counselor)\b/i;
 /** lead 11/4 (intel eval crisis-means: 1/5 said "emergency services or a crisis helpline" with no number): a real number */
-const HELP_NUMBER = /\b(?:988|911|112|999|000|nine[- ]eight[- ]eight|nine[- ]one[- ]one|one[- ]one[- ]two|triple nine|nine nine nine)\b/i;
 export const CRISIS_NUMBER_LINE = "<sad> You can call or text 988 any time in the US, or your local emergency number.";
 /** what a real crisis reply still needs: the whole help line (no pointer at all), just the number line, or nothing */
-/** Codex r4 P1: crisis support, not medical care ("see a doctor", "urgent care" for a kitchen cut never gets 988) */
 // Codex r8: only explicit crisis services earn the number line (not "someone you trust", not a generic hotline)
-// Codex r9: a figurative "lifeline" is no crisis service
-const CRISIS_SUPPORT = /\b(?:988|nine[- ]eight[- ]eight|crisis (?:text |help|hot)?line|crisis text|suicide (?:hotline|helpline|line|prevention line)|suicide (?:and|&) crisis lifeline)\b/i;
 export function crisisFollowUp(said: string[]): string | null {
-  if (!said.some((x) => HELP_POINTER.test(x))) return CRISIS_HELP_LINE;
-  return said.some((x) => HELP_NUMBER.test(x)) || !said.some((x) => CRISIS_SUPPORT.test(x)) ? null : CRISIS_NUMBER_LINE;
+  // Codex r10: main's rule only (no help pointer at all → the help line); the number comes from the prompt's "988 in the
+  // US" (sweep: the model said it 20/20), so no new forced path versus main
+  return said.some((x) => HELP_POINTER.test(x)) ? null : CRISIS_HELP_LINE;
 }
 /**
  * The follow-up for this turn: on a real signal (detector) the full rule above; otherwise, when the user's words come
