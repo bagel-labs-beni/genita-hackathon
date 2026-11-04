@@ -74,62 +74,16 @@ struct FaceScanOverlay: View, Animatable {
             let netY = clock.netY(size.height * CGFloat(min(1, max(0, min(progress, reveal)))), monotonic: smooth && progress > 0.01)
             let pts = clock.points(at: now).map { FaceMesh.place($0, image: imageSize, in: size, origin: origin) }
             for (i, p) in pts.enumerated() where p.y <= netY + 0.5 { clock.mark(i, at: now) }
-            let shown = { (i: Int) -> Double? in clock.time(i).map { now.timeIntervalSince($0) } }
-            // the net this one replaced (a different layout): fades out where it was over the glide time
-            if let old = clock.leaving(at: now) {
-                let op = old.points.map { FaceMesh.place($0, image: imageSize, in: size, origin: origin) }
-                for e in old.mesh.edges where op.indices.contains(e.a) && op.indices.contains(e.b) {
-                    var line = Path(); line.move(to: op[e.a]); line.addLine(to: op[e.b])
-                    ctx.stroke(line, with: .color(Self.lineBlue.opacity(0.9 * old.alpha)), style: StrokeStyle(lineWidth: 1, lineCap: .round))
-                }
-                for p in op { ctx.fill(Path(ellipseIn: CGRect(x: p.x - 3.5, y: p.y - 3.5, width: 7, height: 7)), with: .color(Self.accent.opacity(old.alpha))) }
-            }
-
-            // faces: each once its 2nd point (by height) is in, fading up over the trim time, under the line's feather
             var faceA = 0.25
             if sinceDone >= 0 && !reduceMotion { faceA = 0.25 + 0.03 * sin(2 * .pi * sinceDone / 1.6) }
-            ctx.drawLayer { layer in
-                let foot = netY + 6
-                layer.clip(to: Path(CGRect(x: 0, y: 0, width: size.width, height: foot)))
-                for t in mesh.triangles {
-                    let second = t.sorted { pts[$0].y < pts[$1].y }[1]
-                    guard let s = shown(second) else { continue }
-                    let k = reduceMotion ? 1 : Self.easeOut(min(1, s / (smooth ? Self.glide : Self.trim)))
-                    var path = Path()
-                    path.move(to: pts[t[0]]); path.addLine(to: pts[t[1]]); path.addLine(to: pts[t[2]]); path.closeSubpath()
-                    layer.fill(path, with: .color(Self.faceBlue.opacity(faceA * k)))
-                }
-                // the feather: opaque down to 12 pt above the line's foot, clear at it
-                layer.blendMode = .destinationIn
-                layer.fill(Path(CGRect(x: 0, y: 0, width: size.width, height: foot)),
-                           with: .linearGradient(Gradient(stops: [.init(color: .white, location: 0),
-                                                                  .init(color: .white, location: max(0, (foot - Self.feather) / max(foot, 1))),
-                                                                  .init(color: .white.opacity(0), location: 1)]),
-                                                 startPoint: .zero, endPoint: CGPoint(x: 0, y: foot)))
+            // the net this one replaced (a different layout): exactly as it was showing, fading out over the glide time
+            if let old = clock.leaving(at: now) {
+                var fading = ctx
+                fading.opacity = outA * old.alpha
+                drawNet(old.mesh, at: old.points.map { FaceMesh.place($0, image: imageSize, in: size, origin: origin) },
+                        shown: { i in old.times[i].map { now.timeIntervalSince($0) } }, netY: netY, faceA: faceA, size: size, in: &fading)
             }
-
-            // lines: drawn from the upper end down, once the lower end is in
-            for e in mesh.edges {
-                let (top, bottom) = pts[e.a].y <= pts[e.b].y ? (e.a, e.b) : (e.b, e.a)
-                guard let s = shown(bottom) else { continue }
-                let k = reduceMotion ? 1 : Self.easeOut(min(1, s / (smooth ? Self.glide : Self.trim)))
-                let a = pts[top], b = pts[bottom]
-                var line = Path()
-                line.move(to: a); line.addLine(to: CGPoint(x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k))
-                ctx.stroke(line, with: .color(Self.lineBlue.opacity(0.9)), style: StrokeStyle(lineWidth: 1, lineCap: .round))
-            }
-            // points: 7 pt #00A2FF with a 1.5 pt white rim, popping in
-            for (i, p) in pts.enumerated() {
-                guard let s = shown(i) else { continue }
-                // smooth: fade + grow in, no overshoot (the 25 springs in a row read as flicker); old: spring pop
-                let k = reduceMotion ? 1 : smooth ? Self.easeOut(min(1, s / Self.glide)) : Self.spring(s)
-                guard k > 0.01 else { continue }
-                let r = 3.5 * k
-                if smooth && k < 1 { ctx.opacity = outA * k } else { ctx.opacity = outA }
-                ctx.fill(Path(ellipseIn: CGRect(x: p.x - r - 0.75, y: p.y - r - 0.75, width: 2 * r + 1.5, height: 2 * r + 1.5)), with: .color(.white))
-                ctx.fill(Path(ellipseIn: CGRect(x: p.x - r + 0.75, y: p.y - r + 0.75, width: 2 * r - 1.5, height: 2 * r - 1.5)), with: .color(Self.accent))
-            }
-            ctx.opacity = outA
+            drawNet(mesh, at: pts, shown: { i in clock.time(i).map { now.timeIntervalSince($0) } }, netY: netY, faceA: faceA, size: size, in: &ctx)
         }
 
         // the scan line and its band cross the whole card; they fade out over 0.15 s at 100 %
@@ -142,6 +96,56 @@ struct FaceScanOverlay: View, Animatable {
                                         startPoint: CGPoint(x: 0, y: lineY - 24), endPoint: CGPoint(x: 0, y: lineY)))
         band.addFilter(.shadow(color: Self.accent.opacity(0.6), radius: 3))
         band.fill(Path(CGRect(x: 0, y: lineY - 1, width: size.width, height: 2)), with: .color(Self.accent))
+    }
+
+    /// One net: faces under the line's feather, lines drawn from their upper end, points easing (or springing) in.
+    /// `shown(i)` = seconds since point i was passed, nil = not yet.
+    private func drawNet(_ mesh: FaceMesh, at pts: [CGPoint], shown: (Int) -> Double?, netY: CGFloat, faceA: Double,
+                         size: CGSize, in ctx: inout GraphicsContext) {
+        let grow = smooth ? Self.glide : Self.trim
+        // faces: each once its 2nd point (by height) is in, fading up, under the line's feather
+        ctx.drawLayer { layer in
+            let foot = netY + 6
+            layer.clip(to: Path(CGRect(x: 0, y: 0, width: size.width, height: foot)))
+            for t in mesh.triangles {
+                let second = t.sorted { pts[$0].y < pts[$1].y }[1]
+                guard let s = shown(second) else { continue }
+                let k = reduceMotion ? 1 : Self.easeOut(min(1, s / grow))
+                var path = Path()
+                path.move(to: pts[t[0]]); path.addLine(to: pts[t[1]]); path.addLine(to: pts[t[2]]); path.closeSubpath()
+                layer.fill(path, with: .color(Self.faceBlue.opacity(faceA * k)))
+            }
+            // the feather: opaque down to 12 pt above the line's foot, clear at it
+            layer.blendMode = .destinationIn
+            layer.fill(Path(CGRect(x: 0, y: 0, width: size.width, height: foot)),
+                       with: .linearGradient(Gradient(stops: [.init(color: .white, location: 0),
+                                                              .init(color: .white, location: max(0, (foot - Self.feather) / max(foot, 1))),
+                                                              .init(color: .white.opacity(0), location: 1)]),
+                                             startPoint: .zero, endPoint: CGPoint(x: 0, y: foot)))
+        }
+        // lines: drawn from the upper end down, once the lower end is in
+        for e in mesh.edges {
+            let (top, bottom) = pts[e.a].y <= pts[e.b].y ? (e.a, e.b) : (e.b, e.a)
+            guard let s = shown(bottom) else { continue }
+            let k = reduceMotion ? 1 : Self.easeOut(min(1, s / grow))
+            let a = pts[top], b = pts[bottom]
+            var line = Path()
+            line.move(to: a); line.addLine(to: CGPoint(x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k))
+            ctx.stroke(line, with: .color(Self.lineBlue.opacity(0.9)), style: StrokeStyle(lineWidth: 1, lineCap: .round))
+        }
+        // points: 7 pt #00A2FF with a 1.5 pt white rim; smooth = fade + grow in, no overshoot (25 springs in a row read
+        // as flicker, TF 331); the old look = the r01 spring pop
+        let base = ctx.opacity
+        for (i, p) in pts.enumerated() {
+            guard let s = shown(i) else { continue }
+            let k = reduceMotion ? 1 : smooth ? Self.easeOut(min(1, s / Self.glide)) : Self.spring(s)
+            guard k > 0.01 else { continue }
+            let r = 3.5 * k
+            ctx.opacity = smooth ? base * min(1, k) : base
+            ctx.fill(Path(ellipseIn: CGRect(x: p.x - r - 0.75, y: p.y - r - 0.75, width: 2 * r + 1.5, height: 2 * r + 1.5)), with: .color(.white))
+            ctx.fill(Path(ellipseIn: CGRect(x: p.x - r + 0.75, y: p.y - r + 0.75, width: 2 * r - 1.5, height: 2 * r - 1.5)), with: .color(Self.accent))
+        }
+        ctx.opacity = base
     }
 
     static func easeOut(_ x: Double) -> Double { 1 - pow(1 - x, 3) }
@@ -162,7 +166,8 @@ final class RevealClock {
     private var times: [Int: Date] = [:]
     private var from: [CGPoint]?
     private var changedAt: Date?
-    private var old: (mesh: FaceMesh, points: [CGPoint])?
+    /// the replaced net as it was showing (places and reveal times) and when it started fading
+    private var old: (mesh: FaceMesh, points: [CGPoint], times: [Int: Date], since: Date)?
     private var lowest: CGFloat = 0
     /// seconds a change glides / crossfades; 0 = snap (Reduce Motion, the old look)
     private var glide = 0.0
@@ -174,9 +179,10 @@ final class RevealClock {
         guard glide > 0, let current = mesh else { times = [:]; from = nil; old = nil; changedAt = nil; return }
         let here = points(at: now)
         if current.points.count == m.points.count && current.triangles == m.triangles && current.edges == m.edges {
-            from = here; changedAt = now            // same net, new places: glide, no re-pop
+            from = here; changedAt = now            // same net, new places: glide, no re-pop (a fading old net keeps fading)
         } else {
-            old = (current, here); from = nil; changedAt = now; times = [:]   // another net: crossfade, reveal the new one
+            // another net: the one showing fades out as it was (an older one still fading gives way to it), the new one reveals
+            old = (current, here, times, now); from = nil; changedAt = nil; times = [:]
         }
     }
     /// image-fraction points, gliding from where they were when the answer changed
@@ -188,11 +194,11 @@ final class RevealClock {
         return zip(from, mesh.points).map { CGPoint(x: $0.x + ($1.x - $0.x) * k, y: $0.y + ($1.y - $0.y) * k) }
     }
     /// the replaced net and its fading alpha, while it lasts
-    func leaving(at now: Date) -> (mesh: FaceMesh, points: [CGPoint], alpha: Double)? {
-        guard glide > 0, let old, let changedAt else { return nil }
-        let a = 1 - FaceScanOverlay.easeOut(min(1, now.timeIntervalSince(changedAt) / glide))
+    func leaving(at now: Date) -> (mesh: FaceMesh, points: [CGPoint], times: [Int: Date], alpha: Double)? {
+        guard glide > 0, let old else { return nil }
+        let a = 1 - FaceScanOverlay.easeOut(min(1, max(0, now.timeIntervalSince(old.since) / glide)))
         if a <= 0.001 { self.old = nil; return nil }
-        return (old.mesh, old.points, a)
+        return (old.mesh, old.points, old.times, a)
     }
     /// how far down the net shows: never less than it already showed (unless the bar starts over)
     func netY(_ y: CGFloat, monotonic: Bool) -> CGFloat {
