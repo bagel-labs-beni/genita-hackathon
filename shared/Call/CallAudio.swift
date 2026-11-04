@@ -1,6 +1,5 @@
 import AVFoundation
 import AudioToolbox
-import GenitaKit
 import os
 #if os(iOS)
 import UIKit
@@ -88,6 +87,8 @@ import UIKit
     /// every engine rebuild of the last 5 s (config change and heal alike): at most `MicStall.maxConfigRebuilds`
     private var configRebuilds: [TimeInterval] = []
     private var configCheckPending = false
+    /// a config change stopped the engine with a reply queued: the next config decision rebuilds to carry it (Codex #740)
+    private var needsCarry = false
     /// bumped by stop(): a config check scheduled before it does nothing (Codex #740 P2)
     private var audioToken = 0
     /// engines replaced in the last 2 s stay alive: tearing one down while AVFoundation still has blocks queued for it
@@ -197,6 +198,7 @@ import UIKit
         let stalled = engineHasMic ? (quiet || MicStall.stalled(now: now, lastBuffer: pipeline?.lastBufferUptime, since: max(micOpenedAt, lastMicHeal))) : true
         if !stalled { micHeals = 0; return }
         guard MicStall.mayHeal(now: now, lastHeal: lastMicHeal, heals: micHeals, engineHasMic: engineHasMic, queuedBuffers: queuedBuffers) else { return }
+        guard mayRebuild("heal") else { return }
         lastMicHeal = now
         micHeals += 1
         if quiet {
@@ -204,7 +206,6 @@ import UIKit
             log.error("mic: only digital silence for \(MicStall.nonZeroWithinS, privacy: .public)s after the engine came up; healing once")
         }
         log.error("mic: no input for \(MicStall.thresholdS, privacy: .public)s while on (running=\(self.engine.isRunning, privacy: .public), heal \(self.micHeals, privacy: .public)); resetting the session and rebuilding the engine")
-        guard mayRebuild("heal") else { return }
         configureSession()
         buildEngine(withMic: true)
         if !engineHasMic { log.error("mic: rebuild found no input") }
@@ -229,14 +230,14 @@ import UIKit
         configRebuilds.removeAll { now - $0 > 5 }
         // the change stopped the engine: its players' completions must not count as played (Codex #740 P1); what is
         // still queued is carried by a rebuild below
-        if !engine.isRunning, !scheduled.isEmpty, !configCheckPending { generation += 1 }
+        if !engine.isRunning, !scheduled.isEmpty, !needsCarry { generation += 1; needsCarry = true }
         let wantMic = MicStall.rebuildWithMic(micOpen: micOpen, engineHasMic: engineHasMic)
         let inRate = engineHasMic ? engine.inputNode.outputFormat(forBus: 0).sampleRate : 0
         let outRate = engine.outputNode.outputFormat(forBus: 0).sampleRate
         let action = MicStall.onConfigChange(now: now, lastBuild: lastBuildAt, wantMic: wantMic, hasMic: engineHasMic,
                                              builtIn: micRate, nowIn: inRate, builtOut: builtOutRate, nowOut: outRate,
                                              running: engine.isRunning, recentRebuilds: configRebuilds.count,
-                                             voiceProcessing: Self.useVoiceProcessing, stoppedWithQueue: !engine.isRunning && !scheduled.isEmpty)
+                                             voiceProcessing: Self.useVoiceProcessing, stoppedWithQueue: needsCarry)
         log.info("config change: \(String(describing: action), privacy: .public) wantMic=\(wantMic, privacy: .public) hasMic=\(self.engineHasMic, privacy: .public) in=\(self.micRate, privacy: .public)→\(inRate, privacy: .public) out=\(self.builtOutRate, privacy: .public)→\(outRate, privacy: .public) running=\(self.engine.isRunning, privacy: .public)")
         switch action {
         case .keep:
@@ -262,7 +263,7 @@ import UIKit
 
     private func rebuildForConfig(wantMic: Bool, now: TimeInterval) {
         // a queued reply is carried even past the cap (it would be lost otherwise); anything else waits for the gate
-        if scheduled.isEmpty || engine.isRunning { guard mayRebuild("config change") else { return } } else { configRebuilds.append(now) }
+        if needsCarry { configRebuilds.append(now) } else { guard mayRebuild("config change") else { return } }
         buildEngine(withMic: wantMic)
         log.info("config change: rebuilt mic=\(wantMic, privacy: .public) hasMic=\(self.engineHasMic, privacy: .public) micOpen=\(self.micOpen, privacy: .public) inputRate=\(self.micRate, privacy: .public) running=\(self.engine.isRunning, privacy: .public)")
         if micOpen, !engineHasMic { watchMic() }
@@ -433,6 +434,7 @@ import UIKit
         let startOf = carried?.1 ?? utteranceStart
         scheduled.removeAll()
         generation += 1
+        needsCarry = false
         if engineHasMic { engine.inputNode.removeTap(onBus: 0) }
         engine.stop()
         let retired = engine
