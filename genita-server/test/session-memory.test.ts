@@ -434,6 +434,22 @@ test("reconnect: the same device coming back after a drop says the short line (s
   assert.deepEqual(lines, [RECONNECT_LINE]);
 });
 
+test("relaunch (11/4): the same device more than 60 s after the call ended without a stop greets — not \"we got cut off\"", { timeout: 20_000 }, async (t) => {
+  const { logs, lines } = await dropAndReturn(t, { from: "mac", to: "mac", gapMs: 90_000 });
+  assert.ok(!logs.includes("history.seeded"), "not a silent continuation");
+  assert.ok(logs.includes("history.not_seeded"));
+  assert.ok(!logs.includes("call.reconnect_line"));
+  assert.ok(lines.length >= 1, "the greeting arrives");
+  assert.notEqual(lines[0], RECONNECT_LINE);
+});
+
+test("relaunch (11/4): the same device 5 s after a drop is still a reconnect (seeded + the short line)", { timeout: 20_000 }, async (t) => {
+  const { logs, lines } = await dropAndReturn(t, { from: "mac", to: "mac", gapMs: 5_000 });
+  assert.ok(logs.includes("history.seeded"));
+  assert.ok(logs.includes("call.reconnect_line"));
+  assert.deepEqual(lines, [RECONNECT_LINE]);
+});
+
 test("reconnect: the other device more than 10 s after a drop says the short line", { timeout: 20_000 }, async (t) => {
   const { logs, lines } = await dropAndReturn(t, { from: "mac", to: "iphone", gapMs: 11_000 });
   assert.ok(logs.includes("history.seeded"));
