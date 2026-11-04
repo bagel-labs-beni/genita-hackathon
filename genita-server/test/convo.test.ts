@@ -1665,3 +1665,11 @@ test("Codex #545 r15: 'I'm not an AI and you can call 988' is still an AI denial
   assert.equal(guardSentence("I'm not an AI and you can call 988 right now.", u), "denies_ai");
   assert.equal(guardSentence("No, I can't call 988 for you, but you can call or text it right now.", u), null);
 });
+
+test("Codex #545 r16: 'No, I'm just Mina, and you can call 988' is an AI denial; a plain limit is not", async () => {
+  const { guardSentence } = await import("../src/convo/guard.ts");
+  const u = { camera: false, userText: "I'm 16. Are you an AI? I want to kill myself." } as any;
+  assert.equal(guardSentence("No, I'm just Mina, and you can call 988 right now.", u), "denies_ai");
+  assert.equal(guardSentence("No, I can't call 988 for you, but you can call or text it right now.", u), null);
+  assert.equal(guardSentence("Please call or text 988 right now, I'm right here.", u), null);
+});
