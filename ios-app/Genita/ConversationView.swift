@@ -27,6 +27,21 @@ struct ConversationView: View {
     @State private var loopURL: URL?
     /// card 10: S09 stops waiting for the generated face after 2.5 s (a photo-only companion never gets one)
     @State private var faceWaitOver = false
+    /// the wait stage has been up: it stays in the tree through its 300 ms step back after the face arrived
+    @State private var waitStageUp = false
+    @State private var faceArrivedTaps = 0
+    #if DEBUG
+    @State private var debugWaitHold = ProcessInfo.processInfo.environment["GENITA_WAIT_STAGE"] != nil
+    #endif
+    /// S09: nothing generated to show yet (no scene, poster or live face). Upload photos never count.
+    /// DEBUG `GENITA_WAIT_STAGE=hold` keeps it waiting, `=<seconds>` lets the face arrive after that long
+    /// (review shots of the wait stage and the arrival on unwired builds).
+    private var waitingForFace: Bool {
+        #if DEBUG
+        if debugWaitHold { return true }
+        #endif
+        return companionImage == nil && call.facePoster == nil && call.face == nil
+    }
     @State private var connectedTaps = 0
     @State private var appConfig = GenitaAppConfigStore.shared
     @Environment(\.scenePhase) private var scenePhase
@@ -50,10 +65,12 @@ struct ConversationView: View {
                 let findsOpen = !connecting && sheet != .idle && sheet != .dismissed && !unclear
                 let moveLine = !connecting && handoffEnabled && (handoff.moving || handoff.moveFailed)
                 let findsPill = call.finds.pillText
+                // S09 wait stage: "Getting {name} ready" until the face is here; S09-PREP keeps its own line instead
+                let waitingPill: String? = !connecting && waitingForFace && model.callPrepIndicator == nil ? "Getting \(call.companionName) ready" : nil
                 // HUD r01 A: which line the status pill is on, so the prep line, the chip and camera labels stack around it
                 let moveShown = moveLine && !findsTabOpen && !interpreting && !unclear
                 let statusWidth = moveShown ? CallCueView.pillWidth(text: HandoffMoveStatusLine.text(moving: handoff.moving))
-                    : !findsTabOpen && !connecting && !interpreting && !unclear ? CallCueView.width(cue: call.cue, name: call.companionName, findsText: findsPill, rowWidth: grid.rowPillWidth) : nil
+                    : !findsTabOpen && !connecting && !interpreting && !unclear ? CallCueView.width(cue: call.cue, name: call.companionName, findsText: findsPill, rowWidth: grid.rowPillWidth, waitingText: waitingPill) : nil
                 let status = Self.statusLine(width: statusWidth, rowWidth: grid.rowPillWidth)
                 ZStack(alignment: .topLeading) {
                     ZStack(alignment: .topLeading) {
@@ -71,7 +88,7 @@ struct ConversationView: View {
                             // S07 veiled → S09 the veil lifts (motion lane); never in the handoff snapshot (ImageRenderer, no onAppear)
                             // motion details card 10: veiled until the generated face (poster or live) is there, then clears
                             // once (blur 14, 520 ms) with one medium tap; flag off → the catalog reveal as before
-                            .modifier(CallFaceVeil(connecting: connecting, faceReady: call.facePoster != nil || faceWaitOver, enabled: handoffEnabled))
+                            .modifier(CallFaceVeil(connecting: connecting, faceReady: !waitingForFace && (call.facePoster != nil || call.face != nil || faceWaitOver), enabled: handoffEnabled))
                             .grayscale(sheetOffline ? 1 : 0).brightness(sheetOffline ? -0.25 : 0).blur(radius: unclear ? 8 : 0)
                             .scaleEffect(faceScale(sheet), anchor: .topLeading).offset(faceOffset(sheet, top: top))
                             .opacity(sheet == .full || call.cameraOn ? 0 : 1)
@@ -81,6 +98,14 @@ struct ConversationView: View {
                             .allowsHitTesting(!call.cameraOn)
                             .accessibilityIdentifier("companionFace")
                             .animation(.drawer, value: sheet)
+                        // S09 wait stage (춘식이 11/4): the orb holds the face's place until the generated face is here,
+                        // then steps back (300 ms) while the face clears (card 10). Same place and steps as the face.
+                        if !connecting && (waitingForFace || waitStageUp) {
+                            CallWaitStage(size: full.size, leaving: !waitingForFace)
+                                .scaleEffect(faceScale(sheet), anchor: .topLeading).offset(faceOffset(sheet, top: top))
+                                .opacity(sheet == .full || call.cameraOn ? 0 : 1)
+                                .animation(.drawer, value: sheet)
+                        }
                         if waitingCopy != nil { handoffScrim.frame(width: full.size.width, height: full.size.height).allowsHitTesting(false) }
                         Button { withAnimation(.easeInOut(duration: 0.22)) { model.menuOpen.toggle() } } label: {
                             CallGlassControl(icon: "glass-menu-icon", size: CallHUDGrid.button)
@@ -164,7 +189,7 @@ struct ConversationView: View {
                             // MV-1 / MV-E take the call's status line slot
                             HandoffMoveStatusLine().position(x: grid.pillCenter.x, y: grid.statusY(status))
                         } else if !findsTabOpen && !connecting && !interpreting && !unclear {
-                            CallCueView(cue: call.cue, name: call.companionName, findsText: findsPill, retry: call.retryAnswer, openSettings: openAppSettings, rowWidth: grid.rowPillWidth, level: { call.outputLevel })
+                            CallCueView(cue: call.cue, name: call.companionName, findsText: findsPill, waitingText: waitingPill, retry: call.retryAnswer, openSettings: openAppSettings, rowWidth: grid.rowPillWidth, level: { call.outputLevel })
                                 .frame(width: sheet == .full ? 250 : full.size.width - 2 * CallHUDGrid.margin, alignment: sheet == .full ? .leading : .center)
                                 // HUD r01 A: on the menu row (same centre line) when it fits between the menu button and its
                                 // mirror, else centred on the line just under it; beside the face window when the sheet is full.
@@ -267,7 +292,23 @@ struct ConversationView: View {
         .task(id: model.setup.imageData) { loopURL = model.companionLoopURL }
         // card 10: one medium tap when this call first goes live (not on a cached face alone, not on reconnects)
         .sensoryFeedback(trigger: connectedTaps) { _, _ in MotionDetails.live(reduceMotion: reduceMotion) ? .impact(weight: .medium) : nil }
-        .onChange(of: call.link == .live, initial: true) { _, live in if live && !connecting && connectedTaps == 0 { connectedTaps = 1 } }
+        .onChange(of: call.link == .live, initial: true) { _, live in if live && !connecting && !waitingForFace && connectedTaps == 0 { connectedTaps = 1 } }
+        // wait stage → face: the orb steps back for 300 ms, the pill turns to the live cue, one medium tap
+        .onChange(of: waitingForFace, initial: true) { was, now in
+            if now { waitStageUp = true; return }
+            guard was, !connecting else { waitStageUp = false; return }
+            // the arrival is card 10's moment: its one tap moves here when the face came after the call went live
+            if connectedTaps == 0 { connectedTaps = 1 } else { faceArrivedTaps += 1 }
+            Task { try? await Task.sleep(for: .milliseconds(320)); if !waitingForFace { waitStageUp = false } }
+        }
+        #if DEBUG
+        .task(id: connecting) {
+            guard !connecting, let s = ProcessInfo.processInfo.environment["GENITA_WAIT_STAGE"].flatMap(Double.init) else { return }
+            try? await Task.sleep(for: .seconds(s))
+            if !Task.isCancelled { debugWaitHold = false }
+        }
+        #endif
+        .sensoryFeedback(trigger: faceArrivedTaps) { _, _ in MotionDetails.live(reduceMotion: reduceMotion) ? .impact(weight: .medium) : nil }
         .task(id: connecting) {
             guard !connecting, !faceWaitOver else { return }
             try? await Task.sleep(for: .seconds(2.5))

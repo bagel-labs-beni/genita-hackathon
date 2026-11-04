@@ -99,6 +99,43 @@ final class CallScreenUITests: XCTestCase {
 
     /// HUD r01 A + Codex P2: a 20-character companion name (NM01's limit) says "Thinking" / "Talking" on the menu row
     /// instead of running "{name} is thinking" into the menu button.
+    /// S09 wait stage (춘식이 11/4): until the face is here the orb holds its place on the radial ground and the pill
+    /// says "Getting Jin ready"; on arrival the orb steps back and the pill turns to the live cue.
+    /// GENITA_WAIT_STAGE=6 holds the wait for 6 s on this unwired build (its fixture still would otherwise be there at once).
+    func testWaitStageThenArrival() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launchEnvironment = [
+            "GENITA_REVIEW_STAGE": "conversation",
+            "GENITA_SERVER_URL": "ws://127.0.0.1:8788/v1/session",
+            "GENITA_FIXTURE_SCRIPT": "none",
+            "GENITA_CALL_AUTOMIC": "1",
+            "GENITA_WAIT_STAGE": "6",
+            "GENITA_FACE_SET_DIR": URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+                .appending(path: "shared/GenitaKit/Tests/GenitaKitTests/Fixtures/face-animal").path,
+        ]
+        app.launch()
+        let stage = app.descendants(matching: .any)["callWaitStage"]
+        let cue = app.descendants(matching: .any).matching(identifier: "callCue").firstMatch
+        func capture(_ name: String) {
+            let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "call-" + name; shot.lifetime = .keepAlways; add(shot)
+        }
+        XCTAssertTrue(stage.waitForExistence(timeout: 10), "the wait stage holds the face's place")
+        XCTAssertTrue(cue.waitForExistence(timeout: 5))
+        XCTAssertEqual(cue.label, "Getting Jin ready")
+        Thread.sleep(forTimeInterval: 1.2) // mid-breath
+        capture("S09-wait-stage")
+        // arrival: the orb steps back (300 ms) and the face clears (520 ms)
+        let end = Date().addingTimeInterval(15)
+        while Date() < end, stage.exists, (stage.value as? String) != "leaving" { Thread.sleep(forTimeInterval: 0.02) }
+        Thread.sleep(forTimeInterval: 0.12)
+        capture("S09-wait-arriving")
+        XCTAssertTrue(stage.waitForNonExistence(timeout: 3), "the orb is gone after its step back")
+        Thread.sleep(forTimeInterval: 0.5)
+        capture("S09-wait-arrived")
+        XCTAssertNotEqual(cue.label, "Getting Jin ready", "the pill turns to the live cue")
+    }
+
     func testLongNameShortensOnTheRow() throws {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting"]

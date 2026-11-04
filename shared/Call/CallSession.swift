@@ -1128,7 +1128,8 @@ enum CallStop: Equatable {
     private func renderFacePoster(_ set: FaceSet, size: CGSize, seed: UInt64, reduceMotion: Bool, for driver: FaceDriver) {
         posterReduceMotion = reduceMotion
         Task { [weak self] in
-            let image = await Task.detached(priority: .utility) {
+            // userInitiated (#645): the poster is the first picture of the face the call waits on (the wait stage)
+            let image = await Task.detached(priority: .userInitiated) {
                 FaceRenderer(faceSet: set, outputSize: size, seed: seed, reduceMotion: reduceMotion).render(at: 0, lip: .rest)
             }.value
             // a newer draw (reduce motion changed meanwhile) wins
@@ -1142,6 +1143,8 @@ enum CallStop: Equatable {
     func prepareFace(reduceMotion: Bool) {
         guard !CompanionFace.clipLoopFace, !faceOnScreen else { return }
         faceReduceMotion = reduceMotion
+        // #645: a prefetch already in flight for this account (PREP-1c) keeps going into S07
+        if faceLoading, faceLoadOwner == Self.tokenSubject(currentEndpoint.token) { return }
         cancelFaceLoad()
         faceLoad = Task { [weak self] in await self?.loadFace() }
     }
