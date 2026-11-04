@@ -59,7 +59,10 @@ struct FindEntry: Identifiable, Equatable {
 @MainActor @Observable final class FindsModel {
     // DEBUG fixtures (FindsFixture state 25) set the pill/say on the shown card, so the setter is not private
     var entries: [FindEntry] = []
-    var state: SheetState = .idle
+    var state: SheetState = .idle { didSet { if state != .peek { heldAtPeek = nil } } }
+    /// Demo S3: the card that waits at peek while its camera masks are held (the half sheet would cover them);
+    /// it rises when they fade. Anything that moves the sheet off peek lets go of it.
+    @ObservationIgnored private var heldAtPeek: String?
     /// Index into `entries` of the card on screen.
     var page = 0
     /// Ingredient chip the user tapped (its camera box lights up; r03 #4/#5).
@@ -82,6 +85,10 @@ struct FindEntry: Identifiable, Equatable {
     private(set) var undoState: SheetState?
     /// Boxes on the live camera preview (F5-U-CAM, CAM-H).
     let boxes = CameraBoxes()
+
+    init() {
+        boxes.onHoldEnded = { [weak self] in self?.boxesHoldEnded() }
+    }
     /// FT-NOSEE: a small card on the camera says what the companion cannot see and asks to move the camera. Never a guess.
     private(set) var noSee: NoSeeCheck?
     @ObservationIgnored private var noSeeTask: Task<Void, Never>?
@@ -142,7 +149,11 @@ struct FindEntry: Identifiable, Equatable {
             // only frames the card shows (fridge camera, outfit crops) stay on the phone; a product or link card shows none (AU-75)
             if let e = entries.first(where: { $0.id == c.findId }), card.camera != nil || !card.options.isEmpty { persistFrames(e.id, e.frames) }
             guard let index = entries.firstIndex(where: { $0.id == c.findId }) else { return }
-            if state == .searching && page == index {
+            if state == .searching && page == index && boxes.holding && boxes.findId == c.findId {
+                // demo S3: the masks are up until the companion has named what she sees; the card waits at peek
+                state = .peek
+                heldAtPeek = c.findId
+            } else if state == .searching && page == index {
                 state = .rising
                 risingTask?.cancel()
                 risingTask = Task { [weak self] in
@@ -223,8 +234,24 @@ struct FindEntry: Identifiable, Equatable {
     }
     func pipTapped() { if state == .full { state = .half } }
 
+    /// The held masks faded: the card that waited at peek rises as it would have (searching → rising → half).
+    private func boxesHoldEnded() {
+        guard let id = heldAtPeek else { return }
+        heldAtPeek = nil
+        guard state == .peek, current?.id == id, !touching else { return }
+        state = .rising
+        risingTask?.cancel()
+        risingTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(420))
+            guard let self, !Task.isCancelled, self.state == .rising else { return }
+            self.state = .half
+        }
+    }
+
     /// The user started talking. Conversation comes first; reading full or touching the sheet keeps it.
     func userStartedTalking() {
+        // a card waiting at peek for the masks stays folded: the user is talking now
+        heldAtPeek = nil
         guard state == .half, !touching else { return }
         state = .peek
     }
@@ -451,6 +478,7 @@ struct FindEntry: Identifiable, Equatable {
 
     func callEnded() {
         interrupted()
+        heldAtPeek = nil
         boxes.clear()
         risingTask?.cancel(); toastTask?.cancel()
         state = .idle

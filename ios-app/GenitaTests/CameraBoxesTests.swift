@@ -55,31 +55,169 @@ import XCTest
         XCTAssertEqual(b.boxes.map(\.label), ["Beige trench"]); XCTAssertNil(b.highlighted)
     }
 
-    func testBoxesFadeAfterFourSeconds() async throws {
+    /// Nobody speaks: a batch fades at the hold's cap (12 s on a device; shortened here).
+    func testBoxesFadeAtTheCapWhenNobodySpeaks() async throws {
         let b = CameraBoxes()
-        b.fadeAfter = .milliseconds(120)
+        b.hold = .init(minimum: 0.05, cap: 0.12)
         b.apply(event([("Egg", egg)]))
-        XCTAssertTrue(b.visible)
+        XCTAssertTrue(b.visible); XCTAssertTrue(b.holding)
         try await Task.sleep(for: .milliseconds(350))
-        XCTAssertFalse(b.visible, "faded"); XCTAssertEqual(b.boxes.count, 1, "kept so a chip tap can bring it back")
-        XCTAssertEqual(CameraBoxes().fadeAfter, .seconds(4), "the board's 4 s")
+        XCTAssertFalse(b.visible, "faded"); XCTAssertFalse(b.holding); XCTAssertEqual(b.boxes.count, 1, "kept so a chip tap can bring it back")
+        XCTAssertEqual(CameraBoxes().fadeAfter, .seconds(4), "a chip tap still shows them for the board's 4 s")
+        XCTAssertEqual(CameraBoxes().hold, .init(minimum: 4, cap: 12, sentence: 6, afterSpeech: 0.6), "demo S3: up to 12 s when nobody speaks")
     }
 
     func testNewBatchRestartsTheClock() async throws {
         let b = CameraBoxes()
-        b.fadeAfter = .milliseconds(250)
+        b.hold = .init(minimum: 0.05, cap: 0.25)
         b.apply(event([("Egg", egg)]))
         try await Task.sleep(for: .milliseconds(150))
         b.apply(event([("Egg", egg), ("Tofu", tofu)]))
         try await Task.sleep(for: .milliseconds(150))
         XCTAssertTrue(b.visible, "300 ms after the first batch but 150 ms after the second")
-        try await Task.sleep(for: .milliseconds(250))
+        try await Task.sleep(for: .milliseconds(300))
         XCTAssertFalse(b.visible)
+    }
+
+    // MARK: demo S3 hold (s3-b9: masks gone at 4 s, "I can see…" at 8–12 s; 2 of 6 runs before she spoke)
+
+    func testHoldRules() {
+        let h = CameraBoxes.Hold()
+        XCTAssertEqual(h.fadeAt(speechStart: nil, speechEnd: nil), 12, accuracy: 0.001, "nobody speaks: the cap")
+        XCTAssertEqual(h.fadeAt(speechStart: 4.5, speechEnd: nil), 10.5, accuracy: 0.001, "still speaking: the ingredient sentence's 6 s")
+        XCTAssertEqual(h.fadeAt(speechStart: 4.5, speechEnd: 8), 8.6, accuracy: 0.001, "her answer played: fade right after")
+        XCTAssertEqual(h.fadeAt(speechStart: 7.7, speechEnd: nil), 13.7, accuracy: 0.001, "an answer that starts before the cap finishes its sentence")
+        XCTAssertEqual(h.fadeAt(speechStart: 0.2, speechEnd: 1), 4, accuracy: 0.001, "never under the board's 4 s")
+        XCTAssertEqual(h.fadeAt(speechStart: 12.5, speechEnd: nil), 12, accuracy: 0.001, "speech after the cap doesn't bring them back")
+        XCTAssertEqual(h.fadeAt(speechStart: -1, speechEnd: 5), 5, accuracy: 0.001, "speech that began before a later batch of the same find")
+    }
+
+    /// Run e2-1 timing: masks land, the filler "Let me see." was still playing, the answer plays 7 s later and the masks
+    /// stay through it, fading just after it ends (not 4 s after they landed).
+    func testMasksStayUntilTheAnswerHasPlayed() async throws {
+        let b = CameraBoxes()
+        b.hold = .init(minimum: 0.05, cap: 3, sentence: 2, afterSpeech: 0.05)
+        b.companionStarted(1)                       // "Let me see." playing
+        b.apply(event([("Tomato", egg)]))
+        b.companionStopped(1); b.companionStopped(nil)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertTrue(b.visible, "the filler that was already playing is not her answer")
+        b.companionStarted(2)                       // "I can see tomato, bell pepper, onion, and garlic. …"
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertTrue(b.visible, "up while she names them")
+        b.companionStopped(2)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertFalse(b.visible, "fades right after she finished"); XCTAssertFalse(b.holding)
+    }
+
+    func testLongAnswerFadesAfterTheIngredientSentence() async throws {
+        let b = CameraBoxes()
+        b.hold = .init(minimum: 0.05, cap: 3, sentence: 0.2, afterSpeech: 0.05)
+        b.apply(event([("Tomato", egg)]))
+        b.companionStarted(7)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(b.visible)
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertFalse(b.visible, "the rest of the reply (the dish, the steps) plays without them")
+    }
+
+    func testAChipTapDuringTheHoldKeepsIt() async throws {
+        let b = CameraBoxes()
+        b.fadeAfter = .milliseconds(50)
+        b.hold = .init(minimum: 0.05, cap: 0.4)
+        b.apply(event([("Egg", egg)]))
+        b.highlight("egg")
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertTrue(b.visible, "not cut to the chip's own short fade"); XCTAssertTrue(b.holding)
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertFalse(b.visible)
+    }
+
+    func testClearEndsTheHold() {
+        let b = CameraBoxes()
+        var ended = 0
+        b.onHoldEnded = { ended += 1 }
+        b.apply(event([("Egg", egg)]))
+        b.clear()
+        XCTAssertFalse(b.holding); XCTAssertEqual(ended, 1, "camera off / flipped: a card waiting at peek can rise")
+        b.clear()
+        XCTAssertEqual(ended, 1)
+    }
+
+    /// The card lands while the masks are held: it waits at peek (the half sheet covered the lower masks on build 9),
+    /// then rises when they fade.
+    func testCardWaitsAtPeekWhileTheMasksAreHeldThenRises() async throws {
+        let m = FindsModel()
+        m.boxes.hold = .init(minimum: 0.05, cap: 3, sentence: 2, afterSpeech: 0.05)
+        m.apply(try ServerEvent.decode(#"{"type":"find.started","findId":"s3","utteranceId":1,"kind":"recipe","title":"t","detail":"d"}"#))
+        m.apply(.observeBoxes(event(find: "s3", [("Tomato", egg), ("Garlic", tofu)])))
+        XCTAssertEqual(m.state, .searching)
+        m.apply(created("s3"))
+        XCTAssertEqual(m.state, .peek, "held at peek while the masks are up")
+        m.boxes.companionStarted(2)
+        m.boxes.companionStopped(2)
+        try await Task.sleep(for: .milliseconds(250))
+        XCTAssertFalse(m.boxes.visible)
+        XCTAssertTrue(m.state == .rising || m.state == .half, "then it rises as before (\(m.state))")
+        try await Task.sleep(for: .milliseconds(600))
+        XCTAssertEqual(m.state, .half)
+    }
+
+    func testHeldCardStaysFoldedWhenTheUserTalksOrMovesIt() async throws {
+        let m = FindsModel()
+        m.boxes.hold = .init(minimum: 0.05, cap: 0.2)
+        m.apply(try ServerEvent.decode(#"{"type":"find.started","findId":"s3","utteranceId":1,"kind":"recipe","title":"t","detail":"d"}"#))
+        m.apply(.observeBoxes(event(find: "s3", [("Tomato", egg)])))
+        m.apply(created("s3"))
+        XCTAssertEqual(m.state, .peek)
+        m.userStartedTalking()
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(m.state, .peek, "the user is talking: it stays folded")
+
+        // tapped open, then folded again by hand: the end of the hold doesn't pull it back up
+        let n = FindsModel()
+        n.boxes.hold = .init(minimum: 0.05, cap: 0.2)
+        n.apply(try ServerEvent.decode(#"{"type":"find.started","findId":"s4","utteranceId":1,"kind":"recipe","title":"t","detail":"d"}"#))
+        n.apply(.observeBoxes(event(find: "s4", [("Tomato", egg)])))
+        n.apply(created("s4"))
+        n.tapPeek(); XCTAssertEqual(n.state, .half)
+        n.dragEnded(translation: 80, velocity: 0); XCTAssertEqual(n.state, .peek)
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(n.state, .peek)
+    }
+
+    func testCardWithoutBoxesRisesStraightAway() {
+        let m = FindsModel()
+        m.apply(try! ServerEvent.decode(#"{"type":"find.started","findId":"p1","utteranceId":1,"kind":"recipe","title":"t","detail":"d"}"#))
+        m.apply(created("p1"))
+        XCTAssertEqual(m.state, .rising)
+    }
+
+    func testStageLiftClearsThePeekSheetWithoutPushingMasksUnderTheHUD() {
+        // 390 × 844, peek sheet top 696, label floor 107
+        let low = [CGRect(x: 40, y: 300, width: 80, height: 80), CGRect(x: 200, y: 600, width: 90, height: 120)]   // bottom 720
+        XCTAssertEqual(CameraBoxes.stageLift(boxes: low, sheetTop: 696, viewHeight: 844, floor: 107), 36, "720 + 12 − 696")
+        let tall = [CGRect(x: 40, y: 150, width: 80, height: 80), CGRect(x: 200, y: 640, width: 90, height: 120)]
+        XCTAssertEqual(CameraBoxes.stageLift(boxes: tall, sheetTop: 696, viewHeight: 844, floor: 107), 11, "the top mask keeps its label under the floor")
+        XCTAssertEqual(CameraBoxes.stageLift(boxes: [CGRect(x: 0, y: 300, width: 50, height: 50)], sheetTop: 696, viewHeight: 844, floor: 107), 0, "already clear")
+        let deep = [CGRect(x: 40, y: 500, width: 80, height: 330)]
+        XCTAssertEqual(CameraBoxes.stageLift(boxes: deep, sheetTop: 696, viewHeight: 844, floor: 107), 108, "no more than the sheet hides at the bottom")
+        XCTAssertEqual(CameraBoxes.stageLift(boxes: low, sheetTop: 844, viewHeight: 844, floor: 107), 0, "no sheet, no lift")
+        XCTAssertEqual(CameraBoxes.stageLift(boxes: [], sheetTop: 696, viewHeight: 844, floor: 107), 0)
+    }
+
+    private func created(_ id: String) -> ServerEvent {
+        let card = try! JSONDecoder().decode(FindCard.self, from: Data("""
+        {"id":"\(id)","kind":"recipe","createdAt":"2026-11-04T10:00:00Z","eyebrow":"From your camera","title":"Roasted tomato red pepper soup",
+         "subtitle":"About 30 min","items":[],"steps":[{"text":"Roast them."}],"options":[],"why":[],"ask":["Spicy?"],"sources":[],"how":[]}
+        """.utf8))
+        return .findCreated(.init(findId: id, card: card))
     }
 
     func testChipHighlightLightsOneBoxAndBringsBackFadedBoxes() async throws {
         let b = CameraBoxes()
         b.fadeAfter = .milliseconds(100)
+        b.hold = .init(minimum: 0.05, cap: 0.1)
         b.apply(event([("Egg", egg), ("Green onion", tofu)]))
         try await Task.sleep(for: .milliseconds(250))
         XCTAssertFalse(b.visible)
