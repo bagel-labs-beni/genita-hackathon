@@ -54,7 +54,7 @@ test("judge: an open line the keywords miss is judged with the context; a genera
   await r.settle();
   assert.ok(events.some((e) => e.type === "find.created" && e.card.kind === "answer"));
   assert.match(seen.at(-1)!, /ramen shops near Hongdae Seoul/, "the search uses the judge's filled-in query");
-  assert.deepEqual(said, ["I put a few links up for you."]);
+  assert.deepEqual(said, ["Here are a few spots, with photos and a map."], "a place search says what its card shows, never \"links\"");
   // the reply's own web search adds no second card for the same turn
   assert.equal(r.webAnswer({ utteranceId: 7, question: line, said: "Try Menya.", searches: [{ query: "q", urls: ["https://a.com/x"] }] }), null);
 });

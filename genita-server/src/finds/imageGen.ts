@@ -193,6 +193,7 @@ export async function endSlot(ctx: SlotCtx, end: SlotEnd): Promise<FindImage | n
     const img = await sendPicture(ctx, end.slot, hero);
     if (img) {
       end.keep?.(hero);
+      ctx.log("find.image_hero_standin", { findId: ctx.findId, slot: end.slot });
       return img;
     }
   }

@@ -10,7 +10,7 @@ import { Session, type SessionDeps, type ClientSink } from "../src/session/sessi
 import type { SparkRequest, SparkStreamEvent } from "../src/meta/spark.ts";
 import assert from "node:assert/strict";
 import { classifyTurn } from "../src/finds/intent.ts";
-import { GENERAL_IMAGE_MS, GENERAL_REPLY_LINE, GENERAL_SAY, firstSentenceOnly, isGeneralAsk, questionTitle, runGeneral } from "../src/finds/general.ts";
+import { GENERAL_IMAGE_MS, GENERAL_REPLY_LINE, GENERAL_SAY, PLACE_SAY, firstSentenceOnly, isGeneralAsk, questionTitle, runGeneral } from "../src/finds/general.ts";
 import { FindsRunner } from "../src/finds/runner.ts";
 import { MemoryFindsStore } from "../src/finds/store.ts";
 import type { PipelineCtx } from "../src/finds/pipeline.ts";
@@ -132,7 +132,7 @@ test("general pipeline: up to 5 results, each a page the search really returned;
   assert.ok(card, "a card");
   assert.equal(card.kind, "answer");
   assert.equal(card.title, "Best ramen in Seoul");
-  assert.equal(card.say, GENERAL_SAY, "spoken: a short line, never the results");
+  assert.equal(card.say, PLACE_SAY, "spoken: a short line about the place card, never the results or \"links\"");
   assert.deepEqual(card.sources.map((s) => s.domain), ["timeout.com", "eater.com", "michelin.com"]);
   assert.match(card.sources[0].title, /^Time Out: best ramen in Seoul — A recent roundup/);
   assert.equal(card.sources[0].url, "https://www.timeout.com/seoul/restaurants/best-ramen-in-seoul");
@@ -173,7 +173,7 @@ test("general runner (mix): no fixed ack — the turn answers in one sentence it
   assert.equal(started.ack, undefined, "no fixed line: the reply answers from what it knows");
   await r.settle();
   assert.ok(events.some((e) => e.type === "find.created" && e.card.kind === "answer"));
-  assert.deepEqual(said, [GENERAL_SAY]);
+  assert.deepEqual(said, [PLACE_SAY]);
   assert.equal(r.onTurn({ text: "How are you?", frames: [], utteranceId: 2, replyText: Promise.resolve(null) }), null);
 });
 

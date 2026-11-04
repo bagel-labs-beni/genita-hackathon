@@ -9,7 +9,7 @@
  * better?") and crisis lines never search. GENITA_WEB_SEARCH=0 (the companion's web search switch) turns it off.
  *
  * Spoken (Chelsea 11/4 "섞어"): the turn answers at once in ONE sentence from what the companion already knows (a
- * natural hedge when it doesn't), with no search of its own, while the sheet fills; "I put a few links up for you."
+ * natural hedge when it doesn't), with no search of its own, while the sheet fills; then one line for the card ("Here are a few spots, with photos and a map.")
  * when the card lands (after that sentence). The results are never read aloud.
  */
 import type { FindCard, FindImage, FindLayout, FindPlace } from "../protocol.ts";
@@ -26,7 +26,27 @@ import { findWebImage, pagePicture, sendFoundImages, stepQuery } from "./imageFi
 import { endSlot, genPrompt, imageGateOn, type Picture } from "./imageGen.ts";
 
 /** said when the card lands (after the one-sentence answer) */
-export const GENERAL_SAY = "I put a few links up for you.";
+export const GENERAL_SAY = "It's up on your screen now.";
+/** Chelsea 11/4: every search is a visual card — the line says what is on it, never "links" */
+export const PLACE_SAY = "Here are a few spots, with photos and a map.";
+export const HOWTO_SAY = "The steps are up, with pictures.";
+export function generalSay(layout: FindLayout): string {
+  return layout === "place" ? PLACE_SAY : layout === "how-to" ? HOWTO_SAY : GENERAL_SAY;
+}
+
+/**
+ * Prod 11/4 (utt 20, "How many How do I fold a fitted sheet?"): the transcript keeps a false start before the real
+ * question. A capitalized question word after 1–3 words with no punctuation before it starts the question again;
+ * the line is judged from there.
+ */
+const RESTART = /^(?:[\p{L}']+\s+){1,3}?((?:How|What|Where|Who|When|Why|Which|Can|Could|Should|Would|Do|Does|Is|Are|Tell|Show|Find)\s.+)$/u;
+export function asrRestart(text: string): string {
+  const t = text.trim();
+  const m = t.match(RESTART);
+  if (!m) return t;
+  const lead = t.slice(0, t.length - m[1].length);
+  return /[.,!?;:]/.test(lead) ? t : m[1];
+}
 /** the one sentence when the model has none the voice would say (P0 11/4: never "Sorry, I lost you" on a search turn) */
 export const GENERAL_HEDGE = "Not sure off the top of my head, pulling up a few sources.";
 /** rides the turn's reply instructions (session.ts) when the sheet is searching */
@@ -156,7 +176,8 @@ const JOKE = /^(?:a |another )?(?:joke|story|fun fact|riddle)\b/;
 const ASKS = /\?\s*$|^(?:who|what|where|when|which|how|why|is|are|was|were|do|does|did|can|could|would|will|should|any|find|get|show|recommend|suggest|tell|give|list|name)\b/;
 const LINKS_ASK = /\b(?:send me (?:the )?links?)\b|링크\s*보내/;
 
-export function assessLine(text: string, env: NodeJS.ProcessEnv = process.env): LineVerdict {
+export function assessLine(raw: string, env: NodeJS.ProcessEnv = process.env): LineVerdict {
+  const text = asrRestart(raw);
   if (!text.trim() || text.length > 400 || realCrisisSignal(text)) return "spoken";
   // "the US" / "U.S." is a country, not "us" (lowercased below)
   const country = text.replace(/\bU\.?S\.?(?:A\b\.?)?(?![a-z])/g, "USA");
@@ -240,7 +261,7 @@ const HOWTO_ASK = /^(?:how (?:do|can|should|would|to)\b|how\s+(?:i|we|you)\b)|\b
 const PLACE_ASK = /\b(?:near(?:by| me)?|around (?:here|me)|restaurants?|caf[eé]s?|coffee shops?|bars?|pubs?|hotels?|bakery|bakeries|brunch|ramen|sushi|pizza|bbq|museums?|galleries|parks?|beaches|places? to (?:eat|go|stay|visit)|where (?:to|can i|should i) (?:eat|go|stay|get)|things to do in)\b|맛집|카페|근처/i;
 /** which layout a web answer gets: places (map, rating), a how-to (numbered steps), else the general rows */
 export function generalLayout(question: string): FindLayout {
-  const q = question.trim();
+  const q = asrRestart(question);
   if (HOWTO_ASK.test(q)) return "how-to";
   if (PLACE_ASK.test(q)) return "place";
   return "general";
@@ -521,7 +542,7 @@ export async function runGeneral(ctx: PipelineCtx): Promise<PipelineResult> {
     title,
     subtitle: `Web search · ${n} result${n > 1 ? "s" : ""}`,
     status: `${n} result${n > 1 ? "s" : ""}`,
-    say: GENERAL_SAY,
+    say: generalSay(layout),
     items: [],
     // each result once: in Sources, as "title — why" with its link (P0 11/4: the Mac listed them twice); one summary line
     // above them because the iPhone link layout always shows its Takeaways label

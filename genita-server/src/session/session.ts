@@ -725,6 +725,12 @@ export class Session {
   /** Knows-Me S1: long replies the user cut off in this call; the one-time "I'll keep it short" line */
   private longCuts = 0;
   private shorterLine: string | null = null;
+  /**
+   * Prod 11/4 (utt 18 → 20): the last question a card answered ("Best ramen places in Seoul"). Its spoken line was a
+   * hedge ("…pulling up a few sources"), so a later reply saw an open promise and answered it — the ramen picks were
+   * said as the answer to "How do I fold a fitted sheet?". Every later turn is told that question is done.
+   */
+  private cardAsk: string | null = null;
   private taste: TasteLine[] = [];
   private correcting: AbortController | null = null;
   private correctionChecks = 0;
@@ -2335,6 +2341,7 @@ export class Session {
     // P0 11/4: guided cooking of the recipe card ("Walk me through it", then "next"): one step a turn (finds/walkthrough.ts)
     const walk = !greeting && !turn.cue ? this.finds?.walkTurn(text) ?? null : null;
     if (walk) finalInstructions += `\n${walk.line}\n`;
+    if (this.cardAsk && !greeting && !turn.cue && normTranscript(this.cardAsk) !== normTranscript(text)) finalInstructions += `\n${earlierAskLine(this.cardAsk)}\n`;
     if (greeting && !interpret && this.deps.greetOpener === true) {
       this.greetOpener = pickGreetOpener(this.user?.name);
       finalInstructions += `\nYou already said "${this.greetOpener}" out loud as your first words. Continue right after it: do not greet them again (no hey / hi / hello) and do not say their name again.\n`;
@@ -2612,6 +2619,7 @@ export class Session {
       const recent = this.history.slice(-7, -1).map((h) => `${h.role === "user" ? "User" : "You"}: ${h.text}`);
       const started = this.finds.onTurn({ text, frames: built.images, ...(built.screen ? { screen: built.screen } : {}), utteranceId, replyText: said, recent, unclear: built.images.length > 0 && this.framesUnclear, signal });
       cardTurn = !!started;
+      if (started) this.cardAsk = text;
       signal.addEventListener("abort", () => resolveSaid(null), { once: true });
       if (started?.kind === "answer" && !started.ack) {
         // Chelsea 11/4 "섞어": the sheet searches; the reply answers now in one sentence from what it knows, with no
@@ -3703,4 +3711,10 @@ function parseHistory(v: unknown): HistoryItem[] {
     if (text && (item.role === "user" || item.role === "assistant")) out.push({ role: item.role, text });
   }
   return out;
+}
+
+/** Prod 11/4: a question a card already answered is never answered again as the reply to a new one. */
+export function earlierAskLine(ask: string): string {
+  const q = ask.replace(/["\n]/g, " ").replace(/\s+/g, " ").trim().slice(0, 120);
+  return `Their earlier question ("${q}") is already answered by the card on their screen. Answer only what they just said. Don't go back to that earlier question or recap its results unless they ask about it now.`;
 }
