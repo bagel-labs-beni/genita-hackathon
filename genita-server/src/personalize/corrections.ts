@@ -21,11 +21,19 @@ const HINT =
 const STYLE_HINT =
   /\b(?:(?:can you |could you |please )?be (?:more|less) (?:direct|concise|casual|formal|playful|serious|funny|detailed|blunt|gentle|chatty)|(?:more|less) (?:detail|details|small talk|jokes|questions|chatty|formal|casual|enthusiasm|energy)|get (?:straight )?to the point|skip the (?:small talk|intro|pleasantries|chit ?chat)|just (?:give me )?the (?:short version|gist|bottom line)|(?:in |just )?one (?:sentence|line) (?:please|only|max)|(?:in|just) one (?:sentence|line)|no more (?:\w+ )?(?:questions|jokes|lists|options)|(?:that'?s|that is|you'?re) (?:way )?too (?:long|wordy|much|formal|chatty|serious)|tl;?dr)\b/i;
 
+/**
+ * prompt-100 No-AI path (Chelsea 11/5): style taste said in passing ("I always wear black", "my favorite color is olive",
+ * "I have warm undertones", "I usually go for oversized stuff") — the HINT above missed all of them, so a user with no
+ * import never had their taste learned in the call. Same path: one Spark call beside the reply, merged, next turn knows.
+ */
+const TASTE_HINT =
+  /\b(?:i (?:always|usually|mostly|only|basically|normally) (?:wear|go for|buy|dress in|reach for|pick)|i (?:basically )?live in|my (?:favou?rite|go-to) (?:colou?rs?|style|look|outfit|fit)|(?:i have|i've got|i'm|i am) (?:a )?(?:warm|cool|neutral|olive)(?:[- ]toned| undertones?| skin(?: ?tone)?)?\b|(?:warm|cool|neutral) undertones|i (?:look|feel) (?:best|better|good|great|terrible|awful) in|(?:that'?s|it'?s|this is) (?:so )?not (?:me|my style|my colou?r)|i (?:like|love|need) (?:room to move|loose|baggy|oversized|fitted|relaxed)|i (?:hate|can'?t do|never wear) (?:anything )?(?:tight|clingy|fitted|baggy|bright|neon|patterns?))\b/i;
+
 /** Lines worth one Spark call. Questions alone ("What should I cook?") are not. */
 export function mightBeCorrection(text: string): boolean {
   const t = text.replace(/[’‘]/g, "'").trim();
   // a short, clear style ask ("Less detail.", "TL;DR please") counts even under three words
-  if (STYLE_HINT.test(t)) return true;
+  if (STYLE_HINT.test(t) || TASTE_HINT.test(t)) return true;
   if (t.split(/\s+/).length < 3) return false;
   return HINT.test(t);
 }

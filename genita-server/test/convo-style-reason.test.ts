@@ -55,3 +55,12 @@ test("prod 23:30: the wait line says 'dress', not 'dres'", async () => {
   assert.equal(stillHunting("Jackets"), "Still hunting for the right jacket, one sec.");
   assert.equal(stillHunting("Boots"), "Still hunting for the right pair, one sec.");
 });
+
+test("No-AI path: taste said in passing reaches the in-call extraction, and the profile's Taste lines reach the product search", async () => {
+  const { mightBeCorrection } = await import("../src/personalize/corrections.ts");
+  const { tasteLines } = await import("../src/finds/product.ts");
+  for (const t of ["honestly I always wear black", "my favorite color is olive green", "I think I have warm undertones", "I usually go for oversized stuff", "ugh that's not my style", "and I hate anything tight, I like room to move"]) assert.ok(mightBeCorrection(t), t);
+  for (const t of ["which one suits me?", "I have a dinner date tonight", "find me some"]) assert.ok(!mightBeCorrection(t), t);
+  // red before: "- Taste:" lines were dropped (only Likes / Interests / Support / Thinking were read)
+  assert.deepEqual(tasteLines(undefined, "How the user wants to be treated:\n- Taste: Always wears black\n- Taste: Dislikes tight fits\n- Talk: Casual", []), ["Always wears black", "Dislikes tight fits"]);
+});
