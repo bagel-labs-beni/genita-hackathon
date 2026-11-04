@@ -25,6 +25,8 @@ import { answerTitle, isBlockedSite } from "./webAnswer.ts";
 
 /** said when the card lands (after the one-sentence answer) */
 export const GENERAL_SAY = "I put a few links up for you.";
+/** the one sentence when the model has none the voice would say (P0 11/4: never "Sorry, I lost you" on a search turn) */
+export const GENERAL_HEDGE = "Not sure off the top of my head, pulling up a few sources.";
 /** rides the turn's reply instructions (session.ts) when the sheet is searching */
 export const GENERAL_REPLY_LINE =
   "Web results for this question are about to appear on their screen. Answer right now in ONE short sentence (under 20 words) from what you already know. No links, no site names, no lists, and don't say you're searching or looking it up. If you don't know, or it changes often (news, scores, prices, hours), make that one sentence a natural hedge, like \"Not sure off the top of my head, pulling up a few sources.\"";
@@ -35,6 +37,8 @@ export const GENERAL_TIMEOUT_MS = 25_000;
 
 /** "hey Jin," / "so," / "Jin," before the ask */
 const LEAD_IN = /^(?:(?:hey|hi|hello|ok(?:ay)?|so|um+|uh+|oh|yo|alright|well)\b[,!\s]+)+(?:[a-z]+,\s*)?|^[a-z]+,\s+/;
+/** LEAD_IN on the original casing ("Hey Jin, Who…" keeps "Who" capitalised for NAMED) */
+const LEAD_IN_ORIG = /^(?:(?:hey|hi|hello|ok(?:ay)?|so|um+|uh+|oh|yo|alright|well)\b[,!\s]+)+(?:[A-Za-z]+,\s*)?|^[A-Za-z]+,\s+/i;
 /** the polite wrapper around the real question: "can you tell me…", "do you know…", "look up…" */
 const PREAMBLE =
   /^(?:(?:can|could|would|will) you (?:please )?(?:tell me|let me know|check|find out|look up|search(?: for)?|google)?|do you (?:happen to )?know|(?:please )?tell me|i (?:wonder|want to know|wanna know|'d like to know)|any idea|please|quick question[,:]?)\s*/;
@@ -45,9 +49,28 @@ const SEARCH_VERB =
 const NO_SEARCH = /\b(?:don'?t|do not|no need to|never|stop|without)\s+(?:\w+\s+)?(?:search\w*|googl\w*|look\w* (?:\w+ )?up)\b|검색\s*(?:하지\s*마|말고)/;
 const SEARCH_KO = /검색|찾아\s*봐|찾아\s*줄래|찾아\s*줘|알아\s*봐|알아\s*줘/;
 /** words that mean "the web knows this" */
+/** P0 11/4 (device test: "recommend black or white for me" opened a design-colour sheet): only external, look-up-able
+ * facts search. These words are facts on their own */
 const TOPIC =
-  /\b(?:news|latest|headlines?|price|prices|cost|costs|how much|weather|forecast|rain|snow|temperature|score|scores|who won|reviews?|ratings?|best|top \d+|recommend\w*|suggest\w*|near me|open(?:ing)? (?:now|hours)|hours|schedule|release date|showtimes?|population|capital of|tickets?)\b/;
-const TOPIC_KO = /뉴스|가격|얼마|날씨|추천|맛집|최신|제일|가장|순위|후기/;
+  /\b(?:news|latest|headlines?|price|prices|cost|costs|how much|weather|forecast|rain|snow|temperature|score|scores|who won|open(?:ing)? (?:now|hours)|hours|schedule|release date|showtimes?|population|capital of|tickets?|near me|nearby)\b/;
+/** these only with an external category or a place ("best KBBQ in Suwon", "recommend a dinner place near Gangnam") */
+const REC = /\b(?:recommend\w*|suggest\w*|best|top \d+|good|great|reviews?|ratings?|popular|famous)\b/;
+const EXTERNAL =
+  /\b(?:restaurants?|places?|spots?|caf[eé]s?|coffee shops?|bars?|pubs?|bakery|bakeries|shops?|stores?|malls?|markets?|hotels?|hostels?|museums?|galleries|parks?|beaches?|hikes?|trails?|movies?|films?|shows?|series|dramas?|books?|novels?|podcasts?|songs?|albums?|artists?|games?|apps?|phones?|laptops?|tablets?|cameras?|headphones?|earbuds|tvs?|cars?|brands?|products?|kbbq|bbq|barbecue|ramen|sushi|pizza|burgers?|tacos?|galbi|noodles?|pho|brunch|steak(?:house)?s?|dim sum)\b/;
+/** a place named after "in / near / around" (checked on the original text: "in Suwon", "near Gangnam") or a known one */
+// known places by name only: "in daylight" / "at home" are not places (Codex r1); "in Suwon" is CAPITAL_PLACE on the original
+const LOCATION = /\b(?:seoul|suwon|gangnam|hongdae|itaewon|busan|incheon|jeju|tokyo|osaka|new york|nyc|london|paris|san francisco)\b/i;
+/** a fact about a role of a thing, any casing ("who is the ceo of nintendo?") */
+const ROLE_Q = /^(?:who|what)(?:'s| is| was| are| were)? (?:the )?(?:ceo|president|founder|owner|capital|population|prime minister|mayor|leader|director|author|singer|members?|head|chairman) of \w+/;
+const ROLE_KO = /CEO|ceo|대표|사장|회장|대통령|수도|인구|창업자|감독|작가|가수/;
+const CAPITAL_PLACE = /\b(?:in|near|around)\s+(?:the\s+)?[A-Z][\w'-]+/;
+/** a named real-world thing: a capitalised word that doesn't start the sentence (Nintendo, Eiffel Tower, World Series) */
+const NAMED = /(?:^|[^.!?]\s)[A-Za-z][\w'-]*\s+(?:\w+\s+)*?[A-Z][a-zA-Z]{1,}/;
+/** a choice between two things with nothing external ("black or white?"): an opinion, spoken */
+const CHOICE = /\b\w+ or \w+\b/;
+const TOPIC_KO = /뉴스|가격|얼마|날씨|최신/;
+const REC_KO = /추천|맛집|제일|가장|순위|후기/;
+const EXTERNAL_KO = /맛집|식당|카페|가게|호텔|영화|드라마|책|노래|여행지|관광지|집\s|집[?？]|라멘|고기|갈비|국밥|곳|서울|수원|강남|홍대|부산|제주|근처|에서/;
 const WH = /^(?:who|who's|what|what's|whats|where|where's|when|when's|which|how)\b/;
 /** a short fact question: "who invented penicillin?", "what is photosynthesis?", "where is Seoul?" (Codex r1) */
 const SHORT_FACT = /^(?:who|what|where|when) (?:invented|discovered|wrote|founded|painted|directed|created|owns|is|was|are|were) ([a-z][a-z.-]{3,})\s*[?.!]*$/;
@@ -61,13 +84,14 @@ const IMPERATIVE = /^(?:recommend|suggest|list|name|give me|show me)\b/;
 const YOU = /\b(?:you|your|yours|yourself|you're|youre|ur)\b|\bu\b(?!\.)/;
 const SELF = /\b(?:i|i'm|im|i've|i'd|i'll|me|my|mine|myself|we|we're|us|our)\b/;
 /** "for me" / "show me" / "near me" keep a lookup a lookup */
-const BENIGN_ME = /\b(?:for|recommend|suggest|show|tell|give|get|find|send|near) me\b/g;
+/** "near me" / "show me" keep a lookup a lookup; "recommend … for me" is personal advice (P0 11/4) */
+const BENIGN_ME = /\b(?:show|tell|give|get|find|send|near) me\b/g;
 /** "how do I make kimchi", "where can I get…": a how-to, the web helps */
 const HOWTO = /^(?:how (?:do|can|should|would) (?:i|we)\b|how to\b|where (?:can|do|should) (?:i|we)\b)|\bhow to\b/;
 const SELF_STATE = /\bhow (?:do|did) (?:i|we) (?:look|seem|sound|do)\b|\bhow am i\b/;
 const FEELING = /\b(?:feel|feeling|felt|sad|lonely|bored|tired|stressed|anxious|upset|angry|happy|love|miss|hate|worried|scared)\b/;
 const SMALL_TALK = /^(?:how about|what about|what if|thanks|thank you|ok|okay|cool|nice|great|wow|lol|haha|yes|no|yeah|nope|sure|bye|good (?:morning|night)|what'?s up|what'?s new|what'?s going on|how'?s it going|what are you (?:up to|doing))\b/;
-const PERSONAL_KO = /(?:^|\s)(?:너|넌|너는|니가|네가|너도|당신|나|난|나는|내가|내|제가|저는|저도|우리)(?:\s|$)|기분|사랑|보고\s*싶|심심|외로|우울|힘들|피곤|지내|안녕|고마워|괜찮아/;
+const PERSONAL_KO = /(?:^|\s)(?:너|넌|너는|니가|네가|너도|당신|나|난|나는|내가|내|제가|저는|저도|우리|나한테|내게|저한테|제게|나랑)(?:\s|$)|어울려|어울리|기분|사랑|보고\s*싶|심심|외로|우울|힘들|피곤|지내|안녕|고마워|괜찮아/;
 
 /** about something already in the conversation or on screen ("how long does it take?", "how old is he?"): the companion answers */
 const PRONOUN = /\b(?:it|its|it's|they|them|their|they're|he|him|his|he's|she|her|she's)\b/;
@@ -137,19 +161,33 @@ export function assessLine(text: string, env: NodeJS.ProcessEnv = process.env): 
   if (FEELING.test(t) && !searchVerb) return "spoken";
   if (YOU.test(t) && !searchVerb) return "spoken";
   if (SELF_STATE.test(t)) return "spoken";
-  if (SELF.test(t.replace(BENIGN_ME, "")) && !HOWTO.test(t) && !searchVerb) return "spoken";
+  // "recommend … for me" is advice, unless the ask is a plain outside fact ("a dinner place near Gangnam for me", Codex r1)
+  const outside = (REC.test(t) && EXTERNAL.test(t) && (CAPITAL_PLACE.test(country) || LOCATION.test(t))) || (TOPIC.test(t) && !/\b(?:i|my|me)\b(?! ?(?:near|nearby))/.test(t.replace(/\bfor me\b/, "")));
+  if (SELF.test(t.replace(BENIGN_ME, "")) && !HOWTO.test(t) && !searchVerb && !outside) return "spoken";
   if (PERSONAL_KO.test(t) && !searchVerb) return "spoken";
   const n = words(t);
   const webOn = env.GENITA_WEB_SEARCH !== "0";
   if (searchVerb) return n >= 2 && webOn ? "search" : "spoken";
+  const original = country.replace(LEAD_IN_ORIG, "");
+  const place = CAPITAL_PLACE.test(original) || LOCATION.test(t);
+  const named = NAMED.test(original);
   const question = /\?\s*$/.test(t) || WH.test(t) || IMPERATIVE.test(t);
+  const external = (REC.test(t) && (EXTERNAL.test(t) || place)) || (EXTERNAL.test(t) && place);
+  // "black or white?" / "which is better, A or B?" with nothing external, factual or named: an opinion (P0 11/4)
+  if (CHOICE.test(t) && !place && !named && !TOPIC.test(t) && !EXTERNAL.test(t)) return "spoken";
   const fact = t.match(SHORT_FACT);
   const search =
     (TOPIC.test(t) && question && n >= 3) ||
-    (WH.test(t) && n >= 4) ||
+    (external && (question || n >= 3)) ||
+    // a who/what/where question about a named real-world thing ("who's the CEO of Nintendo", "where is the Eiffel Tower")
+    (WH.test(t) && n >= 4 && (named || place)) ||
+    ROLE_Q.test(t) ||
+    // a how-to for a concrete task ("how do I get a red wine stain out of a carpet")
+    (HOWTO.test(t) && n >= 6) ||
     (!!fact && !CONTEXT_WORD.test(fact[1].replace(/[.-]+$/, ""))) ||
     (TOPIC_KO.test(t) && n >= 2 && KO_ASK.test(t)) ||
-    (WH_KO.test(t) && n >= 3 && KO_ASK.test(t));
+    (REC_KO.test(t) && EXTERNAL_KO.test(t) && n >= 2 && KO_ASK.test(t)) ||
+    (WH_KO.test(t) && n >= 3 && KO_ASK.test(t) && (EXTERNAL_KO.test(t) || ROLE_KO.test(country)));
   if (search) return webOn ? "search" : "open";
   // a short "what is next?" needs the conversation, not a card
   const last = t.replace(/[?.!\s]+$/, "").split(/\s+/).at(-1) ?? "";
@@ -157,6 +195,8 @@ export function assessLine(text: string, env: NodeJS.ProcessEnv = process.env): 
   // "send me the links" on its own: the runner's product follow-up, never a judged card
   if (LINKS_ASK.test(full)) return "spoken";
   if (/[가-힣]/.test(t)) return KO_ASK.test(t) ? "open" : "spoken";
+  // a who/what/how question with nothing external or named is an opinion / chat question: spoken (P0 11/4 narrowing)
+  if (WH.test(t)) return "spoken";
   return ASKS.test(t) && n >= 2 ? "open" : "spoken";
 }
 
@@ -254,7 +294,8 @@ export async function runGeneral(ctx: PipelineCtx): Promise<PipelineResult> {
   timings.cardJsonMs = Math.round(ctx.now() - t0);
   const results = pickResults(j, traced);
   if (!results.length) {
-    ctx.emit({ type: "find.failed", findId: ctx.findId, reason: "search_failed", message: "I couldn't find anything solid on that. Ask me another way?" });
+    // Chelsea 11/4: conversation first, finds only add a sheet — a failed search is silent (no line, no fail sheet)
+    ctx.emit({ type: "find.failed", findId: ctx.findId, reason: "stopped", message: "" });
     return { card: null, timings };
   }
   const n = results.length;
@@ -269,17 +310,17 @@ export async function runGeneral(ctx: PipelineCtx): Promise<PipelineResult> {
     status: `${n} result${n > 1 ? "s" : ""}`,
     say: GENERAL_SAY,
     items: [],
-    steps: results.map((r) => ({ text: r.why ? `${r.title} — ${r.why}` : r.title, source: r.url })),
+    // each result once: in Sources, as "title — why" with its link (P0 11/4: the Mac listed them twice); one summary line
+    // above them because the iPhone link layout always shows its Takeaways label
+    steps: [{ text: `Top ${n} result${n > 1 ? "s" : ""} from the web. Tap one to open it.` }],
     options: [],
     why: [],
     ask: strList(j?.ask, 2, 40),
-    sources: results.map((r) => ({ title: r.title, url: r.url, domain: r.domain })),
+    sources: results.map((r) => ({ title: r.why ? `${r.title} — ${r.why}` : r.title, url: r.url, domain: r.domain })),
     // never taste chips on a looked-up fact
     reasons: [],
-    how: [
-      query ? `Searched the web for “${query.replace(/[?.!]+$/, "")}”.` : "Searched the web.",
-      "Each result is a page that search returned. Open it to check the details.",
-    ],
+    // no how lines: the Mac shows them under an empty-looking "Why these" (P0 11/4)
+    how: [],
   };
   ctx.emit({ type: "find.created", findId: ctx.findId, card });
   timings.cardMs = Math.round(ctx.now() - t0);
@@ -300,6 +341,11 @@ function scrubWord(w: string): string {
 }
 const scrub = (t: string) => t.split(/(\s+)/).map((w) => (/^\s+$/.test(w) ? w : scrubWord(w))).join("").replace(/ {2,}/g, " ");
 /** a line the voice drops anyway ("I'll look that up.", "Hmm."): not the one sentence */
+/** some sentence of it is one the voice would say */
+const sayable = (all: string) => {
+  const sp = new SentenceSplitter({ firstClauseMaxChars: Number.POSITIVE_INFINITY });
+  return [...sp.push(`${all} `), ...sp.flush()].some((x) => !unsaid(x));
+};
 const unsaid = (raw: string) => {
   // judged on what is said, without "<warm>" / "[smile]" tags (Codex mix r2)
   const s = parseTaggedSentence(raw).displayText.trim();
@@ -332,6 +378,8 @@ export async function* firstSentenceOnly(src: AsyncIterable<SparkStreamEvent>): 
       if (stopAt === null) {
         const t = take(all.length);
         if (t) yield { type: "text", delta: t };
+        // nothing the voice would say (an announcement, a bare tag, an empty reply): the hedge (P0 11/4)
+        if (!sayable(all)) { const h = `${said && !/\s$/.test(said) ? " " : ""}${GENERAL_HEDGE}`; said += h; yield { type: "text", delta: h }; }
       }
       yield { ...ev, text: said };
       return;

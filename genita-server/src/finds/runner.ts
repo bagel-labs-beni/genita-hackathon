@@ -957,6 +957,9 @@ export class FindsRunner {
   private purged = false;
 }
 
+const RECIPE_ASK = /\bwhat (?:can|could|should) (?:i|we) (?:make|cook)\b|\bwhat'?s in (?:here|there|my fridge)\b|\bin (?:my|the) fridge\b|\bwith (?:these|this|what i have|what's here)\b|뭐\s*해\s*먹|냉장고/i;
+const OUTFIT_CHOICE = /\b(?:which|better|or|should i wear|pick|choose|decide|go with)\b|어느|뭐가\s*나아|골라/i;
+
 /** The judge's pick as a runner intent, or null: camera kinds need a picture, a link needs a URL, general needs web search on. */
 export function judgedIntent(r: JudgeResult, t: { text: string; frames: string[]; screen?: string }, env: NodeJS.ProcessEnv = process.env): NonNullable<Intent> | null {
   const picture = t.frames.length > 0 || !!t.screen;
@@ -964,7 +967,10 @@ export function judgedIntent(r: JudgeResult, t: { text: string; frames: string[]
     case "general": return env.GENITA_WEB_SEARCH === "0" ? null : { kind: "answer" };
     case "product": return { kind: "product" };
     case "identify": return picture ? { kind: "identify" } : null;
-    case "recipe": case "outfit": return picture ? { kind: r.kind } : null;
+    // Chelsea 11/4 (finds lane): describe / observe lines ("what am I wearing?", "recommend a dinner menu") stay a spoken
+    // answer — an outfit card needs a choice, a recipe card a cooking-from-these ask, same as the keyword path
+    case "recipe": return picture && RECIPE_ASK.test(t.text) ? { kind: "recipe" } : null;
+    case "outfit": return picture && OUTFIT_CHOICE.test(t.text) ? { kind: "outfit" } : null;
     case "link": { const url = findUrl(t.text); return url ? { kind: "link", url } : null; }
     default: return null;
   }

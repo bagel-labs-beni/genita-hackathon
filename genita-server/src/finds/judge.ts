@@ -31,12 +31,12 @@ export function judgeEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
 export function judgePrompt(i: JudgeInput): string {
   return [
     "You decide whether one turn of a live video call should open a card on the user's screen. Pick exactly one kind:",
-    "- none: greetings, feelings, small talk, opinions about something shown (\"how about this?\", \"is this one better?\"), questions about you or about them. When unsure, none.",
+    "- none: greetings, feelings, small talk, opinions about something shown (\"how about this?\", \"is this one better?\"), questions about you or about them, and ANY personal advice or opinion (\"recommend black or white for me\", \"which suits me\", \"should I…\", \"what should I eat\"). When unsure, none.",
     "- identify: they want to know what the object they show is (\"what is this exactly?\").",
     "- recipe: what to cook or eat from food that is shown.",
     "- outfit: choosing between clothes they show or wear.",
     "- product: find or buy something (\"where can I get these?\", \"find me one like this\").",
-    "- general: a look-up or information question the web answers (facts, news, places, how-to).",
+    "- general: only external facts the web answers: places / restaurants / shops (near me, in a city), news, scores, prices, hours, tickets, facts about a named real-world thing, a how-to for a concrete task. Never personal advice.",
     "- link: they shared a web address to read.",
     i.recent.length ? `Recent conversation:\n${i.recent.map((l) => l.slice(0, 200)).join("\n")}` : "Recent conversation: (none)",
     i.frame ? `The attached picture is their ${i.screen ? "shared screen" : "camera"} right now.` : i.scene ? `Their camera shows: ${i.scene.slice(0, 200)}` : "No picture.",

@@ -20,8 +20,10 @@ export const OPENS_SHEET = [
   // Codex r2
   "Google ramen restaurants in Seoul",
   "Search Nintendo CEO",
-  "How come the sky is blue?",
   "오늘 서울 날씨 알려줄 수 있어",
+  // P0 11/4 (device test): external, look-up-able only
+  "Recommend a good dinner place near Gangnam",
+  "Best KBBQ in Suwon?",
   // Codex r3
   "Jin, search Nintendo CEO",
   "What's the population of the US?",
@@ -62,6 +64,18 @@ export const STAYS_SPOKEN = [
   "How long does it take to get there?",
   "How long does it take to get there by train?",
   "오늘 서울 날씨 알려줬네",
+  // P0 11/4 (device test): personal advice / opinion is a spoken answer from the camera and her profile, never a web sheet
+  "Recommend black or white for me",
+  "Recommend black or white",
+  "Black or white?",
+  "Which is better, black or white?",
+  "What should I eat for dinner?",
+  "Which color suits me?",
+  "Should I get bangs?",
+  "Suggest something to wear for me",
+  "What's the best thing to do when you're bored?",
+  "How come the sky is blue?",
+  "What makes a good friend?",
   // demo runbook (QA 11/4): other paths own these
   "I have no idea what to wear today. It's for the Halloween party tonight. Jin, can you help me pick an outfit?",
   "Find me some.",

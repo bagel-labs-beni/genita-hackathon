@@ -43,7 +43,7 @@ test("judge: an open line the keywords miss is judged with the context; a genera
   const inputs: JudgeInput[] = [];
   const seen: string[] = [];
   const { r, events, said } = runnerWith(async (i) => { inputs.push(i); return { kind: "general", query: "ramen shops near Hongdae Seoul", reason: "place info" }; }, { seen });
-  const line = "Any good spots for that around Hongdae?";
+  const line = "Any ideas for something fun to do tonight?";
   assert.equal(assessLine(line), "open", "no rule either way");
   const started = r.onTurn(turn(line, [], ["User: I'm craving ramen.", "You: Ooh, nice."]));
   assert.equal(started, null, "the spoken reply runs as usual (no fixed line)");
@@ -80,7 +80,7 @@ test("judge: camera kinds need a picture; identify with the camera on draws only
 
 test("judge: a slow judge times out to none (no card); the deadline helper says so", async () => {
   const { r, events, logs } = runnerWith(() => new Promise<JudgeResult>(() => {}), { timeoutMs: 20 });
-  r.onTurn(turn("Any good spots for that around Hongdae?"));
+  r.onTurn(turn("Any ideas for something fun to do tonight?"));
   await new Promise((res) => setTimeout(res, 60));
   assert.equal(events.length, 0);
   const judged = logs.find(([e]) => e === "finds.judge");
@@ -97,14 +97,14 @@ test("judge: GENITA_FIND_JUDGE=0 turns it off (default on)", async () => {
   const { r, events } = runnerWith(async () => { calls++; return { kind: "general", reason: "x" }; });
   process.env.GENITA_FIND_JUDGE = "0";
   try {
-    r.onTurn(turn("Any good spots for that around Hongdae?"));
+    r.onTurn(turn("Any ideas for something fun to do tonight?"));
     await settleJudge();
   } finally {
     delete process.env.GENITA_FIND_JUDGE;
   }
   assert.equal(calls, 0);
   assert.equal(events.length, 0);
-  r.onTurn(turn("Any good spots for that around Hongdae?"));
+  r.onTurn(turn("Any ideas for something fun to do tonight?"));
   await settleJudge();
   assert.equal(calls, 1, "on by default");
   r.close();
@@ -127,7 +127,7 @@ test("judge: spoken-only lines (greetings, feelings, opinions about what's shown
 test("judge: a newer turn stops the older judge; parse keeps only known kinds", async () => {
   let release: (r: JudgeResult) => void = () => {};
   const { r, events } = runnerWith(() => new Promise<JudgeResult>((res) => (release = res)), { timeoutMs: 500 });
-  r.onTurn(turn("Any good spots for that around Hongdae?"));
+  r.onTurn(turn("Any ideas for something fun to do tonight?"));
   r.onTurn({ ...turn("How are you?"), utteranceId: 8 });
   release({ kind: "general", reason: "late" });
   await settleJudge();
@@ -143,7 +143,7 @@ test("judge (Codex r1): a cancelled turn, a Forget, or a card the reply already 
   // barge-in: the turn's reply resolves null
   let j = late();
   let run = runnerWith(() => j.p, { timeoutMs: 500 });
-  run.r.onTurn({ ...turn("Any good spots for that around Hongdae?"), replyText: Promise.resolve(null) });
+  run.r.onTurn({ ...turn("Any ideas for something fun to do tonight?"), replyText: Promise.resolve(null) });
   await settleJudge();
   j.release({ kind: "general", reason: "late" });
   await settleJudge();
@@ -152,7 +152,7 @@ test("judge (Codex r1): a cancelled turn, a Forget, or a card the reply already 
   // Forget all of this
   j = late();
   run = runnerWith(() => j.p, { timeoutMs: 500 });
-  run.r.onTurn(turn("Any good spots for that around Hongdae?"));
+  run.r.onTurn(turn("Any ideas for something fun to do tonight?"));
   run.r.forgetTaste();
   j.release({ kind: "general", reason: "late" });
   await settleJudge();
@@ -161,7 +161,7 @@ test("judge (Codex r1): a cancelled turn, a Forget, or a card the reply already 
   // the reply's own web search landed first
   j = late();
   run = runnerWith(() => j.p, { timeoutMs: 500 });
-  run.r.onTurn(turn("Any good spots for that around Hongdae?"));
+  run.r.onTurn(turn("Any ideas for something fun to do tonight?"));
   assert.ok(run.r.webAnswer({ utteranceId: 7, question: "q", said: "Try Menya.", searches: [{ query: "q", urls: ["https://www.timeout.com/x"] }] }));
   j.release({ kind: "general", reason: "late" });
   await settleJudge();
@@ -180,7 +180,7 @@ test("judge (Codex r1): 'on the screen' sends the shared frame (and the card kee
   assert.ok(events.some((e) => e.type === "find.started" && e.kind === "product"));
   r.close();
   const { judgedIntent } = await import("../src/finds/runner.ts");
-  assert.deepEqual(judgedIntent({ kind: "recipe", reason: "x" }, { text: "x", frames: [], screen: SCREEN }), { kind: "recipe" });
+  assert.deepEqual(judgedIntent({ kind: "recipe", reason: "x" }, { text: "What can I make with these?", frames: [], screen: SCREEN }), { kind: "recipe" });
   assert.equal(judgedIntent({ kind: "outfit", reason: "x" }, { text: "x", frames: [] }), null);
 });
 
@@ -188,17 +188,28 @@ test("judge (Codex r2): cut off while playing (the turn's signal) → nothing; a
   let release: (r: JudgeResult) => void = () => {};
   let run = runnerWith(() => new Promise<JudgeResult>((res) => (release = res)), { timeoutMs: 500 });
   const turnAbort = new AbortController();
-  run.r.onTurn({ ...turn("Any good spots for that around Hongdae?"), signal: turnAbort.signal });
+  run.r.onTurn({ ...turn("Any ideas for something fun to do tonight?"), signal: turnAbort.signal });
   turnAbort.abort();
   release({ kind: "general", reason: "late" });
   await settleJudge();
   assert.equal(run.events.length, 0);
   run.r.close();
   run = runnerWith(() => new Promise<JudgeResult>((res) => (release = res)), { timeoutMs: 500 });
-  run.r.onTurn(turn("Any good spots for that around Hongdae?"));
+  run.r.onTurn(turn("Any ideas for something fun to do tonight?"));
   assert.equal(run.r.webAnswer({ utteranceId: 7, question: "q", said: "Hm.", searches: [{ query: "q", urls: ["https://evil-casino.top/a"] }] }), null);
   release({ kind: "general", reason: "late" });
   await settleJudge();
   assert.ok(run.events.some((e) => e.type === "find.started" && e.kind === "answer"));
   run.r.close();
+});
+
+test("judge: describe / observe and dinner-idea lines never become an outfit or recipe card (finds lane rule 11/4)", async () => {
+  const { judgedIntent } = await import("../src/finds/runner.ts");
+  for (const text of ["What am I wearing?", "Recommend a dinner menu", "Any dinner ideas?", "Do you like my shirt?"]) {
+    assert.equal(judgedIntent({ kind: "outfit", reason: "x" }, { text, frames: [FRAME] }), null, text);
+    assert.equal(judgedIntent({ kind: "recipe", reason: "x" }, { text, frames: [FRAME] }), null, text);
+  }
+  assert.deepEqual(judgedIntent({ kind: "outfit", reason: "x" }, { text: "Which one should I go with tonight?", frames: [FRAME] }), { kind: "outfit" });
+  assert.deepEqual(judgedIntent({ kind: "recipe", reason: "x" }, { text: "What can I make with what's here?", frames: [FRAME] }), { kind: "recipe" });
+  assert.deepEqual(judgedIntent({ kind: "general", reason: "x" }, { text: "Any dinner ideas?", frames: [] }), { kind: "answer" }, "a menu idea sheet is fine");
 });
