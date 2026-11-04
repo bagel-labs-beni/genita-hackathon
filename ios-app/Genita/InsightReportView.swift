@@ -158,11 +158,11 @@ struct InsightReportView: View {
                     Image(uiImage: img).resizable().scaledToFill()
                 } else {
                     // no face yet: the orb on the call stage's dark ground (a light orb on white read as a smudge,
-                    // designer 11/4); the art has a wide transparent margin, so a 30 pt frame drawn 1.5× is a ~30 pt globe
+                    // designer 11/4); the art has a wide transparent margin: drawn 3.2× the globe itself is ~30 pt (CI capture: 1.5× gave ~14 pt)
                     ZStack {
                         RadialGradient(colors: [Color(red: 0x1A / 255, green: 0x1C / 255, blue: 0x20 / 255), Color(red: 0x0B / 255, green: 0x0B / 255, blue: 0x0B / 255)],
                                        center: .center, startRadius: 0, endRadius: 22)
-                        Image(resource: "reference-orb-round").resizable().scaledToFit().frame(width: 30, height: 30).scaleEffect(1.5)
+                        Image(resource: "reference-orb-round").resizable().scaledToFit().frame(width: 30, height: 30).scaleEffect(3.2)
                     }
                     .accessibilityIdentifier("insightHeaderOrb")
                 }
