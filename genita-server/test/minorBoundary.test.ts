@@ -16,3 +16,8 @@ test("Codex #640 r3: own age after a quote counts; seconds are no age; an explic
   let a = NO_AGE; for (const l of ["I'm 15", ...Array(25).fill("I'm 19")]) a = foldAge(a, ageSays(l));
   assert.ok(isMinor([a]), "an explicit minor age always wins");
 });
+
+test("Codex #640 r4: 'I told him I'm 15', 'a 15-year-old', '15 years of age' count", () => {
+  for (const t of ["I told him I'm 15", "I'm a 15-year-old", "I'm 15 years of age"]) assert.ok(minorLine([t]), t);
+  assert.equal(minorLine(['My mom said "I\'m 15" in a play']), null);
+});

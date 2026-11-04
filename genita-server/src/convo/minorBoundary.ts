@@ -8,14 +8,15 @@
 const AGE_WORD = "(?:[5-9]|1[0-7]|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen)";
 const ADULT_WORD = "(?:1[89]|[2-9]\\d|eighteen|nineteen|twenty|thirty|forty|fifty|sixty)";
 // a quantity, not an age: "15 minutes away", "17 dollars short", "20 hours into", "18 months sober", "9 out of 10"
-const QUANTITY = String.raw`(?!\s*(?:seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?|months?|dollars?|bucks|k\b|%|percent|pounds?|lbs?|kg|miles?|km|feet|ft|inches?|cm|times?|pages?|points?|steps?|blocks?|stops?|episodes?|chapters?|questions?|reps?|games?|levels?|out of|of\b|short|behind|ahead|away|late|early|deep|years? (?:into|in|at|of|younger|older|sober|clean|married)))`;
+const QUANTITY = String.raw`(?!\s*(?:seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?|months?|dollars?|bucks|k\b|%|percent|pounds?|lbs?|kg|miles?|km|feet|ft|inches?|cm|times?|pages?|points?|steps?|blocks?|stops?|episodes?|chapters?|questions?|reps?|games?|levels?|out of|of\b|short|behind|ahead|away|late|early|deep|years? (?:into|in|at|of(?!\s+age)|younger|older|sober|clean|married)))`;
 const SELF = String.raw`\b(?:i'?m|i am|im)\s+(?:still\s+|only\s+|just\s+|now\s+)?`;
-const OWN_MINOR_AGE = new RegExp(`${SELF}${AGE_WORD}\\b${QUANTITY}`, "i");
+const OWN_MINOR_AGE = new RegExp(`${SELF}(?:${AGE_WORD}\\b${QUANTITY}|an?\\s+${AGE_WORD}[- ]?(?:year|yr)s?[- ]?old\\b)`, "i");
 const OWN_ADULT_AGE = new RegExp(`${SELF}${ADULT_WORD}\\b${QUANTITY}`, "i");
 const UNDER_18 = new RegExp(`${SELF}(?:under\\s+(?:18|eighteen)\\b${QUANTITY}|a\\s+minor\\b|not\\s+(?:18|eighteen)\\s+yet\\b|underage\\b)`, "i");
 const TEEN_PHRASE = /\b(?:i'?m|i am|im)\s+(?:a\s+)?(?:teen(?:ager)?|in (?:middle|high) school|a (?:freshman|sophomore|junior|senior) in high school)\b/i;
 // someone else's words: My sister said, "I'm 15"
-const QUOTED = /\b(?:said|says|told (?:me|us|her|him)|texted|wrote|asked|goes|went)\b[^.!?]{0,6}["“'‘]?\s*$/i;
+// someone else's words: My sister said, "I'm 15" — but "I told him I'm 15" is their own (Codex #640 r4)
+const QUOTED = /\b(\w+)\s+(?:said|says|told (?:me|us|her|him|them)|texted|wrote|asked|goes|went)\b[^.!?]{0,6}["“'‘]?\s*$/i;
 
 export type AgeSay = { minor: boolean; adult: boolean; teen: boolean };
 // Codex #640 r3: every match is checked; only one inside someone else's quote is skipped
@@ -23,7 +24,8 @@ function own(re: RegExp, t: string): boolean {
   const g = new RegExp(re.source, "gi");
   for (const m of t.matchAll(g)) {
     const before = t.slice(0, m.index);
-    const quoted = QUOTED.test(before) || ((before.match(/"/g) ?? []).length % 2 === 1 && /\b(?:said|says|told|texted|wrote|asked)\b/i.test(before));
+    const q = QUOTED.exec(before);
+    const quoted = (!!q && !/^(?:i|we)$/i.test(q[1])) || ((before.match(/"/g) ?? []).length % 2 === 1 && /\b(?!i\b|we\b)\w+\s+(?:said|says|told|texted|wrote|asked)\b/i.test(before));
     if (!quoted) return true;
   }
   return false;

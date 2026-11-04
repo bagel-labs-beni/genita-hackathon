@@ -53,7 +53,7 @@ import type { CallStart, VoiceUpdate } from "../personalize/service.ts";
 import type { CallTurn } from "../personalize/extract.ts";
 import { ASK_TURNS, replyAsks } from "../personalize/unknowns.ts";
 import { mightBeCorrection } from "../personalize/corrections.ts";
-import { ageSays, foldAge, isMinor, MINOR_LINE, minorLine, NO_AGE, type AgeSay } from "../convo/minorBoundary.ts";
+import { ageSays, foldAge, isMinor, MINOR_LINE, NO_AGE, type AgeSay } from "../convo/minorBoundary.ts";
 import { avoidKeys, forgetTarget, isForgetRequest, scrubHistory, type Removed } from "../personalize/forgotten.ts";
 import { isForgetRequest as isMemoryForgetRequest } from "../memory/extract.ts";
 import { localTimeLine } from "../personalize/knows.ts";
@@ -740,7 +740,7 @@ export class Session {
       this.recentReplies = this.history.filter((h) => h.role === "assistant").map((h) => h.text).slice(-3);
       // the whole claimed history, not just the kept 16 (Codex #502 P1 r5)
       if (claimedCrisis(msg.history)) this.crisisInCall = true;
-      if (claimedMinor(msg.history)) this.minorInCall = true;
+      this.ageSaid = foldAge(this.ageSaid, claimedAge(msg.history));
     }
     const startMode: Mode = msg.mode === "interpret" ? "interpret" : "chat";
     // the mic ASR opened during start listens in the start mode's languages (no English-only stream to replace)
@@ -817,7 +817,8 @@ export class Session {
           // a crisis anywhere in the handed-over turns stays with the call: server turns carry the flag (server.ts);
           // a client-claimed history is read whole, not just the kept 16 (Codex #502 P1 r4/r5)
           if (server?.length ? seed.some((h) => h.role === "user" && realCrisisSignal(h.text)) : claimedCrisis(msg.history)) this.crisisInCall = true;
-          if (server?.length ? !!minorLine(seed.filter((h) => h.role === "user").map((h) => h.text)) : claimedMinor(msg.history)) this.minorInCall = true;
+          // Codex #640 r4: fold the flags (never a bare "minor" from a partial history; an adult age can still win)
+          this.ageSaid = foldAge(this.ageSaid, server?.length ? seed.filter((h) => h.role === "user").reduce((a, h) => foldAge(a, ageSays(h.text)), NO_AGE) : claimedAge(msg.history));
           // a handoff is the same conversation: one thread, one summary (iPhone and Mac write the same row)
           this.memoryCall?.continueThread(server?.length ? this.deps.priorThread?.(revision) ?? null : null, this.history);
           this.recentReplies = [...this.recentReplies, ...this.history.filter((h) => h.role === "assistant").map((h) => h.text)].slice(-3);
@@ -2741,11 +2742,11 @@ export class Session {
 
 /** `start.history` from the app: role + text only, capped. */
 /** a real crisis line anywhere in a claimed start.history (the whole list, before the 16-line trim; Codex #502 P1 r5) */
-/** Codex #640: a handed-over history (up to 200 lines) that says they're a minor keeps the boundary */
-function claimedMinor(v: unknown): boolean {
-  if (!Array.isArray(v)) return false;
-  const lines = v.slice(-200).filter((h) => (h as Record<string, unknown>)?.role === "user" && typeof (h as Record<string, unknown>).text === "string").map((h) => String((h as Record<string, unknown>).text).slice(0, 1000));
-  return !!minorLine(lines);
+/** Codex #640: what a handed-over history (up to 200 lines) said about their own age, as flags */
+function claimedAge(v: unknown): AgeSay {
+  if (!Array.isArray(v)) return NO_AGE;
+  return v.slice(-200).filter((h) => (h as Record<string, unknown>)?.role === "user" && typeof (h as Record<string, unknown>).text === "string")
+    .reduce((a: AgeSay, h) => foldAge(a, ageSays(String((h as Record<string, unknown>).text).slice(0, 1000))), NO_AGE);
 }
 function claimedCrisis(v: unknown): boolean {
   if (!Array.isArray(v)) return false;
