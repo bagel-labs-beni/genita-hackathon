@@ -425,16 +425,9 @@ public final class FaceRenderer: @unchecked Sendable {
         // resolution: the frame so far (mouth, jaw, blink included) is cut into head, body and
         // background layers that move separately, so the mouth rides the head and never slides.
         let out = CGRect(origin: .zero, size: outputSize)
-        let scale = max(outputSize.width / extent.width, outputSize.height / extent.height) * (reduceMotion ? 1 : AliveMotion.overscan)
-        var fill = CGAffineTransform(a: scale, b: 0, c: 0, d: scale,
-                                     tx: (outputSize.width - extent.width * scale) / 2, ty: (outputSize.height - extent.height * scale) / 2)
-        if framingZoom > 1.001 {
-            // zoom about the framing point where it already sits on screen (inside the image: no edge shows)
-            let c = CGPoint(x: framingCenter.x - extent.minX, y: framingCenter.y - extent.minY).applying(fill)
-            fill = fill.concatenating(CGAffineTransform(translationX: -c.x, y: -c.y))
-                .concatenating(CGAffineTransform(scaleX: framingZoom, y: framingZoom))
-                .concatenating(CGAffineTransform(translationX: c.x, y: c.y))
-        }
+        // (one transform with `framedScene`, so the call scene shown before the face set lands sits on these pixels)
+        let fill = Self.fillTransform(still: extent.size, output: outputSize, zoom: framingZoom,
+                                      center: CGPoint(x: framingCenter.x - extent.minX, y: framingCenter.y - extent.minY), reduceMotion: reduceMotion)
         let filled = img.clampedToExtent().transformed(by: fill)
         guard !reduceMotion else { return filled.cropped(to: out) }
         var m = motionState(at: t, open: open, face: Self.ciRect(faceSet.faceBox, height: h))

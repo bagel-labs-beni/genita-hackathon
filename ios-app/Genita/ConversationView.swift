@@ -1,4 +1,5 @@
 import Combine
+import ImageIO
 import SwiftUI
 
 struct ConversationView: View {
@@ -30,6 +31,9 @@ struct ConversationView: View {
     @State private var faceWaitOver = false
     /// the wait stage has been up: it stays in the tree through its 300 ms step back after the face arrived
     @State private var waitStageUp = false
+    /// Face plan item 1 (flag `CompanionFace.sceneFraming`): the call scene in the face set's crop (server `framing`),
+    /// drawn at once under the poster / live face; with it the veil doesn't wait for the face set.
+    @State private var framedScene: CGImage?
     @State private var faceArrivedTaps = 0
     #if DEBUG
     @State private var debugWaitHold = ProcessInfo.processInfo.environment["GENITA_WAIT_STAGE"] != nil
@@ -100,11 +104,11 @@ struct ConversationView: View {
                             .onTapGesture(count: 2) { if call.canFlipCamera { call.flipCamera() } } }
                         // F10-U-SHEET r03: the face steps back as the sheet rises (half .814, rising .895) and
                         // becomes a 96 × 128 window when the sheet is full.
-                        CompanionFaceView(still: companionImage, loop: loopURL, face: connecting ? nil : call.face, faceStill: call.faceStill, poster: call.facePoster).frame(width: full.size.width, height: full.size.height).clipped()
+                        CompanionFaceView(still: companionImage, loop: loopURL, face: connecting ? nil : call.face, faceStill: call.faceStill, poster: call.facePoster, framedStill: framedScene).frame(width: full.size.width, height: full.size.height).clipped()
                             // S07 veiled → S09 the veil lifts (motion lane); never in the handoff snapshot (ImageRenderer, no onAppear)
                             // motion details card 10: veiled until the generated face (poster or live) is there, then clears
                             // once (blur 14, 520 ms) with one medium tap; flag off → the catalog reveal as before
-                            .modifier(CallFaceVeil(connecting: connecting, faceReady: !waitingForFace && (call.facePoster != nil || call.face != nil || faceWaitOver), enabled: handoffEnabled))
+                            .modifier(CallFaceVeil(connecting: connecting, faceReady: !waitingForFace && (call.facePoster != nil || call.face != nil || framedScene != nil || faceWaitOver), enabled: handoffEnabled))
                             .grayscale(sheetOffline ? 1 : 0).brightness(sheetOffline ? -0.25 : 0).blur(radius: unclear ? 8 : 0)
                             .scaleEffect(faceScale(sheet), anchor: .topLeading).offset(faceOffset(sheet, top: top))
                             .opacity(sheet == .full || call.cameraOn ? 0 : 1)
@@ -133,7 +137,7 @@ struct ConversationView: View {
                         if call.cameraOn && sheet != .full {
                             // r01 CAM-H `.pip`: right 20, top 120, 96 × 128, 2 px light border; moves left while the sheet is half up (the rail rises into its place)
                             // the camera's small window is the live, talking face too (Chelsea P1, build 7: a frozen upload photo)
-                            CompanionFaceView(still: companionImage, loop: loopURL, face: call.face, faceStill: call.faceStill, poster: call.facePoster).frame(width: 96, height: 128)
+                            CompanionFaceView(still: companionImage, loop: loopURL, face: call.face, faceStill: call.faceStill, poster: call.facePoster, framedStill: framedScene).frame(width: 96, height: 128)
                                 .overlay { if waitingForFace { CallWaitStage(size: CGSize(width: 96, height: 128)) } }.clipShape(RoundedRectangle(cornerRadius: 16))
                                 .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(CallInk.onInk, lineWidth: 2)).shadow(color: CallInk.ink.opacity(0.18), radius: 12, y: 8)
                                 .position(x: sheet == .half || sheet == .rising ? 68 : full.size.width - 68, y: 184 + top)
@@ -194,7 +198,7 @@ struct ConversationView: View {
                         if sheet == .full {
                             // r03 `.pip`: the face as a 96 × 128 window; tap → back to half
                             Button { withAnimation(.drawer) { call.finds.pipTapped() } } label: {
-                                CompanionFaceView(still: companionImage, loop: loopURL, face: call.face, faceStill: call.faceStill, poster: call.facePoster).frame(width: 96, height: 128)
+                                CompanionFaceView(still: companionImage, loop: loopURL, face: call.face, faceStill: call.faceStill, poster: call.facePoster, framedStill: framedScene).frame(width: 96, height: 128)
                                 .overlay { if waitingForFace { CallWaitStage(size: CGSize(width: 96, height: 128)) } }.clipShape(RoundedRectangle(cornerRadius: 16))
                                     .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(CallInk.onInk, lineWidth: 2)).shadow(color: CallInk.ink.opacity(0.18), radius: 12, y: 8)
                             }.buttonStyle(PressScale()).position(x: full.size.width - 64, y: 112 + top)
@@ -323,6 +327,18 @@ struct ConversationView: View {
             // before the link is live the arrival taps on its own and card 10's live tap stays for the link (Codex P3)
             else if connectedTaps == 0, call.link == .live { connectedTaps = 1 } else { faceArrivedTaps += 1 }
             Task { try? await Task.sleep(for: .milliseconds(320)); if !waitingForFace { waitStageUp = false } }
+        }
+        // face plan item 1: draw the scene in the poster's crop (off the main thread) as soon as scene + framing are here
+        .task(id: framedSceneID) {
+            guard CompanionFace.sceneFraming, let data = model.sceneImageData, let framing = model.prep?.framing else { framedScene = nil; return }
+            let rm = reduceMotion || CallMotion.reviewStill
+            let image = await Task.detached(priority: .userInitiated) { () -> CGImage? in
+                guard let src = CGImageSourceCreateWithData(data as CFData, nil),
+                      let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
+                      let w = props[kCGImagePropertyPixelWidth] as? CGFloat, let h = props[kCGImagePropertyPixelHeight] as? CGFloat else { return nil }
+                return FaceRenderer.framedScene(data: data, outputSize: CompanionFace.outputSize(still: CGSize(width: w, height: h)), framing: framing, reduceMotion: rm)
+            }.value
+            if !Task.isCancelled { framedScene = image }
         }
         #if DEBUG
         .task(id: connecting) {
@@ -571,6 +587,11 @@ struct ConversationView: View {
             // D22: double-tap the self view → the camera on, facing back
             .onTapGesture(count: 2) { call.useBackCamera() }.accessibilityAction(named: "Use back camera") { call.useBackCamera() }
         }
+    }
+    /// What the framed scene is drawn from: the scene bytes, the server's crop and the overscan (reduce motion).
+    private var framedSceneID: String {
+        let d = model.sceneImageData
+        return "\(model.sceneKey ?? "-")|\(d?.count ?? -1)|\(d?.hashValue ?? 0)|\(String(describing: model.prep?.framing))|\(reduceMotion || CallMotion.reviewStill)"
     }
     /// The still under the face: the prep call scene (the generated face, same framing as the face set). The upload
     /// photo never shows on a call (Chelsea P1, build 7); until the scene or the face set lands it's the dark ground.

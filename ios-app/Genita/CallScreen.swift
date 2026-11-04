@@ -49,11 +49,15 @@ struct CompanionFaceView: View {
     /// The face set's rest frame (CallController.facePoster): the generated face in the call's crop, drawn over the
     /// upload still as soon as it exists, so the call never opens on the original photo and then jumps.
     var poster: CGImage? = nil
+    /// Face plan item 1: the call scene drawn in the face set's crop (`FaceRenderer.framedScene`), in place of `still`:
+    /// the poster and the live face that follow land on its pixels. Never the upload photo.
+    var framedStill: CGImage? = nil
     var lip: LipSource = .none
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         ZStack {
-            if let still { still.resizable().scaledToFill() } else { CallInk.ink }
+            if let framedStill { Image(decorative: framedStill, scale: 1).resizable().scaledToFill() }
+            else if let still { still.resizable().scaledToFill() } else { CallInk.ink }
             if let poster { Image(decorative: poster, scale: 1).resizable().scaledToFill() }
             if let face {
                 // S09-P (D28, AU-25): a face set that lands mid-call fades in over the still once (the reveal)
@@ -68,7 +72,7 @@ struct CompanionFaceView: View {
         // layers as separate elements the identifier matched several of them, and UI tests read the still's value
         // even after the face had landed ("still" on b9-3…b9-6; probe run 41745964955: "multiple matching elements")
         .accessibilityElement(children: .ignore)
-        .accessibilityValue(Self.layer(face: face != nil, poster: poster != nil, still: still != nil))
+        .accessibilityValue(Self.layer(face: face != nil, poster: poster != nil, still: still != nil || framedStill != nil))
     }
     /// What's on top, for UI tests: live (the talking face) > poster (its rest frame) > still (scene / fixture) > ground.
     static func layer(face: Bool, poster: Bool, still: Bool) -> String { face ? "live" : poster ? "poster" : still ? "still" : "ground" }

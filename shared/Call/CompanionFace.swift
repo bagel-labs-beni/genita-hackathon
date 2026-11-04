@@ -33,9 +33,30 @@ enum CompanionFace {
 
     /// Frame size for a face set: its own aspect, `pixelHeight` tall (the view aspect-fills it like the still).
     static func outputSize(for set: FaceSet, pixelHeight: CGFloat = pixelHeight) -> CGSize {
-        let h = min(pixelHeight, set.pixelSize.height)
-        return CGSize(width: (h * set.pixelSize.width / set.pixelSize.height).rounded(), height: h)
+        outputSize(still: set.pixelSize, pixelHeight: pixelHeight)
     }
+    /// The same for a still of this size (the call scene = the face set's neutral still, so the two match).
+    static func outputSize(still: CGSize, pixelHeight: CGFloat = pixelHeight) -> CGSize {
+        let h = min(pixelHeight, still.height)
+        return CGSize(width: (h * still.width / max(1, still.height)).rounded(), height: h)
+    }
+
+    /// One motion seed per face (face plan item 1): the prepared poster, the disk poster and the live face all draw
+    /// with it, so they match. First 8 bytes of SHA-256(key); no key → 1.
+    static func seed(forKey key: String?) -> UInt64 {
+        guard let key else { return 1 }
+        let d = Array(SHA256.hash(data: Data(key.utf8)))
+        let v = d.prefix(8).enumerated().reduce(UInt64(0)) { $0 | UInt64($1.element) << (8 * UInt64($1.offset)) }
+        return v == 0 ? 1 : v
+    }
+
+    /// Face plan item 1: S09 draws the call scene in the face set's crop (`FaceRenderer.framedScene`, server
+    /// `framing`) and the veil lifts at once, instead of waiting for the poster. `GENITA_SCENE_FRAMING=0|1` (launch
+    /// env or Info.plist) overrides `sceneFramingDefault`.
+    static var sceneFraming: Bool {
+        flag(ProcessInfo.processInfo.environment["GENITA_SCENE_FRAMING"]) ?? flag(Bundle.main.object(forInfoDictionaryKey: "GENITA_SCENE_FRAMING")) ?? sceneFramingDefault
+    }
+    static let sceneFramingDefault = false
 }
 
 /// Draws the face driver's latest frame above the still, aspect-filled like the still. Layers (face → mouth →

@@ -58,6 +58,14 @@ struct AliveMotion {
     var swaySmoothing = 0.0
     private var swayLP: [Double] = [], swayLPV: [Double] = []
     private var energy = 0.0, energyPeak = 0.0
+    /// Face plan item 1 (11/4): every motion run starts still. The first frame — and the first after a gap longer
+    /// than `restartGap` (the display link was paused, e.g. the poster drawn at t = 0 while connecting and the live
+    /// face started later) — has no sway, head or camera motion, so it is pixel for pixel the rest frame (= the call
+    /// scene in its crop); the motion then eases in over `settleSeconds`. Before, the live face's first frame jumped
+    /// by the seed's sway and head roll at that moment.
+    static let settleSeconds = 1.0
+    static let restartGap = 2.0
+    private var runStart: Double?
 
     init(seed: UInt64) {
         var rng = SplitMix64(seed: seed &+ 0xA11E)
@@ -82,6 +90,8 @@ struct AliveMotion {
 
         // Speech onset energy: openness above its own slow average drives the nod target.
         let dt = lastT.map { t - $0 } ?? 0
+        if lastT == nil || dt < 0 || dt > Self.restartGap { runStart = t }
+        let ease = smoothstep(0, Self.settleSeconds, t - (runStart ?? t))
         if dt < 0 || dt > 0.5 { nod = 0; nodVelocity = 0; slowOpen = open }   // jump: restart
         else if dt > 0 {
             let steps = max(1, Int((dt * 120).rounded(.up)))
@@ -101,10 +111,10 @@ struct AliveMotion {
         // Camera (whole frame) about the frame centre.
         let c = CGPoint(x: extent.midX, y: extent.midY)
         let cg = cameraGain
-        let camX = (Self.cameraDrift * noise(0, hz: 0.06, t) + Self.cameraJitter * noise(1, hz: 0.33, t)) * k * cg
-        let camY = (Self.cameraDrift * noise(2, hz: 0.05, t) + Self.cameraJitter * noise(3, hz: 0.29, t)) * k * cg
-        let camRoll = Self.cameraRollDegrees * .pi / 180 * noise(4, hz: 0.045, t) * cg
-        let zoom = 1 + Self.cameraZoom * noise(5, hz: 0.04, t) * cg
+        let camX = (Self.cameraDrift * noise(0, hz: 0.06, t) + Self.cameraJitter * noise(1, hz: 0.33, t)) * k * cg * ease
+        let camY = (Self.cameraDrift * noise(2, hz: 0.05, t) + Self.cameraJitter * noise(3, hz: 0.29, t)) * k * cg * ease
+        let camRoll = Self.cameraRollDegrees * .pi / 180 * noise(4, hz: 0.045, t) * cg * ease
+        let zoom = 1 + Self.cameraZoom * noise(5, hz: 0.04, t) * cg * ease
         let camera = CGAffineTransform(translationX: -c.x, y: -c.y)
             .concatenating(CGAffineTransform(rotationAngle: camRoll))
             .concatenating(CGAffineTransform(scaleX: zoom, y: zoom))
@@ -112,7 +122,7 @@ struct AliveMotion {
         let parallax = CGAffineTransform(translationX: Self.parallax * camX, y: Self.parallax * camY)
 
         // Body: breathing about the bottom of the frame under the face, plus parallax.
-        let breath = lockVertical ? 0 : sin(2 * .pi * Self.breathingHz * t)
+        let breath = lockVertical ? 0 : sin(2 * .pi * Self.breathingHz * t) * ease
         let bottom = CGPoint(x: face.midX, y: extent.minY)
         let body = CGAffineTransform(translationX: -bottom.x, y: -bottom.y)
             .concatenating(CGAffineTransform(scaleX: 1 + Self.breathingScale * 0.5 * breath, y: 1 + Self.breathingScale * breath))
@@ -146,10 +156,10 @@ struct AliveMotion {
                 }
                 u = swayLP
             }
-            var cx = max(-Self.swayMaxPx, min(Self.swayMaxPx, u[0])) * k
-            var cy = max(-Self.swayMaxPx, min(Self.swayMaxPx, u[1])) * k
-            var rr = max(-Self.swayMaxDeg, min(Self.swayMaxDeg, Self.swayMaxDeg * u[2])) * .pi / 180
-            var sc = 1 + max(-Self.swayMaxScale, min(Self.swayMaxScale, Self.swayMaxScale * u[3]))
+            var cx = max(-Self.swayMaxPx, min(Self.swayMaxPx, u[0])) * k * ease
+            var cy = max(-Self.swayMaxPx, min(Self.swayMaxPx, u[1])) * k * ease
+            var rr = max(-Self.swayMaxDeg, min(Self.swayMaxDeg, Self.swayMaxDeg * u[2])) * .pi / 180 * ease
+            var sc = 1 + max(-Self.swayMaxScale, min(Self.swayMaxScale, Self.swayMaxScale * u[3])) * ease
             // about the face centre: the eyes, nose and mouth stay within the caps (a neck pivot swung the forehead 3 px per 0.5°)
             let pivot = CGPoint(x: face.midX, y: face.midY)
             func make() -> CGAffineTransform {
@@ -179,10 +189,10 @@ struct AliveMotion {
 
         // Head: tilt about the neck, drift, nod (down + slight pitch), then it rides the body.
         let neck = CGPoint(x: face.midX, y: face.minY - face.height * 0.15)
-        let roll = Self.headRollDegrees * rollGain * .pi / 180 * noise(6, hz: 0.11, t)
-        let dx = Self.headDriftX * headGain * noise(7, hz: 0.08, t) * k
-        let dy = lockVertical ? 0 : (Self.headDriftY * headGain * noise(8, hz: 0.13, t) - Self.nodPixels * nodGain * nod) * k
-        let pitch = lockVertical ? 1 : 1 - Self.nodPitch * nod
+        let roll = Self.headRollDegrees * rollGain * .pi / 180 * noise(6, hz: 0.11, t) * ease
+        let dx = Self.headDriftX * headGain * noise(7, hz: 0.08, t) * k * ease
+        let dy = lockVertical ? 0 : (Self.headDriftY * headGain * noise(8, hz: 0.13, t) - Self.nodPixels * nodGain * nod) * k * ease
+        let pitch = lockVertical ? 1 : 1 - Self.nodPitch * nod * ease
         let headLocal = CGAffineTransform(translationX: -neck.x, y: -neck.y)
             .concatenating(CGAffineTransform(scaleX: 1, y: pitch))
             .concatenating(CGAffineTransform(rotationAngle: roll))
