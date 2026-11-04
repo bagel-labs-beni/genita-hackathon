@@ -1512,6 +1512,87 @@ test("Codex #542 P2: two looks failing in a row both hand their frames back; a n
   assert.deepEqual(reacted, ["<warm> [smile] ooh, red runners", "<warm> [smile] ooh, that blue jacket"]);
 });
 
+// ───────────────────────── instant nonverbal (lead's call 11/4) ─────────────────────────
+
+function nvController(verdicts: string[] = [], extra: Partial<WatchDeps> = {}) {
+  const nv: number[] = [];
+  const ctl = controller(verdicts, {}, extra);
+  (ctl.c as unknown as { host: WatchHost }).host.nonverbal = () => (nv.push(1), true);
+  return { ...ctl, nv };
+}
+const feed = (c: { c: { onMessage: (m: Record<string, unknown>) => void }; at: (ms: number) => number }, from: number, motions: number[]) =>
+  motions.forEach((m, i) => { c.at(from + i * 333); c.c.onMessage({ type: "frame", image: `${frame}${from + i}`, motion: m }); });
+
+test("nonverbal: two frames that out-move the last 2 s → brows + inhale once; a pan that moves this much all along does not", () => {
+  const q = nvController();
+  q.c.onMessage({ type: "start", source: "YouTube" });
+  feed(q, 5_400, [0.03, 0.04, 0.03, 0.04, 0.03, 0.03, 0.04, 0.03, 0.04, 0.03, 0.17, 0.19]); // a quiet court, then the dunk
+  assert.equal(q.nv.length, 1);
+  feed(q, 9_400, [0.03, 0.04, 0.2, 0.22]); // another big move 0.7 s later: inside the 25 s gap
+  assert.equal(q.nv.length, 1);
+  const pan = nvController();
+  pan.c.onMessage({ type: "start", source: "YouTube" });
+  feed(pan, 7_000, [0.12, 0.13, 0.12, 0.14, 0.12, 0.15, 0.14, 0.13, 0.12, 0.14]); // a broadcast pan from its first frame
+  assert.equal(pan.nv.length, 0, "no history at first, then nothing out-moves the pan 1.5×");
+});
+
+test("Codex #613 P2: the page guard holds through the page's next memos; another scene's spoken line waits out the nonverbal's gap", async () => {
+  const verdicts = [
+    JSON.stringify({ protectedVideo: false, moment: "sweet", page: true, reaction: "ooh, red runners", talkOver: false, memo: "A shop page.", speakers: [] }),
+    JSON.stringify({ protectedVideo: false, moment: "none", page: false, reaction: "", talkOver: false, memo: "Still the shop page.", speakers: [] }),
+  ];
+  const page = nvController(verdicts);
+  page.c.onMessage({ type: "start", source: "Google Chrome" });
+  page.at(7_000); page.c.onMessage({ type: "frame", image: frame, motion: 1 });
+  page.at(9_100); page.c.tick(); await new Promise((r) => setTimeout(r, 5));
+  page.at(12_000); page.c.onMessage({ type: "frame", image: frame + "x", motion: 0.03 });
+  page.at(14_100); page.c.tick(); await new Promise((r) => setTimeout(r, 5)); // the next memo: page false
+  feed(page, 40_000, [0.01, 0.02, 0.17, 0.13]); // scrolling the same page much later
+  assert.equal(page.nv.length, 0);
+  const funny = JSON.stringify({ protectedVideo: false, moment: "funny", page: false, reaction: "He fell", talkOver: false, memo: "x", speakers: [] });
+  const q = nvController([funny]);
+  q.c.onMessage({ type: "start", source: "YouTube" });
+  feed(q, 5_400, [0.03, 0.04, 0.03, 0.04, 0.03, 0.03, 0.04, 0.03, 0.04, 0.03, 0.17, 0.19]); // nonverbal at ~9 s
+  assert.equal(q.nv.length, 1);
+  q.at(15_000); q.c.onMessage({ type: "frame", image: frame + "later", motion: 0.03 });
+  q.at(15_100); q.c.tick(); await new Promise((r) => setTimeout(r, 5)); // another scene's line at 15 s
+  assert.equal(q.reacted.length, 0, "the gap holds both ways");
+});
+
+test("nonverbal: a cut (one whole-picture change), the share's first 6 s, a page and reactions off never fire it", async () => {
+  const cut = nvController();
+  cut.c.onMessage({ type: "start", source: "YouTube" });
+  feed(cut, 7_000, [0.02, 0.03, 0.6, 0.03, 0.02]);
+  assert.equal(cut.nv.length, 0, "cut");
+  const early = nvController();
+  early.c.onMessage({ type: "start", source: "YouTube" });
+  feed(early, 1_000, [0.02, 0.03, 0.2, 0.2]);
+  assert.equal(early.nv.length, 0, "first 6 s");
+  const page = nvController([JSON.stringify({ protectedVideo: false, moment: "none", page: true, reaction: "", talkOver: false, memo: "A shop page.", speakers: [] })]);
+  page.c.onMessage({ type: "start", source: "Google Chrome" });
+  page.at(7_000);
+  page.c.onMessage({ type: "frame", image: frame, motion: 1 });
+  page.at(9_100);
+  page.c.tick();
+  await new Promise((r) => setTimeout(r, 5));
+  feed(page, 10_000, [0.01, 0.02, 0.17, 0.13]); // scrolling the page
+  assert.equal(page.nv.length, 0, "page");
+  const off = nvController([], { reactions: false });
+  off.c.onMessage({ type: "start", source: "YouTube" });
+  feed(off, 7_000, [0.02, 0.03, 0.2, 0.2]);
+  assert.equal(off.nv.length, 0, "reactions off");
+});
+
+test("nonverbal: the inhale is breath-quiet and short; the event is a valid backchannel", async () => {
+  const { inhalePcmBase64 } = await import("../src/watch/breath.ts");
+  const pcm = Buffer.from(inhalePcmBase64(), "base64");
+  assert.ok(pcm.length / 2 / 24_000 <= 0.45, "≤ 0.45 s");
+  let peak = 0;
+  for (let i = 0; i < pcm.length; i += 2) peak = Math.max(peak, Math.abs(pcm.readInt16LE(i)));
+  assert.ok(peak <= 1_100 && peak > 300, `peak ${peak} (~ −30 dBFS)`);
+  assert.deepEqual(checkServerEvent({ type: "backchannel", kind: "inhale", audio: inhalePcmBase64() }), []);
+});
+
 test("Codex #542 r2 P2: a failed look's frames get the next look even when they're past the 3 s lookback", async () => {
   let n = 0;
   const q = quickController((r) => {
