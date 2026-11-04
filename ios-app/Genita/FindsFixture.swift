@@ -4,7 +4,8 @@ import Foundation
 /// Debug builds only. Puts the Finds sheet into one of the r03 board's states using events recorded from a real
 /// genita-server run (Resources/finds-fixture.json: fridge recipe, outfit, link; `npm run finds:e2e -- --record`).
 ///   GENITA_FINDS_STATE = 1…19 (r03 frame numbers), 20 = IC-4 "can't see it", 21–24 = PF-1 product search (#120), 25 = fridge pill (#214), 26 = FT-NOSEE, 41 = reason chips (D48 ③), 42 = budget reason chip on a product card (Knows-Me Map),
-///   43–44 = motion demo recordings (MotionDemoFindsUITests): 43 the recipe card rises, its pictures arrive late; 44 a "?" chip turns ✓
+///   43–44 = motion demo recordings (MotionDemoFindsUITests): 43 the recipe card rises, its pictures arrive late; 44 a "?" chip turns ✓,
+///   35 = demo S3: SAM masks held while the recipe card waits at peek (CameraBoxes.Hold)
 /// Pictures point at bundled illustrations ("bundle:finds-step-1") instead of the server.
 extension CallController {
     func installFindsFixture(environment env: [String: String] = ProcessInfo.processInfo.environment) {
@@ -163,6 +164,23 @@ extension FindsModel {
                 guard let url = Bundle.main.url(forResource: name, withExtension: "json"), let data = try? Data(contentsOf: url),
                       case let .observeBoxes(b)? = try? JSONDecoder().decode(ServerEvent.self, from: data) else { return }
                 self?.boxes.apply(b)
+            }
+        case 35:
+            // demo S3 (s3-b9 b/c): the counter masks are held and the recipe card lands meanwhile — it waits at peek and
+            // the picture moves up so the lowest mask clears it. The masks batch is re-keyed to the recipe find.
+            // (turning the camera on keeps the box epoch; only a flip or camera off drops a find's boxes)
+            play([(recipe, Array(untilCard(recipe).prefix(1)))])
+            guard let id = entries.first?.id, let card = recipe.events.first(where: { if case .findCreated = $0 { return true }; return false }) else { return }
+            Task { [weak self] in
+                for _ in 0..<80 where CallController.shared.cameraOn == false { try? await Task.sleep(for: .milliseconds(100)) }
+                guard let self, let url = Bundle.main.url(forResource: "finds-masks-counter", withExtension: "json"), let data = try? Data(contentsOf: url),
+                      var obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
+                obj["findId"] = id
+                guard let keyed = try? JSONSerialization.data(withJSONObject: obj),
+                      case let .observeBoxes(b)? = try? JSONDecoder().decode(ServerEvent.self, from: keyed) else { return }
+                self.apply(.observeBoxes(b))
+                try? await Task.sleep(for: .milliseconds(600))
+                self.apply(card)
             }
         case 26:
             // FT-NOSEE: boxes on the camera, no sheet, the check card says the rice is not in view

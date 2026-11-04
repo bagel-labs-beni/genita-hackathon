@@ -102,7 +102,8 @@ enum CallStop: Equatable {
     private(set) var cameraFront = true
     private(set) var cameraDenied = false
     private(set) var mode: ConversationMode = .chat { didSet { finds.interpreting = mode == .interpret } }
-    private(set) var playing = false
+    /// demo S3: the camera masks wait for the companion's answer to finish playing (CameraBoxes.Hold)
+    private(set) var playing = false { didSet { if oldValue, !playing { finds.boxes.companionStopped(nil) } } }
     private(set) var awaitingFirstAudio = false
     private(set) var interruptedHold = false
     private(set) var answerFailed = false
@@ -1103,6 +1104,7 @@ enum CallStop: Equatable {
 
     private func playbackStarted(_ utteranceId: Int) {
         playingUtterance = utteranceId
+        finds.boxes.companionStarted(utteranceId)
         playing = true
         awaitingFirstAudio = false
         let now = Date()
@@ -1123,6 +1125,7 @@ enum CallStop: Equatable {
 
     private func utterancePlayed(_ utteranceId: Int) {
         voice.forget(utteranceId)
+        finds.boxes.companionStopped(utteranceId)
         if playingUtterance == utteranceId { playingUtterance = nil }
         playing = audio.isPlaying
         flushFacePending()
