@@ -17,6 +17,7 @@ import { isDeviceVoice, orderForFace, previewLine, renderPreview, voicesForKind,
 import type { MediaApi } from "./face.ts";
 import type { CompanionRecord, ImageRecord, PrepStore } from "./store.ts";
 import type { Personalize } from "../personalize/service.ts";
+import type { Insights } from "../insights/service.ts";
 
 export type PrepLog = (event: string, data: Record<string, unknown>) => void;
 
@@ -36,6 +37,8 @@ export type PrepDeps = {
   photoPolish?: boolean;
   /** lane 개인화: HISY story (in parallel with the import), corrections, call growth; unset = none */
   personalize?: Personalize;
+  /** SUM insight report (src/insights), written in the background from the import / N1–N3 / setup answers; unset = none */
+  insights?: Insights;
 };
 
 /** how long the import response waits for a story that's still being written after the parse (then it's saved when it lands) */
@@ -162,6 +165,9 @@ export async function importStyle(d: PrepDeps, userId: string, pasted: unknown):
   const redacted = redactSensitive(p.text);
   // D47: the story is written from the same redacted text in parallel, so I03 has no extra wait
   const storyJob = d.personalize?.storyFromText(redacted) ?? null;
+  // SUM insight report: also from the same text, now; saved once this import's card is (commit below)
+  const insightJob = d.insights?.begin(userId, redacted);
+  try {
   const json = d.spark ?? (<T>(req: Parameters<NonNullable<PrepDeps["spark"]>>[0]) => sparkJson<T>(d.metaKey, req));
   const raw = await json<ImportRaw>(buildImportRequest(redacted));
   let card = toStyleCard(raw, "import");
@@ -177,10 +183,17 @@ export async function importStyle(d: PrepDeps, userId: string, pasted: unknown):
     else if (s === "late") d.personalize.trackLate(userId, storyJob);
   }
   // under the personalize lock: a call starting at the same moment can't write the old card back
-  if (d.personalize) await d.personalize.replaceStyle(userId, card);
+  let importedAt: string | undefined;
+  if (d.personalize) importedAt = await d.personalize.replaceStyle(userId, card);
   else await d.store.putStyle(userId, card);
   d.log("import.applied", { item_count: card.itemCount, latency_ms: since(t0), chars: p.chars, partial: card.partial, dropped: card.dropped });
+  if (importedAt) insightJob?.commit(importedAt);
+  else insightJob?.cancel();
   return card;
+  } catch (err) {
+    insightJob?.cancel();
+    throw err;
+  }
 }
 
 // ---------- F2-L21: call scene ----------
