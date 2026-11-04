@@ -411,7 +411,9 @@ import XCTest
     func testHalfSheetPictureLeavesRoomForTheTiles() {
         XCTAssertEqual(FindCardPage.halfCameraHeight(titleRow: 53), 89, "one-line title + subtitle: 89 pt picture")
         let twoLines: CGFloat = 87 // "Kimchi fried rice / with tofu and egg" + subtitle
-        XCTAssertLessThanOrEqual(40 + 44 + 3 * 8 + twoLines + FindCardPage.halfCameraHeight(titleRow: twoLines) + FindCardPage.stripHeight, 344, "tiles whole")
+        let fixed: CGFloat = 108 // 40 top + 44 header + 3 × 8 spacing
+        let used: CGFloat = fixed + twoLines + FindCardPage.halfCameraHeight(titleRow: twoLines) + FindCardPage.stripHeight
+        XCTAssertLessThanOrEqual(used, 344, "tiles whole")
         XCTAssertEqual(FindCardPage.halfCameraHeight(titleRow: 70), 72, "72 while it fits")
         XCTAssertEqual(FindCardPage.halfCameraHeight(titleRow: 200), 0, "big text: no picture in the half sheet, tiles whole")
     }

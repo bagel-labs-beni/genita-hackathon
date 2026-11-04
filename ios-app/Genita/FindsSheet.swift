@@ -695,8 +695,11 @@ struct FindCardPage: View {
     /// the half sheet, a 4-column grid in the full one), then the numbered step cards.
     @ViewBuilder private var recipe: some View {
         // a reopened card's half page is 396: 396 − 40 − 44 − 3 × 8 − 94 strip = 194 for title row + picture
-        let reopenedHeight = min(card.title.count <= 17 ? 196 : 130, titleRowHeight > 0 ? 194 - titleRowHeight : 196)
-        let camHeight = full ? 196 : (entry.reopened ? (reopenedHeight >= 72 ? reopenedHeight : 0) : halfCameraHeight)
+        let reopenedCap: CGFloat = card.title.count <= 17 ? 196 : 130
+        let reopenedRoom: CGFloat = titleRowHeight > 0 ? 194 - titleRowHeight : 196
+        let reopenedHeight: CGFloat = min(reopenedCap, reopenedRoom)
+        let reopenedPicture: CGFloat = reopenedHeight >= 72 ? reopenedHeight : 0
+        let camHeight: CGFloat = full ? 196 : (entry.reopened ? reopenedPicture : halfCameraHeight)
         if let cam = card.camera, camHeight > 0 {
             CameraFrame(frame: entry.frames.indices.contains(cam.frame) ? entry.frames[cam.frame] : nil, camera: cam, items: card.items, selected: finds.selectedItem,
                         checking: entry.checking, height: camHeight)
@@ -731,7 +734,7 @@ struct FindCardPage: View {
     /// most (r03), 72 at least. With accessibility text sizes the title row alone can take the room (AX-L): then the
     /// half sheet drops the picture (it is in the full sheet) so the ingredient tiles stay whole.
     static func halfCameraHeight(titleRow: CGFloat) -> CGFloat {
-        let room = 344 - 40 - 44 - 3 * 8 - stripHeight - titleRow
+        let room: CGFloat = 236 - stripHeight - titleRow   // 236 = 344 − 40 − 44 − 3 × 8 (one literal: the iOS type checker timed out on the sum)
         return room >= 72 ? min(132, room) : 0
     }
     private var halfCameraHeight: CGFloat { titleRowHeight > 0 ? Self.halfCameraHeight(titleRow: titleRowHeight) : 132 }
