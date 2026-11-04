@@ -192,9 +192,12 @@ import UIKit
         startedUtterances.removeAll()
     }
 
-    /// Stop now and drop everything queued (utterance.cancelled, disconnect, background). `restart`: the player is
-    /// left running for the next chunk (not when the call stops: TF 331 CRASH-1 played here from a background expiry).
-    func flush(restart: Bool = true) {
+    /// Stop now and drop everything queued (utterance.cancelled, disconnect, background).
+    func flush() { flush(restart: true) }
+
+    /// `restart`: the player is left running for the next chunk (not when the call stops: TF 331 CRASH-1 played here
+    /// from a background expiry).
+    private func flush(restart: Bool) {
         stopCue()
         generation += 1
         if player.engine != nil { player.stop() }   // before start() the node has no engine
