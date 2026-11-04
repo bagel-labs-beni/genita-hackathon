@@ -87,9 +87,11 @@ function latch() {
   return { promise, open };
 }
 
-async function setup(t: TestContext, max = 2, productionGate = false, deviceFallback = true) {
-  // the seat-overflow → `say` tests below are the GENITA_VOICE_DEVICE_FALLBACK=1 path (off by default since 11/4)
-  const config = loadConfig({ MODEL_API_KEY: "fake", GENITA_VOICE_URL: "https://voice.invalid", GENITA_VOICE_TOKEN: "fake", GENITA_VOICE_MAX_CALLS: String(max), GENITA_SPARK_HEDGE: "1", GENITA_SPECULATE: "0", ...(deviceFallback ? { GENITA_VOICE_DEVICE_FALLBACK: "1" } : {}) });
+async function setup(t: TestContext, max = 2, productionGate = false, deviceFallback = true, env: Record<string, string> = {}) {
+  // the seat-overflow → `say` tests below are the old device-fallback path: only an injected config reaches it now
+  // (11/4 18:3x: the env can no longer turn it on)
+  const loaded = loadConfig({ MODEL_API_KEY: "fake", GENITA_VOICE_URL: "https://voice.invalid", GENITA_VOICE_TOKEN: "fake", GENITA_VOICE_MAX_CALLS: String(max), GENITA_SPARK_HEDGE: "1", GENITA_SPECULATE: "0", ...env });
+  const config = deviceFallback ? { ...loaded, voice: { ...loaded.voice!, deviceFallback: true } } : loaded;
   // defaultDeps constructs clients only; the harness replaces all vendor methods with fakes.
   const gate = productionGate ? defaultDeps(config, () => {}).voiceSeats! : await seats(max);
   assert.ok(gate);
@@ -264,4 +266,22 @@ test("voice capacity default (no device fallback): the third call keeps the comp
   assert.equal(logs.filter((e) => e.event === "voice.capacity_fallback").length, 0);
   await three.reply(); await three.client.waitFor("turn.metrics", 2);
   assert.deepEqual(logs.filter((e) => e.event === "voice.capacity_over").map((e) => e.data.sessionId), ["three"], "logged once per stretch");
+});
+
+// 11/4 18:3x (Chelsea, TF 341: "robot voice"): a stale GENITA_VOICE_DEVICE_FALLBACK=1 in the env never sends `say` —
+// not over the seat cap, not when the voice service fails (the companion's own voice is retried, then captions)
+test("no robot voice: GENITA_VOICE_DEVICE_FALLBACK=1 in the env, full GPU and a failing voice service still send no say", async (t) => {
+  const { call } = await setup(t, 1, false, false, { GENITA_VOICE_DEVICE_FALLBACK: "1" });
+  const holder = await call("holder");
+  await holder.reply(); await holder.client.waitFor("turn.metrics");
+  const over = await call("over");
+  await over.reply(); await over.client.waitFor("turn.metrics");
+  const failing = await call("failing", { failVoice: true });
+  await failing.reply(); await failing.client.waitFor("turn.metrics");
+  for (const c of [holder, over, failing]) {
+    assert.equal(c.client.of("say").length, 0, "never the phone's voice");
+    assert.ok(!String(c.client.of("turn.metrics")[0].ttsModel ?? "").includes("device"), "ttsModel never device");
+  }
+  assert.ok(over.client.of("audio").length > 0, "the over-cap call keeps the server voice");
+  assert.ok(failing.calls.length > 1, "the failing clause is retried in the companion's own voice");
 });

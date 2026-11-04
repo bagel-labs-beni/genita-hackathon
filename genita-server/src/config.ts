@@ -70,10 +70,10 @@ export type VoiceConfig = {
   /** `expression` events per reply clause (face expression layer, 11/3). Default on; GENITA_EXPRESSION=0 turns them off. */
   expressions?: boolean;
   /**
-   * GENITA_VOICE_DEVICE_FALLBACK=1: the old fallback (a full GPU or a failed clause → the app's system voice via `say`).
-   * Off by default since 11/4 (Chelsea, build 7: "왜 여자 + 기계식"): the phone's voice is another person (iOS picks a
-   * female en-US voice) and robotic, so a call keeps the companion's own voice and retries; captions cover a clause
-   * the voice service could not voice.
+   * The old fallback (a full GPU or a failed clause → the app's system voice via `say`). Off since 11/4 (Chelsea,
+   * build 7: "왜 여자 + 기계식"; TF 341: "robot voice"): the phone's voice is another person (iOS picks a female en-US
+   * voice) and robotic, so a call keeps the companion's own voice and retries; captions cover a clause the voice
+   * service could not voice. No env turns it on (GENITA_VOICE_DEVICE_FALLBACK is ignored); injected configs only.
    */
   deviceFallback?: boolean;
 };
@@ -122,7 +122,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
           ...(env.GENITA_VOICE_POST === "1" ? {} : { post: false }),
           ...(env.GENITA_VOICE_EMOTION === "0" ? { emotion: false } : {}),
           expressions: env.GENITA_EXPRESSION !== "0",
-          ...(env.GENITA_VOICE_DEVICE_FALLBACK === "1" ? { deviceFallback: true } : {}),
+          // 11/4 18:3x (Chelsea, TF 341: "robot voice"): never the phone's voice in a server-voice call. The old
+          // GENITA_VOICE_DEVICE_FALLBACK=1 opt-in is ignored on purpose, so a stale env/SSM value can't bring it back;
+          // `deviceFallback` is reachable only from an injected config (tests).
         }
       : null;
   if (voiceUrl && !voice) throw new Error("GENITA_VOICE_URL needs GENITA_VOICE_TOKEN");
