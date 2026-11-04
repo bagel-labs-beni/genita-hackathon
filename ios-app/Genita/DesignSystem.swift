@@ -1,7 +1,16 @@
 import SwiftUI
 import UIKit
 
-enum Palette { static let accent = Color("AccentColor") }
+enum Palette {
+    static let accent = Color("AccentColor")
+    /// D1 (Chelsea 04:53): secondary text on white is #737373 (4.8:1), not Figma's #B7B7B7 (2.0:1, unreadable at 12 pt).
+    static let secondaryUI = UIColor(white: 115.0 / 255, alpha: 1)
+    static let secondary = Color(uiColor: secondaryUI)
+    /// Figma's #B7B7B7 secondary grey, as the design JSON carries it (0.7177 per channel).
+    static func isFigmaSecondary(r: CGFloat, g: CGFloat, b: CGFloat) -> Bool {
+        abs(r - 0.7177) < 0.01 && abs(g - 0.7177) < 0.01 && abs(b - 0.7177) < 0.01
+    }
+}
 enum TypeStyle {
     static func title(_ size: CGFloat = 35) -> Font { .custom("KMUTTF-SungkokSemiSerif", size: size, relativeTo: .largeTitle) }
     /// Fixed size: Figma-placed text (call overlays, onboarding frames) whose layout is absolute.

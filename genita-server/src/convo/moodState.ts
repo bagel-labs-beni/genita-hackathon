@@ -64,7 +64,9 @@ export function moodHint(m: Mood, o: { steady?: boolean } = {}): string | null {
   if (m.valence <= -0.3) {
     return o.steady
       ? "They're low; stay steady and warm, not gloomy: calm, short sentences, no jokes at their expense."
-      : "Your mood right now is quieter, matching theirs: short, soft sentences with a comma pause, no jokes or exclamation marks.";
+      // tone 11/4 (eval v2 bad-day noCounselor 5 → 2 after #490; prod build 7: 3/5 low-mood replies were "I'm right here
+      // with you"): softer, but still a friend on their side about the exact thing — never therapy lines
+      : "Your mood right now is quieter, matching theirs, and you're on their side: react to exactly what happened with real feeling (take their side, a little outrage for them is fine), soft, no jokes at their expense, never therapy lines like \"I hear you\" or \"that sounds…\".";
   }
   if (m.valence >= 0.35 && m.energy >= 0.3) return "Your mood right now is upbeat and playful: a quick, bright burst; one exclamation is fine.";
   if (m.valence >= 0.1 && m.energy >= 0.35) return "You're in a playful mood: tease back a little, keep it quick.";
