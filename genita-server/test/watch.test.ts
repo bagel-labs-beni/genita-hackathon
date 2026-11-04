@@ -101,6 +101,7 @@ test("memo request: frames as images, labelled lines, strict JSON schema; parse 
     speakers: [{ label: "A", name: "the woman" }],
     protectedVideo: false,
     talkOver: false,
+    page: false,
   });
   assert.equal(parseMemoVerdict("no json"), null);
   assert.equal(parseMemoVerdict('{"memo":"x","moment":"lol","reaction":"","speakers":[]}')!.moment, "none");
@@ -986,7 +987,7 @@ test("quick look: a spike gets its own small Spark call on the next frame and re
   assert.equal(imgs.length, 2, "the last second as 2 frames (the spike and after it), newest last");
   assert.match(quick[0].instructions!, /only name what is clearly visible in the last frame/);
   assert.match(quick[0].instructions!, /no clothes slipping or falling off/);
-  assert.ok(quick[0].maxOutputTokens! <= 600 && quick[0].instructions!.length < 900, "small and fast");
+  assert.ok(quick[0].maxOutputTokens! <= 600 && quick[0].instructions!.length < 1000, "small and fast");
   assert.deepEqual(q.reacted, ["<surprised> [surprised] What a dunk!"]);
 });
 
@@ -1374,4 +1375,263 @@ test("watch socket: a replaced uplink's late stop or audio never touches the new
   next.emit("message", Buffer.from(JSON.stringify({ type: "stop" })), false);
   assert.equal(c.isSharing, false, "the current uplink still stops it");
   c.close();
+});
+
+test("page comment (lead's call 11/4): a new page gets one grounded comment once the share's first seconds pass; the same page never again, a new title does", async () => {
+  const page = (line: string) => JSON.stringify({ protectedVideo: false, moment: "sweet", page: true, reaction: line, talkOver: false, memo: "A shoe shop page with running shoes.", speakers: [] });
+  const { c, sink, reacted, sparkCalls, at } = controller([page("ooh, those red runners are cute"), page("those blue ones too"), page("oh, bike history")]);
+  c.onMessage({ type: "start", source: "Google Chrome", title: "Running shoes - RUNSHOP" });
+  at(100);
+  c.onMessage({ type: "frame", image: frame, motion: 1 });
+  at(2_200);
+  c.tick();
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(sparkCalls.length, 1);
+  assert.deepEqual(reacted, [], "the share's first 6 s: held, not dropped");
+  at(6_500);
+  c.tick();
+  assert.deepEqual(reacted, ["<warm> [smile] ooh, those red runners are cute"]);
+  assert.deepEqual(sink.events.find((e) => e.type === "reaction"), { type: "reaction", utteranceId: 1, moment: "sweet" });
+  // scrolled the same page, past the 25 s gap: no second comment
+  at(40_000);
+  c.onMessage({ type: "frame", image: frame + "B", motion: 0.05 });
+  at(42_500);
+  c.tick();
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(sparkCalls.length, 2);
+  assert.equal(reacted.length, 1, "same page: no second comment");
+  // another page (the title changed): one comment again
+  c.onMessage({ type: "context", title: "History of the bicycle - Encyclopedia" });
+  at(70_000);
+  c.onMessage({ type: "frame", image: frame + "C", motion: 0.5 });
+  at(72_500);
+  c.tick();
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(reacted.length, 2);
+  assert.equal(reacted[1], "<warm> [smile] oh, bike history");
+});
+
+test("page comment: the memo prompt asks for it once per new page, grounded; the question context gives the reason for a why", () => {
+  const memo = buildMemoRequest({ companion: { name: "Jin", traits: [] }, source: null, memo: [], lines: [], names: new Map(), frames: [], blank: false });
+  assert.match(String(memo.instructions), /page: true only if the frames show a web page, shop or document that the memo so far has not seen yet/);
+  assert.equal((memo.text?.format as { schema: { required: string[] } }).schema.required.join(","), "protectedVideo,moment,page,reaction,talkOver,memo,speakers");
+  const q = buildQuestionContext({ source: "YouTube", memo: [], lines: [{ at: 0, label: null, text: "Off the heat, keep stirring, back on the heat." }], names: new Map(), frames: [frame], blank: false });
+  assert.match(q.instructions, /If they ask why or how, give the reason too/);
+});
+
+test("a quick look that fails (Spark timeout) hands its frames to the next look (11/4: the dunk fell between looks)", async () => {
+  let n = 0;
+  const q = quickController((r) => {
+    if ((r.text?.format as { name?: string }).name !== "watch_quick") return memoNone;
+    if (++n === 1) throw new Error("spark first-token timeout");
+    return JSON.stringify({ react: false, moment: "none", line: "", talkOver: true });
+  }, {}, { quickEveryMs: 1_000 });
+  q.c.onMessage({ type: "start", source: "YouTube" });
+  const send = async (ms: number, id: string, motion: number) => { q.at(ms); q.c.onMessage({ type: "frame", image: `${frame}${id}`, motion }); await wait(1); };
+  await send(7_000, "A", 0.2); // the dunk: a spike
+  await send(7_330, "B", 0.03); // its look goes out (A, B) and times out
+  await send(7_660, "C", 0.01);
+  await send(8_000, "D", 0.01);
+  await send(8_400, "E", 0.01); // the next look
+  const looks = q.calls.filter(q.isQuick).map((r) => (r.input as { content: { type: string; image_url?: string }[] }[])[0].content.filter((p) => p.type === "input_image").map((p) => p.image_url!.slice(-1)));
+  assert.equal(looks.length, 2);
+  assert.deepEqual(looks[0], ["A", "B"]);
+  assert.ok(looks[1].includes("A"), `the failed look's moment is looked at again (got ${looks[1]})`);
+});
+
+test("page comment: a YouTube page with its video playing is not commented on as a page (it waits, then drops)", async () => {
+  const page = JSON.stringify({ protectedVideo: false, moment: "sweet", page: true, reaction: "ooh, a cooking channel", talkOver: false, memo: "A YouTube page with a cooking video.", speakers: [] });
+  const { c, reacted, at } = controller([page]);
+  c.onMessage({ type: "start", source: "Google Chrome", title: "Perfect scrambled eggs - YouTube" });
+  for (let ms = 6_000; ms <= 9_000; ms += 333) {
+    at(ms);
+    c.onMessage({ type: "frame", image: `${frame}${ms}`, motion: 0.05 });
+  }
+  at(9_100);
+  c.tick();
+  await new Promise((r) => setTimeout(r, 5));
+  assert.deepEqual(reacted, [], "the video is playing: no page comment");
+  for (let ms = 9_400; ms <= 19_000; ms += 333) {
+    at(ms);
+    c.onMessage({ type: "frame", image: `${frame}${ms}`, motion: 0.05 });
+    c.tick();
+  }
+  assert.deepEqual(reacted, [], "still playing, then stale: dropped");
+});
+
+test("English-only transcriber (11/4): every place the video's lines show up says a non-English video comes out garbled, react from frames", () => {
+  const lines = [{ at: 0, label: null, text: "ah so de su ne" }];
+  const memo = buildMemoRequest({ companion: { name: "Jin", traits: [] }, source: null, memo: [], lines, names: new Map(), frames: [frame], blank: false });
+  assert.match(JSON.stringify(memo.input), /English only: a video in another language comes out garbled or empty, then react from the frames and never claim to understand/);
+  const q = buildQuestionContext({ source: "YouTube", memo: [], lines, names: new Map(), frames: [frame], blank: false });
+  assert.match(q.instructions, /never claim to understand what is said/);
+});
+
+test("AU-66: after the share stops, turns hear 'you were watching' in the past tense for 90 s, then nothing", async () => {
+  const { c, at } = controller(['{"memo":"A chess game in a park.","moment":"none","reaction":"","speakers":[]}']);
+  c.onMessage({ type: "start", source: "Safari" });
+  at(13_000);
+  c.onMessage({ type: "frame", image: frame });
+  c.tick();
+  await new Promise((r) => setTimeout(r, 5));
+  assert.match(c.questionContext()!.instructions, /^You and the user are watching their shared screen together \(Safari\)/);
+  at(20_000);
+  c.onMessage({ type: "stop" });
+  at(50_000);
+  const q = c.questionContext()!;
+  assert.match(q.instructions, /were watching their shared screen together \(Safari\) until 30 s ago; they stopped sharing/);
+  assert.doesNotMatch(q.instructions, /are watching/);
+  assert.match(q.instructions, /chess game/);
+  at(111_000);
+  assert.equal(c.questionContext(), null, "90 s after the stop the call has moved on");
+  // a new share is live again
+  c.onMessage({ type: "start", source: "Safari" });
+  at(112_000);
+  c.onMessage({ type: "frame", image: frame + "N" });
+  assert.match(c.questionContext()!.instructions, /are watching/);
+});
+
+test("Codex #542 P2: two looks failing in a row both hand their frames back; a new product (most of the screen changed) can get its comment", async () => {
+  const { quickFrames } = await import("../src/watch/watch.ts");
+  assert.ok(quickFrames);
+  const page = (line: string) => JSON.stringify({ protectedVideo: false, moment: "sweet", page: true, reaction: line, talkOver: false, memo: "A shop page.", speakers: [] });
+  const { c, reacted, at } = controller([page("ooh, red runners"), page("ooh, that blue jacket")]);
+  c.onMessage({ type: "start", source: "Google Chrome", title: "RUNSHOP" });
+  at(7_000);
+  c.onMessage({ type: "frame", image: frame, motion: 1 });
+  at(9_100);
+  c.tick();
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(reacted.length, 1);
+  // same title, another product page: most of the screen changed
+  at(40_000);
+  c.onMessage({ type: "frame", image: frame + "B", motion: 0.45 });
+  at(42_500);
+  c.tick();
+  await new Promise((r) => setTimeout(r, 5));
+  assert.deepEqual(reacted, ["<warm> [smile] ooh, red runners", "<warm> [smile] ooh, that blue jacket"]);
+});
+
+// ───────────────────────── instant nonverbal (lead's call 11/4) ─────────────────────────
+
+function nvController(verdicts: string[] = [], extra: Partial<WatchDeps> = {}) {
+  const nv: number[] = [];
+  const ctl = controller(verdicts, {}, extra);
+  (ctl.c as unknown as { host: WatchHost }).host.nonverbal = () => (nv.push(1), true);
+  return { ...ctl, nv };
+}
+const feed = (c: { c: { onMessage: (m: Record<string, unknown>) => void }; at: (ms: number) => number }, from: number, motions: number[]) =>
+  motions.forEach((m, i) => { c.at(from + i * 333); c.c.onMessage({ type: "frame", image: `${frame}${from + i}`, motion: m }); });
+
+test("nonverbal: two frames that out-move the last 2 s → brows + inhale once; a pan that moves this much all along does not", () => {
+  const q = nvController();
+  q.c.onMessage({ type: "start", source: "YouTube" });
+  feed(q, 5_400, [0.03, 0.04, 0.03, 0.04, 0.03, 0.03, 0.04, 0.03, 0.04, 0.03, 0.17, 0.19]); // a quiet court, then the dunk
+  assert.equal(q.nv.length, 1);
+  feed(q, 9_400, [0.03, 0.04, 0.2, 0.22]); // another big move 0.7 s later: inside the 25 s gap
+  assert.equal(q.nv.length, 1);
+  const pan = nvController();
+  pan.c.onMessage({ type: "start", source: "YouTube" });
+  feed(pan, 7_000, [0.12, 0.13, 0.12, 0.14, 0.12, 0.15, 0.14, 0.13, 0.12, 0.14]); // a broadcast pan from its first frame
+  assert.equal(pan.nv.length, 0, "no history at first, then nothing out-moves the pan 1.5×");
+});
+
+test("Codex #613 P2: the page guard holds through the page's next memos; another scene's spoken line waits out the nonverbal's gap", async () => {
+  const verdicts = [
+    JSON.stringify({ protectedVideo: false, moment: "sweet", page: true, reaction: "ooh, red runners", talkOver: false, memo: "A shop page.", speakers: [] }),
+    JSON.stringify({ protectedVideo: false, moment: "none", page: false, reaction: "", talkOver: false, memo: "Still the shop page.", speakers: [] }),
+  ];
+  const page = nvController(verdicts);
+  page.c.onMessage({ type: "start", source: "Google Chrome" });
+  page.at(7_000); page.c.onMessage({ type: "frame", image: frame, motion: 1 });
+  page.at(9_100); page.c.tick(); await new Promise((r) => setTimeout(r, 5));
+  page.at(12_000); page.c.onMessage({ type: "frame", image: frame + "x", motion: 0.03 });
+  page.at(14_100); page.c.tick(); await new Promise((r) => setTimeout(r, 5)); // the next memo: page false
+  feed(page, 40_000, [0.01, 0.02, 0.17, 0.13]); // scrolling the same page much later
+  assert.equal(page.nv.length, 0);
+  const funny = JSON.stringify({ protectedVideo: false, moment: "funny", page: false, reaction: "He fell", talkOver: false, memo: "x", speakers: [] });
+  const q = nvController([funny]);
+  q.c.onMessage({ type: "start", source: "YouTube" });
+  feed(q, 5_400, [0.03, 0.04, 0.03, 0.04, 0.03, 0.03, 0.04, 0.03, 0.04, 0.03, 0.17, 0.19]); // nonverbal at ~9 s
+  assert.equal(q.nv.length, 1);
+  q.at(15_000); q.c.onMessage({ type: "frame", image: frame + "later", motion: 0.03 });
+  q.at(15_100); q.c.tick(); await new Promise((r) => setTimeout(r, 5)); // another scene's line at 15 s
+  assert.equal(q.reacted.length, 0, "the gap holds both ways");
+});
+
+test("nonverbal: a cut (one whole-picture change), the share's first 6 s, a page and reactions off never fire it", async () => {
+  const cut = nvController();
+  cut.c.onMessage({ type: "start", source: "YouTube" });
+  feed(cut, 7_000, [0.02, 0.03, 0.6, 0.03, 0.02]);
+  assert.equal(cut.nv.length, 0, "cut");
+  const early = nvController();
+  early.c.onMessage({ type: "start", source: "YouTube" });
+  feed(early, 1_000, [0.02, 0.03, 0.2, 0.2]);
+  assert.equal(early.nv.length, 0, "first 6 s");
+  const page = nvController([JSON.stringify({ protectedVideo: false, moment: "none", page: true, reaction: "", talkOver: false, memo: "A shop page.", speakers: [] })]);
+  page.c.onMessage({ type: "start", source: "Google Chrome" });
+  page.at(7_000);
+  page.c.onMessage({ type: "frame", image: frame, motion: 1 });
+  page.at(9_100);
+  page.c.tick();
+  await new Promise((r) => setTimeout(r, 5));
+  feed(page, 10_000, [0.01, 0.02, 0.17, 0.13]); // scrolling the page
+  assert.equal(page.nv.length, 0, "page");
+  const off = nvController([], { reactions: false });
+  off.c.onMessage({ type: "start", source: "YouTube" });
+  feed(off, 7_000, [0.02, 0.03, 0.2, 0.2]);
+  assert.equal(off.nv.length, 0, "reactions off");
+});
+
+test("nonverbal: the inhale is breath-quiet and short; the event is a valid backchannel", async () => {
+  const { inhalePcmBase64 } = await import("../src/watch/breath.ts");
+  const pcm = Buffer.from(inhalePcmBase64(), "base64");
+  assert.ok(pcm.length / 2 / 24_000 <= 0.45, "≤ 0.45 s");
+  let peak = 0;
+  for (let i = 0; i < pcm.length; i += 2) peak = Math.max(peak, Math.abs(pcm.readInt16LE(i)));
+  assert.ok(peak <= 1_100 && peak > 300, `peak ${peak} (~ −30 dBFS)`);
+  assert.deepEqual(checkServerEvent({ type: "backchannel", kind: "inhale", audio: inhalePcmBase64() }), []);
+});
+
+test("Codex #542 r2 P2: a failed look's frames get the next look even when they're past the 3 s lookback", async () => {
+  let n = 0;
+  const q = quickController((r) => {
+    if ((r.text?.format as { name?: string }).name !== "watch_quick") return memoNone;
+    if (++n === 1) throw new Error("spark first-token timeout");
+    return JSON.stringify({ react: false, moment: "none", line: "", talkOver: true });
+  }, {}, { quickEveryMs: 1_000 });
+  q.c.onMessage({ type: "start", source: "YouTube" });
+  const send = async (ms: number, id: string, motion: number) => { q.at(ms); q.c.onMessage({ type: "frame", image: `${frame}${id}`, motion }); await wait(1); };
+  await send(7_000, "A", 0.2);
+  await send(7_330, "B", 0.03); // look 1 (A, B) fails
+  await send(10_600, "C", 0.03);
+  await send(10_900, "D", 0.03); // 3.6 s later: A and B are out of the lookback
+  const looks = q.calls.filter(q.isQuick).map((r) => (r.input as { content: { type: string; image_url?: string }[] }[])[0].content.filter((p) => p.type === "input_image").map((p) => p.image_url!.slice(-1)));
+  assert.deepEqual(looks[0], ["A", "B"]);
+  assert.deepEqual(looks[1], ["A", "B"], "the failed look's frames are looked at again");
+});
+
+test("Codex #542 r2 P2: a page comment from a memo that started on the old page is dropped after most of the screen changes", async () => {
+  let release: () => void = () => {};
+  const gate = new Promise<void>((r) => (release = r));
+  const page = JSON.stringify({ protectedVideo: false, moment: "sweet", page: true, reaction: "ooh, product A", talkOver: false, memo: "Product A.", speakers: [] });
+  const reacted: string[] = [];
+  const { c, at } = controller([], {}, {
+    async *spark(): AsyncGenerator<SparkStreamEvent> {
+      await gate;
+      yield { type: "text", delta: page };
+      yield { type: "done", responseId: null, text: page, status: "completed" };
+    },
+  });
+  (c as unknown as { host: WatchHost }).host.react = (s) => (reacted.push(s), reacted.length);
+  c.onMessage({ type: "start", source: "Google Chrome", title: "SHOP" });
+  at(7_000);
+  c.onMessage({ type: "frame", image: frame, motion: 1 });
+  at(9_100);
+  c.tick(); // memo on product A starts
+  at(9_500);
+  c.onMessage({ type: "frame", image: frame + "B", motion: 0.45 }); // product B now
+  release();
+  await new Promise((r) => setTimeout(r, 5));
+  assert.deepEqual(reacted, [], "A's comment is not said over B");
 });

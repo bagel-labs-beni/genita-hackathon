@@ -37,7 +37,7 @@ enum ProximityToken {
 enum ProximityMessage: Equatable {
     case token(String, expiresIn: Double)
     case unavailable(reason: String)
-    case result(accepted: Bool, reason: String)
+    case result(accepted: Bool, reason: String, token: String? = nil, requestID: String? = nil)
     /// An ownership change made by a proximity move (trigger `proximity`).
     case moved(to: ConversationDevice)
     /// Mac: this account's iPhone is (not) advertising a token right now.
@@ -54,7 +54,8 @@ enum ProximityMessage: Equatable {
             self = .peer(armed: armed)
         case "proximity.result":
             guard let accepted = m["accepted"] as? Bool else { return nil }
-            self = .result(accepted: accepted, reason: m["reason"] as? String ?? "")
+            self = .result(accepted: accepted, reason: m["reason"] as? String ?? "",
+                           token: ProximityToken.parse(m["token"] as? String), requestID: m["requestId"] as? String)
         case "ownership":
             guard m["trigger"] as? String == "proximity", let to = ConversationDevice(serverName: m["owner"] as? String) else { return nil }
             self = .moved(to: to)

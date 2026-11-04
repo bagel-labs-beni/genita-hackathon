@@ -24,6 +24,9 @@
  *   POST /v1/companion/prefs {depth, answers}      F2-L14 → persona card + SUM lines + session start fields
  *   GET  /v1/profile/story?wait=s           D47 HISY story cards (wait ≤ 10 s for one being written)
  *   PATCH /v1/profile {cardId, pick?, text?}  D47 "That's not me" → updated card + ack (10/min/user)
+ *   GET  /v1/profile/insights?wait=s        SUM insight report {status: ready|pending|failed|none, report} (wait ≤ 8 s, 30/min)
+ *   POST /v1/profile/insights {answers}     setup answers (prefs keys, partial ok) → 202, the report is rewritten (6/min)
+ *   POST /v1/profile/insights/:id/verdict {verdict: right|not_me, correction?≤200}  → report (10/min)
  *
  * The user comes from server.ts (session JWT → users.id, F1-L5). Without one
  * (shared-token dev mode, tests) it is `x-genita-user` (default "demo").
@@ -33,7 +36,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
 import { IMPORT_PROMPT, skipStyleCard, styleProfileText, type StyleCard } from "./importProfile.ts";
 import { MAX_IMAGE_BYTES, PrepError, checkImage, importStyle, orderedVoices, savePrefs, voicePreview, type PrepDeps } from "./pipeline.ts";
-import { needsFaceSet, newPrepState, prepView, type PrepRunner } from "./runner.ts";
+import { ResetBusy, needsFaceSet, newPrepState, prepView, type PrepRunner } from "./runner.ts";
 import { ALL_FACE_KEYS, type FaceKey } from "./face.ts";
 import { flowAssetAllowed } from "./faceflow.ts";
 import { sniffImage } from "./classify.ts";
@@ -52,6 +55,8 @@ function demoSwap<T>(userId: string, fn: () => Promise<T>): Promise<T> {
   return next;
 }
 import { PersonalizeError } from "../personalize/service.ts";
+import { InsightsError } from "../insights/service.ts";
+import { picksFromSkip } from "../insights/report.ts";
 import { getOps } from "../ops/limits.ts";
 
 const JSON_LIMIT = 256 * 1024;
@@ -131,6 +136,10 @@ const STORY_WAIT_MAX_S = 10;
 /** a story read can start a Spark write: 20 reads per user per minute (the app polls at most 3 times) */
 const STORY_PER_MIN = 20;
 const PROFILE_JSON_LIMIT = 2048;
+/** SUM insight report: reads may wait ≤ 8 s; a write is ≤ 2 Spark calls (the app sends one per P-last) */
+const INSIGHTS_WAIT_MAX_S = 8;
+const INSIGHTS_READS_PER_MIN = 30;
+const INSIGHTS_WRITES_PER_MIN = 6;
 
 export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
   const importJobs = new Map<string, ImportJob>();
@@ -150,6 +159,8 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
   const allowCorrect = limiter(CORRECT_PER_MIN);
   const allowStory = limiter(STORY_PER_MIN);
   const allowPolish = limiter(POLISH_PER_MIN);
+  const allowInsightRead = limiter(INSIGHTS_READS_PER_MIN);
+  const allowInsightWrite = limiter(INSIGHTS_WRITES_PER_MIN);
   /** polishes per uploaded photo (first + two "Try again"); in memory: a restart only gives a few more */
   const polishAttempts = new Map<string, number>();
 
@@ -180,10 +191,14 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
     }
 
     if (m === "POST" && p === "/v1/import/skip") {
-      const r = skipStyleCard(await readJson(req));
+      const skipBody = await readJson(req);
+      const r = skipStyleCard(skipBody);
       if (!r.ok) throw new PrepError(400, "bad_skip", "Pick up to 8 short answers.");
+      const picks = picksFromSkip(skipBody);
+      if (picks.length) r.card.picks = picks;
       if (d.personalize) await d.personalize.replaceStyle(user, r.card);
       else await d.store.putStyle(user, r.card);
+      d.insights?.fromSkip(user);
       d.log("import.skipped", { item_count: r.card.itemCount, partial: r.card.partial });
       return send(res, 200, { status: "ready", style: r.card, profile: styleProfileText(r.card) });
     }
@@ -277,8 +292,8 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
     if (m === "GET" && p === "/v1/companion/voices") {
       const imageId = url.searchParams.get("imageId");
       const img = imageId ? await d.store.getImage(imageId).catch(() => null) : null;
-      const kind = img && img.rec.userId === user ? img.rec.check.type : null;
-      const r = await orderedVoices(d, user, kind);
+      const own = img && img.rec.userId === user ? img : null;
+      const r = await orderedVoices(d, user, own?.rec.check.type ?? null, own?.rec.check.raw?.voice_fit);
       return send(res, 200, {
         voices: r.voices.map((v) =>
           v.locale
@@ -320,6 +335,9 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
 
     if (m === "POST" && p === "/v1/companion") {
       const b = await readJson(req);
+      // a create and POST /v1/companion/reset never overlap (Codex r3 P2): during a reset this answers 409, and a reset
+      // waits for a create already under way (then removes that companion too, photo and all)
+      const made = await runner.creating(user, async () => {
       const existing = await d.store.getCompanion(user);
       if (existing && !existing.demo) throw new PrepError(409, "companion_exists", "one companion per user; the face cannot be changed");
       const img = typeof b.imageId === "string" ? await d.store.getImage(b.imageId).catch(() => null) : null;
@@ -359,7 +377,12 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
       d.log("companion.named", { companionId: c.id, userId: user });
       d.log("companion.created", { companionId: c.id, userId: user, imageId: c.imageId });
       void runner.run(user);
-      return send(res, 201, companionView(c, await d.store.getStyle(user)));
+      return c;
+      }).catch((err) => {
+        if (err instanceof ResetBusy) throw new PrepError(409, "reset_in_progress", "Starting over. Try again in a moment.");
+        throw err;
+      });
+      return send(res, 201, companionView(made, await d.store.getStyle(user)));
     }
 
     if (m === "POST" && p === "/v1/companion/name/suggest") {
@@ -454,6 +477,39 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
         return send(res, 200, await d.personalize.correct(user, b as Record<string, unknown>));
       } catch (err) {
         if (err instanceof PersonalizeError) throw new PrepError(err.status, err.code, err.message);
+        throw err;
+      }
+    }
+
+    // SUM insight report (src/insights): iOS app, account session (server.ts auth + AI consent gate before handle)
+    if (p === "/v1/profile/insights" || p.startsWith("/v1/profile/insights/")) {
+      const ins = d.insights;
+      if (!ins?.enabled) throw new PrepError(404, "not_found");
+      try {
+        if (m === "GET" && p === "/v1/profile/insights") {
+          if (!allowInsightRead(user)) throw new PrepError(429, "rate_limited", "try again in a minute");
+          const w = Number(url.searchParams.get("wait") ?? 0);
+          const waitMs = Number.isFinite(w) ? Math.round(Math.min(INSIGHTS_WAIT_MAX_S, Math.max(0, w)) * 1000) : 0;
+          return send(res, 200, await ins.get(user, waitMs));
+        }
+        if (m === "POST" && p === "/v1/profile/insights") {
+          const b = JSON.parse((await readBody(req, PROFILE_JSON_LIMIT)).toString("utf8") || "{}") as Record<string, unknown> | null;
+          if (!b || typeof b !== "object" || Array.isArray(b)) throw new PrepError(400, "bad_json");
+          // each write is up to two Spark calls
+          if (!allowInsightWrite(user)) throw new PrepError(429, "rate_limited", "try again in a minute");
+          await ins.fromAnswers(user, b.answers);
+          return send(res, 202, { status: "pending" });
+        }
+        const v = p.match(/^\/v1\/profile\/insights\/([A-Za-z0-9_-]{1,40})\/verdict$/);
+        if (m === "POST" && v) {
+          const b = JSON.parse((await readBody(req, PROFILE_JSON_LIMIT)).toString("utf8") || "{}");
+          if (!allowCorrect(user)) throw new PrepError(429, "rate_limited", "try again in a minute");
+          return send(res, 200, await ins.verdict(user, v[1], b));
+        }
+        if (/^\/v1\/profile\/insights\/[^/]+\/verdict$/.test(p)) throw new PrepError(404, "not_found");
+      } catch (err) {
+        if (err instanceof SyntaxError) throw new PrepError(400, "bad_json");
+        if (err instanceof InsightsError) throw new PrepError(err.status, err.code, err.message);
         throw err;
       }
     }

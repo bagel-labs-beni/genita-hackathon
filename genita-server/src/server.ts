@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
 /**
  * HTTP + WebSocket entry.
  *   GET  /healthz          → {ok:true, sessions, spark_open, spark_open_provider, spark_open_model}
@@ -18,6 +20,7 @@
  * Limits: maxSessions concurrent, 2 MB per message, maxSessionMs per
  * session, 120 s idle. Vendor keys never leave the server.
  */
+import { forgetProductCache } from "./finds/productCache.ts";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -29,15 +32,21 @@ import { META_BASE, metaHeaders } from "./meta/http.ts";
 import { setLlmLog, sparkOpenStatus, startSparkOpenProbe } from "./meta/sparkOpen.ts";
 import { installKeepAlive, makePrewarm } from "./util/keepalive.ts";
 import { createSeamless } from "./tts/seamless.ts";
+import { fileClips } from "./tts/clips.ts";
+import { DEFAULT_VOICES } from "./prep/voices.ts";
+const CURATED_SPEAKERS = DEFAULT_VOICES.map((v) => Number(v.id)).filter((n) => Number.isInteger(n));
 import { createVoiceSeats } from "./tts/capacity.ts";
 import { createPrep } from "./prep/index.ts";
-import { demoTemplateWanted, startDemoTemplate } from "./prep/demoTemplate.ts";
+import { demoTemplateWanted, readDemoPointer, startDemoTemplate } from "./prep/demoTemplate.ts";
+import { DEMO_TEMPLATE_SUB } from "./prep/demo.ts";
+import { createCompanionReset, guardDemoSeed } from "./prep/reset.ts";
 import { likesFromStyle } from "./finds/setup.ts";
 import { renameCompanion } from "./prep/naming.ts";
 import { createAccounts, type AccountsService, type Principal } from "./auth/index.ts";
 import { looksLikeJwt } from "./auth/jwt.ts";
 import { createMemory, PgMemoryRepository } from "./memory/index.ts";
 import type { ThreadState } from "./memory/call.ts";
+import { foldAge, NO_AGE, type AgeSay } from "./convo/minorBoundary.ts";
 import { isMemoryRoute, memoryRoute } from "./memory/routes.ts";
 import { findsFromEnv } from "./finds/setup.ts";
 import { handleFindsHttp, isFindsRoute } from "./finds/http.ts";
@@ -48,6 +57,7 @@ import { createEventsRoute } from "./events/routes.ts";
 import { HandoffHub } from "./handoff/hub.ts";
 import { MemoryOwnershipStore, PgOwnershipStore } from "./handoff/store.ts";
 import { forgetOpenerTopics } from "./convo/openerTopics.ts";
+import { safetyTurn } from "./convo/forgetInCall.ts";
 import { attachPresence, deviceFor, gatedCallDevice, gateCall, handleHandoffHttp, handoffHttpPaths } from "./handoff/routes.ts";
 import { createAppConfigSource, handleAppConfig, isAppConfigRoute } from "./appconfig/appConfig.ts";
 
@@ -65,7 +75,7 @@ async function* serverTtsOff(): AsyncGenerator<never> {
 }
 
 export function defaultDeps(config: Config, log: LogFn): SessionDeps {
-  const voice = config.voice ? createSeamless(config.voice, { log }) : null;
+  const voice = config.voice ? createSeamless(config.voice, { log, clips: fileClips(join(process.env.GENITA_DATA_DIR || join(homedir(), ".genita-data"), "voice-clips")) }) : null;
   return {
     config,
     ...createMemory(config.metaKey, log),
@@ -73,6 +83,8 @@ export function defaultDeps(config: Config, log: LogFn): SessionDeps {
     spark: (req, opts) => sparkStream(config.metaKey, req, opts),
     tts: voice ? (req) => voice.speak(req) : serverTtsOff,
     voicePrefetch: voice ? (speaker) => voice.prefetch(speaker) : undefined,
+    // main.ts at boot: render (or load) the cold-GPU lines for the curated speakers, so the first call after a deploy has them
+    voiceWarm: voice ? () => { for (const spk of new Set([...CURATED_SPEAKERS, ...Object.values(config.voice!.speakers)])) voice.prefetch(spk); } : undefined,
     greetOpener: greetOpenerOn(),
     // one socket per hedged Spark lane, one to the voice service (kept open by installKeepAlive)
     prewarm: makePrewarm({ metaUrl: META_BASE + "/models", metaHeaders: metaHeaders(config.metaKey, false), lanes: config.sparkHedge, voiceUrl: config.voice ? config.voice.url + "/healthz" : undefined }),
@@ -124,6 +136,8 @@ export async function startServer(
   const touches = new Map<string, () => void>();
   const sessionUsers = new Map<string, string>(); // ws session id → users.id
   const prep = createPrep(config, log, env, accounts?.prepStore); // onboarding prep routes (src/prep/routes.ts)
+  // the judge demo copy at sign-in is a companion create: it takes the same lock as POST /v1/companion (Codex #514 P2)
+  if (accounts?.seedDemo) accounts.seedDemo = guardDemoSeed(accounts.seedDemo, prep.runner, log);
   // D41: the judge demo template ("Jin") is built by the server itself, in the background after the accounts
   // DB is migrated (007); idempotent, version-stamped, failures only logged (src/prep/demoTemplate.ts)
   const demoTemplate = accounts && demoTemplateWanted(env, accounts.db.kind)
@@ -153,13 +167,42 @@ export async function startServer(
       for (const [id, u] of sessionUsers) if (u === userId) sessions.get(id)?.close(4401, "account_deleted");
       await findsDeleted;
       await prep.runner.forgetUser(userId);
+      // SUM insight report: the kept paste (memory only) goes, and a write still running lands nowhere
+      prep.deps.insights?.forget(userId);
       await deps.memory?.forget(userId);
       await deps.finds?.store.removeOwner(ownerKey(userId));
+      // S5 product cache: this account's cards and warm-ups (in memory, keyed by the account)
+      forgetProductCache(ownerKey(userId));
     } catch (err) {
       deletedUsers.delete(userId); // the account stays (DELETE /me answers 502 and can be retried)
       throw err;
     }
   };
+  // 11/4 "Make a new companion" (src/prep/reset.ts): the companion goes, the account stays. Same stop as DELETE /me
+  // (prep / top-up / reflow drained by the runner); then live calls close 4410 and call memory is forgotten.
+  const companionReset = createCompanionReset({
+    store: prep.deps.store, runner: prep.runner, log, blobs: accounts?.blobs ?? null,
+    isProtected: async (userId) => {
+      if (!accounts) return false;
+      const u = await accounts.accounts.getUser(userId);
+      if (u?.provider === "dev" && u.providerSub.startsWith(DEMO_TEMPLATE_SUB)) return true;
+      return (await readDemoPointer(accounts.blobs).catch(() => null))?.userId === userId;
+    },
+    afterErase: async (userId) => {
+      // after the rows: an app re-reading /me on 4410 already sees no companion
+      for (const [id, u] of sessionUsers) if (u === userId) sessions.get(id)?.close(4410, "companion_reset");
+      dropLastTurns(userId);
+      forgetOpenerTopics(userId);
+      // after the close: its revision bump refuses a late extraction or turn cache from that call; the new companion
+      // never met them (AU-90): when they last talked and the carried mood go too
+      await deps.memory?.forget(userId, undefined, { relationship: true });
+      // ...and it is call 1 with them again (first-call nod and question), what Genita knows about them stays (AU-90)
+      // in the profile's per-user lock: a personalize save under way can't write the old count back (Codex AU-90)
+      const personalize = deps.personalize ?? prep.deps.personalize;
+      if (personalize && "resetGrowth" in personalize) await (personalize as { resetGrowth(u: string): Promise<void> }).resetGrowth(userId);
+      else { const style = await prep.deps.store.getStyle(userId); if (style?.growth) await prep.deps.store.putStyle(userId, { ...style, growth: { calls: 0, asked: [] } }); }
+    },
+  });
   // F6-L7: who holds the sound. conversations.active_device/epoch with accounts, memory without.
   // proximity handoff moves a conversation only while the account has a live call socket
   const handoff = new HandoffHub(accounts ? new PgOwnershipStore(accounts.db) : new MemoryOwnershipStore(), log, {
@@ -220,6 +263,12 @@ export async function startServer(
     }
     if (accounts?.routes.handles(url.pathname)) return accounts.routes.handle(req, res, await principal(req, url));
     if (!accounts && (url.pathname === "/me" || url.pathname.startsWith("/me/") || url.pathname.startsWith("/auth/"))) return json(res, 503, { error: "accounts_disabled" });
+    if (companionReset.handles(url.pathname)) {
+      const who = await principal(req, url);
+      if (!who) return json(res, 401, { error: "unauthorized" });
+      if (!who.consented) return json(res, 403, { error: "consent_required" });
+      return companionReset.handle(req, res, who.userId);
+    }
     if (prep.routes.handles(req)) {
       const who = await principal(req, url);
       if (!who) return json(res, 401, { error: "unauthorized" });
@@ -324,7 +373,7 @@ export async function startServer(
   const zero: Progress = { turn: 0, update: 0 };
   const newer = (a: Progress, b: Progress) => a.turn > b.turn || (a.turn === b.turn && a.update > b.update);
   // device + hungUp (demo S5): the same device calling again after its user hung up is a return visit, not a move
-  const lastTurns = new Map<string, { turns: HistoryItem[]; thread: ThreadState | null; revision: number | null; progress: Progress; at: number; device: string; hungUp: boolean; gen: number; forgetAsked?: boolean; crisisInCall?: boolean; unsubscribe?: () => void }>();
+  const lastTurns = new Map<string, { turns: HistoryItem[]; thread: ThreadState | null; revision: number | null; progress: Progress; at: number; device: string; hungUp: boolean; gen: number; forgetAsked?: boolean; crisisInCall?: boolean; ageSaid?: AgeSay; unsubscribe?: () => void }>();
   function dropLastTurns(userId: string) {
     lastTurns.get(userId)?.unsubscribe?.();
     lastTurns.delete(userId);
@@ -343,6 +392,8 @@ export async function startServer(
     return c;
   }
   const sessionGens = new Map<string, number>();
+  /** a seeded call that opens later than this after the last one dropped is a reconnect (it says RECONNECT_LINE) */
+  const RECONNECT_GAP_MS = 10_000;
   function priorTurns(userId: string, self: string, revision: number, device: string): HistoryItem[] | null {
     // this call joins the conversation now (a slow first memory read can make it join after a later socket)
     sessionGens.set(self, ++nextGen);
@@ -351,18 +402,28 @@ export async function startServer(
       dropLastTurns(userId);
       cached = undefined;
     }
-    let best: HistoryItem[] | null = cached?.turns ?? null;
+    let best: HistoryItem[] | null = cached?.turns.length ? cached.turns : null;
     let thread = cached?.thread ?? null;
     let bestProgress = cached?.progress ?? zero;
     // the winner was a call the user hung up on this same device (cached, or stopped with its socket still closing)
     let hungUpHere = !!(best && cached?.hungUp && cached.device === device);
+    // where the winning turns came from and how long ago: a drop coming back gets the reconnect line
+    let fromDevice = cached?.device ?? null;
+    let gapMs = cached ? Date.now() - cached.at : 0;
+    let hungUp = !!cached?.hungUp;
     let forgetAsked = !!cached?.forgetAsked;
     let crisisInCall = !!cached?.crisisInCall;
+    // Codex #640: a minor's boundary rides the same handoff as the crisis flag
+    let ageSaid: AgeSay = cached?.ageSaid ?? NO_AGE;
+    // Codex #547 r4: a cached call with no turns left (all forgotten) still had its crisis
+    let crisisAny = !!cached && !cached.turns.length && !!cached.crisisInCall;
     let bestGen = cached?.gen ?? 0;
     for (const [sid, u] of sessionUsers) {
       if (u !== userId || sid === self) continue;
       const session = sessions.get(sid);
       if (!session) continue;
+      // Codex #547 r3: a crisis in the other device's call goes with the move even when its forgets left no turns
+      if (session.crisisInCall) crisisAny = true;
       const t = session.historyForgetRevision === revision ? session.historySnapshot() : null;
       const p = progress.get(sid) ?? zero;
       const g = sessionGens.get(sid) ?? 0;
@@ -372,12 +433,16 @@ export async function startServer(
         // on this same device is a return visit, exactly like its cached copy will be.
         best = t; thread = session.threadInfo(); bestProgress = p; bestGen = g;
         hungUpHere = session.isClosed && session.endedByUser && sessionDevices.get(sid) === device;
+        fromDevice = sessionDevices.get(sid) ?? null; gapMs = 0; hungUp = session.isClosed && session.endedByUser;
         forgetAsked = session.forgetAsked;
         crisisInCall = session.crisisInCall;
+        ageSaid = session.ageSaid;
       }
     }
     // a crisis earlier in the conversation goes with it (next device or a quick call-back): no take nudge (Codex #502 P1 r3)
-    if (best && crisisInCall) { const me = sessions.get(self); if (me) me.crisisInCall = true; }
+    if ((best && crisisInCall) || crisisAny) { const me = sessions.get(self); if (me) me.crisisInCall = true; }
+    // the three age flags as they were (Codex #640 r3: a teen phrase stays a teen phrase, an adult age can still win)
+    if (best && (ageSaid.minor || ageSaid.adult || ageSaid.teen)) { const me = sessions.get(self); if (me) me.ageSaid = foldAge(me.ageSaid, ageSaid); }
     // Hung up on this same device and called again: a return visit (greeting + the last call's notes). A call
     // on the OTHER device still continues it, whatever order its stop and the claim arrived in (Codex 11/3).
     if (best && hungUpHere) {
@@ -385,12 +450,21 @@ export async function startServer(
       // ...but its last lines go along right away as "the call that just ended" (P1 FILM 11/3): the summary and
       // memories of that call are written in the background and can take longer than a quick call-back
       // a call with a forget request anywhere in it (even before the kept lines) hands over nothing raw (Codex 11/3)
-      if (!forgetAsked) lastCallFor.set(self, { turns: best, threadId: thread?.threadId ?? null, covered: thread?.covered ?? 0 });
+      // Codex #547 r6: after a forget, the call's crisis lines (kept by forgetInCall) still go to the quick call-back
+      if (!forgetAsked || crisisInCall || best.some((h, i) => h.role === "user" && safetyTurn(h.text, best![i + 1]?.role === "assistant" ? best![i + 1].text : undefined))) lastCallFor.set(self, { turns: best, threadId: thread?.threadId ?? null, covered: thread?.covered ?? 0 });
       return null;
     }
     if (best) {
       // the conversation carries its forget request with it to the next device (Codex 11/3 #447 r3)
       if (forgetAsked) { const me = sessions.get(self); if (me) me.forgetAsked = true; }
+      // same device (a dropped call: a hang-up there never seeds) or a drop on the other device longer than
+      // RECONNECT_GAP_MS ago: "Sorry, we got cut off — where were we?". A move to the other device (live, within the
+      // gap, or after hanging up there) goes on silently: that's the handoff.
+      if (fromDevice === device || (!hungUp && gapMs > RECONNECT_GAP_MS)) {
+        const me = sessions.get(self);
+        if (me) me.reconnected = true;
+        log("history.reconnect", { session: self, sameDevice: fromDevice === device, gapMs: Math.round(gapMs) });
+      }
       progress.set(self, bestProgress); // inherit the snapshot's order; seeding is not a new turn
       handedThread.set(self, thread);
       return best;
@@ -401,12 +475,23 @@ export async function startServer(
    * Personalize (P1 11/3, demo S4): this call continues the account's conversation from the OTHER device — a live
    * call there, or one that ended there < 10 min ago. Independent of memory (off or slow) and of `start.handoff`.
    */
+  /** Codex #640 r13: the account's age flags from its live calls and the < 10 min cached one (no memory read) */
+  function accountAge(userId: string, self: string): AgeSay {
+    const cached = lastTurns.get(userId);
+    let a: AgeSay = cached && Date.now() - cached.at < 10 * 60_000 && cached.ageSaid ? cached.ageSaid : NO_AGE;
+    for (const [sid, u] of sessionUsers) {
+      if (u !== userId || sid === self) continue;
+      const s = sessions.get(sid);
+      if (s) a = foldAge(a, s.ageSaid);
+    }
+    return a;
+  }
   function continuesOtherDevice(userId: string, self: string, device: string): boolean {
     for (const [sid, u] of sessionUsers) {
       if (u === userId && sid !== self && sessionDevices.get(sid) !== device) return true;
     }
     const cached = lastTurns.get(userId);
-    return !!cached && cached.device !== device && Date.now() - cached.at < 10 * 60_000;
+    return !!cached && cached.turns.length > 0 && cached.device !== device && Date.now() - cached.at < 10 * 60_000;
   }
   function priorThread(self: string): ThreadState | null {
     const t = handedThread.get(self) ?? null;
@@ -418,7 +503,8 @@ export async function startServer(
     const thread = session.threadInfo();
     const revision = session.historyForgetRevision;
     const p = progress.get(session.id) ?? zero;
-    if (!turns.length || deletedUsers.has(userId)) return;
+    // Codex #547 r4: a call whose forgets left no turns still carries its crisis to the next socket
+    if ((!turns.length && !session.crisisInCall) || deletedUsers.has(userId)) return;
     const save = () => {
       const cached = lastTurns.get(userId);
       const now = Date.now();
@@ -437,7 +523,7 @@ export async function startServer(
       const tags = keep ? { device: cached!.device, hungUp: cached!.hungUp, gen: cached!.gen } : { device, hungUp: session.endedByUser, gen };
       dropLastTurns(userId);
       const unsubscribe = deps.memory?.subscribe(userId, () => dropLastTurns(userId));
-      lastTurns.set(userId, { turns, thread, revision, progress: p, at: now, ...tags, forgetAsked: session.forgetAsked || (same && !!cached!.forgetAsked), crisisInCall: session.crisisInCall || (same && !!cached!.crisisInCall), unsubscribe });
+      lastTurns.set(userId, { turns, thread, revision, progress: p, at: now, ...tags, forgetAsked: session.forgetAsked || (same && !!cached!.forgetAsked), crisisInCall: session.crisisInCall || (same && !!cached!.crisisInCall), ageSaid: same && cached!.ageSaid ? foldAge(session.ageSaid, cached!.ageSaid) : session.ageSaid, unsubscribe });
       log("history.cached", { session: session.id, turns: turns.length });
     };
     if (!deps.memory) return save();
@@ -466,16 +552,27 @@ export async function startServer(
     // F2-L26: a rename said in the call is saved to this user's own companion (no-op without one)
     const rename = deps.renameCompanion ?? ((userId: string, name: string) => renameCompanion(prep.deps.store, userId, name));
     // Same presence (11/3): this account's saved companion voice, on the iPhone and the Mac alike
-    const companionVoiceId = () => prep.deps.store.getCompanion(who.userId).then((c) => c?.voiceId ?? null);
+    // one store read for both (AU-53: the stored name wins over the app's cached persona name)
+    let companion: ReturnType<typeof prep.deps.store.getCompanion> | undefined;
+    const storedCompanion = () => (companion ??= prep.deps.store.getCompanion(who.userId));
+    const companionVoiceId = () => storedCompanion().then((c) => c?.voiceId ?? null);
+    const companionName = () => storedCompanion().then((c) => c?.name ?? null);
     // Demo S4: an iPhone call may suggest moving to this account's open Mac app
     const macNearby = here === "iphone" ? () => handoff.isPresent(who.userId, "mac") : undefined;
     // lane 개인화: the stored profile, first-call asks, voice corrections and post-call growth for this account
     // D41: judge demo accounts get a per-code daily turn cap (auth/judge.ts), on top of the D46 ops caps
     const turnGate = who.judge && accounts ? accounts.judgeTurns.gate(who.judge) : undefined;
-    const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, turnGate, renameCompanion: rename, companionVoiceId,
+    const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, turnGate, renameCompanion: rename, companionVoiceId, companionName,
       priorTurns: (revision) => priorTurns(who.userId, id, revision, callDevice), priorThread: () => priorThread(id), lastCall: () => lastCall(id),
       personalize: deps.personalize ?? prep.deps.personalize, macNearby,
       continuesCall: () => continuesOtherDevice(who.userId, id, callDevice),
+      accountAge: () => accountAge(who.userId, id),
+      // the reconnect line waits for the start claim and a switch's lease (src/handoff/hub.ts mayPlay), at most 2 s
+      untilPlayable: gated ? () => new Promise<boolean>((resolve) => {
+        const t0 = Date.now();
+        const tick = () => (gated.call.mayPlay() ? resolve(true) : Date.now() - t0 > 2000 ? resolve(false) : void setTimeout(tick, 50).unref?.());
+        tick();
+      }) : undefined,
       onHistoryChange: (role) => {
         const p = progress.get(id) ?? zero;
         progress.set(id, role === "user" ? { turn: ++nextTurn, update: 0 } : { turn: p.turn, update: p.update + 1 });

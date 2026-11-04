@@ -98,7 +98,8 @@ export type ClientMessage =
   | { type: "ping"; t?: unknown }
   | { type: "stop" }
   | { type: "find.confirm"; findId: string; itemId: string; yes: boolean }
-  | { type: "find.stop"; findId: string };
+  | { type: "find.stop"; findId: string }
+  | { type: "find.focus"; findId: string };
 
 // ───────────────────────── Finds (F5-L3, F5-L8, F10) ─────────────────────────
 
@@ -228,7 +229,7 @@ export type ServerEvent =
    * (aligner timing when on, else the clause's audio span). Sent after the clause's audio. */
   | { type: "expression"; utteranceId: number; sentence: number; tag: ExpressionTag; intensity: number; startMs: number; endMs: number }
   /** P1 #345 (GENITA_BACKCHANNEL=1, off by default): play a soft listening sound now, mid user turn; never a reply */
-  | { type: "backchannel"; kind: "mm" | "yeah"; audio?: string }
+  | { type: "backchannel"; kind: "mm" | "yeah" | "inhale"; audio?: string }
   /** device mode: one sentence for the app to speak, in order. Plain text (no tags); lang is BCP-47. */
   | { type: "say"; utteranceId: number; sentence: number; text: string; emotion: string; lang: string }
   | { type: "reply"; utteranceId: number; text: string; emotion: string; interpret: boolean; final: true }

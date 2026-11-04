@@ -27,11 +27,12 @@ export function avoidKeys(removed: Removed[]): AvoidKey[] {
     .filter((k) => k.keys.length > 0);
 }
 
-/** strict: carries every content word of a removed line; loose (a forget request): carries any of its words */
+/** strict: carries every content word of a removed line; loose (a forget request): carries any of its words — two of
+ * them when the target has three or more (Codex #547 r10: "need" alone must not take an unrelated laptop question) */
 export function mentionsAvoided(text: string, keys: AvoidKey[] | string[][]): boolean {
   if (!keys.length) return false;
   const w = new Set(keyWords(text));
-  return (keys as Array<AvoidKey | string[]>).some((k) => (Array.isArray(k) ? k.every((x) => w.has(x)) : k.loose ? k.keys.some((x) => w.has(x)) : k.keys.every((x) => w.has(x))));
+  return (keys as Array<AvoidKey | string[]>).some((k) => (Array.isArray(k) ? k.every((x) => w.has(x)) : k.loose ? k.keys.filter((x) => w.has(x)).length >= (k.keys.length >= 3 ? 2 : 1) : k.keys.every((x) => w.has(x))));
 }
 
 /** "Actually, forget that I like leather accessories." → "leather accessories" (what to keep out from now on) */

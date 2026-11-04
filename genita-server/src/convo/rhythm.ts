@@ -57,7 +57,8 @@ export function moodFrom(userLines: string[], start: Mood = NEUTRAL, baseline: M
     if (laughed(line)) { valence += 0.3; energy += 0.4; }
     else if (teased(line)) { valence += 0.2; energy += 0.45; }
     flat = flatReply(line) ? flat + 1 : 0;
-    if (flat >= 2) energy -= 0.35;
+    // AU-41: two flat replies in a row end a tease's lift at once (tease, tease, ok, yeah → low-key, not "playful")
+    if (flat >= 2) energy = Math.min(energy, 0) - 0.35;
     valence = clampMood(valence);
     energy = clampMood(energy);
   }

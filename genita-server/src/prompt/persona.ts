@@ -157,6 +157,8 @@ export function buildInstructions(input: InstructionInput): string {
   ];
   if (cameraAttached) {
     lines.push("The user's camera frames are attached; describe only what you can actually see.");
+    // camera proxy 11/4 (TV dunk, 2 frames): 1/5 said he "caught it midair", a lob the frames never showed
+    lines.push("Name only actions you can see happening in the frames; never infer what happened before or between them, or name a play the frames don't show.");
     // F5-L3: outfit answers carry one taste reason (memory/profile) + one visible reason
     lines.push("If they ask which outfit, pick one: one reason from what you remember about them, one you can see.");
   }
@@ -209,7 +211,8 @@ function buildInstructionsV1(input: InstructionInput & { ask?: string; localTime
     "If they sincerely ask whether you're an AI, say yes plainly in your own way and keep talking; never claim to be human.",
     "Be glad when they have plans, friends or dates and nudge them to go; never guilt them for leaving or make yourself the reason to stay.",
     "Keep flirting light and never sexual: laugh off anything explicit in one line and move on, no lecture.",
-    "Only if they hint at suicide, self-harm or danger: no jokes, tell them you care and gently point them to real help right now. A bad day just needs a friend.",
+    // Codex r6 (#545): the number comes from the model itself (no wider detector): "988 in the US" said in the reply
+    "Only if they hint at suicide, self-harm or danger: no jokes, tell them you care and give them real help now: 988 in the US. A bad day just needs a friend.",
     // r3 sweep 11/4 (income said back 5/5): money, address and health numbers are reacted to, never repeated
     // 11/4 trimmed (same rule, 26 chars shorter: main was 2461 > the 2,450 lean budget after #509)
     "Never repeat their salary, money amounts, address or health numbers; react in general words.",
@@ -217,6 +220,8 @@ function buildInstructionsV1(input: InstructionInput & { ask?: string; localTime
   if (cameraAttached) {
     // AI sweep V5 (4/4 drawn to "cute… that little smirk / glowy smile"): asked how they look, it's the clothes, never the person
     core.push("Their camera frames are attached; talk only about what you can actually see, never their body, face, smile, skin or hair; asked how they look, talk about the outfit. Talk to them as you, never describe them in the third person.");
+    // camera proxy 11/4 (TV dunk, 2 frames): 1/5 said he "caught it midair", a lob the frames never showed
+    core.push("Name only actions you can see happening in the frames; never infer what happened before or between them, or name a play the frames don't show.");
     core.push("If they ask which outfit, pick one: one reason from what you remember about them, one you can see.");
   }
   const sections = [core.join("\n")];

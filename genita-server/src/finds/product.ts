@@ -25,6 +25,9 @@ import { domainOf, lastJsonObject, str } from "./parse.ts";
 import { userMessage, type FindsVendors, type OutputItem } from "./vendors.ts";
 import type { PageFacts } from "./fetchPage.ts";
 import type { PipelineCtx, PipelineResult } from "./pipeline.ts";
+import { askedColors, offColor } from "./productCache.ts";
+// one color rule for search, cache and warm-up (handover b9-6): it lives in productCache.ts
+export { askedColors, offColor };
 
 export const PRODUCT_COUNT = 2;
 /** PF-1 searching line: one line at 390 pt next to Stop (≈ 32 characters of Pretendard 16 medium) */
@@ -173,12 +176,50 @@ export function shortName(s: string): string {
   return cut.slice(0, cut.lastIndexOf(" ") > 20 ? cut.lastIndexOf(" ") : 48).replace(/[\s,;:–-]+$/, "") + "…";
 }
 
-/** Keep a product page: the page says product → yes; says list → no; can't tell → URL shape must not be a list. */
+const PLURAL_GOODS = "boots|shoes|sneakers|loafers|sandals|heels|flats|jackets|coats|blazers|dresses|shirts|tops|tees|sweaters|hoodies|pants|trousers|jeans|skirts|bags|totes|accessories|clothing";
+/** "/womens-brown-boots", "/mens-jackets", "/boots-dark-brown/": a category slug, not one item (AU-79). */
+const LIST_SLUG = new RegExp(`^(?:(?:womens?|mens?|women-s|men-s|kids|all|shop)-(?:[a-z]+-){0,3}(?:${PLURAL_GOODS})|(?:${PLURAL_GOODS})(?:-[a-z]+){0,3})$`, "i");
+/** A title only a results page has: "24 results", "Results for brown boots", "Shop all". */
+const LIST_TITLE_STRONG = /\b(?:\d+ (?:items|results|products|styles)|results for|shop all)\b/i;
+/** One title part that names a category: "Women's Boots", "Brown boots collection", "Boots". */
+const CATEGORY_PART = new RegExp(`^(?:(?:women|men|kid)'?s(?: [a-z]+){0,2} (?:${PLURAL_GOODS})|(?:[a-z]+ ){0,3}(?:collection|category)|(?:${PLURAL_GOODS})|shop (?:women|men))$`, "i");
+/**
+ * A title that is only a category (+ a short shop name): "Women's Boots | Shop", "Brown boots collection – Acme".
+ * "Women's Boots - Heritage Chelsea Boot" names one item in another part, so it is not (Codex AU-79 r1).
+ */
+function categoryTitle(title: string): boolean {
+  const parts = title.split(/\s+[|–—:-]\s+/).map((p) => p.trim()).filter(Boolean);
+  return parts.some((p) => CATEGORY_PART.test(p)) && parts.every((p) => CATEGORY_PART.test(p) || p.split(/\s+/).length <= 2);
+}
+
+/** A category / collection the URL slug or the page title gives away, when the markup can't say (AU-79). */
+export function looksLikeList(url: string, title?: string): boolean {
+  if (title && LIST_TITLE_STRONG.test(title)) return true;
+  // "/products/boots-dark-brown" is one product whatever its slug or a category word in its title says
+  if (urlShape(url) === "product") return false;
+  if (title && categoryTitle(title)) return true;
+  try {
+    const seg = new URL(url).pathname.replace(/\/+$/, "").split("/").pop() ?? "";
+    return LIST_SLUG.test(seg.replace(/\.html?$/i, ""));
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Keep a product page: the page says product → yes; says list → no; can't tell (unread, or no markers) → the URL
+ * shape must not be a list and neither the slug nor the title may read as a category (FD-02: category pages 0).
+ */
 export function isProductPage(url: string, facts: PageFacts | null): boolean {
   if (hardList(url)) return false;
   if (facts?.kind === "product") return true;
   if (facts?.kind === "list") return false;
-  return urlShape(url) !== "list";
+  if (urlShape(url) === "list") return false;
+  return !looksLikeList(url, facts?.title);
+}
+/** Pages that say "one product" (markup or URL) are taken before ones nothing could confirm. */
+function proven(url: string, facts: PageFacts | null): boolean {
+  return facts?.kind === "product" || urlShape(url) === "product";
 }
 
 const words = (s: string) => new Set(s.toLowerCase().match(/[a-z가-힣]{3,}/g) ?? []);
@@ -286,6 +327,8 @@ function withTimeout<T>(p: Promise<T>, ms: number, signal: AbortSignal): Promise
 }
 
 export type ProductCtx = PipelineCtx & {
+  /** a cache warm-up nobody waits for: it yields search slots to calls */
+  background?: boolean;
   /** I04 "Likes & dislikes" lines for this account (server-side style card), if any */
   likes?: string[];
   /** the last few lines of this conversation (refine on the Mac: "match my style") */
@@ -314,9 +357,55 @@ function provenCount(r: SearchResult): number {
  * identical calls race: the first that lists ${PRODUCT_COUNT} opened pages wins and the rest are aborted;
  * if none does, the best one (most opened pages listed, then most opens) is used.
  */
-export async function hedgedSearch(vendors: FindsVendors, prompt: string, n: number, signal: AbortSignal, images: string[] = []): Promise<SearchResult | null> {
-  // up to 6 lanes (the S5 prefetch asks for 5; a normal search for GENITA_PRODUCT_HEDGE, default 3)
-  const runs = Array.from({ length: Math.max(1, Math.min(6, n)) }, () => new AbortController());
+/**
+ * Spark web searches in flight across the server (11/4: 10–13 at once slowed every one of them, S5 16–27 s).
+ * A search's first lane waits for a slot; extra hedge lanes only start when a slot is free; background (cache
+ * warm-up) searches yield to everything else. GENITA_SPARK_SEARCH_MAX (default 8).
+ */
+export function sparkSearchMax(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number(env.GENITA_SPARK_SEARCH_MAX);
+  return Number.isInteger(n) && n >= 1 && n <= 64 ? n : 8;
+}
+const slots = { used: 0, fg: [] as Array<() => void>, bg: [] as Array<() => void> };
+/** slots background searches may use: all but two; 1 with a limit of 2; none with a limit of 1 (Codex #522 r4) */
+const backgroundMax = () => { const n = sparkSearchMax(); return n <= 1 ? 0 : n === 2 ? 1 : n - 2; };
+function tryTake(background: boolean): boolean {
+  // a background search leaves slots for the people in calls
+  if (slots.used < (background ? backgroundMax() : sparkSearchMax())) { slots.used++; return true; }
+  return false;
+}
+function take(background: boolean, signal: AbortSignal): Promise<boolean> {
+  if (tryTake(background)) return Promise.resolve(true);
+  // no background slot at this limit: give up at once rather than wait forever (Codex #522 r3)
+  if (background && backgroundMax() === 0) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const q = background ? slots.bg : slots.fg;
+    const go = () => { signal.removeEventListener("abort", stop); resolve(true); };
+    const stop = () => { const i = q.indexOf(go); if (i >= 0) q.splice(i, 1); resolve(false); };
+    signal.addEventListener("abort", stop, { once: true });
+    q.push(go);
+  });
+}
+function give(): void {
+  // hand the slot straight to the next waiter (calls first), else free it
+  const next = slots.fg.shift() ?? (slots.used <= backgroundMax() ? slots.bg.shift() : undefined);
+  if (next) next();
+  else slots.used = Math.max(0, slots.used - 1);
+}
+/** For tests: slots in use right now. */
+export const searchSlotsUsed = () => slots.used;
+
+export async function hedgedSearch(vendors: FindsVendors, prompt: string, n: number, signal: AbortSignal, images: string[] = [], opts: { background?: boolean } = {}): Promise<SearchResult | null> {
+  // up to 6 lanes (the S5 prefetch asks for 5; a normal search for GENITA_PRODUCT_HEDGE, default 3); the first one
+  // waits for a search slot, the others run only if one is free right now
+  // a free slot is taken synchronously (the calls start in this tick); only a full server waits
+  if (!tryTake(!!opts.background) && !(await take(!!opts.background, signal))) return null;
+  let extra = 0;
+  while (extra < Math.max(1, Math.min(6, n)) - 1 && tryTake(!!opts.background)) extra++;
+  const held = 1 + extra;
+  let released = 0;
+  const release = () => { if (released < held) { released++; give(); } };
+  const runs = Array.from({ length: held }, () => new AbortController());
   const stopAll = () => runs.forEach((a) => a.abort());
   signal.addEventListener("abort", stopAll, { once: true });
   const done: SearchResult[] = [];
@@ -341,6 +430,8 @@ export async function hedgedSearch(vendors: FindsVendors, prompt: string, n: num
   } finally {
     stopAll();
     signal.removeEventListener("abort", stopAll);
+    // every lane is stopped here: its slot is free again
+    while (released < held) release();
   }
 }
 
@@ -363,7 +454,7 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
   const look = ctx.allFrames ? ctx.frames.slice(-3) : ctx.frames.length ? [ctx.frames[ctx.frames.length - 1]] : [];
   const prompt = productPrompt({ question: ctx.question, recent: ctx.recent ?? [], taste, previous: ctx.previous, city: cityOf(ctx.timeZone), region: ctx.region ?? "US", today, seeing: look.length > 0, oneSearch: process.env.GENITA_PRODUCT_ONE_SEARCH !== "0" });
 
-  const res = await hedgedSearch(vendors, prompt, ctx.hedge ?? 2, ctx.signal, look);
+  const res = await hedgedSearch(vendors, prompt, ctx.hedge ?? 2, ctx.signal, look, { background: ctx.background });
   timings.searchMs = ms();
   if (ctx.signal.aborted) return { card: null, timings };
   let j = res ? lastJsonObject<ProductJson>(res.text) : null;
@@ -389,7 +480,8 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
   const raw = (Array.isArray(j?.items) ? (j!.items as ItemJson[]) : []).slice(0, 4);
   const seen = new Set<string>();
   const cands: { item: ItemJson; url: string; inTrace: boolean }[] = [];
-  const dropped: { notOpened: number; notProduct: number; offOccasion?: number } = { notOpened: 0, notProduct: 0 };
+  const dropped: { notOpened: number; notProduct: number; offOccasion?: number; offColor?: number } = { notOpened: 0, notProduct: 0 };
+  const colors = askedColors(ctx.question, ctx.previous);
   for (const item of raw) {
     const claimed = str(item?.url, 600);
     const hit = matchOpened(claimed, opened);
@@ -408,6 +500,13 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
     seen.add(k);
     cands.push({ item, url, inTrace: !!hit });
   }
+  // FD-02: a black boot for "dark brown boots" (prod 11/3 S5) only fills a slot no candidate in the asked color can,
+  // on every search, not only the prefetch; a brand like "Red Wing" can't sink a card (Codex r1: reorder, not drop)
+  const off = cands.filter((c) => offColor(str(c.item?.name, 200), colors));
+  if (off.length) {
+    dropped.offColor = off.length;
+    cands.sort((a, b) => Number(off.includes(a)) - Number(off.includes(b)));
+  }
   const styleLine = groundStyle(str(j?.style_line, 200), taste);
   const situationLine = str(j?.situation_line, 120);
   if (cands.length) {
@@ -422,7 +521,12 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
 
   const products: (FindProduct & { _image?: string })[] = [];
   let serverOpened = 0;
-  cands.forEach((p, i) => {
+  // proven product pages first, then pages nothing could confirm (a category page can't take a slot a product page had)
+  // the asked color first (AU-78), then proven product pages before unconfirmed ones (Codex #602 r2)
+  const rank = (i: number) => (offColor(str(cands[i].item?.name, 200), colors) ? 2 : 0) + (proven(cands[i].url, facts[i]) ? 0 : 1);
+  const order = cands.map((_, i) => i).sort((a, b) => rank(a) - rank(b));
+  order.forEach((i) => {
+    const p = cands[i];
     if (products.length >= PRODUCT_COUNT) return;
     const f = facts[i];
     // not in the trace: only a page we fetched ourselves and that says "one product" counts as opened

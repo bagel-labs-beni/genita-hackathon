@@ -5,6 +5,11 @@ import CoreText
 @main struct GenitaMacApp: App {
     @NSApplicationDelegateAdaptor(MacAppDelegate.self) private var appDelegate
     init() {
+        MacBundleName.fixOnLaunch() // an updated GenitaMac.app becomes Genita.app (reopens from there), before anything starts
+        // UI-09: always light, like the iPhone (GenitaApp forces .light at the root). The home window had
+        // .preferredColorScheme(.light), but the call window (its own NSWindow), MAC-SET, MC-M and alerts followed a
+        // dark system. The app's appearance covers every window, sheet, menu and alert.
+        NSApplication.shared.appearance = NSAppearance(named: .aqua)
         MacAppConfig.start() // GET /v1/app-config at launch + on activate
         if let root = Bundle.main.resourceURL, let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) {
             for case let url as URL in files where ["ttf", "otf"].contains(url.pathExtension.lowercased()) { CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil) }
@@ -29,7 +34,7 @@ import CoreText
                 #endif
         }
             .windowResizability(.contentSize).defaultSize(width: 420, height: 320)
-            .commands { MacAccountCommands() }
+            .commands { MacAccountCommands(); MacCallCommands() }
     }
 }
 
@@ -70,6 +75,20 @@ struct MacAccountCommands: Commands {
         }
     }
 }
+/// Edit ▸ Paste Link (⇧⌘V): FD-01 step 6 on the Mac (AU-71). A link copied in the browser goes to the call as the
+/// user's words and comes back as the link card (MAC-RS). Outside a live call it does nothing.
+struct MacCallCommands: Commands {
+    var body: some Commands {
+        CommandGroup(after: .pasteboard) {
+            Button("Paste Link into Call") {
+                let board = NSPasteboard.general
+                let pasted = board.string(forType: .URL) ?? board.string(forType: .string) ?? ""
+                CallController.shared.sendLink(pasted)
+            }
+            .keyboardShortcut("v", modifiers: [.command, .shift])
+        }
+    }
+}
 func resourceImage(_ name: String) -> Image {
     guard let url = Bundle.main.url(forResource: name, withExtension: "png"), let image = NSImage(contentsOf: url) else { return Image(systemName: "questionmark") }
     return Image(nsImage: image)
@@ -85,14 +104,17 @@ struct MacGlassControl: View {
         ZStack {
             if let tint { tinted(tint) } else { clearGlass }
             if let url = Bundle.main.url(forResource: icon, withExtension: "png"), let data = try? Data(contentsOf: url), let bitmap = NSBitmapImageRep(data: data) {
-                resourceImage(icon).resizable().frame(width: CGFloat(bitmap.pixelsWide) / 4, height: CGFloat(bitmap.pixelsHigh) / 4)
+                // glyph = 55 % of the circle, the same rule as the iPhone (GlassGlyph); ⋮ as three dots
+                let g = GlassGlyph.size(pixels: CGSize(width: bitmap.pixelsWide, height: bitmap.pixelsHigh), diameter: size)
+                if icon == GlassGlyph.moreIcon { GlassDots(diameter: size) }
+                else { resourceImage(icon).resizable().frame(width: g.width, height: g.height) }
             }
             if slashed { Capsule().fill(.white).frame(width: 26, height: 1.5).rotationEffect(.degrees(45)) }
         }.frame(width: size, height: size).contentShape(Circle())
     }
     @ViewBuilder private var clearGlass: some View {
-        if #available(macOS 26.0, *) { Circle().fill(.black.opacity(0.15)).glassEffect(.clear.interactive(), in: Circle()).environment(\.colorScheme, .dark).overlay(Circle().strokeBorder(LinearGradient(colors: [.white.opacity(0.65), .white.opacity(0.06), .white.opacity(0.32)], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 0.7)) }
-        else { Circle().fill(.ultraThinMaterial).environment(\.colorScheme, .dark).overlay(Circle().fill(.black.opacity(0.15))).overlay(Circle().strokeBorder(.white.opacity(0.4), lineWidth: 0.7)) }
+        if #available(macOS 26.0, *) { Circle().fill(.black.opacity(GlassGlyph.fill)).glassEffect(.clear.interactive(), in: Circle()).environment(\.colorScheme, .dark).overlay(Circle().strokeBorder(LinearGradient(colors: [.white.opacity(0.65), .white.opacity(0.06), .white.opacity(0.32)], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 0.7)) }
+        else { Circle().fill(.ultraThinMaterial).environment(\.colorScheme, .dark).overlay(Circle().fill(.black.opacity(GlassGlyph.fill))).overlay(Circle().strokeBorder(.white.opacity(0.4), lineWidth: 0.7)) }
     }
     /// Sharing on: ink-in-glass in red (#E7200C), the GlassCTA structure with the MacInkGlass non-key rule.
     @ViewBuilder private func tinted(_ tint: Color) -> some View {
