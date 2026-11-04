@@ -116,7 +116,7 @@ const DEICTIC_REQUEST = /\b(?:where (?:can|could|do|should) (?:i|we) (?:get|buy|
 const BARE_REQUEST = /^(?:(?:please )?(?:find|get|show|grab|pick)(?: me)? (?:some|one|a pair|a couple|them|more))\W*$/;
 const JOKE = /^(?:a |another )?(?:joke|story|fun fact|riddle)\b/;
 /** a question or a request at all ("Google is great." / "서울 날씨 좋다" are remarks) */
-const ASKS = /\?\s*$|^(?:who|what|where|when|which|how|why|is|are|was|were|do|does|did|can|could|would|will|should|any|find|get|show|recommend|suggest|tell|give|look|search|google|check|list|name)\b/;
+const ASKS = /\?\s*$|^(?:who|what|where|when|which|how|why|is|are|was|were|do|does|did|can|could|would|will|should|any|find|get|show|recommend|suggest|tell|give|list|name)\b/;
 const LINKS_ASK = /\b(?:send me (?:the )?links?)\b|링크\s*보내/;
 
 export function assessLine(text: string, env: NodeJS.ProcessEnv = process.env): LineVerdict {
@@ -125,7 +125,7 @@ export function assessLine(text: string, env: NodeJS.ProcessEnv = process.env): 
   const country = text.replace(/\bU\.?S\.?(?:A\b\.?)?(?![a-z])/g, "USA");
   const full = country.replace(/[‘’ʼ]/g, "'").toLowerCase();
   const t = coreQuestion(country);
-  if (NO_SEARCH.test(full) || LINKS_ASK.test(full)) return "spoken";
+  if (NO_SEARCH.test(full)) return "spoken";
   const searchVerb = SEARCH_VERB.test(full) || SEARCH_VERB.test(t) || SEARCH_KO.test(full);
   if ((SMALL_TALK.test(t) || JOKE.test(t) || BARE_REQUEST.test(t)) && !searchVerb) return "spoken";
   if (DEICTIC.some((re) => re.test(t)) || DEICTIC_KO.test(t)) return DEICTIC_REQUEST.test(t) && !FEELING.test(t) ? "open" : "spoken";
@@ -153,6 +153,8 @@ export function assessLine(text: string, env: NodeJS.ProcessEnv = process.env): 
   // a short "what is next?" needs the conversation, not a card
   const last = t.replace(/[?.!\s]+$/, "").split(/\s+/).at(-1) ?? "";
   if (WH.test(t) && n <= 3 && CONTEXT_WORD.test(last)) return "spoken";
+  // "send me the links" on its own: the runner's product follow-up, never a judged card
+  if (LINKS_ASK.test(full)) return "spoken";
   if (/[가-힣]/.test(t)) return KO_ASK.test(t) ? "open" : "spoken";
   return ASKS.test(t) && n >= 2 ? "open" : "spoken";
 }

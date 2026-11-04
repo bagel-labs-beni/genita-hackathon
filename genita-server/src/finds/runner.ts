@@ -6,11 +6,13 @@
  * on screen so "Ask about this" follow-ups make sense.
  */
 import { webAnswerCard, type WebSearch } from "./webAnswer.ts";
-import { runGeneral } from "./general.ts";
+import { assessLine, runGeneral } from "./general.ts";
+import { JUDGE_TIMEOUT_MS, judgeEnabled, judgeWithin, sparkJudge, type Judge, type JudgeResult } from "./judge.ts";
 import { reasonChips, tasteLines, type TasteLine } from "../personalize/reasons.ts";
 import { randomUUID } from "node:crypto";
 import type { FindCard, FindKind, ServerEvent } from "../protocol.ts";
-import { classifyTurn, isBareAccept, isGoesWithFollowUp, isLinksAsk, isProductAsk, refersToScreen } from "./intent.ts";
+import { classifyTurn, isBareAccept, isGoesWithFollowUp, isLinksAsk, isProductAsk, refersToScreen, type Intent } from "./intent.ts";
+import { findUrl } from "./parse.ts";
 import { PRODUCT_COUNT, SEARCH_TITLE, guessLabel, runProduct, shortLabel } from "./product.ts";
 import { confirmItem, FRIDGE_UNCLEAR, IDENTIFY_UNSURE, runIdentify, runLink, runOutfit, runRecipe, type PipelineCtx, type PipelineResult } from "./pipeline.ts";
 import { cacheGet, cacheKey, cachePut, cardFitsColors, cardIsKind, categoryOf, claimWarm, colorAsks, colorPhrases, colorsOf, plainAsk, releaseWarm, type CachedProducts } from "./productCache.ts";
@@ -33,6 +35,10 @@ export type FindsDeps = {
   productPrefetch?: boolean;
   /** S5 product cache + background warm-up (GENITA_PRODUCT_CACHE=0 turns it off) */
   productCache?: boolean;
+  /** the find judge (judge.ts); default: one Spark call. Tests stub it. */
+  judge?: Judge;
+  /** the judge's deadline (default JUDGE_TIMEOUT_MS) */
+  judgeTimeoutMs?: number;
   /** demo S5: a product search with nothing on screen by then gets one "still hunting" line (default 30 s) */
   stillSearchingMs?: number;
 };
@@ -310,16 +316,26 @@ export class FindsRunner {
     // Chelsea 11/4 D: while the Mac shares its screen, a question takes the shared frame (fresher than the camera,
     // ≤1 s old), unless it's about them or what they hold; "on my screen" / "this video" always mean the share
     const intent0 = followUp ? { kind: "product" as const } : base ?? (prefetchLive && isLinksAsk(t.text) ? { kind: "product" as const } : null);
-    if (!intent0) return null;
-    const intent = intent0;
+    // Chelsea 11/4: nothing in the words alone — the judge looks at the line, the context and the picture (judge.ts)
+    this.judgeAbort?.abort();
+    this.judgeAbort = null;
+    if (!intent0) {
+      this.startJudge(input);
+      return null;
+    }
+    return this.start(intent0, t, followUp, false);
+  }
+
+  /** The keyword intent or the judge's pick, started the same way. `judged`: the turn already answered out loud. */
+  private start(intent: NonNullable<Intent>, t: TurnInput, followUp: boolean, judged: boolean): TurnStarted {
     // the share when there is no camera picture, or when the line points at it; otherwise the camera (Codex r1 P2)
     const useScreen = !!t.screen && !followUp && (
       !t.frames.length || SCREEN_WORDS.test(t.text) || (intent.kind === "product" && refersToScreen(t.text) && !CAMERA_WORDS.test(t.text))
     );
     if (useScreen) t = { ...t, frames: [t.screen!], unclear: false };
     const findId = randomUUID();
-    if (intent.kind === "identify") return this.startIdentify(findId, t, useScreen);
-    if (intent.kind === "recipe" && t.unclear) {
+    if (intent.kind === "identify") return this.startIdentify(findId, t, useScreen, judged);
+    if (intent.kind === "recipe" && t.unclear && !judged) {
       // D59 · CW-01 DARK: the app saw nothing but dark / blur — no "let me see" that IC-4 then takes back: the honest
       // line is the turn's whole answer, the IC-4 card shows at once, and nothing is guessed from the picture
       this.onEvent({ type: "find.started", findId, utteranceId: t.utteranceId, kind: "recipe", title: "Looking at your ingredients", detail: "Checking what's there · recipes" });
@@ -435,24 +451,58 @@ export class FindsRunner {
       }, this.deps.stillSearchingMs ?? 30_000);
       void done.finally(() => clearTimeout(timer));
     }
-    if (ACK[intent.kind]) this.acked.add(findId);
+    // a judged turn already answered out loud: no fixed line, and an outfit card stays silent too
+    const ack = judged ? undefined : ACK[intent.kind];
+    if (ack) this.acked.add(findId);
     // an outfit pick is answered out loud by the turn itself: its card only shows it (demo S4, one verdict)
     else if (intent.kind === "outfit") this.answered.set(findId, t.replyText);
-    return { findId, kind: intent.kind, ...(ACK[intent.kind] ? { ack: ACK[intent.kind] } : {}) };
+    return { findId, kind: intent.kind, ...(ack ? { ack } : {}) };
+  }
+
+  /** the judge of the latest turn (a newer turn stops it) */
+  private judgeAbort: AbortController | null = null;
+  /** turns a judged card answered: the reply's own web search adds no second sheet card */
+  private readonly judged = new Set<number>();
+
+  /**
+   * Chelsea 11/4: an "open" line (assessLine) with nothing in its words goes to the find judge beside the spoken reply.
+   * A pick other than none starts the same pipeline as a keyword intent, with find.started at once.
+   */
+  private startJudge(t: TurnInput): void {
+    if (!judgeEnabled() || t.unclear) return;
+    if (assessLine(t.text) !== "open") return;
+    const abort = new AbortController();
+    this.judgeAbort = abort;
+    const frame = t.frames.at(-1) ?? t.screen;
+    const judge = this.deps.judge ?? sparkJudge(this.deps.vendors);
+    const t0 = this.hooks.now();
+    void judgeWithin(judge, { text: t.text, recent: (t.recent ?? []).slice(-4), ...(frame ? { frame, screen: !t.frames.length } : {}) }, this.deps.judgeTimeoutMs ?? JUDGE_TIMEOUT_MS, abort.signal).then((r) => {
+      const ms = Math.round(this.hooks.now() - t0);
+      if (abort.signal.aborted || this.closed) return;
+      if (this.judgeAbort === abort) this.judgeAbort = null;
+      const intent = judgedIntent(r, t);
+      this.hooks.log("finds.judge", { utteranceId: t.utteranceId, kind: r.kind, started: intent?.kind ?? null, reason: r.reason, ms });
+      if (!intent) return;
+      if (this.owner && this.deps.store.work.isDeleted(this.owner)) return;
+      this.judged.add(t.utteranceId);
+      const question = (intent.kind === "answer" || intent.kind === "product") && r.query ? r.query : t.text;
+      this.start(intent, { ...t, text: question }, false, true);
+    });
   }
 
   /**
    * "What's this?" (CEO demo 11/4): outline the thing on the camera frame and name it once checked — no card, no
    * sheet. On a shared screen (the Mac draws no boxes over it) the answer lands in the sheet instead.
    */
-  private startIdentify(findId: string, t: TurnInput, screen: boolean): TurnStarted {
+  private startIdentify(findId: string, t: TurnInput, screen: boolean, silent = false): TurnStarted {
     if (t.unclear && !screen) return { findId, kind: "identify", ack: IDENTIFY_UNSURE };
     const abort = new AbortController();
     const ctx: PipelineCtx = {
       findId, utteranceId: t.utteranceId, kind: "answer", question: t.text, frames: t.frames, screen, memories: this.memories, profile: this.profile, userName: this.userName,
       replyText: t.replyText, timeZone: this.timeZone, vendors: this.deps.vendors, emit: (e) => this.onEvent(e), signal: abort.signal, now: this.hooks.now,
       log: this.hooks.log, images: false, putImage: async () => { throw new Error("no pictures"); },
-      speak: (text) => {
+      // a judged turn already answered out loud: the outline only
+      speak: silent ? undefined : (text) => {
         const card = this.cards.get(findId);
         if (card) void this.persist(card);
         if (!this.closed) this.hooks.announce(text);
@@ -475,6 +525,7 @@ export class FindsRunner {
    */
   webAnswer(o: { utteranceId: number; question: string; said: string; searches: WebSearch[] }): string | null {
     if (this.closed || this.purged || (this.owner && this.deps.store.work.isDeleted(this.owner))) return null;
+    if (this.judged.has(o.utteranceId)) return null;
     const findId = randomUUID();
     const card = webAnswerCard({ id: findId, question: o.question, said: o.said, searches: o.searches });
     if (!card) return null;
@@ -871,4 +922,17 @@ export class FindsRunner {
     for (const [id, r] of this.running) if (opts.purge || !this.cards.has(id)) r.abort.abort();
   }
   private purged = false;
+}
+
+/** The judge's pick as a runner intent, or null: camera kinds need a picture, a link needs a URL, general needs web search on. */
+export function judgedIntent(r: JudgeResult, t: { text: string; frames: string[]; screen?: string }, env: NodeJS.ProcessEnv = process.env): NonNullable<Intent> | null {
+  const picture = t.frames.length > 0 || !!t.screen;
+  switch (r.kind) {
+    case "general": return env.GENITA_WEB_SEARCH === "0" ? null : { kind: "answer" };
+    case "product": return { kind: "product" };
+    case "identify": return picture ? { kind: "identify" } : null;
+    case "recipe": case "outfit": return t.frames.length > 0 ? { kind: r.kind } : null;
+    case "link": { const url = findUrl(t.text); return url ? { kind: "link", url } : null; }
+    default: return null;
+  }
 }

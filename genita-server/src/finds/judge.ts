@@ -4,7 +4,7 @@
  * The keyword intents (intent.ts, general.ts) stay the fast path. When they say nothing and the line is "open"
  * (no rule says talk only: assessLine), a small Spark call looks at the line, the last two exchanges and the latest
  * camera or screen frame and answers one of none | identify | recipe | outfit | product | general | link. It runs
- * beside the spoken reply (never delays it) and gives up after JUDGE_TIMEOUT_MS (→ none). A kind other than none
+ * beside the spoken reply (never delays it) and gives up after JUDGE_TIMEOUT_MS (5 s, → none). A kind other than none
  * starts the same runner pipeline as the keyword path. GENITA_FIND_JUDGE=0 turns it off (default on).
  */
 import { lastJsonObject, str } from "./parse.ts";
@@ -12,10 +12,16 @@ import { userMessage, type FindsVendors } from "./vendors.ts";
 
 export type JudgeKind = "none" | "identify" | "recipe" | "outfit" | "product" | "general" | "link";
 export type JudgeResult = { kind: JudgeKind; query?: string; reason: string };
-export type JudgeInput = { text: string; recent: string[]; frame?: string; screen?: boolean };
+/** `scene`: a text description of the picture instead of the frame (eval script; no live scene feed exists today) */
+export type JudgeInput = { text: string; recent: string[]; frame?: string; screen?: boolean; scene?: string };
 export type Judge = (input: JudgeInput, signal: AbortSignal) => Promise<JudgeResult>;
 
-export const JUDGE_TIMEOUT_MS = 1500;
+/**
+ * Brief said ~1.5 s, but live Spark (11/4, n=10, scripts/find-judge-eval.ts) answers in p50 2.4 s / p90 4.4 s on text and
+ * p50 4.0 s with a camera frame: at 1.5 s nothing would ever land. The judge runs beside the spoken reply, so a longer
+ * deadline only delays the sheet, never speech.
+ */
+export const JUDGE_TIMEOUT_MS = 5000;
 const KINDS = new Set<JudgeKind>(["none", "identify", "recipe", "outfit", "product", "general", "link"]);
 
 export function judgeEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -33,7 +39,7 @@ export function judgePrompt(i: JudgeInput): string {
     "- general: a look-up or information question the web answers (facts, news, places, how-to).",
     "- link: they shared a web address to read.",
     i.recent.length ? `Recent conversation:\n${i.recent.map((l) => l.slice(0, 200)).join("\n")}` : "Recent conversation: (none)",
-    i.frame ? `The attached picture is their ${i.screen ? "shared screen" : "camera"} right now.` : "No picture.",
+    i.frame ? `The attached picture is their ${i.screen ? "shared screen" : "camera"} right now.` : i.scene ? `Their camera shows: ${i.scene.slice(0, 200)}` : "No picture.",
     `They just said: "${i.text.slice(0, 300)}"`,
     'Reply with only JSON: {"kind": "none|identify|recipe|outfit|product|general|link", "query": "for product or general: what to search, filling in what the conversation or picture shows (e.g. white leather sneakers like the ones shown)", "reason": "under 10 words"}',
   ].join("\n");
@@ -47,10 +53,10 @@ export function parseJudge(text: string): JudgeResult {
   return { kind, ...(query && (kind === "product" || kind === "general") ? { query } : {}), reason: str(j?.reason, 80) || kind };
 }
 
-/** The real judge: one Spark call (the server's cheap path: effort minimal, a few tokens), the frame attached if any. */
+/** The real judge: one Spark call (the server's cheap path: effort minimal; 400 tokens, since reasoning spends ~120 before the JSON), the frame attached if any. */
 export function sparkJudge(vendors: FindsVendors): Judge {
   return async (i, signal) => {
-    const res = await vendors.spark({ input: userMessage(judgePrompt(i), i.frame ? [i.frame] : []), effort: "minimal", maxOutputTokens: 120 }, signal);
+    const res = await vendors.spark({ input: userMessage(judgePrompt(i), i.frame ? [i.frame] : []), effort: "minimal", maxOutputTokens: 400 }, signal);
     return parseJudge(res.text);
   };
 }
