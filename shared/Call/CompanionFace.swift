@@ -111,7 +111,8 @@ struct FaceFrameView: View {
 struct CompanionFaceLoader: Sendable {
     typealias Fetch = @Sendable (URLRequest) async throws -> (Data, URLResponse)
     /// `.pending`: the account's companion exists but its face set isn't made yet (prep still running).
-    enum Outcome { case none, pending, unchanged, loaded(key: String, set: FaceSet) }
+    /// `.failed`: prep gave up (PREP-1e); the call asks the server to try again once (`retryPrep`), then keeps polling.
+    enum Outcome { case none, pending, failed, unchanged, loaded(key: String, set: FaceSet) }
     enum LoadError: Error, Equatable { case status(String, Int), foreignHost(String), missingNeutral }
     /// What comes before the final outcome. `true` back from the consumer = it is on screen now.
     enum Early: @unchecked Sendable {
@@ -171,7 +172,7 @@ struct CompanionFaceLoader: Sendable {
         timing?.mark("prep")
         guard let prep = try? JSONDecoder().decode(Prep.self, from: body), !prep.unreadable else { return .none }
         // prep still running: the face comes later; prep failed (PREP-1e): nothing comes until a Try again
-        guard let manifest = prep.face else { return prep.status == "failed" ? .none : .pending }
+        guard let manifest = prep.face else { return prep.status == "failed" ? .failed : .pending }
         let key = Self.cacheKey(subject: subject, manifest: manifest)
         if key == shownKey { return .unchanged }
 
@@ -328,6 +329,18 @@ struct CompanionFaceLoader: Sendable {
         var out: [String: Data] = [:]
         for (k, ref) in refs { if let d = cached(dir.appending(path: k)) { out[ref] = d } }
         return out
+    }
+
+    /// DEMO P0 (11/4): `POST /v1/companion/prep/retry` (PREP_API.md, the PREP-1e Try again) for a call whose face set
+    /// failed, so the face can still arrive in that call. Same token and host as the prep read; 200 or 202.
+    func retryPrep() async throws {
+        guard let token = endpoint.token, !token.isEmpty, let base = Self.httpBase(of: endpoint.url) else { return }
+        var req = URLRequest(url: base.appending(path: "v1/companion/prep/retry"), timeoutInterval: 30)
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (_, res) = try await fetch(req)
+        let status = (res as? HTTPURLResponse)?.statusCode ?? 0
+        guard status == 200 || status == 202 else { throw LoadError.status("prep/retry", status) }
     }
 
     private func get(_ url: URL, token: String, what: String) async throws -> (Data, URLResponse) {

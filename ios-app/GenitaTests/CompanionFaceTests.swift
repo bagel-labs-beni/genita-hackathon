@@ -317,6 +317,45 @@ import XCTest
         call.hideFace()
     }
 
+    /// DEMO P0 (11/4 16:00, TF 331 "the face doesn't move while it speaks"): a companion whose face set failed kept
+    /// the photo frozen for the whole call. Now the call asks the server to make it again (once), keeps checking, and
+    /// swaps the moving face in when it's made.
+    func testAFailedFaceSetIsAskedForAgainAndArrivesInThatCall() async throws {
+        let saved = CallEndpoint.userToken
+        defer { CallEndpoint.userToken = saved }
+        CallEndpoint.userToken = { "tok" }
+        let (_, ready) = try serverManifest()
+        let failed = Data(#"{"status":"failed","face":null}"#.utf8)
+        let (readyFetch, _) = stubServer(prep: ready)
+        let (failedFetch, _) = stubServer(prep: failed)
+        let made = Box(false), retries = Box(0), prepCalls = Box(0)
+        let fetch: CompanionFaceLoader.Fetch = { req in
+            if req.url?.path == "/v1/companion/prep/retry", req.httpMethod == "POST" {
+                XCTAssertEqual(req.value(forHTTPHeaderField: "Authorization"), "Bearer tok")
+                retries.value += 1
+                return (Data(#"{"status":"running"}"#.utf8), HTTPURLResponse(url: req.url!, statusCode: 202, httpVersion: nil, headerFields: nil)!)
+            }
+            if req.url?.path == "/v1/companion/prep" { prepCalls.value += 1 }
+            return try await (made.value ? readyFetch : failedFetch)(req)
+        }
+        let cache = tempDir()
+        let call = CallController()
+        call.faceRetryInterval = .milliseconds(50)
+        call.faceLoaderOverride = { CompanionFaceLoader(endpoint: $0, cacheRoot: cache, fetch: fetch) }
+
+        call.showFace(reduceMotion: true, animate: false)
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertNil(call.face)
+        XCTAssertEqual(retries.value, 1, "a failed face set is asked for again once, not on every check")
+        XCTAssertGreaterThan(prepCalls.value, 2, "and the call keeps checking for it")
+
+        made.value = true   // the retried prep finished mid-call
+        for _ in 0..<1800 where call.face == nil { try await Task.sleep(for: .milliseconds(100)) }
+        XCTAssertNotNil(call.face, "the moving face arrives in the same call")
+        XCTAssertEqual(retries.value, 1)
+        call.hideFace()
+    }
+
     /// AU-25 × #524: hide → show while a load is in flight (app backgrounded and back, handoff) starts a new load
     /// at once; the cancelled one must not leave `faceLoading` set and the screen with no load at all.
     func testHideThenShowDuringALoadStartsANewLoad() async throws {
@@ -356,7 +395,7 @@ import XCTest
         guard case .none = try await CompanionFaceLoader(endpoint: endpoint, cacheRoot: tempDir(), fetch: bad).load(currentKey: nil) else { return XCTFail("an unreadable face is no face") }
         let failed = Data(#"{"status":"failed","face":null}"#.utf8)
         let (gaveUp, _) = stubServer(prep: failed)
-        guard case .none = try await CompanionFaceLoader(endpoint: endpoint, cacheRoot: tempDir(), fetch: gaveUp).load(currentKey: nil) else { return XCTFail("failed prep: stop asking") }
+        guard case .failed = try await CompanionFaceLoader(endpoint: endpoint, cacheRoot: tempDir(), fetch: gaveUp).load(currentKey: nil) else { return XCTFail("failed prep: the call may ask again") }
     }
 
     func testLoaderNeverSendsTheTokenToAnotherHost() async throws {
