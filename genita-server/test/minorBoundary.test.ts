@@ -62,3 +62,8 @@ test("Codex #640 r11: spaced scores, queue / leaderboard spots are no age; '16yo
   for (const t of ["I'm 15 / 20 on free throws", "I'm 16 - 0 this season", "I'm 15 in the queue for tickets", "I'm 15 on the leaderboard", "I'm 12 in two games", "I'm 15 in like 3 queues"]) assert.equal(minorLine([t]), null, t);
   for (const t of ["I'm 16yo", "I'm 16yrs old", "im 15y/o", "I'm not yet 18", "I'm 15 in the summer", "I turn 16 on Friday", "I'm 14 in my first year of high school"]) assert.ok(minorLine([t]), t);
 });
+
+test("Codex #640 r12: 'N years out of / away from' is a span; 'not quite 18 yet', 'haven't turned 18', '16 from California' are ages", () => {
+  for (const t of ["I'm 5 years out of college", "I'm 10 years away from retirement", "I'm 14 years into my career"]) assert.equal(minorLine([t]), null, t);
+  for (const t of ["I'm not quite 18 yet", "I haven't turned 18 yet", "I'm 16 from California", "I'm 15 years old.", "I'm 15 years of age"]) assert.ok(minorLine([t]), t);
+});
