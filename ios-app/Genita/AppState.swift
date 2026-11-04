@@ -531,7 +531,7 @@ extension AppState {
         // SUM insight report review (R1): GENITA_REVIEW_VARIANT=insight / insight-empty
         #if os(iOS)
         if reviewStage == .summary, variant.hasPrefix("insight") {
-            insightReport = InsightFixture.report(empty: variant == "insight-empty", longName: variant == "insight-long")
+            insightReport = InsightFixture.report(empty: variant == "insight-empty", longName: variant == "insight-long", longerName: variant == "insight-long2")
             setup.importAI = "ChatGPT"
             setup.name = "Summer"
         }
@@ -541,6 +541,15 @@ extension AppState {
         if variant == "image" || reviewStage == .conversation || reviewStage == .connecting,
            let url = Bundle.main.url(forResource: "companion", withExtension: "png") { setup.imageData = try? Data(contentsOf: url) }
         else { setup.imageData = nil }
+        // R1 header face order (scene → V02 polished → orb): insight-scene has both (the scene must win), insight-polished
+        // only the polished photo
+        if reviewStage == .summary, variant == "insight-scene" || variant == "insight-polished" {
+            polishedImage = Bundle.main.url(forResource: "review-character", withExtension: "jpg").flatMap { try? Data(contentsOf: $0) }
+            if variant == "insight-scene", let url = Bundle.main.url(forResource: "companion", withExtension: "png"), let data = try? Data(contentsOf: url) {
+                sceneFresh = true
+                sceneImage = (key: sceneOwner + "review", data: data)
+            }
+        }
         // photo polish review: GENITA_REVIEW_VARIANT=polished shows V02-T confirming the polished picture (two "Try again" left)
         if reviewStage == .imageCheck, variant == "polished" || variant == "polished-last" {
             if let url = Bundle.main.url(forResource: "companion", withExtension: "png") { setup.imageData = try? Data(contentsOf: url); polishedImage = setup.imageData }

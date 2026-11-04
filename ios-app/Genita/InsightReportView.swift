@@ -104,7 +104,8 @@ struct InsightReportView: View {
                 InsightInk.canvas.ignoresSafeArea()
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 0) {
-                        header.padding(.top, 62)
+                        // the avatar row top at the safe area + 16 pt (no blank band above it, designer 11/4)
+                        header.padding(.top, 16)
                         if let report { content(report, width: w - 48) } else { loading }
                         Color.clear.frame(height: showsCTA ? 170 : 40)
                     }
@@ -163,10 +164,17 @@ struct InsightReportView: View {
                 if let data = model.sceneImageData ?? model.polishedImage, let img = UIImage(data: data) {
                     Image(uiImage: img).resizable().scaledToFill()
                 } else {
-                    Image(resource: "reference-orb-round").resizable().scaledToFit().scaleEffect(1.5)
+                    // no face yet: the orb on the call stage's dark ground (a light orb on white read as a smudge,
+                    // designer 11/4); the art has a wide transparent margin, so a 30 pt frame drawn 1.5× is a ~30 pt globe
+                    ZStack {
+                        RadialGradient(colors: [Color(red: 0x1A / 255, green: 0x1C / 255, blue: 0x20 / 255), Color(red: 0x0B / 255, green: 0x0B / 255, blue: 0x0B / 255)],
+                                       center: .center, startRadius: 0, endRadius: 22)
+                        Image(resource: "reference-orb-round").resizable().scaledToFit().frame(width: 30, height: 30).scaleEffect(1.5)
+                    }
+                    .accessibilityIdentifier("insightHeaderOrb")
                 }
             }
-            .frame(width: 40, height: 40).clipShape(Circle()).accessibilityHidden(true)
+            .frame(width: 44, height: 44).clipShape(Circle()).accessibilityHidden(true)
             // the scene may still be on the server (prep started at V01): fetch it like PREP-1 does
             .task(id: model.prep?.sceneURL) { if model.sceneImageData == nil { await model.loadScene() } }
             VStack(alignment: .leading, spacing: 0) {
