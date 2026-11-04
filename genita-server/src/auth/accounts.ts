@@ -213,16 +213,21 @@ export class Accounts {
   /** Deletes the user row; ON DELETE CASCADE clears every user-owned table. */
   async deleteUser(userId: string): Promise<boolean> {
     // AU-07 (SE-03): email_codes has no user FK, so the address it keeps goes with the account, in one
-    // transaction (a failure after the user row went would leave the address with nothing to retry from)
+    // transaction (a failure after the user row went would leave the address with nothing to retry from).
+    // The user row is locked first (an email change can't slip in), then each address under the same per-address
+    // advisory lock a code being issued takes (EmailCodes.issue): no code issued mid-delete outlives the account.
     return this.db.tx(async (q) => {
-      const r = await q.query("DELETE FROM users WHERE id = $1 RETURNING email, provider, provider_sub", [userId]);
+      const u = await q.query("SELECT email, provider, provider_sub FROM users WHERE id = $1 FOR UPDATE", [userId]);
+      const row = u.rows[0] as { email: string | null; provider: string; provider_sub: string } | undefined;
+      if (!row) return false;
       const addresses = new Set<string>();
-      for (const row of r.rows as { email: string | null; provider: string; provider_sub: string }[]) {
-        if (row.email) addresses.add(row.email.trim().toLowerCase());
-        if (row.provider === "email" && row.provider_sub) addresses.add(row.provider_sub.trim().toLowerCase());
+      if (row.email) addresses.add(row.email.trim().toLowerCase());
+      if (row.provider === "email" && row.provider_sub) addresses.add(row.provider_sub.trim().toLowerCase());
+      for (const email of [...addresses].sort()) {   // sorted: two deletes never wait on each other's lock
+        await q.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`genita-email:${email}`]);
+        await q.query("DELETE FROM email_codes WHERE lower(email) = $1", [email]);
       }
-      if (addresses.size > 0) await q.query("DELETE FROM email_codes WHERE lower(email) = ANY($1::text[])", [[...addresses]]);
-      return r.rowCount > 0;
+      return (await q.query("DELETE FROM users WHERE id = $1", [userId])).rowCount > 0;
     });
   }
 }
