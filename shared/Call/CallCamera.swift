@@ -67,6 +67,15 @@ import UniformTypeIdentifiers
         return Self.jpeg(image)?.base64EncodedString()
     }
 
+    /// D63: the newest frame as it is (no JPEG), for the mask motion check.
+    func latestImage() -> CIImage? {
+        guard isOn else { return nil }
+        #if DEBUG
+        if let fixture { return CIImage(cgImage: fixture) }
+        #endif
+        return worker.latest()
+    }
+
     /// PERC-2: the latest frame for the perception face crop, only if it came from the front camera (iPhone).
     /// The frame carries its own camera, so a flip or a quick off/on can never pass a rear-camera face as the user's.
     func latestFrontImage() -> CIImage? {

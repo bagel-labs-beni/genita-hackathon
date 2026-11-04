@@ -105,8 +105,10 @@ struct CameraBoxOverlay: View {
                            labelAt: origins[d.item.id])
                 }
             }
-            .opacity(boxes.visible ? 1 : 0)
+            // D63: the phone really moved since the analysed frame → off in 150 ms, back when it lines up again
+            .opacity(boxes.visible && !boxes.misaligned ? 1 : 0)
             .animation(.fade, value: boxes.visible)
+            .animation(.easeOut(duration: 0.15), value: boxes.misaligned)
             .animation(.fade, value: boxes.highlighted)
         }
         .allowsHitTesting(false)

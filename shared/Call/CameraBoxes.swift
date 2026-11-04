@@ -30,6 +30,10 @@ struct LiveBox: Identifiable, Equatable {
     private(set) var findId: String?
     /// Boxes are on screen; false after the 4 s fade.
     private(set) var visible = false
+    /// D63: the phone has really moved since the analysed frame (`CameraMotion`) — the masks fade out (150 ms) and
+    /// come back when the picture lines up again. The hold (#676) keeps running underneath: moving doesn't end it.
+    private(set) var misaligned = false
+    func setMisaligned(_ on: Bool) { if misaligned != on { misaligned = on } }
     /// Label of the lit box (chip tapped), lowercased.
     private(set) var highlighted: String?
     /// Bumped on every reveal so a new batch re-runs the pop animation.
@@ -142,6 +146,8 @@ struct LiveBox: Identifiable, Equatable {
     func apply(_ e: ServerEvent.ObserveBoxes) {
         guard e.w > 0, e.h > 0, !e.items.isEmpty else { return }
         if findId != e.findId { boxes = []; highlighted = nil }
+        // a new look is on the frame just taken: it lines up again (D63)
+        misaligned = false
         findId = e.findId
         frameSize = CGSize(width: e.w, height: e.h)
         let known = Set(boxes.map(\.id))
@@ -174,7 +180,7 @@ struct LiveBox: Identifiable, Equatable {
         endHold()
         fadeTask?.cancel()
         if stale { epoch += 1 }
-        boxes = []; highlighted = nil; visible = false; findId = nil; maskCache = [:]
+        boxes = []; highlighted = nil; visible = false; findId = nil; maskCache = [:]; misaligned = false
     }
 
     private func reveal() {
