@@ -9,7 +9,7 @@ import type { Config } from "../config.ts";
 import type { TurnGate } from "../auth/judge.ts";
 import type { AsrEvent } from "../meta/transcribe.ts";
 import type { WebSearch } from "../finds/webAnswer.ts";
-import { GENERAL_REPLY_LINE, firstSentenceOnly } from "../finds/general.ts";
+import { GENERAL_HEDGE, GENERAL_REPLY_LINE, firstSentenceOnly } from "../finds/general.ts";
 import { SPARK_MODEL, type InputMessage, type SparkRequest, type SparkStreamEvent, type ContentPart } from "../meta/spark.ts";
 import type { TtsChunk, TtsRequest } from "../tts/types.ts";
 import { pcmDurationMs, PCM_SAMPLE_RATE } from "../tts/types.ts";
@@ -2496,7 +2496,6 @@ export class Session {
         if (spec && speculative === "hit") { spec.abort.abort(); pre = null; }
         req.instructions = `${req.instructions ?? ""}\n${GENERAL_REPLY_LINE}\n`;
         req.tools = undefined;
-        req.maxOutputTokens = Math.min(req.maxOutputTokens ?? 200, 200);
         this.log("finds.general_reply", { utteranceId });
       }
       if (started?.ack) {
@@ -2937,8 +2936,9 @@ export class Session {
         // "Sorry, I lost you… say that again?" before the user said anything
         if (!signal.aborted && !hasAnswer() && !interpret && !self && !openerSpoken()) {
           // a real crisis turn never gets "say that again": the help line instead (AI sweep, P1 safety)
-          enqueueSentences([this.v1 && realCrisisSignal(text) ? CRISIS_HELP_LINE : LOST_LINE], true);
-          lostLine = true;
+          // a general search turn: the sheet is already filling, so the hedge, never "lost you" (P0 11/4)
+          enqueueSentences([this.v1 && realCrisisSignal(text) ? CRISIS_HELP_LINE : oneSentence ? GENERAL_HEDGE : LOST_LINE], true);
+          lostLine = !oneSentence;
           this.log("spark.lost_line", { utteranceId, cause: emptyCause, error: sparkError instanceof Error ? sparkError.message.slice(0, 120) : null });
         }
       } catch (err) {
