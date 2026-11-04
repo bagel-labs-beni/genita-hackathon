@@ -75,8 +75,10 @@ struct ConversationView: View {
                             .grayscale(sheetOffline ? 1 : 0).brightness(sheetOffline ? -0.25 : 0).blur(radius: unclear ? 8 : 0)
                             .scaleEffect(faceScale(sheet), anchor: .topLeading).offset(faceOffset(sheet, top: top))
                             .opacity(sheet == .full || call.cameraOn ? 0 : 1)
-                            .allowsHitTesting(!call.cameraOn)
                             .contentShape(Rectangle()).onTapGesture { faceTapped() }.accessibilityAction(named: "Interrupt") { call.interrupt() }
+                            // after the tap gesture: with the camera on, the hidden full-screen face must not take the
+                            // touches meant for the camera stage under it (D22 double-tap → back camera never arrived)
+                            .allowsHitTesting(!call.cameraOn)
                             .accessibilityIdentifier("companionFace")
                             .animation(.drawer, value: sheet)
                         if waitingCopy != nil { handoffScrim.frame(width: full.size.width, height: full.size.height).allowsHitTesting(false) }
