@@ -270,6 +270,13 @@ enum CallStop: Equatable {
     /// Events of a later reply held while the face's current reply is still being heard (queued
     /// interpretations): switching early would close the mouth on audio that is still playing.
     @ObservationIgnored private var facePending: [(utterance: Int, apply: (FaceDriver) -> Void)] = []
+    /// b14 (Chelsea 15:53/16:15 "말하면 얼굴 움직여야 해"): everything the face was fed for the last few replies, kept
+    /// whether or not a face driver exists. A driver that arrives mid-reply (the greeting while the face set still
+    /// loads, the Mac face that lands after the move, a reload after a reconnect, the cached → full set swap) gets
+    /// the reply that is still audible replayed into it, instead of a still face until the next reply.
+    @ObservationIgnored private var faceReplay: [(utterance: Int, apply: (FaceDriver) -> Void)] = []
+    static let faceReplayUtterances = 3
+    static let faceReplayMaxEvents = 2048
     /// One rendered frame when the face doesn't animate (UI review stills); rendered off the main thread.
     private(set) var faceStill: CGImage?
     /// Same presence (Mac): the face set's own rest frame, drawn under the live face so the very first frame on
@@ -968,7 +975,7 @@ enum CallStop: Equatable {
                 if sessionId != nil { finds.interrupted() }
                 // A new session counts utterances from the start: ids of the old one mean nothing now.
                 faceIdBase = faceIdMax + 1
-                cancelled = []; routed = []; seqToUtterance = [:]; faceAudio = [:]; facePending = []; faceDeviceMs = [:]; faceWall = [:]; faceWallEnd = 0
+                cancelled = []; routed = []; seqToUtterance = [:]; faceAudio = [:]; facePending = []; faceReplay = []; faceDeviceMs = [:]; faceWall = [:]; faceWallEnd = 0
             }
             start?.greetAfterMs = nil   // D21: only the very first connect waits; a reconnect doesn't greet again
             sessionId = r.sessionId
@@ -1023,7 +1030,8 @@ enum CallStop: Equatable {
         case let .audio(a):
             seqToUtterance[a.seq] = a.utteranceId
             currentUtterance = a.utteranceId
-            if face != nil, !cancelled.contains(a.utteranceId) {
+            // b14: kept with no face too (the greeting lands before the face set does); the face replays it on arrival
+            if !cancelled.contains(a.utteranceId) {
                 if faceAudio.count > 64 { faceAudio.removeAll() }   // frames that never came
                 faceAudio[a.seq] = a
             }
@@ -1046,6 +1054,7 @@ enum CallStop: Equatable {
             face?.cancel(utteranceId: faceId(c.utteranceId))
             faceAudio = faceAudio.filter { $0.value.utteranceId != c.utteranceId }
             facePending.removeAll { $0.utterance == c.utteranceId }
+            faceReplay.removeAll { $0.utterance == c.utteranceId }
             faceDeviceMs[c.utteranceId] = nil
             saidOnDevice.remove(c.utteranceId)
             flushPlayback()
@@ -1317,6 +1326,7 @@ enum CallStop: Equatable {
             return self.faceClockMs(utterance: id - self.faceIdBase)
         }
         face = driver
+        replayAudible(into: driver)
         if faceOnScreen && faceAnimates { driver.start() }
         if !faceAnimates { renderFaceStill(set, size: size, for: driver) }
         // iPhone too since build 8: the generated face's rest frame shows before it moves (no upload-photo flash)
@@ -1426,6 +1436,7 @@ enum CallStop: Equatable {
         face?.cancel()
         faceAudio = [:]
         facePending = []
+        faceReplay = []
         faceDeviceMs = [:]
         faceWall = [:]; faceWallEnd = 0
     }
@@ -1464,7 +1475,8 @@ enum CallStop: Equatable {
         // the player's own clock wins whenever it has one that agrees the reply has started (or not yet, by both)
         if let player, player >= 0 || wall < 1000 { return player }
         guard wall >= 0, wall <= e.ms + 1000 else { return player }
-        if !faceClockFellBack {
+        // b14: past the audio's end the player has simply finished (checkDone drops its start): the slack is no fallback
+        if !faceClockFellBack, wall <= e.ms {
             faceClockFellBack = true
             let head = player.map { String(Int($0)) } ?? "nil"
             log.error("FACE_CLOCK player playhead \(head, privacy: .public) while audio plays; face follows the wall clock")
@@ -1488,7 +1500,6 @@ enum CallStop: Equatable {
         let ms = Int(PCM.durationMs(bytes: pcm.count).rounded())
         faceDeviceMs[utteranceId] = offset + ms
         if faceDeviceMs.count > 16 { faceDeviceMs = faceDeviceMs.filter { $0.key >= utteranceId - 4 } }
-        guard face != nil else { return }
         let event = ServerEvent.Audio(utteranceId: faceId(utteranceId), seq: 0, sentence: 0, offsetMs: offset, durationMs: ms,
                                       sampleRate: GenitaProtocol.sampleRate, model: "device", words: [], mouth: nil)
         feedFace(utteranceId) { $0.handle(audio: event, pcm: pcm) }
@@ -1498,6 +1509,7 @@ enum CallStop: Equatable {
     private var faceUtterance: Int? { face?.currentUtteranceId.map { $0 - faceIdBase } }
 
     private func feedFace(_ utterance: Int, _ apply: @escaping (FaceDriver) -> Void) {
+        recordFace(utterance, apply)
         guard let face else { return }
         if facePending.contains(where: { $0.utterance == utterance }) || stillHearing(before: utterance) {
             if facePending.count > 512 { facePending.removeAll() }
@@ -1505,6 +1517,42 @@ enum CallStop: Equatable {
             return
         }
         apply(face)
+    }
+
+    /// b14: remembers one face event of a reply (the last `faceReplayUtterances` replies, at most `faceReplayMaxEvents`).
+    private func recordFace(_ utterance: Int, _ apply: @escaping (FaceDriver) -> Void) {
+        faceReplay.append((utterance, apply))
+        var seen: [Int] = []
+        for e in faceReplay.reversed() where !seen.contains(e.utterance) { seen.append(e.utterance) }
+        if seen.count > Self.faceReplayUtterances {
+            let keep = Set(seen.prefix(Self.faceReplayUtterances))
+            faceReplay.removeAll { !keep.contains($0.utterance) }
+        }
+        if faceReplay.count > Self.faceReplayMaxEvents { faceReplay.removeFirst(faceReplay.count - Self.faceReplayMaxEvents) }
+    }
+
+    /// b14: a new face driver picks up the replies still being heard (or still to be heard), in order, through the
+    /// same hold-until-audible queue the live events use. Replies whose audio is over are not replayed.
+    private func replayAudible(into driver: FaceDriver) {
+        let now = ProcessInfo.processInfo.systemUptime
+        let audible = Self.audibleReplayUtterances(faceReplay.map(\.utterance), cancelled: cancelled, now: now) { [faceWall] u in
+            faceWall[u].map { $0.start + $0.ms / 1000 }
+        }
+        guard !audible.isEmpty else { return }
+        facePending = faceReplay.filter { audible.contains($0.utterance) }
+        log.info("FACE_REPLAY utterances=\(audible.sorted().map(String.init).joined(separator: ","), privacy: .public) events=\(self.facePending.count, privacy: .public)")
+        flushFacePending()
+    }
+
+    /// The replies a face that arrives now should still show: not cancelled, and their audio (wall clock end, 1 s of
+    /// output latency slack) not over yet. A reply with no audio yet (text first) counts as still to come.
+    nonisolated static func audibleReplayUtterances(_ utterances: [Int], cancelled: Set<Int>, now: TimeInterval,
+                                                    wallEnd: (Int) -> TimeInterval?) -> Set<Int> {
+        var out = Set<Int>()
+        for u in Set(utterances) where !cancelled.contains(u) {
+            if let end = wallEnd(u) { if end + 1 > now { out.insert(u) } } else { out.insert(u) }
+        }
+        return out
     }
 
     /// True while the face's current reply is still audible and `utterance` is a later one whose own audio

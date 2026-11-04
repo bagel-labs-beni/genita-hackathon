@@ -88,6 +88,47 @@ import XCTest
         XCTAssertEqual(try XCTUnwrap(call.faceClockMs(utterance: 8, now: t0 + 2.2)), 200 - lat, accuracy: 30)
     }
 
+    /// b14 (Chelsea 15:53/16:15, "말하면 얼굴 움직여야 해"): the greeting (or the first reply after a move or a
+    /// reconnect) played while the face set was still loading, and the face that arrived mid-reply stayed still until
+    /// the next reply: the `audio` events were only kept when a face already existed. Now the face that arrives gets
+    /// the reply still being heard.
+    func testAFaceThatArrivesMidReplyMovesWithIt() throws {
+        let call = CallController()
+        call.playbackSink = { _, _ in }
+        call.handle(#"{"type":"reply.delta","utteranceId":4,"text":"Hey, good to see you again"}"#)
+        call.handle(audio(4, seq: 1, durationMs: 2000))
+        call.handle(binary: frame(seq: 1, pcm(ms: 2000)))
+        XCTAssertNil(call.face, "no face yet: the greeting plays over the still")
+        call.useFace(try Self.fixtureSet(), key: "late", reduceMotion: true)
+        let face = try XCTUnwrap(call.face)
+        XCTAssertEqual(face.currentUtteranceId, 4, "the reply still being heard reaches the face that just arrived")
+        XCTAssertGreaterThan(peak(face).openness, 0.5, "its audio opens the jaw")
+        // later chunks of the same reply keep feeding it
+        call.handle(audio(4, seq: 2, offsetMs: 2000, durationMs: 400))
+        call.handle(binary: frame(seq: 2, pcm(ms: 400)))
+        XCTAssertGreaterThan(face.timeline.sample(atMs: 2200).openness, 0.1)
+    }
+
+    /// b14: a swapped face (cached set → full set) picks up the reply mid-way too; a cancelled reply is never replayed.
+    func testASwappedFaceKeepsTheReplyAndACancelledOneStaysClosed() throws {
+        let (call, _, _) = try callWithFace()
+        call.handle(audio(5, seq: 1, durationMs: 2000))
+        call.handle(binary: frame(seq: 1, pcm(ms: 2000)))
+        call.useFace(try Self.fixtureSet(), key: "full", reduceMotion: true)
+        let swapped = try XCTUnwrap(call.face)
+        XCTAssertEqual(swapped.currentUtteranceId, 5)
+        call.handle(#"{"type":"utterance.cancelled","utteranceId":5,"reason":"barge_in"}"#)
+        call.useFace(try Self.fixtureSet(), key: "again", reduceMotion: true)
+        XCTAssertNil(try XCTUnwrap(call.face).currentUtteranceId, "a cancelled reply is not replayed")
+    }
+
+    func testOnlyRepliesStillAudibleAreReplayed() {
+        let now: TimeInterval = 100
+        let ends: [Int: TimeInterval] = [1: 90, 2: 99.5, 3: 104]
+        let out = CallController.audibleReplayUtterances([1, 1, 2, 3, 4, 6], cancelled: [6], now: now) { ends[$0] }
+        XCTAssertEqual(out, [2, 3, 4], "1 ended 10 s ago; 2 is inside the 1 s output slack; 3 is playing; 4 has no audio yet; 6 was cancelled")
+    }
+
     /// DEMO P0: the call screen moves the still while she speaks (no live face yet); a cancel stops it at once.
     func testSpeakingStateFollowsTheServerAndStopsOnCancel() {
         let call = CallController()
