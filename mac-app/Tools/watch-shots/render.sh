@@ -11,7 +11,10 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$OUT" "$WORK/bin"
 sed 's/^@main struct GenitaMacApp/struct GenitaMacApp/' mac-app/GenitaMac/GenitaMacApp.swift > "$WORK/GenitaMacAppNoMain.swift"
+# CallAudio / PCMPlayer catch AVAudioPlayerNode.play()'s ObjC exception through GenitaObjCCatch (TF 331 CRASH-1)
+clang -c -fobjc-arc -isysroot "$(xcrun --sdk macosx --show-sdk-path)" -target arm64-apple-macos15.0 shared/Call/GenitaObjCCatch.m -o "$WORK/GenitaObjCCatch.o"
 swiftc -parse-as-library -sdk "$(xcrun --sdk macosx --show-sdk-path)" -target arm64-apple-macos15.0 -D DEBUG \
+  -import-objc-header shared/Call/Genita-Bridging-Header.h "$WORK/GenitaObjCCatch.o" \
   $(ls mac-app/GenitaMac/*.swift | grep -v GenitaMacApp.swift) mac-app/GenitaMac/Interpret/*.swift "$WORK/GenitaMacAppNoMain.swift" mac-app/Tools/watch-shots/Harness.swift \
   shared/Handoff/*.swift shared/Call/*.swift $(find shared/GenitaKit/Sources/GenitaKit -name '*.swift') \
   ios-app/Genita/AppState.swift ios-app/Genita/SharedSettingsView.swift -o "$WORK/bin/harness"
