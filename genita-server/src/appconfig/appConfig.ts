@@ -46,6 +46,7 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
     judgeAccess: true,
     interactiveSplash: true,
     motion: true,
+    proximityHandoff: true, // demo "징": bring the iPhone to the Mac and the call moves (PROXIMITY_CALIBRATION.md)
   },
   tuning: {
     bargeInMs: 400,
