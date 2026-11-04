@@ -359,6 +359,7 @@ extension MacCallCue {
         case .interrupted: "Stopped. Go ahead."
         case .reconnecting: "Reconnecting…"
         case .answerFailed: "Couldn’t get an answer."
+        case .micOff: "Stopped"
         case .micBlocked: "Microphone is off for Genita."
         }
     }

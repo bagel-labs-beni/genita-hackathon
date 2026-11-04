@@ -257,13 +257,13 @@ public struct InterpretHoldButton: View {
                     Capsule().fill(.ultraThinMaterial.opacity(0.6))
                     Capsule().fill(InterpretInk.glass)
                     GeometryReader { g in
-                        Rectangle().fill(InterpretInk.onInk)
+                        Rectangle().fill(InterpretInk.blueOnInk)
                             .frame(width: held || !live ? g.size.width : 0)
                             .opacity(held ? 1 : 0)
                     }
                     .clipShape(Capsule())
                 } else {
-                    Capsule().fill(held ? AnyShapeStyle(InterpretInk.onInk) : AnyShapeStyle(.ultraThinMaterial.opacity(0.6)))
+                    Capsule().fill(held ? AnyShapeStyle(InterpretInk.blueOnInk) : AnyShapeStyle(.ultraThinMaterial.opacity(0.6)))
                     Capsule().fill(held ? Color.clear : InterpretInk.glass)
                 }
             }
