@@ -95,12 +95,14 @@ struct PresenceState: Equatable {
 }
 
 /// Where `/v1/presence` is. Same keys as the call client (`GENITA_SERVER_URL` / defaults
-/// `genita.server.url`, which point at `/v1/session`) and the same session token.
+/// `genita.server.url`, which point at `/v1/session`), the same default (the deployed server) and the same session token.
+/// TF 331: the fallback was ws://127.0.0.1:8787, and only the Mac registers `genita.server.url`, so the iPhone's presence
+/// never reached the server (no proximity, no Continue here when the Mac took the call).
 struct PresenceEndpoint: Equatable {
     var url: URL
     var token: String?
     static func current(device: ConversationDevice, environment: [String: String] = ProcessInfo.processInfo.environment, defaults: UserDefaults = .standard) -> PresenceEndpoint? {
-        let raw = environment["GENITA_PRESENCE_URL"] ?? defaults.string(forKey: "genita.presence.url") ?? environment["GENITA_SERVER_URL"] ?? defaults.string(forKey: "genita.server.url") ?? "ws://127.0.0.1:8787/v1/session"
+        let raw = environment["GENITA_PRESENCE_URL"] ?? defaults.string(forKey: "genita.presence.url") ?? environment["GENITA_SERVER_URL"] ?? defaults.string(forKey: "genita.server.url") ?? CallEndpoint.defaultURL
         guard var c = URLComponents(string: raw), let scheme = c.scheme, ["ws", "wss"].contains(scheme) else { return nil }
         if c.path.hasSuffix("/v1/session") { c.path = String(c.path.dropLast("/v1/session".count)) + "/v1/presence" }
         else if !c.path.hasSuffix("/v1/presence") { c.path = (c.path.hasSuffix("/") ? String(c.path.dropLast()) : c.path) + "/v1/presence" }

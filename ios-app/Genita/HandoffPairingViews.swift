@@ -85,21 +85,21 @@ struct PhonePairingView: View {
     private var pairedSheet: some View {
         VStack(alignment: .leading, spacing: 0) {
             title("Paired with your Mac.").padding(.top, 12)
-            Text(handoff.proximitySupported
+            Text(handoff.offersTouchSetup
                  ? "You can also move by touching your Mac’s\u{00A0}screen edge. Show this iPhone your Mac’s\u{00A0}screen once to set it up."   // "Mac’s / screen" never splits (pixel QA)
                  : "Use Move to Mac in the menu to move the conversation.")
                 .font(.custom("PretendardVariable-Regular", fixedSize: 16)).foregroundStyle(ink).fixedSize(horizontal: false, vertical: true).padding(.top, 16)
-            if handoff.proximitySupported {
+            if handoff.offersTouchSetup {
                 Button(action: handoff.registerScreen) {
                     Text("Set up touch to move").font(.custom("PretendardVariable-Medium", fixedSize: 16)).foregroundStyle(onInk)
                         .frame(maxWidth: .infinity).frame(height: 50).background(ink, in: RoundedRectangle(cornerRadius: 6)).contentShape(Rectangle())
                 }.buttonStyle(.plain).padding(.top, 32).accessibilityIdentifier("setUpTouchToMove")
             }
             Button(action: handoff.closePairing) {
-                Text(handoff.proximitySupported ? "Not now" : "Done").font(.custom("PretendardVariable-Medium", fixedSize: 15)).foregroundStyle(ink)
+                Text(handoff.offersTouchSetup ? "Not now" : "Done").font(.custom("PretendardVariable-Medium", fixedSize: 15)).foregroundStyle(ink)
                     .frame(maxWidth: .infinity).frame(height: 44).contentShape(Rectangle())
-            }.buttonStyle(.plain).padding(.top, handoff.proximitySupported ? 6 : 32).accessibilityIdentifier("pairingNotNow")
-            if handoff.proximitySupported { calibration }
+            }.buttonStyle(.plain).padding(.top, handoff.offersTouchSetup ? 6 : 32).accessibilityIdentifier("pairingNotNow")
+            if handoff.offersTouchSetup { calibration }
         }
     }
     /// Dyno's position fine-tuning and forget-this-Mac, kept for the device test but folded away (not on the board).
