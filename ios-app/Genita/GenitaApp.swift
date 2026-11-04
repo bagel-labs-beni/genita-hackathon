@@ -19,7 +19,9 @@ import SwiftUI
     }
     /// R1 dims the image behind the status bar, so the status bar turns light, as in the design.
     /// PF-1b / r03 full: a full Finds sheet leaves a dark band under the status bar, so it turns light too.
-    private var darkStatusBar: Bool { model.launchRouting || model.stage == .signIn || model.stage == .bringing || CallController.shared.finds.state == .full || (handoff.surface != .active && handoff.motion == nil && !model.menuOpen && !model.settingsOpen && !handoff.settings) }
+    /// S09 call screens (춘식이 11/4 re-check): the call sits on #0E0F11 ink (connecting, the wait stage, the edges of a
+    /// stepped-back face), so the status bar text is white there too; the menu panel and Settings stay light.
+    private var darkStatusBar: Bool { model.launchRouting || model.stage == .signIn || model.stage == .bringing || CallController.shared.finds.state == .full || (model.stage == .conversation && !model.menuOpen && !model.settingsOpen && !handoff.settings) || (handoff.surface != .active && handoff.motion == nil && !model.menuOpen && !model.settingsOpen && !handoff.settings) }
     var body: some Scene {
         WindowGroup {
             Group {

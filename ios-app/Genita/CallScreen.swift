@@ -9,6 +9,8 @@ enum CallInk {
     static let ink = Color(red: 17 / 255, green: 17 / 255, blue: 17 / 255)
     static let onInk = Color(red: 253 / 255, green: 253 / 255, blue: 253 / 255)
     static let pill = Color(red: 17 / 255, green: 17 / 255, blue: 17 / 255).opacity(0.84)
+    /// S09 wait pill (춘식이 11/4 re-check): rgba(30,30,32,.82) — #111 at .84 vanished on the #0E0F11 wait ground
+    static let waitPill = Color(red: 30 / 255, green: 30 / 255, blue: 32 / 255).opacity(0.82)
     static let blueOnInk = Color(red: 84 / 255, green: 193 / 255, blue: 1)
     static let mute = Color(red: 115 / 255, green: 115 / 255, blue: 115 / 255)
     static let handle = Color(red: 219 / 255, green: 219 / 255, blue: 219 / 255)
@@ -160,7 +162,7 @@ struct CallCueView: View {
             .padding(.leading, CallPillMetrics.leading).padding(.trailing, content.action == nil ? CallPillMetrics.trailing : CallPillMetrics.trailingWithAction)
             .padding(.vertical, CallPillMetrics.vertical)
             .frame(minHeight: CallPillMetrics.height)
-            .background(CallInk.pill, in: RoundedRectangle(cornerRadius: CallPillMetrics.radius))
+            .background(waiting ? CallInk.waitPill : CallInk.pill, in: RoundedRectangle(cornerRadius: CallPillMetrics.radius))
             // 춘식이 11/4: a hairline so the pill keeps its shape on the dark wait stage (barely there over a face)
             .overlay(RoundedRectangle(cornerRadius: CallPillMetrics.radius).strokeBorder(.white.opacity(0.12), lineWidth: 0.5).allowsHitTesting(false))
             .accessibilityElement(children: .combine)
@@ -172,6 +174,7 @@ struct CallCueView: View {
     }
 
     private struct Content { let icon: AnyView; let text: String; let action: (title: String, run: () -> Void)? }
+    private var waiting: Bool { Self.showsWaiting(cue: cue, findsText: findsText, waitingText: waitingText) }
 
     /// Card 1's live icon for the three conversation states; reconnecting, alerts and the Finds line keep theirs.
     private var motionIcon: MotionPillIconKind? {
@@ -195,15 +198,15 @@ struct CallCueView: View {
     /// off the screen; Codex P3)
     static func waitingLine(name: String, rowWidth: CGFloat) -> String {
         let full = "Getting \(name) ready"
-        return pillWidth(text: full) <= rowWidth ? full : "Getting ready"
+        return pillWidth(text: full, icon: CueSpinner.waitSize) <= rowWidth ? full : "Getting ready"
     }
     private static func textWidth(_ text: String) -> CGFloat {
         let font = UIFont(name: "PretendardVariable-Medium", size: 14) ?? .systemFont(ofSize: 14, weight: .medium)
         return ceil((text as NSString).size(withAttributes: [.font: font]).width)
     }
-    /// The pill's width for a line (icon counted at its widest, the 20 pt alert). With a button: + 7 + 8 + title + 8.
-    static func pillWidth(text: String, action: String? = nil) -> CGFloat {
-        let base = CallPillMetrics.leading + 20 + CallPillMetrics.iconSpacing + textWidth(text)
+    /// The pill's width for a line (icon counted at its widest, the 20 pt alert; the wait line's spinner is 13). With a button: + 7 + 8 + title + 8.
+    static func pillWidth(text: String, action: String? = nil, icon: CGFloat = 20) -> CGFloat {
+        let base = CallPillMetrics.leading + icon + CallPillMetrics.iconSpacing + textWidth(text)
         guard let action else { return base + CallPillMetrics.trailing }
         return base + CallPillMetrics.iconSpacing + 16 + textWidth(action)
     }
@@ -230,11 +233,12 @@ struct CallCueView: View {
     }
     /// The measured pill width of what it shows now; nil = nothing to show.
     static func width(cue: CallCue, name: String, findsText: String?, rowWidth: CGFloat?, waitingText: String? = nil) -> CGFloat? {
-        line(cue: cue, name: name, findsText: findsText, rowWidth: rowWidth, waitingText: waitingText).map { pillWidth(text: $0.text, action: $0.action) }
+        let icon = showsWaiting(cue: cue, findsText: findsText, waitingText: waitingText) ? CueSpinner.waitSize : 20
+        return line(cue: cue, name: name, findsText: findsText, rowWidth: rowWidth, waitingText: waitingText).map { pillWidth(text: $0.text, action: $0.action, icon: icon) }
     }
     private var content: Content? {
         if Self.showsWaiting(cue: cue, findsText: findsText, waitingText: waitingText), let waitingText {
-            return Content(icon: AnyView(CueSpinner()), text: waitingText, action: nil)
+            return Content(icon: AnyView(CueSpinner(size: CueSpinner.waitSize, line: 1.6, track: 0.30, head: .white)), text: waitingText, action: nil)
         }
         guard let line = Self.line(cue: cue, name: name, findsText: findsText, rowWidth: rowWidth) else { return nil }
         let showingFinds = findsText != nil && cue != .reconnecting && cue != .answerFailed
@@ -345,12 +349,18 @@ struct CueAlert: View {
 }
 
 struct CueSpinner: View {
+    /// S09 wait pill (춘식이 11/4 re-check): 13 pt, 1.6 pt stroke, white 30 % track, #FFF head
+    static let waitSize: CGFloat = 13
+    var size: CGFloat = 16
+    var line: CGFloat = 2
+    var track: Double = 0.32
+    var head = CallInk.onInk
     @State private var turn = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
-        Circle().stroke(CallInk.onInk.opacity(0.32), lineWidth: 2)
-            .overlay(Circle().trim(from: 0, to: 0.25).stroke(CallInk.onInk, style: StrokeStyle(lineWidth: 2, lineCap: .round)).rotationEffect(.degrees(turn ? 360 : 0)))
-            .frame(width: 16, height: 16)
+        Circle().stroke(Color.white.opacity(track), lineWidth: line)
+            .overlay(Circle().trim(from: 0, to: 0.25).stroke(head, style: StrokeStyle(lineWidth: line, lineCap: .round)).rotationEffect(.degrees(turn ? 360 : 0)))
+            .frame(width: size, height: size)
             .onAppear { if !reduceMotion && !CallMotion.reviewStill { withAnimation(.linear(duration: 0.9).repeatForever(autoreverses: false)) { turn = true } } }
     }
 }

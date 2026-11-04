@@ -37,7 +37,17 @@ struct ConversationView: View {
     @State private var faceArrivedTaps = 0
     #if DEBUG
     @State private var debugWaitHold = ProcessInfo.processInfo.environment["GENITA_WAIT_STAGE"] != nil
+    /// DEBUG `GENITA_WAIT_FREEZE=1`: the arrival holds at its midpoint (orb 1.06 half faded, face veil blur half way)
+    /// for the "arriving" review capture
+    private let debugWaitFreeze = ProcessInfo.processInfo.environment["GENITA_WAIT_FREEZE"] != nil
     #endif
+    private var waitFrozen: Bool {
+        #if DEBUG
+        return debugWaitFreeze
+        #else
+        return false
+        #endif
+    }
     /// S09: no picture of the generated face yet (the scene, or the face set's rendered poster / still; a driver
     /// whose first frame isn't drawn doesn't count — Codex P2), and one is still coming: not after the prep failed
     /// (S09-PF, the call goes on as usual), and at most 20 s when nothing is being made or downloaded. Upload photos never count.
@@ -113,6 +123,8 @@ struct ConversationView: View {
                             // motion details card 10: veiled until the generated face (poster or live) is there, then clears
                             // once (blur 14, 520 ms) with one medium tap; flag off → the catalog reveal as before
                             .modifier(CallFaceVeil(connecting: connecting, faceReady: !waitingForFace && (call.facePoster != nil || call.face != nil || framedScene != nil || faceWaitOver), enabled: handoffEnabled))
+                            // DEBUG arriving capture: the veil half way (blur 7 of 14)
+                            .blur(radius: waitFrozen && waitStageUp && !waitingForFace ? 7 : 0)
                             .grayscale(sheetOffline ? 1 : 0).brightness(sheetOffline ? -0.25 : 0).blur(radius: unclear ? 8 : 0)
                             .scaleEffect(faceScale(sheet), anchor: .topLeading).offset(faceOffset(sheet, top: top))
                             .opacity(sheet == .full || call.cameraOn ? 0 : 1)
@@ -127,7 +139,7 @@ struct ConversationView: View {
                         // out of the tree (not just transparent) while the face is the small window: the live orb
                         // would keep drawing at 60 fps unseen (Codex P3); the small windows carry their own orb
                         if !connecting && (waitingForFace || waitStageUp) && sheet != .full && !call.cameraOn {
-                            CallWaitStage(size: full.size, leaving: !waitingForFace)
+                            CallWaitStage(size: full.size, leaving: !waitingForFace, frozenMid: waitFrozen)
                                 .scaleEffect(faceScale(sheet), anchor: .topLeading).offset(faceOffset(sheet, top: top))
                                 .animation(.drawer, value: sheet)
                                 .transition(.opacity)
@@ -336,7 +348,7 @@ struct ConversationView: View {
             // still over after the step back (not a blink while prep turns ready and the idle cap restarts): it gave up
             Task {
                 try? await Task.sleep(for: .milliseconds(320))
-                guard !waitingForFace else { return }
+                guard !waitingForFace, !waitFrozen else { return }
                 waitStageUp = false
                 if !hasFacePicture { waitGaveUp = true }
             }
