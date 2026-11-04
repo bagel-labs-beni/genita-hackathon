@@ -484,6 +484,10 @@ export class Session {
   /** the open segment's latest partial; a watchdog commit keeps it, and then that segment's late final is dropped */
   private segmentPartial = "";
   private dropLateFinal = false;
+  /** bumped on a proximity handoff: an echo check that started before it never completes a turn */
+  private asrEpoch = 0;
+  /** set by stopForHandoff; the server feeds this call's mic again only once it owns the sound (mayPlay) */
+  private handedOff = false;
   private echoPending = 0;
   private lastAsrAt = 0;
   /** the user is talking, or paused inside a turn the end-of-turn hold keeps open */
@@ -682,6 +686,18 @@ export class Session {
   stopForHandoff(): void {
     // the other device has the sound now: this call never speaks first again (Codex 11/3 P2)
     this.stopInitiative();
+    // a turn the end-of-turn hold kept open is not answered here later (CA-14, handover b9-6 P2): this device lost the
+    // sound and the mic, so its reply would only land in the shared history; no cue either
+    this.dropHeld();
+    // …nor a final still on its way from this device (an open segment, an echo check): Codex b9-6 P2
+    if (this.segmentOpen) this.dropLateFinal = true;
+    this.segmentOpen = false;
+    this.asrEpoch++;
+    // the dropped turn's cue-echo filter goes with it (Codex b9-6 r2)
+    this.cuedTurn = false;
+    this.handedOff = true;
+    this.bcGen++;
+    this.backchannel?.stop();
     if (this.started && !this.closed) this.dispatch({ type: "client_barge_in" });
   }
 
@@ -796,6 +812,12 @@ export class Session {
 
   onClientAudio(frame: Buffer): void {
     if (!this.started) return;
+    if (this.handedOff) {
+      // the sound came back to this device: what the user says now is theirs, even inside the segment the move cut
+      // (no new speechStart) — its final is answered (Codex b9-6 r2)
+      this.handedOff = false;
+      this.dropLateFinal = false;
+    }
     let pcm = frame;
     // F8 Mac call mode: frames carry a "GA" header saying mic (3) or call sound (4)
     if (frame.length > FRAME_HEADER_BYTES && frame[0] === 0x47 && frame[1] === 0x41 && frame[3] === 0 && (frame[2] === CLIENT_FRAME_KIND_MIC || frame[2] === CLIENT_FRAME_KIND_CALL)) {
@@ -871,6 +893,11 @@ export class Session {
       const memory = this.deps.memory;
       const userId = this.deps.userId;
       this.memoryCall = new MemoryCall(memory, userId, this.id, (revision) => {
+        // a turn the end-of-turn hold kept open, and a final still in its echo check, are from before the Forget:
+        // never answered (and so never saved) after it (CA-14, #585 Codex P1)
+        // …and so is the segment being spoken at that moment: its late final is dropped (d5c9c86e Codex P1)
+        this.dropHeld(); this.asrEpoch++; this.bcGen++; this.backchannel?.stop(); this.cuedTurn = false;
+        if (this.segmentOpen) { this.dropLateFinal = true; this.segmentOpen = false; }
         this.dropSpeculation(); this.dispatch({ type: "client_barge_in" });
         this.history = []; this.recentReplies = []; this.memories = []; this.greeting = null;
         this.historyRevision = revision;
@@ -1381,7 +1408,8 @@ export class Session {
           // in order: a slow echo check must not let a later utterance go first (Codex 11/2) — an empty final too, while
           // one is pending (Codex CA-14 r2)
           this.echoPending++;
-          this.echoChain = this.echoChain.then(() => this.completeUnlessEcho(e.turnId, e.text)).catch(() => {}).finally(() => { this.echoPending--; });
+          const epoch = this.asrEpoch;
+          this.echoChain = this.echoChain.then(() => (epoch === this.asrEpoch ? this.completeUnlessEcho(e.turnId, e.text, epoch) : undefined)).catch(() => {}).finally(() => { this.echoPending--; });
           return;
         }
         return this.completeTurn(e.turnId, e.text);
@@ -1507,15 +1535,17 @@ export class Session {
   /** While sharing, the video's own lines leaking into the mic are not a user turn (F5-L13). */
   private echoChain: Promise<void> = Promise.resolve();
 
-  private async completeUnlessEcho(turnId: number, text: string): Promise<void> {
+  private async completeUnlessEcho(turnId: number, text: string, epoch = this.asrEpoch): Promise<void> {
     const echo = text.trim() ? ((await this.watch?.isEcho(text)) ?? false) : false;
-    // re-check after the wait: the call may have closed or switched to interpretation meanwhile
-    if (this.closed || this.mode === "interpret") return;
+    // re-check after the wait: the call may have closed, switched to interpretation or moved to the other device
+    if (this.closed || this.mode === "interpret" || epoch !== this.asrEpoch) return;
     if (!echo) return this.completeTurn(turnId, text);
     this.log("watch.echo_dropped", { text: text.slice(0, 120) });
     // a held turn waits again from here (the video's line was not the user going on); if the user went on meanwhile,
     // the hold's clock waits for their final (holdTimerFired)
     if (this.held) return this.completeTurn(turnId, "");
+    // the turn ended (as the video's echo): the cue-echo filter is for that turn only (handover b9-6 P2)
+    this.cuedTurn = false;
     this.dispatch({ type: "speech_complete", text: "" });
     this.dropSpeculation();
   }
