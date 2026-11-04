@@ -31,6 +31,10 @@ test("a second hello after the opener goes; the rest of the sentence stays", () 
   assert.equal(noRepeatGreeting("Look who's talking, you burned toast.", "x"), "Look who's talking, you burned toast.");
   assert.equal(noRepeatGreeting("Well look at you, Summer.", "hey"), "Hey.");
   assert.equal(noRepeatGreeting("Look at you go, that's a clean dice.", "done chopping"), "Look at you go, that's a clean dice.");
+  // bake-off-100 run6: "good to finally hear you" on turn 2 is a second hello
+  assert.equal(noRepeatGreeting("Hey. Good to finally hear you.", "hey"), "Hey.");
+  assert.equal(noRepeatGreeting("Hey you, good to finally put a face to the voice.", "hey"), "Hey you.");
+  assert.equal(noRepeatGreeting("Hey you, finally putting a face to the name.", "hey"), "Hey you.");
   // Codex r1 P2: praise that happens to say "you made it"
   assert.equal(noRepeatGreeting("You made it through a tough interview without freezing.", "Did I do okay in the interview?"), "You made it through a tough interview without freezing.");
   for (const s of ["That's brutal, making you pitch his version like that.", "Black one, no contest.", "Finally, a dish that needs no oven.", "You're back to square one with the deck, huh."]) assert.equal(noRepeatGreeting(s, "x"), s);
@@ -95,6 +99,10 @@ test("r2: a first line that claims what they're doing today becomes a plain hell
   assert.equal(noInventedOpener("Hey Summer. Good to finally catch you, kitchen menace.", o), "Hey Summer. Good to catch you, kitchen menace.");
   assert.equal(noInventedOpener("Hi Summer, finally caught you away from the stove.", o), "Hi Summer, caught you away from the stove.");
   assert.equal(noInventedOpener("Hey hey, Summer! Did you finally try the kimchi pasta?", o), "Hey hey, Summer! Did you finally try the kimchi pasta?");
+  // Codex r3: a wish, a safety check or a real question is not an invented plan; 000 is help
+  for (const s of ["Hey Summer! Hope you are having a good day today.", "Hey Summer! Tell me you're safe.", "I was wondering when your interview is."]) assert.equal(noInventedOpener(s, o), s);
+  assert.equal(noInventedOpener("Hope that spicy ramen is happening tonight.", { first: true, name: "Summer", greeted: true }), "What are you up to?");
+  assert.equal(noUnpromptedGoodbye("Call 000 now and we can talk later.", "Can I wait? My child isn't breathing."), "Call 000 now and we can talk later.");
   // real context, a plain hello or a question stays
   for (const s of ["Hey Summer, how'd the studio interview go on Thursday?", "Oh, you're back! What are you cooking up lately?", "Hey Summer, still putting kimchi in everything?"]) assert.equal(noInventedOpener(s, o), s);
 });

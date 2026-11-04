@@ -2716,7 +2716,7 @@ export class Session {
         }
         // prompt-100 r2: the greeting's own first line never claims a plan for today ("hope that ramen is happening tonight")
         if (this.v1 && tts && greeting && !keepOpener && !interpret && !self) {
-          const plain = noInventedOpener(tts, { first: !sentences.some((x) => !x.beat && !x.opener && !x.drop), name: this.user?.name });
+          const plain = noInventedOpener(tts, { first: !sentences.some((x) => !x.beat && !x.opener && !x.drop), name: this.user?.name, greeted: sentences.some((x) => x.opener && !x.drop) });
           if (plain !== tts) {
             this.log("convo.invented_opener", { utteranceId, dropped: !plain });
             if (!plain) { cutBefore = true; continue; }

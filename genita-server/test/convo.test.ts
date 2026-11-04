@@ -1494,6 +1494,19 @@ test("prompt-100 r2 (session): a greeting that claims their plan for tonight is 
   session.close();
 });
 
+test("prompt-100 r3 (Codex P2): with the name opener out, an invented first line becomes the question alone", { skip: !v1 }, async () => {
+  const client = new Client();
+  const session = new Session("p100-greeted", client, {
+    config, openAsr: () => { throw new Error("no asr"); }, greetOpener: true,
+    async *spark(): AsyncGenerator<SparkStreamEvent> { yield { type: "text", delta: "<happy> Hope that spicy ramen is happening tonight." }; yield { type: "done", responseId: "r", text: "", status: "completed" }; },
+    async *tts() {},
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", user: { name: "Summer" }, greetAfterMs: 0 }));
+  const reply = await client.waitFor((m) => m.type === "reply" && m.final === true, 5000);
+  assert.match(String(reply.text), /^(?:Hey|Hi|Oh hey|Hey hey), Summer! What are you up to\?$/);
+  session.close();
+});
+
 // ───────────── #345 what landed, read from their face ─────────────
 test("#345: a smile or laugh the camera saw at the last reply keeps that lane (and never mentions the face)", async () => {
   const { turnHints } = await import("../src/convo/rhythm.ts");

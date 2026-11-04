@@ -17,14 +17,14 @@ export function userIsLeaving(userText: string): boolean {
 // "look who finally showed up", "you finally made it", "there you are", "you're back", "welcome back", "finally decided to show up"
 // each phrase must end its clause (Codex r1: "You made it through a tough interview" is praise, not a hello)
 const END = String.raw`(?=\s*(?:[,.!?…—]|$))`;
-const GREET_AGAIN = new RegExp(String.raw`\b(?:look (?:who(?:'s| is)?|at you)\b[^,.!?]*\b(?:show(?:ed|s)? up|here|back|made it|decided to [a-z]+|finally|crawl(?:ed|ing)? back|alive)${END}|(?:you\s+|she\s+)?(?:finally|actually)\s+(?:decided\s+to\s+)?(?:show(?:ed)?\s+up|made\s+it|call(?:ed)?|here|back|join(?:ed)?|pick(?:ed)?\s+up)${END}|(?:decided|bothered)\s+to\s+(?:show\s+up|call|join)${END}|there\s+you\s+are${END}|you(?:'re|\s+are)\s+back${END}|welcome\s+back${END}|you\s+made\s+it${END}|(?:oh\s+)?hey\s+stranger|long\s+time\s+no\s+(?:see|talk)|(?:i was )?starting to think you (?:ditched|forgot|ghosted))`, "i");
+const GREET_AGAIN = new RegExp(String.raw`\b(?:look (?:who(?:'s| is)?|at you)\b[^,.!?]*\b(?:show(?:ed|s)? up|here|back|made it|decided to [a-z]+|finally|crawl(?:ed|ing)? back|alive)${END}|(?:you\s+|she\s+)?(?:finally|actually)\s+(?:decided\s+to\s+)?(?:show(?:ed)?\s+up|made\s+it|call(?:ed)?|here|back|join(?:ed)?|pick(?:ed)?\s+up)${END}|(?:decided|bothered)\s+to\s+(?:show\s+up|call|join)${END}|there\s+you\s+are${END}|you(?:'re|\s+are)\s+back${END}|welcome\s+back${END}|you\s+made\s+it${END}|(?:good|nice|glad|great|so good)\s+to\s+(?:finally\s+)?(?:hear|see|meet|talk\s+to|catch|put\s+a\s+face\s+to)\b[^,.!?]*|finally\s+(?:putting|put|get\s+to\s+put)\s+a\s+face\b[^,.!?]*|finally\s+(?:live|talking\s+for\s+real|hear(?:ing)?\s+you)\b[^,.!?]*|(?:oh\s+)?hey\s+stranger|long\s+time\s+no\s+(?:see|talk)|(?:i was )?starting to think you (?:ditched|forgot|ghosted))`, "i");
 /** "Look who actually stayed up late with me" (bake-off-100 run3): a piece that opens with "look who" is a hello tease */
 const LOOK_WHO = /^\s*(?:(?:oh|well|hey)\s+)?(?:look who\b(?!'?s talking| is talking)|look at you\s*$)/i;
 const HELLO_ONLY = /^\s*(?:oh\s+|well\s+)?(?:hey|hi|hello|heya|hiya|yo|sup)(?:\s+(?:you|there|girl|dude|babe|friend))?\s*$/i;
 const USER_HELLO = /^\s*(?:hey|hi|hello|heya|hiya|yo|sup|what'?s up|wassup)\b[\s\w'!.?,]{0,20}$/i;
 
 /** a sentence carrying real help ("call 911", "988") is never cut by these guards (Codex r1/r2 P1) */
-const HELP = /\b(?:911|988|999|112|police|ambulance|crisis (?:line|text)|hotline|lifeline|emergency (?:services|room|number|line)|call (?:someone|a friend|for help|them now))\b/i;
+const HELP = /\b(?:911|988|999|112|000|police|ambulance|crisis (?:line|text)|hotline|lifeline|emergency (?:services|room|number|line)|call (?:someone|a friend|for help|them now))\b/i;
 const TAGS = /^(\s*(?:(?:<[^>]*>|\[[^\]]*\])\s*)*)/;
 
 /**
@@ -80,9 +80,11 @@ function cap(s: string): string {
  * an invented plan, even after the opener prompt said not to (bake-off-100, 2 of 4 big-import first calls). The first
  * such sentence becomes a plain warm hello; a later one goes. "finally" leaves a first line ("good to finally catch you").
  */
-const INVENTED = /\b(?:tell me you'?re|hope (?:that|the|your|you'?re|you)\b[^.!?]{0,60}\b(?:tonight|today|happening|survived|going|still)|(?:figured|bet|guessing|betting) you'?(?:re|d|ll)\b|(?:is|are) happening (?:tonight|today)|you(?:'re| are) (?:probably|totally|definitely) (?:making|cooking|eating|doing|having)|(?:wondered|was wondering) when\b|due for (?:some|a|an)\b|(?:emergency|midnight|late[- ]night) [a-z]+ (?:stash|run|session) (?:survived|is))/i;
+// a claimed activity or plan, never a wish or a safety check ("Hope you're having a good day", "Tell me you're safe": Codex r3)
+const INVENTED = /\b(?:tell me (?:you'?re|there'?s|you are) (?:making|cooking|doing|eating|having|on|about to|[a-z]+ing (?:that|the|some))|hope (?:that|the|your)\b[^.!?]{0,60}\b(?:is happening|are happening|survived|is on the stove|is cooking)|hope you'?re (?:making|cooking|eating|having (?:that|the|some))|(?:figured|bet|guessing|betting) you'?(?:re|d|ll) (?:be )?(?:making|cooking|eating|having|due|craving|on|in)\b|(?:is|are) happening (?:tonight|today)|you(?:'re| are) (?:probably|totally|definitely) (?:making|cooking|eating|doing|having)|(?:wondered|was wondering) when (?:you'?d|you would|my [a-z ]{0,30}would) (?:show|call|pick|get|finally)|due for (?:some|a|an) [a-z ]{0,30}(?:ramen|noodles|food|snack|dinner|by now))/i;
 
-export function noInventedOpener(sentence: string, opts: { first: boolean; name?: string }): string {
+/** opts.greeted: the session's "Hey, Summer!" opener already went out → the replacement is the question alone (Codex r3 P2) */
+export function noInventedOpener(sentence: string, opts: { first: boolean; name?: string; greeted?: boolean }): string {
   const lead = TAGS.exec(sentence)?.[1] ?? "";
   let body = sentence.slice(lead.length);
   if (HELP.test(body)) return sentence;
@@ -90,6 +92,7 @@ export function noInventedOpener(sentence: string, opts: { first: boolean; name?
   body = body.replace(/\b((?:good|nice|glad) to )finally (?=(?:catch|see|talk|hear|meet)\b)/i, "$1").replace(/\bfinally (?=(?:caught|catch) you\b)/i, "");
   if (!INVENTED.test(body)) return `${lead}${cap(body.trim())}`;
   if (!opts.first) return "";
+  if (opts.greeted) return `${lead}What are you up to?`;
   const first = opts.name?.trim().split(/\s+/)[0];
   return `${lead}Hey${first ? ` ${first}` : ""}! What are you up to?`;
 }
