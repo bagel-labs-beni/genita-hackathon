@@ -31,6 +31,39 @@ import ScreenCaptureKit
   capture.reset() // stop, account change and ownership transfer all reset the capture
   capture.forceNextFrame()
   precondition(frames.count == 2, "A new share must not replay the previous share's JPEG")
+  // AU-65: a window that goes black and stays still sends one complete frame, then only .idle: still MS-3 after ~1 s
+  let still = WatchCapture()
+  var blanks: [Bool] = []
+  var sent: [(Bool, Float)] = []
+  still.onBlank = { blanks.append($0) }
+  still.onFrame = { _, blank, motion in sent.append((blank, motion)) }
+  let t0 = Date(timeIntervalSince1970: 1_000)
+  still.handleScreen(screenSample(status: .complete, fill: 0), now: t0)
+  precondition(blanks.isEmpty && sent.count == 1 && sent[0].0 == false, "one black frame is not blank yet")
+  still.handleScreen(screenSample(status: .idle, fill: 0), now: t0.addingTimeInterval(0.5))
+  precondition(blanks.isEmpty, "a short black is a fade, not a protected window")
+  still.handleScreen(screenSample(status: .idle, fill: 0), now: t0.addingTimeInterval(1.0))
+  precondition(blanks == [true], "idle frames after a black one turn blank on: \(blanks)")
+  precondition(sent.count == 2 && sent[1].0 == true && sent[1].1 == 0, "the server gets the black picture again, marked blank")
+  still.handleScreen(screenSample(status: .idle, fill: 0), now: t0.addingTimeInterval(1.5))
+  precondition(blanks == [true] && sent.count == 2, "said once")
+  still.handleScreen(screenSample(status: .complete, fill: 255), now: t0.addingTimeInterval(2.0))
+  precondition(blanks == [true, false], "a picture again clears it")
+  // Codex r1 P2: a picture right after the idle blank frame (inside the ⅓ s limit) still tells the server
+  let quick = WatchCapture()
+  var quickSent: [Bool] = []
+  quick.onFrame = { _, blank, _ in quickSent.append(blank) }
+  quick.handleScreen(screenSample(status: .complete, fill: 0), now: t0)
+  quick.handleScreen(screenSample(status: .idle, fill: 0), now: t0.addingTimeInterval(0.8))
+  quick.handleScreen(screenSample(status: .complete, fill: 255), now: t0.addingTimeInterval(0.9))
+  precondition(quickSent == [false, true, false], "blank off goes out at once: \(quickSent)")
+  // a lit window's idle frames never turn blank
+  let lit2 = WatchCapture()
+  var litBlanks: [Bool] = []
+  lit2.onBlank = { litBlanks.append($0) }
+  lit2.handleScreen(screenSample(status: .complete), now: t0)
+  lit2.handleScreen(screenSample(status: .idle), now: t0.addingTimeInterval(3))
+  precondition(litBlanks.isEmpty)
   let e = WatchUplink.decode(#"{"type":"speaker","on":true,"label":"A","name":"the chef"}"#.data(using: .utf8)!)
   precondition(e == .speaker(name: "the chef"))
   precondition(WatchUplink.decode(#"{"type":"speaker","on":false}"#.data(using: .utf8)!) == .speaker(name: nil))
@@ -40,13 +73,13 @@ import ScreenCaptureKit
   print("capture/uplink checks ok")
 }
 
-static func screenSample(status: SCFrameStatus) -> CMSampleBuffer {
+static func screenSample(status: SCFrameStatus, fill: Int32 = 255) -> CMSampleBuffer {
   var pixels: CVPixelBuffer?
   precondition(CVPixelBufferCreate(kCFAllocatorDefault, 32, 18, kCVPixelFormatType_32BGRA,
     [kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any]] as CFDictionary, &pixels) == kCVReturnSuccess)
   let image = pixels!
   CVPixelBufferLockBaseAddress(image, [])
-  memset(CVPixelBufferGetBaseAddress(image)!, 255, CVPixelBufferGetBytesPerRow(image) * CVPixelBufferGetHeight(image))
+  memset(CVPixelBufferGetBaseAddress(image)!, fill, CVPixelBufferGetBytesPerRow(image) * CVPixelBufferGetHeight(image))
   CVPixelBufferUnlockBaseAddress(image, [])
   var format: CMVideoFormatDescription?
   precondition(CMVideoFormatDescriptionCreateForImageBuffer(allocator: kCFAllocatorDefault,

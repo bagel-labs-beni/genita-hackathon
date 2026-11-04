@@ -18,6 +18,8 @@ final class WatchCapture: @unchecked Sendable {
     static let blankLuma: Float = 0.035          // mean luma under this, and…
     static let blankSpread: Float = 0.03         // …max − min under this = black frame
     static let ringSeconds: TimeInterval = 3
+    /// black for this long (the old rule: 4 samples at 4 fps) before telling anyone: a fade to black is not a protected window
+    static let blankHold: TimeInterval = 0.75
 
     /// JPEG, blank, motion (mean abs luma change from the previous sent frame on a 32×18 thumbnail, 0…1)
     var onFrame: ((Data, Bool, Float) -> Void)?
@@ -27,14 +29,15 @@ final class WatchCapture: @unchecked Sendable {
     private let context = CIContext(options: [.cacheIntermediates: false])
     private var lastThumb: Thumb?
     private var lastSent = Date.distantPast
-    private var blankRun = 0
+    /// when the picture went black (complete frames); a still black window then sends only `.idle` (AU-65)
+    private var blankSince: Date?
     private var blank = false
     private var isBlankSent = false
     private(set) var ring: [(at: Date, jpeg: Data)] = []
     private var audioBuffer = Data()
 
     func reset() {
-        lastThumb = nil; lastSent = .distantPast; blankRun = 0; blank = false; isBlankSent = false; ring = []; audioBuffer = Data()
+        lastThumb = nil; lastSent = .distantPast; blankSince = nil; blank = false; isBlankSent = false; ring = []; audioBuffer = Data()
     }
 
     /// A static screen may only emit `.idle` after reconnect, so replay its latest JPEG now.
@@ -48,18 +51,21 @@ final class WatchCapture: @unchecked Sendable {
     // MARK: frames
 
     func handleScreen(_ sampleBuffer: CMSampleBuffer, now: Date = Date()) {
-        guard Self.isComplete(sampleBuffer), let pixels = sampleBuffer.imageBuffer else { return }
+        let status = Self.status(sampleBuffer)
+        if status == .idle { idle(now: now); return }
+        guard status == .complete, let pixels = sampleBuffer.imageBuffer else { return }
         let image = CIImage(cvPixelBuffer: pixels)
         guard let thumb = thumbnail(image) else { return }
         let isBlank = Self.isBlank(thumb)
-        // four black samples in a row (≥ 1 s at the stream's 4 fps) before telling anyone: a fade to black is not a
-        // protected window
-        blankRun = isBlank ? blankRun + 1 : 0
-        let nowBlank = blankRun >= 4
+        // black for blankHold before telling anyone: a fade to black is not a protected window
+        blankSince = isBlank ? (blankSince ?? now) : nil
+        let nowBlank = blankSince.map { now.timeIntervalSince($0) >= Self.blankHold } ?? false
         if nowBlank != blank { blank = nowBlank; onBlank?(nowBlank) }
         let motion = lastThumb.map { Self.difference($0, thumb) } ?? 1
         let changed = motion > Self.changeThreshold
-        guard changed || (nowBlank != isBlankSent), now.timeIntervalSince(lastSent) >= Self.minFrameInterval else { return }
+        // a blank change always goes out at once (the MS-3 card follows it); other frames at most 3 a second
+        let blankChange = nowBlank != isBlankSent
+        guard changed || blankChange, blankChange || now.timeIntervalSince(lastSent) >= Self.minFrameInterval else { return }
         guard let jpeg = context.jpegRepresentation(of: image, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!, options: [CIImageRepresentationOption(rawValue: kCGImageDestinationLossyCompressionQuality as String): 0.55]) else { return }
         lastThumb = thumb
         lastSent = now
@@ -69,11 +75,26 @@ final class WatchCapture: @unchecked Sendable {
         onFrame?(jpeg, nowBlank, min(1, motion))
     }
 
-    static func isComplete(_ sampleBuffer: CMSampleBuffer) -> Bool {
-        guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
-              let raw = attachments.first?[.status] as? Int, let status = SCFrameStatus(rawValue: raw) else { return false }
-        return status == .complete
+    /// Nothing changed on screen (`.idle`): a window that went black and stays black only sends these after its first
+    /// frame, so time decides — the MS-3 card shows and the server gets the last picture again, marked blank (AU-65).
+    private func idle(now: Date) {
+        guard let since = blankSince, !blank, now.timeIntervalSince(since) >= Self.blankHold else { return }
+        blank = true
+        onBlank?(true)
+        if !isBlankSent, let latest = ring.last {
+            isBlankSent = true
+            lastSent = now
+            onFrame?(latest.jpeg, true, 0)
+        }
     }
+
+    static func status(_ sampleBuffer: CMSampleBuffer) -> SCFrameStatus? {
+        guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
+              let raw = attachments.first?[.status] as? Int else { return nil }
+        return SCFrameStatus(rawValue: raw)
+    }
+
+    static func isComplete(_ sampleBuffer: CMSampleBuffer) -> Bool { status(sampleBuffer) == .complete }
 
     private func thumbnail(_ image: CIImage) -> Thumb? {
         let w = 32, h = 18

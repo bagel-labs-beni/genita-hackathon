@@ -18,8 +18,11 @@ import QuartzCore
     private var titleTask: Task<Void, Never>?
     private var pickedFilter: SCContentFilter?
     private var lastTitle: String?
-    /// MS-3: the shared window captures (almost) black.
+    /// MS-3: the shared window captures (almost) black, or the server saw a DRM-black video in it (Netflix in a browser).
     @Published var blank = false
+    /// what this Mac's capture says / what the server's last `state` said (AU-64): the card shows while either is on
+    private var captureBlank = false
+    private var serverBlank = false
     /// MS-2: the companion reacted first; shown 1.5 s.
     @Published var reacting = false
     /// FT-SPK: who is talking in the shared video (never what they say).
@@ -121,7 +124,7 @@ import QuartzCore
         disconnectUplink(); reconnectAttempt = 0; connectionMessage = nil
         titleTask?.cancel(); titleTask = nil; pickedFilter = nil; lastTitle = nil
         reactingTask?.cancel(); reactingTask = nil
-        blank = false; reacting = false; speakerName = nil; sourceName = nil
+        blank = false; captureBlank = false; serverBlank = false; reacting = false; speakerName = nil; sourceName = nil
     }
     private func stopCapture(_ session: CaptureSession?) {
         guard let session else { return }
@@ -181,7 +184,7 @@ import QuartzCore
                 let old = activeCapture
                 activeCapture = session
                 stopCapture(old)
-                blank = false
+                blank = false; captureBlank = false; serverBlank = false
                 isSharing = true; permissionRequired = false; sourceName = name
                 disconnectUplink(); reconnectAttempt = 0
                 pickedFilter = picked
@@ -229,7 +232,8 @@ import QuartzCore
         capture.onBlank = { [weak self] on in
             Task { @MainActor in
                 guard let self, self.captureRequest.acceptsSamples(request), self.isSharing else { return }
-                self.blank = on
+                self.captureBlank = on
+                self.blank = on || self.serverBlank
             }
         }
     }
@@ -271,7 +275,9 @@ import QuartzCore
         switch event {
         case .state(let sharing, let isBlank):
             guard callIsValid else { disconnectUplink(); connectionMessage = "Screen sharing is disconnected."; return }
-            blank = isBlank || blank
+            // the server's verdict comes and goes on its own (a DRM video in a page that captures fine, AU-64)
+            serverBlank = isBlank
+            blank = isBlank || captureBlank
             if sharing, connectionMessage != nil {
                 connectionMessage = nil; reconnectAttempt = 0
                 reconnectTask?.cancel(); reconnectTask = nil
@@ -292,7 +298,7 @@ import QuartzCore
         case .speaker: break
         case .closed:
             disconnectUplink()
-            speakerName = nil; blank = false; reacting = false
+            speakerName = nil; blank = false; captureBlank = false; serverBlank = false; reacting = false
             reactingTask?.cancel(); reactingTask = nil
             recoverUplink()
         }
