@@ -17,6 +17,9 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 | date | change |
 |---|---|
 | 11/4 | `backchannel.kind: "inhale"` (watch together, lead's call): a big move on the shared screen → the companion's instant nonverbal reaction, a small inhale in `audio` (≤ 0.45 s, ~−30 dBFS), no words; the spoken reaction follows as before. Apps that know it also raise the face's brows for ≤ 0.5 s; older apps just play the audio (the field is a string; nothing else changes). ≥ 25 s apart, shares the reaction gap. `GENITA_WATCH_NONVERBAL=0` turns it off. Additive. |
+| 11/4 | Companion reset: `POST /v1/companion/reset` (PREP_API.md) closes the account's live calls with **`4410` `companion_reset`** (new, additive). Clients: stop reconnecting and route like `/me` with no companion (iPhone → V01, Mac → "Set up on iPhone"). Older clients treat it like any other close and reconnect; the next `/me` routes them. |
+| 11/4 | `proximity.seen` accepts optional `requestId` (nonempty string, ≤128 characters); all `proximity.result` replies to it echo `requestId` and `token`. Macs match both, ignore superseded/uncorrelated replies, and treat a 5 s timeout as unconfirmed while keeping the leave-range latch. Additive: requests without an ID keep the legacy result shape. |
+| 11/4 | `proximity.result` gets `reason: server_error`: a store failure now answers the Mac's `proximity.seen` (it used to be a bare `error`, which left the Mac's one report in flight until it reconnected). Additive; older Macs treat it as any other refusal. |
 | 11/4 | `/v1/presence` `peer` gets `inCall` (bool): the other device has a started call socket right now (its `start` was handled, until the socket closes). The Mac home says "Talking on your iPhone" only while it is true (QA 171). Additive; older apps ignore it and newer apps fall back when it is missing. |
 | 11/4 | `backchannel.audio?` (base64 PCM, the companion's own "Mm-hm.") — the app plays it quietly beside the reply queue (same engine, so echo cancellation removes it) and stops it when the user's voice is heard or a reply starts; the uplink is never cut; the server drops a stray "mm-hm" from that turn's transcript. Rate: ≥ 20 s apart. Additive. |
 | 11/3 | `backchannel {kind: "mm" \| "yeah"}` (server → app, convo P1 #345): during a long user turn, a 1.2 s mid-sentence pause → play a soft listening sound from the app's own clips; it is not a reply and changes no state. Server flag `GENITA_BACKCHANNEL=1`, off by default. Additive: older apps decode it as unknown and ignore it. |
@@ -52,8 +55,11 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 | 11/3 | Expression layer: new event `expression {utteranceId, sentence, tag, intensity, startMs, endMs}` (tag `smile\|smileopen\|laugh\|surprised\|concerned`), at most one per reply clause, server voice only, after that clause's audio. Nothing for neutral clauses. `GENITA_EXPRESSION=0` turns it off. Additive: unknown to old builds → ignored. |
 | 11/3 | PERC-1 perception (#319): new app message `perception.frame {image}` and optional `ready.perception: true` (sent only when the server runs `GENITA_PERCEPTION=1`). The app sends face crops only when it sees `ready.perception`. No server event; the companion just reacts more like a person. Additive: off by default, old apps send nothing and see nothing new. |
 | 11/3 | App config: new public REST `GET /v1/app-config` (copy, flags, tuning, update nudges, remote asset URLs; ETag/304). No WebSocket change. Additive. |
+| 11/4 | Voice identity (Chelsea build 7: "왜 여자 + 기계식"): with server TTS, `say` is no longer sent by default — over the seat cap the call keeps the server voice; a clause the voice service fails is retried once, then the reply is captions only (`error tts_unavailable`, `turn.metrics.ttsModel` never `device`). `GENITA_VOICE_DEVICE_FALLBACK=1` restores the 11/3 rows below. Device mode (`tts: device`) is unchanged. `GET /v1/companion/voices`: the face's gender (image check `voice_fit`) orders the list and sets `suggested`. No wire changes. |
 | 11/3 | D27 voice GPU capacity: above `GENITA_VOICE_MAX_CALLS` (default 3, 0 = unlimited), chat and interpretation replies use the existing `say` fallback; server voice resumes from the next reply once a seat is free. Voice never switches mid-reply. No wire or `ready` changes. |
 | 11/3 | D27 capacity for judging: `GENITA_VOICE_MAX_CALLS` default 3 → 8 (the voice GPU now autoscales early, up to 4 containers). A full GPU queue answers 503 `busy` within 2.5 s; that sentence uses the existing `say` fallback and server voice is retried after 2 s (other failures still 30 s). No wire changes. |
+| 11/4 | Finds audit (additive): new client message `find.focus {findId}` ("Talk about this on a call" names the card, including one from an earlier call; AU-70). Outfit cards: the occasion line ("for this weekend") is the last `why` line and `evidence {style, situation}` is set (CW-02, AU-57). |
+| 11/4 | Device QA test photos: `/me` (and the sign-in body) adds `qaSamplePhotos: true` **only** for accounts listed in server env `GENITA_QA_SAMPLE_PHOTOS` (account ids / verified emails); every other account's `/me` is unchanged (no key). The iPhone app then shows "Use a test photo" on V01 (bundled samples → the same `POST /v1/companion/image`). Additive. |
 
 ```
 wss://<host>/v1/session
@@ -62,7 +68,7 @@ Authorization: Bearer <session JWT>     (or ?token=… ; dev fallback: GENITA_SE
 
 With neither accounts (`DATABASE_URL`) nor `GENITA_SESSION_TOKEN` the server only binds to loopback (local dev).
 Rejections at upgrade: `503` server full. Auth is checked after the upgrade and closes with `4401` (no/bad/expired/revoked token → sign in again) or `4403` (signed in, no AI-data consent yet → CS01).
-Server close codes: `1000` normal / `stop`, `4000` idle 120 s, `4001` max call length (30 min default), `4401` unauthorized or account deleted mid-call, `4403` consent required.
+Server close codes: `1000` normal / `stop`, `4000` idle 120 s, `4001` max call length (30 min default), `4401` unauthorized or account deleted mid-call, `4403` consent required, `4410` the companion was reset (`POST /v1/companion/reset`; no reconnect, route from `/me`).
 
 ## Frames
 
@@ -104,6 +110,7 @@ queues and plays it, and flushes the queue on `utterance.cancelled`.
 | `stop` | — | end the call |
 | `find.confirm` | `findId`, `itemId`, `yes` | the user answered "맞아?" on a maybe ingredient (IC-3): yes → have, no → buy (or gone if no recipe needs it) |
 | `find.stop` | `findId` | Stop on the searching sheet; answered with `find.failed {reason:"stopped"}` |
+| `find.focus` | `findId` | "Talk about this on a call" (FD-01): later turns are about this card. A card from an earlier call is read back from this account's Finds; an unknown id is ignored. No reply. |
 
 `text` may carry `findId` ("Ask about this" chip): that card becomes the context of the reply.
 `start.user` may carry `id` (stable per install until login; owner of saved Finds) and `timeZone` (IANA, for "7:12 PM" in cards).
@@ -617,7 +624,7 @@ The server pings every 2 s and drops a socket silent for 6 s, so the other devic
 | `presence` | `active` | `false` on lock/background, `true` on return. A locked device does not take move requests. |
 | `proximity.arm` | — | iPhone only: "I own the conversation in a live call, give me a Bluetooth token". Re-sent every 30 s to rotate. |
 | `proximity.disarm` | — | iPhone only: the call ended, moved, or the app left the front; its tokens stop counting |
-| `proximity.seen` | `token` | Mac only: this account's iPhone token was held close (RSSI over the threshold for 0.5 s) |
+| `proximity.seen` | `token`, `requestId?` | Mac only: this account's iPhone token was held close (RSSI over the threshold for 0.5 s). A new ID per attempt (nonempty string, ≤128 characters) correlates replies across timeouts/retries. |
 | `ping` | `t` | → `pong {t}` |
 
 | server → app | fields | meaning |
@@ -630,7 +637,7 @@ The server pings every 2 s and drops a socket silent for 6 s, so the other devic
 | `proximity.token` | `token`, `expiresIn` (s) | answer to `proximity.arm`: advertise this as the BLE local name |
 | `proximity.unavailable` | `reason: not_owner \| not_in_call` | answer to `proximity.arm` (`not_owner` = the Mac has it): don't advertise |
 | `proximity.peer` | `armed` | to Macs: this account's iPhone is (not) advertising a token now. Sent on connect and on every change; the Mac scans (and asks for Bluetooth) only while `armed` |
-| `proximity.result` | `accepted`, `reason: ok \| unknown_token \| expired \| not_owner \| not_in_call \| phone_inactive \| mac_inactive \| cooldown \| rate_limited` | answer to `proximity.seen`. `ok` → the server already claimed for the Mac (`ownership` with trigger `proximity` follows) |
+| `proximity.result` | `accepted`, `requestId?`, `token?`, `reason: ok \| unknown_token \| expired \| not_owner \| not_in_call \| phone_inactive \| mac_inactive \| cooldown \| rate_limited \| server_error` | answer to `proximity.seen`, always; echoes both ID and token when the request supplied an ID (including refusals and store failures). A store failure is `server_error`: nothing moved, the token is spent, `proximity.peer {armed:false}` follows. `ok` → the server already claimed for the Mac (`ownership` with trigger `proximity` follows). A timeout is unconfirmed: keep the approach latched until a matching refusal or leaving range; a result for another attempt never releases it. |
 | `error` | `code` | `bad_message`, `bad_epoch`, `unknown_type`, `server_error` |
 
 What the server does on a claim that changes the owner: (1) shuts the audio gate and cancels the current

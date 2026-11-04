@@ -50,6 +50,9 @@ struct HISYView: View {
     @State private var toast: String?
     @State private var toastTask: Task<Void, Never>?
     @State private var forward = true
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// motion details card 8 (flag `motionDetails`): one set of dots above the sliding cards
+    private var movingDots: Bool { MotionDetails.live(reduceMotion: reduceMotion) }
 
     private var cards: [StoryCard] { model.story ?? [] }
     private var skip: Bool { model.storySource == "skip" }
@@ -71,6 +74,10 @@ struct HISYView: View {
                     .id(page)
                     .transition(.asymmetric(insertion: .move(edge: forward ? .trailing : .leading).combined(with: .opacity),
                                             removal: .move(edge: forward ? .leading : .trailing).combined(with: .opacity)))
+                    // motion details card 8: the dots stay while the cards slide, and their capsule moves on
+                    if movingDots, toast == nil, page >= 1, page <= cards.count {
+                        HISYDots(count: cards.count, current: page - 1, moving: true).position(x: w / 2, y: 52 + top + 22).allowsHitTesting(false)
+                    }
                     if let fixing {
                         HISYFixSheet(model: model, card: fixing, width: w, onCancel: { close() }, onSaved: { saved(fixing.id) })
                             .transition(.identity)
@@ -167,7 +174,7 @@ struct HISYView: View {
         ZStack {
             if let toast {
                 HISYToast(text: toast).transition(.opacity)
-            } else {
+            } else if !movingDots {
                 HISYDots(count: cards.count, current: index)
             }
         }.position(x: w / 2, y: 52 + top + 22)
@@ -211,8 +218,11 @@ struct HISYTitle: View {
     var line: CGFloat = 39
     /// Dynamic Type: the title grows with the text size like the old `.largeTitle`-relative serif (1 at the default size)
     @ScaledMetric(relativeTo: .largeTitle) private var scale: CGFloat = 1
+    /// explicit: the SUM insight report (InsightReportView.swift) uses other sizes
+    init(text: String, size: CGFloat = 35, line: CGFloat = 39) { self.text = text; self.size = size; self.line = line }
     var body: some View {
         HISYSerifText(text: text, size: size * scale, line: line * scale).padding(.vertical, -HISYSerifText.overflow)
+            .motionBandLineReveal(pitch: line * scale, key: text)   // motion details card 8: one line after another
     }
 }
 
@@ -292,7 +302,7 @@ final class SerifLabel: UIView {
 struct HISYGlobe: View {
     var body: some View {
         if let orb = DesignLibrary.nodes("preparing").first(where: { $0.name.hasPrefix("soul-orb") }) {
-            DesignImage(node: orb, resource: orb.name.contains("(2)") ? "reference-orb-wide" : "reference-orb-round")
+            SoulOrbSlot(node: orb, resource: orb.name.contains("(2)") ? "reference-orb-wide" : "reference-orb-round")
                 .frame(width: orb.w, height: orb.h).scaleEffect(0.59).frame(width: 346, height: 321).accessibilityHidden(true)
         }
     }
@@ -329,15 +339,24 @@ struct HISYTextButton: View {
 }
 
 /// Progress: done #00A2FF 6 pt, now #00A2FF 18 × 6, next #EAEAEA, 6 pt apart.
+/// `moving` (motion details card 8): the "now" capsule is one view that springs to the next card's slot.
 struct HISYDots: View {
     let count: Int
     let current: Int
+    var moving = false
+    @Namespace private var dots
     var body: some View {
         HStack(spacing: 6) {
             ForEach(0..<max(count, 1), id: \.self) { i in
-                RoundedRectangle(cornerRadius: 3).fill(i <= current ? HISYInk.blue : HISYInk.dotOff).frame(width: i == current ? 18 : 6, height: 6)
+                if moving && i == current {
+                    RoundedRectangle(cornerRadius: 3).fill(HISYInk.blue).frame(width: 18, height: 6)
+                        .matchedGeometryEffect(id: "now", in: dots)
+                } else {
+                    RoundedRectangle(cornerRadius: 3).fill(i <= current ? HISYInk.blue : HISYInk.dotOff).frame(width: i == current ? 18 : 6, height: 6)
+                }
             }
         }
+        .animation(moving ? MotionOnboarding.dotSpring : nil, value: current)
         .accessibilityElement().accessibilityLabel("Card \(current + 1) of \(count)").accessibilityIdentifier("hisyDots")
     }
 }

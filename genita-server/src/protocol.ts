@@ -98,7 +98,8 @@ export type ClientMessage =
   | { type: "ping"; t?: unknown }
   | { type: "stop" }
   | { type: "find.confirm"; findId: string; itemId: string; yes: boolean }
-  | { type: "find.stop"; findId: string };
+  | { type: "find.stop"; findId: string }
+  | { type: "find.focus"; findId: string };
 
 // ───────────────────────── Finds (F5-L3, F5-L8, F10) ─────────────────────────
 

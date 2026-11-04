@@ -205,4 +205,5 @@ private final class ReconnectConnection: CallConnection, @unchecked Sendable {
     func send(_ message: ClientMessage) { sent.append(message) }
     func send(audio: Data) {}
     func close() {}
+    func disconnect() {}
 }

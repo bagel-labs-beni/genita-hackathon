@@ -44,7 +44,26 @@ export const POLISH_PROMPT = [
 export const POLISH_SIZE = "1024x1820";
 /** The first polish + two "Try again" per uploaded photo. */
 export const POLISH_MAX_ATTEMPTS = 3;
-const POLISH_TIMEOUT_MS = 60_000;
+/**
+ * AU-34: CloudFront drops an origin answer after 60 s (deploy/aws README), and the re-check follows the edit, so
+ * the edit (with its one automatic retry) fits in 45 s. A retry only starts with at least 10 s of that left.
+ */
+export const POLISH_BUDGET_MS = 45_000;
+const POLISH_RETRY_MIN_MS = 10_000;
+/** The whole polish request (edit, retry, re-check) answers by this, inside CloudFront's 60 s (Codex r3). */
+export const POLISH_DEADLINE_MS = 55_000;
+/** `p`, or a rejection once `ms` has passed (≤ 0: at once). */
+export function withDeadline<T>(p: Promise<T>, ms: number): Promise<T> {
+  if (ms <= 0) return Promise.reject(new Error("polish_deadline"));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("polish_deadline")), ms); });
+  return Promise.race([p, late]).finally(() => clearTimeout(timer));
+}
+/** Time the automatic retry may take after the first edit failed `elapsedMs` in, or null (no retry). */
+export function polishRetryBudgetMs(elapsedMs: number): number | null {
+  const left = POLISH_BUDGET_MS - elapsedMs;
+  return left >= POLISH_RETRY_MIN_MS ? left : null;
+}
 
 /**
  * What the edit can fix (11/4, Chelsea: users bring any photo). A group photo keeps its largest subject (the app can
@@ -119,14 +138,17 @@ export async function polishImage(
   const retriesLeft = POLISH_MAX_ATTEMPTS - attempt;
 
   const t0 = performance.now();
-  const edit = () => mediaOf(d).imageEdit(d.metaKey, src.bytes, variant.prompt, { size: variant.size, mime: orig.mime, signal: AbortSignal.timeout(POLISH_TIMEOUT_MS) });
+  const edit = (ms: number) => mediaOf(d).imageEdit(d.metaKey, src.bytes, variant.prompt, { size: variant.size, mime: orig.mime, signal: AbortSignal.timeout(ms) });
   let bytes: Buffer;
   try {
-    // an empty answer or a 5xx is usually a one-off: one automatic retry (not counted as the user's "Try again")
-    bytes = await edit().catch((err) => {
+    // an empty answer or a 5xx is usually a one-off: one automatic retry (not counted as the user's "Try again"),
+    // only while the request still fits CloudFront's 60 s (AU-34)
+    bytes = await edit(POLISH_BUDGET_MS).catch((err) => {
       if (isRefusal(err)) throw err;
+      const budget = polishRetryBudgetMs(since(t0));
+      if (budget === null) throw err;
       d.log("photo.polish_retry", { attempt, reason: String(err).slice(0, 120) });
-      return edit();
+      return edit(budget);
     });
   } catch (err) {
     d.log("photo.polish_failed", { attempt, ms: since(t0), refused: isRefusal(err), reason: String(err).slice(0, 200) });
@@ -143,13 +165,16 @@ export async function polishImage(
     const t1 = performance.now();
     const url = `data:image/png;base64,${bytes.toString("base64")}`;
     const json = d.spark ?? (<T>(req: Parameters<NonNullable<PrepDeps["spark"]>>[0]) => sparkJson<T>(d.metaKey, req));
-    const [raw, boxes] = await Promise.all([
+    // the re-check gets what is left of the request's 55 s: an answer CloudFront would drop after 60 s is a
+    // retryable polish_failed instead of a 504 for an attempt the server already counted
+    const left = POLISH_DEADLINE_MS - since(t0);
+    const [raw, boxes] = await withDeadline(Promise.all([
       json<ClassifyRaw>(buildClassifyRequest(url)),
       mediaOf(d).samDetect(d.metaKey, url, headPrompt(orig.check.type)).catch(() => null),
-    ]);
+    ]), left);
     checkMs = since(t1);
     // species and character style stay the upload's (the face profile is chosen from them) once they're known to match
-    const merged: ClassifyRaw = { ...raw, species: orig.check.raw.species || raw.species, character_style: orig.check.raw.character_style ?? raw.character_style };
+    const merged: ClassifyRaw = { ...raw, species: orig.check.raw.species || raw.species, character_style: orig.check.raw.character_style ?? raw.character_style, voice_fit: orig.check.raw.voice_fit ?? raw.voice_fit };
     let check: ImageCheck = interpretCheck(merged);
     if (check.type !== orig.check.type || changedLook(orig.check.raw, raw)) {
       check = { ...check, type: orig.check.type, passed: false, reasons: [{ code: "style_changed", label: FAIL_REASONS.style_changed }] };

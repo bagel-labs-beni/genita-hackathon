@@ -245,3 +245,13 @@ test("Codex P1s #522: one kind per ask (a bag never answers shoes, boots never a
   await b.r.settle();
   a.r.close(); b.r.close();
 });
+
+test("handover b9-6: one color rule — the cache takes what the search ranks as the asked color", async () => {
+  const { cardFitsColors, colorAsks } = await import("../src/finds/productCache.ts");
+  const card = (names: string[]) => ({ id: "c", kind: "product", createdAt: "", eyebrow: "", title: "", subtitle: "", items: [], steps: [], options: [], why: [], ask: [], sources: [], how: [], products: names.map((name, i) => ({ id: `p${i}`, name, url: "https://x.example.com/p/1", domain: "x.example.com", store: "X", taste: "", situation: "" })) }) as never;
+  assert.equal(cardFitsColors(card(["Chocolate Suede Boot", "Espresso Chelsea Boot"]), colorAsks("dark brown shoes")), true, "shades of brown fit brown");
+  assert.equal(cardFitsColors(card(["Black Chelsea Boot"]), colorAsks("dark brown shoes")), false);
+  assert.deepEqual(colorAsks("Find shoes, but no black ones"), [], "a color ruled out is not asked");
+  assert.deepEqual(colorAsks("shoes in dark brown"), ["brown"]);
+  assert.deepEqual(colorAsks("shoes that go with my brown trench"), []);
+});
