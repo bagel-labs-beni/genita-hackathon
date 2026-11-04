@@ -57,3 +57,8 @@ test("Codex #640 r10 sweep: scores, streaks and half-units are no age", () => {
   for (const t of ["I'm 16 and a half hours into this", "I'm 12 in a row", "I'm 15 and 0 this season", "I'm 15-0 this season", "I'm 15 in line", "I'm 5'2", "I'm 6 feet tall", "I'm 15 tabs deep", "I'm 10 drinks in"]) assert.equal(minorLine([t]), null, t);
   for (const t of ["im 14 btw", "I'm 15, why?", "I'm 15 is that weird", "I'm 14 in grade 9", "I'm 16 and a half"]) assert.ok(minorLine([t]), t);
 });
+
+test("Codex #640 r11: spaced scores, queue / leaderboard spots are no age; '16yo', 'not yet 18' are", () => {
+  for (const t of ["I'm 15 / 20 on free throws", "I'm 16 - 0 this season", "I'm 15 in the queue for tickets", "I'm 15 on the leaderboard", "I'm 12 in two games", "I'm 15 in like 3 queues"]) assert.equal(minorLine([t]), null, t);
+  for (const t of ["I'm 16yo", "I'm 16yrs old", "im 15y/o", "I'm not yet 18", "I'm 15 in the summer", "I turn 16 on Friday", "I'm 14 in my first year of high school"]) assert.ok(minorLine([t]), t);
+});
