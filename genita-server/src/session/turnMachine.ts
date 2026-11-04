@@ -12,7 +12,8 @@
  *
  * Words mode (cfg.words, default on; GENITA_BARGE_IN_WORDS=0 is the rule above): the iPhone speaker's
  * echo is sustained VAD with a transcript of the companion's own line, so while it is busy only real
- * words cancel: bargeInMinWords non-echo words in a partial, or one word once the speech has lasted
+ * words cancel (while speaking; before the first sound there is no echo, so VAD + bargeInMinMs still
+ * cancels a held reply): bargeInMinWords non-echo words in a partial, or one word once the speech has lasted
  * bargeInMinMs. VAD alone, a hum or a partial flagged `echo` never cancels, and a barge-in cancel
  * comes at most once per debounceMs (cancel → resume flapped every 200 ms on build 13).
  *
@@ -119,9 +120,12 @@ function reduceWords(s: TurnState, e: TurnEvent, cfg: TurnConfig): { state: Turn
     case "speech_start": {
       if (!busy(s)) return null;
       const next = { ...s, userSpeaking: true, backchannel: false, pendingBargeIn: true, sustained: cfg.bargeInMinMs <= 0, heardWords: 0 };
-      return cfg.bargeInMinMs <= 0 ? none(next) : { state: next, effects: [{ type: "arm_barge_timer", ms: cfg.bargeInMinMs }] };
+      if (cfg.bargeInMinMs <= 0) return s.phase === "thinking" ? cancel(next, "barge_in") : none(next);
+      return { state: next, effects: [{ type: "arm_barge_timer", ms: cfg.bargeInMinMs }] };
     }
     case "partial": {
+      // no sound out yet (thinking, first sound held while they talk): nothing to echo, the plain rule holds
+      if (s.phase === "thinking") return null;
       if (!s.pendingBargeIn || !busy(s) || e.echo) return none();
       const w = realWords(e.text);
       const next = { ...s, heardWords: w };
@@ -129,7 +133,7 @@ function reduceWords(s: TurnState, e: TurnEvent, cfg: TurnConfig): { state: Turn
       return none(next);
     }
     case "barge_timer":
-      if (!(s.pendingBargeIn && s.userSpeaking && busy(s))) return null;
+      if (!(s.pendingBargeIn && s.userSpeaking && busy(s)) || s.phase === "thinking") return null;
       if ((s.heardWords ?? 0) >= 1) return bargeCancel(s, cfg) ?? none({ ...s, sustained: true });
       return none({ ...s, sustained: true });
     case "speech_complete": {

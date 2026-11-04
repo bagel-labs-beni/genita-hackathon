@@ -174,3 +174,9 @@ test("words mode: barge-in cancels at most once per 1.5 s (no cancel/resume flap
   const later = playW([{ type: "partial", text: "okay stop now", at: 2700 }], again.state);
   assert.ok(kinds(later.effects).includes("cancel_reply"));
 });
+
+test("words mode: before the first sound (thinking) sustained speech still cancels — nothing to echo yet", () => {
+  const thinking = playW([{ type: "speech_complete", text: "x" }], initialTurnState()).state;
+  const r = playW([{ type: "speech_start" }, { type: "barge_timer" }], thinking);
+  assert.ok(kinds(r.effects).includes("cancel_reply"));
+});
