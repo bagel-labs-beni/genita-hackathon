@@ -743,7 +743,11 @@ export class Session {
     }
     if (deps.finds) {
       this.finds = new FindsRunner(deps.finds, {
-        emit: (e) => !this.closed && this.client.sendJson(e),
+        emit: (e) => {
+          if (this.closed) return;
+          if (e.type === "observe.boxes") this.log("observe.boxes_sent", { findId: e.findId.slice(0, 64), n: e.items.length, frame: e.frame });
+          this.client.sendJson(e);
+        },
         announce: (text) => this.announce(text),
         log: (event, data) => this.log(event, data),
         now: this.now,
@@ -3386,7 +3390,7 @@ export class Session {
       const nouns = replyNouns(full);
       if (nouns.length >= 1) {
         void observeBoxes({ utteranceId, frame: built.images[built.images.length - 1], frameIndex: built.images.length - 1, nouns, vendors: this.deps.finds.vendors, signal })
-          .then((e) => { if (e && !this.closed) { this.client.sendJson(e); this.log("observe.boxes", { utteranceId, nouns: nouns.length, items: e.items.length }); } })
+          .then((e) => { if (e && !this.closed) { this.client.sendJson(e); this.log("observe.boxes_sent", { findId: e.findId, n: e.items.length, frame: e.frame, nouns: nouns.length }); } })
           .catch(() => {});
       }
     }
