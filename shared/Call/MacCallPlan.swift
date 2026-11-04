@@ -24,9 +24,7 @@ struct CompanionCallPlan: Equatable {
         var session: Session?
     }
 
-    /// `userName`: the account's name (`/me` displayName). The Mac never asks for it itself — it is what the user
-    /// gave the iPhone — so a saved session name wins and the account name fills in when there is none (D42).
-    init?(companionJSON data: Data, userName: String? = nil) {
+    init?(companionJSON data: Data) {
         guard let w = try? JSONDecoder().decode(Wire.self, from: data) else { return nil }
         let name = (w.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return nil }
@@ -36,10 +34,6 @@ struct CompanionCallPlan: Equatable {
         if persona.kind == nil { persona.kind = w.type }
         var user = w.session?.user ?? ClientMessage.User()
         user.timeZone = user.timeZone ?? TimeZone.current.identifier
-        if (user.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let account = (userName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            user.name = account.isEmpty ? nil : String(account.prefix(40))
-        }
         self.name = name
         self.start = ClientMessage.Start(persona: persona, user: user, voiceId: w.session?.voiceId ?? w.voiceId)
         let scene = w.prep?.sceneUrl?.trimmingCharacters(in: .whitespaces)

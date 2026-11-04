@@ -54,8 +54,6 @@ import Foundation
     /// Bumped on sign-out: answers to requests started before it are dropped (no call with an old token).
     private var generation = 0
     private var handoffAccountID: String?
-    /// `/me` displayName of the signed-in account, for the call's `user.name` (D42).
-    private var userDisplayName: String?
     /// This Mac's turns, kept when the conversation moves away so coming back resumes it.
     private var history: [ClientMessage.HistoryItem] = []
 
@@ -84,19 +82,16 @@ import Foundation
         guard let token = CallEndpoint.current().token, !token.isEmpty else { generation += 1; account = .signedOut; useHandoffAccount(nil); return }
         let next: Account
         var accountID: String?
-        var userName: String?
         var plan: CompanionCallPlan?
         do {
             let me: GenitaMe = try await get("/me", token: token)
             accountID = me.user.id
-            // dev/judge rows carry placeholder names ("Judge"): never sent as the user's name
-            userName = me.user.provider == "dev" ? nil : me.user.displayName
             if gen == generation { accountLabel = me.user.email ?? me.user.displayName ?? (me.user.provider == "apple" ? "Apple ID" : me.user.provider.capitalized) }
             if !me.consented {
                 next = .needsConsent
             } else if StartRouter.route(.active(me), device: .mac) == .macNoCompanion {
                 next = .noCompanion
-            } else if let p = CompanionCallPlan(companionJSON: try await getData("/v1/companion", token: token), userName: userName) {
+            } else if let p = CompanionCallPlan(companionJSON: try await getData("/v1/companion", token: token)) {
                 plan = p; next = .ready(p)
             } else { next = .noCompanion }
         } catch MacCallError.status(401) {
@@ -111,7 +106,6 @@ import Foundation
         if next == .signedOut { generation += 1; useHandoffAccount(nil) }
         else if let accountID { useHandoffAccount(accountID) }
         guard let plan else { return }
-        userDisplayName = userName
         call.companionName = plan.name
         call.onCompanionNamed = { [weak self] name in self?.companionRenamed(name) }
         loadFace(plan, token: token, generation: gen)
@@ -289,22 +283,11 @@ import Foundation
         call.companionName = next.name
     }
 
-    /// D53: the server's stored name wins over the plan fetched earlier (the iPhone may have renamed since).
-    /// Any failure keeps the cached plan — the server also syncs the name on `start`.
+    /// D53: the cached plan starts at once; the server swaps in the stored companion name on `start` and says so
+    /// (`companion.named` → `companionRenamed`), so a rename from the iPhone is never overwritten by this cache.
     private func startCall() {
-        guard case .ready = account else { return }
-        let gen = generation
-        Task {
-            if let token = CallEndpoint.current().token, !token.isEmpty,
-               let data = try? await getData("/v1/companion", token: token),
-               let fresh = CompanionCallPlan(companionJSON: data, userName: userDisplayName),
-               gen == generation, case let .ready(old) = account, old != fresh {
-                account = .ready(fresh)
-            }
-            // the conversation may have moved away while the lookup ran (conversationLeft → wantsCall false)
-            guard gen == generation, wantsCall, case .ready = account else { return }
-            beginCall()
-        }
+        guard wantsCall, case .ready = account else { return }
+        beginCall()
     }
 
     private func beginCall() {
