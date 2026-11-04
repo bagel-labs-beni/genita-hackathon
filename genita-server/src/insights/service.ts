@@ -16,6 +16,7 @@
 import type { SparkRequest } from "../meta/spark.ts";
 import { museJson } from "../meta/spark.ts";
 import type { Personalize } from "../personalize/service.ts";
+import { avoidKeys, mentionsAvoided } from "../personalize/forgotten.ts";
 import { looksLikeInjection, redactSensitive, type StyleCard } from "../prep/importProfile.ts";
 import type { PrepStore } from "../prep/store.ts";
 import { LEARN_LABEL, OBS_MIN, buildInsightRequest, picksFromAnswers, privateDetail, settingsFrom, similarClaim, scrubRemoved, toReport, withoutObservations, withoutRemoved, type InsightInputs } from "./report.ts";
@@ -40,23 +41,29 @@ const DENIED_MAX = 20;
 
 type Job = { promise: Promise<void>; startedAt: number };
 type ImportQuote = Pick<InsightEvidence, "quote" | "highlight">;
-type ImportQuotes = { quotes: Map<string, ImportQuote>; at: number };
+type ImportQuotes = { quotes: Map<string, ImportQuote[]>; at: number };
 
-function importEvidenceKey(scope: string, index: number): string {
-  return `${scope}:${index}`;
+/**
+ * Receipt owners survive filtering and reordering. The evidence identity deliberately excludes copied text: source
+ * and server-issued label are enough to distinguish an import receipt from the user's picks or chat.
+ */
+function importEvidenceKey(scope: string, e: InsightEvidence): string {
+  return `${scope}:${e.source}:${e.source_label}`;
 }
 
-function importQuotesOf(report: InsightReport): Map<string, ImportQuote> {
-  const quotes = new Map<string, ImportQuote>();
-  report.observations.forEach((o) => o.evidence.forEach((e, i) => {
-    if (e.source === "import" && e.quote) quotes.set(importEvidenceKey(`observation:${o.id}`, i), { quote: e.quote, ...(e.highlight ? { highlight: e.highlight } : {}) });
-  }));
-  report.strengths.forEach((x, i) => {
-    if (x.evidence.source === "import" && x.evidence.quote) quotes.set(importEvidenceKey("strength", i), { quote: x.evidence.quote, ...(x.evidence.highlight ? { highlight: x.evidence.highlight } : {}) });
-  });
-  report.watchouts.forEach((x, i) => {
-    if (x.evidence.source === "import" && x.evidence.quote) quotes.set(importEvidenceKey("watchout", i), { quote: x.evidence.quote, ...(x.evidence.highlight ? { highlight: x.evidence.highlight } : {}) });
-  });
+function importQuotesOf(report: InsightReport): Map<string, ImportQuote[]> {
+  const quotes = new Map<string, ImportQuote[]>();
+  const remember = (scope: string, e: InsightEvidence) => {
+    if (e.source !== "import" || !e.quote) return;
+    const key = importEvidenceKey(scope, e);
+    const receipts = quotes.get(key) ?? [];
+    receipts.push({ quote: e.quote, ...(e.highlight ? { highlight: e.highlight } : {}) });
+    quotes.set(key, receipts);
+  };
+  report.observations.forEach((o) => o.evidence.forEach((e) => remember(`observation:${o.id}`, e)));
+  report.strengths.forEach((x) => remember(`strength:${x.text}`, x.evidence));
+  report.watchouts.forEach((x) => remember(`watchout:${x.text}:${x.fix}`, x.evidence));
+  report.mix.forEach((x) => remember(`mix:${x.id}`, x.evidence));
   return quotes;
 }
 
@@ -68,28 +75,36 @@ function storeReport(report: InsightReport): InsightReport {
     observations: report.observations.map((o) => ({ ...o, evidence: o.evidence.map(storeEvidence) })),
     strengths: report.strengths.map((x) => ({ ...x, evidence: storeEvidence(x.evidence) })),
     watchouts: report.watchouts.map((x) => ({ ...x, evidence: storeEvidence(x.evidence) })),
+    mix: report.mix.map((x) => ({ ...x, evidence: storeEvidence(x.evidence) })),
   };
 }
 
 /** Restore only this process's import receipts; without them, omit the receipt rather than render an empty quote. */
 function responseReport(report: InsightReport, saved?: ImportQuotes): InsightReport {
+  const used = new Map<string, number>();
   const restore = (e: InsightEvidence, key: string): InsightEvidence | null => {
     if (e.source !== "import") return e;
-    const quote = saved?.quotes.get(key);
+    const quote = saved?.quotes.get(key)?.[used.get(key) ?? 0];
+    used.set(key, (used.get(key) ?? 0) + 1);
     return quote ? { ...e, ...quote } : null;
   };
   return {
     ...report,
-    observations: report.observations.map((o) => ({ ...o, evidence: o.evidence.flatMap((e, i) => {
-      const next = restore(e, importEvidenceKey(`observation:${o.id}`, i));
+    observations: report.observations.map((o) => ({ ...o, evidence: o.evidence.flatMap((e) => {
+      const next = restore(e, importEvidenceKey(`observation:${o.id}`, e));
       return next ? [next] : [];
     }) })),
-    strengths: report.strengths.flatMap((x, i) => {
-      const evidence = restore(x.evidence, importEvidenceKey("strength", i));
+    strengths: report.strengths.flatMap((x) => {
+      const evidence = restore(x.evidence, importEvidenceKey(`strength:${x.text}`, x.evidence));
       return evidence ? [{ ...x, evidence }] : [];
     }),
-    watchouts: report.watchouts.flatMap((x, i) => {
-      const evidence = restore(x.evidence, importEvidenceKey("watchout", i));
+    watchouts: report.watchouts.flatMap((x) => {
+      const evidence = restore(x.evidence, importEvidenceKey(`watchout:${x.text}:${x.fix}`, x.evidence));
+      return evidence ? [{ ...x, evidence }] : [];
+    }),
+    // A mix always has evidence in the app's Codable model. Do not send an empty import receipt: omit that row.
+    mix: report.mix.flatMap((x) => {
+      const evidence = restore(x.evidence, importEvidenceKey(`mix:${x.id}`, x.evidence));
       return evidence ? [{ ...x, evidence }] : [];
     }),
   };
@@ -162,9 +177,26 @@ export class Insights {
     this.importQuotes.set(userId, { quotes, at: this.texts.get(userId)?.at ?? this.nowMs() });
   }
 
-  private reportFor(userId: string, report: StoredInsights | undefined | null): InsightReport | null {
+  private reportFor(userId: string, card: StyleCard | null | undefined): InsightReport | null {
     this.pruneImportMemory();
-    return publicReport(report, this.importQuotes.get(userId));
+    let saved = this.importQuotes.get(userId);
+    const removed = card?.removed ?? [];
+    const receiptAt = saved?.at;
+    // A post-receipt forget makes the entire in-process import memory ineligible, just like textOf().
+    if (receiptAt !== undefined && removed.some((r) => r.forget && Date.parse(r.at) >= receiptAt - 1000)) {
+      this.clearImportMemory(userId);
+      saved = undefined;
+    } else if (saved) {
+      const keys = avoidKeys(removed);
+      if (keys.length) {
+        const current = saved;
+        const quotes = new Map([...current.quotes]
+          .map(([key, receipts]) => [key, receipts.filter((receipt) => !mentionsAvoided(receipt.quote, keys))] as const)
+          .filter(([, receipts]) => receipts.length));
+        saved = quotes.size ? { ...saved, quotes } : undefined;
+      }
+    }
+    return publicReport(card?.insights, saved);
   }
 
   /** the kept paste, unless the user has since asked to forget something (Codex r7: it would be sent again) */
@@ -226,6 +258,7 @@ export class Insights {
       const report = await this.write(inputs, from, opts.settings ?? card?.insights?.settings ?? null, stillOk);
       const basis = opts.gate ? await opts.gate : card?.importedAt ?? null;
       if (opts.gate && !basis) return;
+      let saved: InsightReport | undefined;
       const next = await this.personalize.patchStyle(userId, (c) => {
         if (this.seq.get(userId) !== mine) return null; // a newer write started
         if ((c.importedAt ?? null) !== basis) return null; // the card was replaced (another import / skip)
@@ -236,9 +269,10 @@ export class Insights {
         // and what the user asked to forget / corrected away since (card.removed)
         const kept = scrubRemoved(withoutObservations(report, gone), c.removed);
         const observations = kept.observations.map((o) => (right.has(o.id) ? { ...o, verdict: "right" as const, confidence: "high" as const } : o));
-        return { ...c, insights: { ...storeReport({ ...kept, observations }), ...(denied.length ? { denied } : {}) } };
+        saved = { ...kept, observations };
+        return { ...c, insights: { ...storeReport(saved), ...(denied.length ? { denied } : {}) } };
       });
-      if (next?.insights) this.rememberImportQuotes(userId, report);
+      if (next?.insights && saved) this.rememberImportQuotes(userId, saved);
       this.failedAt.delete(userId);
     })()
       .catch((err) => {
@@ -300,7 +334,7 @@ export class Insights {
     if (!job) {
       const card = await this.store.getStyle(userId);
       if (!card) return { status: "none", report: null };
-      if (card.insights) return { status: "ready", report: this.reportFor(userId, card.insights) };
+      if (card.insights) return { status: "ready", report: this.reportFor(userId, card) };
       const failed = this.failedAt.get(userId);
       if (failed && Date.now() - failed < FAIL_BACKOFF_MS) return { status: "failed", report: null };
       this.start(userId, "card", (c) => (c ? { text: c.source === "import" ? this.textOf(userId, c) : undefined, findings: cardFindings(c), picks: cardPicks(c), source: c.source, unknowns: c.toConfirm } : null));
@@ -312,7 +346,7 @@ export class Insights {
       clearTimeout(timer);
     }
     const card = await this.store.getStyle(userId);
-    const report = this.reportFor(userId, card?.insights);
+    const report = this.reportFor(userId, card);
     if (this.jobs.has(userId)) return { status: "pending", report };
     if (report) return { status: "ready", report };
     return { status: this.failedAt.has(userId) ? "failed" : "none", report: null };
@@ -356,6 +390,6 @@ export class Insights {
     });
     if (!found || !next?.insights) throw new InsightsError(404, "not_found", "no such insight");
     this.log("insights.verdict", { verdict: b.verdict, corrected: !!correction });
-    return this.reportFor(userId, next.insights)!;
+    return this.reportFor(userId, next)!;
   }
 }

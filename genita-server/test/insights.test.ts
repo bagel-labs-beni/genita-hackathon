@@ -213,6 +213,44 @@ test("D95: import receipts remain response-only, then disappear when their memor
   assert.ok(afterExpiry.report!.observations.every((o) => o.evidence.every((e) => e.source !== "import" || e.quote.length > 0)), "an expired receipt is omitted rather than sent as an empty quote");
 });
 
+test("D95 r2: filtered traits keep their own receipt; import mix never persists; forget drops matching memory", async (t) => {
+  const raw = {
+    ...RAW,
+    strengths: [
+      { text: "Two or three options and you're already deciding.", trait: 0 },
+      { text: "Which one is cheaper lol keeps work light.", trait: 1 },
+    ],
+  };
+  const h = harness((req) => (req.schemaName === "insight_report" ? raw : null));
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  const first = (await h.ins.get("u1", 3000)).report!;
+  const think = first.observations.find((o) => o.category === "think")!;
+  const response = await h.ins.verdict("u1", think.id, { verdict: "not_me" });
+  assert.ok(response.strengths.every((s) => !/two or three options/i.test(s.text)), "the filtered strength is not retained");
+  assert.ok(response.strengths.some((s) => s.evidence.quote.includes("which one is cheaper lol")), "the surviving strength keeps its own receipt");
+  const stored = JSON.stringify((await h.store.getStyle("u1"))!.insights);
+  assert.ok(!stored.includes("usually asks for two or three options") && !stored.includes("which one is cheaper lol"), stored);
+  assert.ok(!stored.includes('"source":"import","quote":"') || stored.includes('"quote":""'), stored);
+
+  const legacy = toReport(RAW, INPUTS, { at: new Date().toISOString(), from: "import" });
+  legacy.mix = [{ id: "import-mix", left: "Light", right: "Serious", position: 1, evidence: { source: "import", quote: "ok but which one is cheaper lol", source_label: "From the reply you pasted" } }];
+  await h.p.replaceStyle("u1", { ...CARD, insights: legacy });
+  const mixed = await h.ins.verdict("u1", legacy.observations[0].id, { verdict: "right" });
+  assert.equal(mixed.mix.length, 0, "a mix without an in-memory import receipt is omitted");
+  assert.ok(!JSON.stringify((await h.store.getStyle("u1"))!.insights).includes("which one is cheaper lol"), "a legacy import mix is scrubbed on write");
+
+  const h2 = harness((req) => (req.schemaName === "insight_report" ? RAW : { updates: [], answered: false }));
+  t.after(h2.cleanup);
+  const second = h2.ins.begin("u2", PASTE);
+  second.commit(await h2.p.replaceStyle("u2", { ...CARD, sections: { ...CARD.sections, communication: [f("Jokes about cheaper choices.")] } }));
+  await h2.ins.get("u2", 3000);
+  await h2.p.voiceCorrection("u2", "Forget about cheaper lol.", "");
+  const afterForget = await h2.ins.get("u2", 0);
+  assert.ok(!JSON.stringify(afterForget.report).includes("which one is cheaper lol"), "a forgotten import receipt is never re-attached");
+});
+
 test("service: setup answers re-write the report (import text kept in memory only) with settings; verdicts stick", async (t) => {
   const h = harness((req) => (req.schemaName === "insight_report" ? RAW : null));
   t.after(h.cleanup);
