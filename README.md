@@ -10,7 +10,7 @@
 
 [![Download on TestFlight](https://img.shields.io/badge/iPhone-TestFlight-0D96F6?style=for-the-badge&logo=apple&logoColor=white)](https://testflight.apple.com/join/Ybqh482p)
 [![Download for Mac](https://img.shields.io/badge/Mac-Download%20DMG-111111?style=for-the-badge&logo=apple&logoColor=white)](https://bagel-labs-beni.github.io/genita-legal/mac/Genita-latest.dmg)
-[![Watch the demo](https://img.shields.io/badge/Demo-3%20min-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://youtu.be/O2b4_xFajqE)
+[![Watch the demo](https://img.shields.io/badge/Demo%20video-3%20min-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://youtu.be/O2b4_xFajqE)
 
 **Judge access code: `GENITA-3ANZMN`** · tap **Judge access** on the first screen, no Apple ID or email needed
 
@@ -45,13 +45,13 @@ Bring one reply from the AI you already use. From the first hello, Genita talks 
 <td width="33%" valign="top">
 
 ### 👀 It sees with you
-Point your camera or share your Mac screen. It names what it sees, outlines it, and answers with cards you can act on.
+Point your camera and it names and outlines what it sees. Share your Mac screen and it watches with you. Then it answers with cards you can act on.
 
 </td>
 <td width="33%" valign="top">
 
 ### 🔁 It follows you
-Start on your iPhone, move to your Mac with one tap. Same companion, same conversation, never two devices talking at once.
+Start on your iPhone, move the call to your Mac from the ⋮ menu. Same companion, same conversation, never two devices talking at once.
 
 </td>
 </tr>
@@ -61,23 +61,23 @@ Start on your iPhone, move to your Mac with one tap. Same companion, same conver
 
 | **5** | **1** | **2.7 s** | **2** | **0** |
 | :---: | :---: | :---: | :---: | :---: |
-| Meta models working together in one call | photo to make a talking face, no video model | median from your last word to its first word | devices, one conversation | shop links it didn't actually open |
+| Meta models working together in one call | photo to make a talking face, no video model | median from your last word to its first word ([how we measured](docs/RESULTS.md)) | devices, one conversation | shop links it didn't actually open |
 
 ## Everything Genita does
 
 | | Feature | 📱 iPhone | 💻 Mac |
 | --- | --- | :---: | :---: |
-| 🧠 | **Starts already knowing you.** Bring one reply from ChatGPT or Claude, or answer three quick picks. Keeps learning your taste from every call. | ✅ | ✅ |
-| 🙂 | **A face and a voice from one photo.** You, your pet or a drawing becomes a talking companion with expressions and lip sync. | ✅ | ✅ |
+| 🧠 | **Starts already knowing you.** Bring one reply from ChatGPT or Claude (you paste text; Genita never calls them), or answer three quick picks. Keeps learning your taste from every call. | ✅ set up | ✅ uses it |
+| 🙂 | **A face and a voice from one photo.** You, your pet or a drawing becomes a talking companion with expressions and lip sync. | ✅ set up | ✅ uses it |
 | 📞 | **A real video call.** Talk naturally, cut in any time, captions on both sides. | ✅ | ✅ |
-| 👀 | **Looks with you.** Point the camera and ask "What's this?". It names things and outlines them on screen. | ✅ front and back camera | ✅ webcam |
-| 🗂️ | **Answers you can act on.** Recipes with steps and "Walk me through it", places with photos and a map, how-to step cards, products with verified shop links. Every card has a picture. | ✅ | ✅ |
+| 👀 | **Looks with you.** Point the camera and ask "What's this?" It names things and outlines them on screen. | ✅ front and back camera | ✅ webcam |
+| 🗂️ | **Answers you can act on.** Recipes with steps (and "Walk me through it" on iPhone), places with photos and a Maps link, how-to step cards, products with verified shop links, and a real picture whenever there is one. | ✅ | ✅ |
 | 👗 | **Style feedback that uses what it knows about you.** It ties each reason to your taste and asks lightly when it doesn't know yet. | ✅ | ✅ |
 | 🌏 | **Live interpretation, face to face.** Translates both ways, follows a language switch mid-conversation, asks once when unsure. | ✅ | ✅ |
-| 🔁 | **iPhone → Mac, same conversation.** Move the call to the Mac with one tap. Pair once with six digits. | ✅ send | ✅ receive |
+| 🔁 | **iPhone → Mac, same conversation.** Move the call from **⋮ → Move to Mac**. Pair once with six digits. | ✅ send | ✅ receive |
 | 🎬 | **Watch together on the Mac.** Share a YouTube window and talk about it. It follows the story and the video's audio. | | ✅ |
 | 💭 | **Remembers and comes back.** Memory across calls, a greeting that picks up where you left off, the same companion on both devices. | ✅ | ✅ |
-| 🛡️ | **Safe by default.** No counselor tone, no romance with minors, sensitive topics never stored, daily caps. | ✅ | ✅ |
+| 🛡️ | **Safe by default.** No counselor tone, no romance if a user says they're a minor, sensitive topics never stored, daily caps. | ✅ | ✅ |
 
 ## One call with Genita
 
@@ -91,7 +91,7 @@ This is what you will actually see, in order.
 | 4 | Point the camera and ask **"What's this?"** | Names it and outlines it on screen | **Muse Spark** vision reads the frame, then **SAM 3.1** segments the nouns from its own answer. |
 | 5 | **"Show me a kimchi fried rice recipe"** · **"Best ramen in Seoul"** · **"How do I fold a fitted sheet?"** · **"Find me a black midi dress"** | Cards with pictures, steps, places on a map, shop links, and **Walk me through it** | **Muse Spark** web search and page reading fill a structured card. A shop link is kept only if the page was really opened. **Muse Image** fills a missing recipe or how-to picture, never for products or real places. |
 | 6 | **"Does this suit me?"** | Style feedback grounded in your taste | Each reason is tied to a line from your profile. When nothing overlaps, it gives no made-up reason. |
-| 7 | **⋯ → Interpret**, then talk with someone in another language | Translates both ways out loud and asks once when it can't tell which language you want | **Muse Voice Transcribe → Muse Spark → SeamlessM4T v2**, with the pair following whoever is speaking. The voice speaks English and Korean. |
+| 7 | **⋮ → Interpret a conversation**, then talk with someone in another language | Translates both ways out loud and asks once when it can't tell which language you want | **Muse Voice Transcribe → Muse Spark → SeamlessM4T v2**, with the pair following whoever is speaking. The voice speaks English and Korean. |
 | 8 | **⋮ → Move to Mac** | The same conversation continues on the Mac. Share a YouTube window and watch together. | The server owns the conversation, so two devices never talk at once. The Mac sends frames to **Muse Spark** only when the picture changes, and the video's audio goes to its own **Muse Voice Transcribe** session. |
 
 ---
@@ -115,17 +115,17 @@ flowchart LR
 
 ### Muse Spark 1.3: the brain, in 11 places
 
-Muse Spark runs the conversation and almost every judgment in the product. We use its full surface: streaming, image input, the built-in `web_search` tool, structured output with `json_schema`, and reasoning effort set per job (`minimal` for live replies, higher for background work).
+Muse Spark runs the conversation and almost every judgment in the product. We use its full surface: streaming, image input, the built-in `web_search` tool, structured output with `json_schema`, and reasoning effort set per job (`minimal` almost everywhere for speed, `low` for the full taste report).
 
 | Where | How we use it |
 | --- | --- |
 | Live conversation | Streams the reply token by token. We start it **speculatively from your partial transcript** and cut it into sentences so the voice can start before the reply is finished. |
 | Camera and screen | Camera frames and the shared Mac window go in as `input_image`, so "what's in my fridge?" and "who's that?" are answered from what you actually see. |
-| Cards (recipe, places, how-to, products, answers) | One agent turn: `web_search` → open pages → a `json_schema` card. We keep a product link **only if the tool trace shows the page was opened**. |
+| Cards (recipe, places, how-to, products, answers) | One agent turn: `web_search` → open pages → a JSON card we validate before it reaches the app. We keep a product link **only if the tool trace shows the page was opened**. |
 | Taste profile | Turns a pasted reply from your own AI assistant into a style card; merges what you say in every call; rewrites it when you say "that's not me". |
 | Style feedback | Ties each reason to the closest line of your own profile, so it never invents a taste. |
 | Photo check, companion card, name | Checks the uploaded photo, writes the companion card, suggests a name. |
-| Memory and comeback | Extracts memories after a call and greets you with what you left off. |
+| Memory and comeback | Extracts memories after a call and picks up where you left off. |
 | Interpretation | Translates each line and asks once, in your language, when the target language is unclear. |
 | Watch together | Keeps a running story memo of the video you share, so questions about the scene make sense. |
 | Speaking first | Short reads from the camera decide whether to open a topic, within strict limits (below). |
@@ -153,7 +153,7 @@ Muse Spark runs the conversation and almost every judgment in the product. We us
 
 ### SeamlessM4T v2: the voice (Meta open model, self-hosted)
 
-- Hosted by us on our own GPU container, **streaming 24 kHz audio per sentence**, 200 speakers to choose from, English and Korean.
+- Hosted by us on our own GPU container, **streaming 24 kHz audio per sentence**, 4 voices we picked from its 200 speakers, English and Korean.
 - Its own per-character durations drive the lip sync, so the mouth needs no extra model.
 - Measured: the voice adds about **0.2 s** to a turn; the rest of the wait is the model thinking.
 
@@ -167,7 +167,7 @@ Calling a model is easy. Making it feel like a person on a video call, on two de
 
 - **A real-time turn-taking engine.** Speculative replies, sentence streaming to the voice, barge-in that ignores "yeah" and echo. Median **2.7 s** from the end of your sentence to the companion's first sound, on production logs.
 - **iPhone → Mac with one conversation.** The server owns who is talking with an ownership epoch. A move closes the iPhone's sound before the Mac may play, so two devices never talk at once. Pair once with six digits, then move with one tap. Bluetooth proximity is built in behind a remote switch.
-- **A Mac app built for watching together.** Window sharing with ScreenCaptureKit, frames sent only when the picture changes, the video's audio on its own transcription, and a quiet automatic restart when macOS interrupts the capture. Auto-updates with Sparkle.
+- **A Mac app built for watching together.** Window sharing with ScreenCaptureKit, frames sent only when the picture changes, the video's audio on its own transcription, and (from build 16) a quiet automatic restart when macOS interrupts the capture. Auto-updates with Sparkle.
 - **Cards that never show a blank tile or a fake link.** Each picture tries the page's own image, then an image search, then a Muse Image illustration where that is honest. If none works, the slot is left out.
 - **Taste you can trace.** "Their simple cuts match the understated style you prefer" points back to something you said, and the profile shapes the next search.
 - **A talking face with a quality gate.** Same-scene edits, SAM-checked drift, an optical-flow mouth on the voice's timing.
@@ -178,7 +178,7 @@ Calling a model is easy. Making it feel like a person on a video call, on two de
 
 ## Built during the hackathon
 
-**Everything in this repository was built during the hackathon (October 27 to November 5, 2026). The first commit is dated October 31, 2026. No code from our earlier products is used.**
+**Everything we wrote in this repository was built during the hackathon (October 27 to November 5, 2026, KST). The first commit is dated October 31, 2026 (KST). No code from our earlier products is used; open-source dependencies are listed in [Credits](#credits).**
 
 | # | Feature | What we built | First commit (KST) |
 | --- | --- | --- | --- |
@@ -195,11 +195,11 @@ Calling a model is easy. Making it feel like a person on a video call, on two de
 | F11 | Memory | Memory extraction, storage, recall, forgetting during a call | Nov 2 |
 | F12 | Coming back | Return greeting, same companion and context on both devices | Nov 2 |
 
-**About Beni.** Our team also runs Beni, a separate companion app; the demo video mentions its user numbers as background, because that is where we learned what people want from a companion. Genita shares no code or assets with Beni. Everything listed above was written from scratch for this hackathon.
+**About Beni.** Our team also runs Beni, a separate companion app; the demo video mentions its user numbers as background, because that is where we learned what people want from a companion. Genita shares no code or product assets with Beni; only company accounts (our domain, Apple developer account and YouTube channel) are shared. Everything listed above was written from scratch for this hackathon.
 
-**About the move effect.** The iPhone → Mac transition uses EffectSource, an open-source blur shader and sampler (MIT, © 2026 Akash T, license kept next to the source). It is a dependency, not our work; the compositor around it and everything else in the handoff are new code.
+**About the move effect.** The iPhone → Mac transition uses EffectSource, an open-source blur shader and sampler (MIT, © 2026 Akash T, license kept next to the source in `shared/Handoff/EffectSource/`; the upstream code is `wipe-source.txt`). That shader is a dependency, not our work; the other files in that folder, the compositor around it and everything else in the handoff are new code.
 
-Some early commits have voice and image adapters for non-Meta providers. We replaced them during the hackathon to follow the Meta-only rule; the latest commit calls only Meta models.
+Some early commits have voice and image adapters for non-Meta providers. We replaced them during the hackathon to follow the Meta-only rule; every AI model the latest commit calls is a Meta model. One iOS system feature is not: the "What's off?" correction field can use Apple's on-device dictation (`SFSpeechRecognizer`).
 
 **Verify it yourself** (once the source is pushed, see below):
 
@@ -217,7 +217,7 @@ git log --no-merges --date=short --format='%ad' | sort | uniq -c   # commits per
 1. Install Apple's **TestFlight** app from the App Store.
 2. On the iPhone, open https://testflight.apple.com/join/Ybqh482p, tap **Accept**, then **Install**.
 3. Open Genita, tap **Judge access** and enter `GENITA-3ANZMN`. Or tap **Continue with email** and enter the 6-digit code we send you.
-4. Allow the microphone and the camera. The judge account already has a companion, so you can start a call right away.
+4. Accept the consent screen and allow the microphone and the camera. The judge account already has a companion, so you can start a call right away.
 
 **Mac**
 
@@ -226,14 +226,22 @@ git log --no-merges --date=short --format='%ad' | sort | uniq -c   # commits per
 3. Open Genita from Applications. It is notarized by Apple; if macOS asks whether to open an app from the internet, choose **Open**.
 4. Click **Judge access** and enter `GENITA-3ANZMN`, or use the same email as on your iPhone.
 5. Allow the microphone and the camera. The first time you share a window, macOS asks for **Screen Recording**: turn it on in System Settings, then reopen Genita if asked.
-6. **Move a call from the iPhone:** on the iPhone, open **⋮ → Move to Mac**. The first time, type the six digits the Mac shows.
+6. **Move a call from the iPhone:** keep the Mac app open and signed in to the same account, with both devices nearby on the same Wi-Fi. On the iPhone, open **⋮ → Move to Mac** and allow **Local Network** when asked. The first time, type the six digits the Mac shows.
 7. **Watch together:** in a Mac call, share a YouTube window and ask about what's playing.
 
 The Judge access code is rate-limited and is for judging only.
 
-## Source code
+## Source code and docs
 
-The full source (iOS and Mac apps in SwiftUI, the Node/TypeScript server, the GPU voice service and the deployment) is being pushed to this repository now, with local setup that needs only one Meta API key, measured results and known limitations.
+The full source is in this repository: the iOS and Mac apps (SwiftUI) in `ios-app/`, `mac-app/` and `shared/`, the Node/TypeScript server in `genita-server/`, the GPU voice service in `deploy/modal-voice/`, and the AWS deployment in `deploy/aws/`.
+
+| Doc | What's in it |
+| --- | --- |
+| [Technical deep dive](docs/TECHNICAL.md) | Every Meta model call, the layer we built on top, and the architecture |
+| [Run it yourself](docs/RUN_LOCALLY.md) | Local server with one Meta API key; the companion's voice needs the GPU service in `deploy/modal-voice/` |
+| [Measured results and limitations](docs/RESULTS.md) | Latency from production logs, card times, known limits |
+| [Built during the hackathon](docs/BUILT_DURING_HACKATHON.md) | Feature-by-feature first commits and how to verify them |
+| [Credits](docs/CREDITS.md) · [NOTICE](NOTICE.md) · [Third-party notices](THIRD_PARTY_NOTICES.md) | Every model, library, font and service with its license |
 
 ## Team
 
@@ -249,9 +257,9 @@ A long-time collaborator of Summer and Chief Creative Officer at Bagel Labs. He 
 
 **Meta models.** Muse Spark 1.3, Muse Voice Transcribe, Muse Image 1.0 and SAM 3.1 through the Meta API, under the Meta API terms. SeamlessM4T v2 (Meta AI, FAIR), CC-BY-NC-4.0, self-hosted.
 
-**Open source.** EffectSource's blur shader and sampler (MIT, © 2026 Akash T), the base of the move effect, with our compositor on top; Sparkle, Three.js, esbuild, `pg`, `ws` (MIT); PGlite, TypeScript, Hugging Face Transformers (Apache-2.0); PyTorch and torchaudio (BSD-style); the CMU Pronouncing Dictionary; Pretendard and Noto Serif KR (SIL OFL 1.1). The full list comes with the source.
+**Open source.** EffectSource's blur shader and sampler (MIT, © 2026 Akash T), the base of the move effect, with our compositor on top; Sparkle, Three.js, esbuild, `pg`, `ws` (MIT); PGlite, TypeScript, Hugging Face Transformers (Apache-2.0); PyTorch and torchaudio (BSD-style); the CMU Pronouncing Dictionary; OpenCV, NumPy and SciPy (face preparation); fonts under their own licenses. The full list is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-**Services.** Meta API, Modal, AWS, Resend, Apple (Sign in with Apple, TestFlight, notarization), GitHub Pages.
+**Services.** Meta API, Modal, Baseten, AWS, Resend, Apple (Sign in with Apple, TestFlight, notarization), GitHub Pages.
 
 ## License
 
