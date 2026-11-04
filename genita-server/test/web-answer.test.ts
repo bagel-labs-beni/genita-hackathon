@@ -100,6 +100,9 @@ function setup(script: (req: SparkRequest) => SparkStreamEvent[]) {
   };
   return { client, deps, store };
 }
+/** 11/4: "Who's the CEO of Nintendo now?" opens the general search card (general.ts); this flow covers a turn the
+ * classifier leaves to the reply, which then searched on its own */
+const ASKED = "Tell me about Nintendo's boss.";
 const waitFor = async (check: () => boolean, ms = 3000) => { const end = Date.now() + ms; while (!check()) { if (Date.now() > end) throw new Error("timed out"); await new Promise((r) => setTimeout(r, 2)); } };
 
 test("a looked-up answer: speech first, then the sheet card with its sources (kind answer)", async () => {
@@ -110,7 +113,7 @@ test("a looked-up answer: speech first, then the sheet card with its sources (ki
   ]);
   const s = new Session("w1", client, deps);
   await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Rio" }, mic: false }));
-  await s.onClientText(JSON.stringify({ type: "text", text: "Who's the CEO of Nintendo now?" }));
+  await s.onClientText(JSON.stringify({ type: "text", text: ASKED }));
   // device voice here: the card waits for the estimated end of playback (~4.6 s for this answer)
   await waitFor(() => client.events.some((e) => e.type === "find.created"), 10_000);
   const types = client.events.map((e) => e.type);
@@ -155,7 +158,7 @@ test("Codex P2: a barge-in cancels the card of the answer it cut off", async () 
   const { client, deps } = setup(ANSWER);
   const s = new Session("w3", client, deps);
   await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Rio" }, mic: false }));
-  await s.onClientText(JSON.stringify({ type: "text", text: "Who's the CEO of Nintendo now?" }));
+  await s.onClientText(JSON.stringify({ type: "text", text: ASKED }));
   await waitFor(() => client.events.some((e) => e.type === "reply"));
   await s.onClientText(JSON.stringify({ type: "barge_in" }));
   await new Promise((r) => setTimeout(r, 5500)); // past the playback estimate
@@ -167,7 +170,7 @@ test("Codex P2: playback_done shows the card at once, and ending the call right 
   const { client, deps, store } = setup(ANSWER);
   const s = new Session("w4", client, deps);
   await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Rio" }, mic: false }));
-  await s.onClientText(JSON.stringify({ type: "text", text: "Who's the CEO of Nintendo now?" }));
+  await s.onClientText(JSON.stringify({ type: "text", text: ASKED }));
   await waitFor(() => client.events.some((e) => e.type === "reply"));
   const utteranceId = (client.events.find((e) => e.type === "reply") as { utteranceId: number }).utteranceId;
   await s.onClientText(JSON.stringify({ type: "playback_done", utteranceId }));
@@ -181,7 +184,7 @@ test("ending the call while the looked-up answer still plays keeps its card", as
   const { deps, store, client } = setup(ANSWER);
   const s = new Session("w5", client, deps);
   await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Rio" }, mic: false }));
-  await s.onClientText(JSON.stringify({ type: "text", text: "Who's the CEO of Nintendo now?" }));
+  await s.onClientText(JSON.stringify({ type: "text", text: ASKED }));
   await waitFor(() => client.events.some((e) => e.type === "reply"));
   s.close();
   await waitFor(() => false, 50).catch(() => {});

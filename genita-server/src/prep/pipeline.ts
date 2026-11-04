@@ -19,6 +19,7 @@ import type { MediaApi } from "./face.ts";
 import type { CompanionRecord, ImageRecord, PrepStore } from "./store.ts";
 import type { Personalize } from "../personalize/service.ts";
 import type { Insights } from "../insights/service.ts";
+import { storedStyle } from "../insights/profile.ts";
 
 export type PrepLog = (event: string, data: Record<string, unknown>) => void;
 
@@ -207,7 +208,7 @@ export async function importStyle(d: PrepDeps, userId: string, pasted: unknown, 
     // GET /v1/profile/story waits for this same job (no second Spark call)
     if (lateStory) d.personalize.trackLate(userId, lateStory, gen);
   }
-  else await d.store.putStyle(userId, card);
+  else await d.store.putStyle(userId, storedStyle(card));
   d.log("import.applied", { item_count: card.itemCount, latency_ms: since(t0), chars: p.chars, partial: card.partial, dropped: card.dropped });
   if (importedAt) insightJob?.commit(importedAt);
   else insightJob?.cancel();

@@ -151,7 +151,7 @@ import UIKit
         let now = ProcessInfo.processInfo.systemUptime
         let stalled = engineHasMic ? MicStall.stalled(now: now, lastBuffer: pipeline?.lastBufferUptime, since: max(micOpenedAt, lastMicHeal)) : true
         if !stalled { micHeals = 0; return }
-        guard queuedBuffers == 0, now - lastMicHeal >= MicStall.gap(afterHeals: micHeals) else { return }
+        guard MicStall.mayHeal(now: now, lastHeal: lastMicHeal, heals: micHeals, engineHasMic: engineHasMic, queuedBuffers: queuedBuffers) else { return }
         lastMicHeal = now
         micHeals += 1
         log.error("mic: no input for \(MicStall.thresholdS, privacy: .public)s while on (running=\(self.engine.isRunning, privacy: .public), heal \(self.micHeals, privacy: .public)); resetting the session and rebuilding the engine")
@@ -333,6 +333,9 @@ import UIKit
             }
             let format = input.outputFormat(forBus: 0)
             micRate = format.sampleRate
+            if format.sampleRate <= 0 || format.channelCount == 0 {
+                log.error("mic: input format \(format.sampleRate, privacy: .public) Hz \(format.channelCount, privacy: .public) ch; the engine comes up without the mic (micOpen=\(self.micOpen, privacy: .public))")
+            }
             if format.sampleRate > 0, format.channelCount > 0 {
                 let pipeline = MicPipeline(input: format, meter: inputMeter)
                 pipeline.enabled = micOpen
@@ -480,10 +483,15 @@ import UIKit
         observers.append(center.addObserver(forName: .AVAudioEngineConfigurationChange, object: nil, queue: .main) { [weak self] note in
             MainActor.assumeIsolated {
                 guard let self, (note.object as? AVAudioEngine) === self.engine else { return }
-                // Route or format changed (headphones, AirPods). Rebuild with the same mic state.
-                let mic = self.engineHasMic
+                // Route or format changed (headphones, AirPods, the first reply on the speaker). Rebuild with the mic
+                // the user has on. iOS P0 (TF 341): right after the change the input can report 0 Hz, so the rebuild
+                // comes up without the mic. That used to turn `micOpen` off here, silently: the call still said
+                // Listening, nothing went up, and the mic watch (which runs only while `micOpen`) stopped too. Now the
+                // mic stays on and the watch rebuilds it as soon as the input is back (`MicStall.decide`).
+                let mic = MicStall.rebuildWithMic(micOpen: self.micOpen, engineHasMic: self.engineHasMic)
                 self.buildEngine(withMic: mic)
-                if self.micOpen, !self.engineHasMic { self.micOpen = false }
+                self.log.info("config change: rebuilt mic=\(mic, privacy: .public) hasMic=\(self.engineHasMic, privacy: .public) micOpen=\(self.micOpen, privacy: .public) inputRate=\(self.micRate, privacy: .public) running=\(self.engine.isRunning, privacy: .public)")
+                if self.micOpen, !self.engineHasMic { self.watchMic() }
             }
         })
         #if os(iOS)
@@ -621,6 +629,19 @@ enum MicStall {
     static let healGapS: TimeInterval = 3
     /// the gap before the next heal after `afterHeals` that brought nothing: 3, 6, 12, 24, then every 30 s
     static func gap(afterHeals n: Int) -> TimeInterval { min(30, healGapS * pow(2, Double(max(0, n - 1)))) }
+
+    /// iOS P0 (TF 341): an engine change never turns the user's mic off. A rebuild takes the mic when the user has it on.
+    static func rebuildWithMic(micOpen: Bool, engineHasMic: Bool) -> Bool { micOpen || engineHasMic }
+
+    /// When the watch may heal now. Never while a reply is still queued (a failed restart would drop the rest of it and
+    /// report it played, Codex #705 P1 / #728 P1): the user's next turn comes after it anyway. An engine with no mic at
+    /// all (it came up while the input reported 0 Hz) is rebuilt every second once the reply is done, until the input
+    /// is back (5 tries), then backs off like any other heal.
+    static func mayHeal(now: TimeInterval, lastHeal: TimeInterval, heals: Int, engineHasMic: Bool, queuedBuffers: Int) -> Bool {
+        guard queuedBuffers == 0 else { return false }
+        if !engineHasMic { return now - lastHeal >= (heals < 5 ? 1 : gap(afterHeals: heals - 4)) }
+        return now - lastHeal >= gap(afterHeals: heals)
+    }
     /// `since`: when the current input was opened or last rebuilt (it gets `thresholdS` to deliver its first buffer).
     static func stalled(now: TimeInterval, lastBuffer: TimeInterval?, since: TimeInterval) -> Bool {
         let last = max(lastBuffer ?? -.infinity, since)

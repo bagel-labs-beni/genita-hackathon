@@ -9,6 +9,7 @@ import type { Config } from "../config.ts";
 import type { TurnGate } from "../auth/judge.ts";
 import type { AsrEvent } from "../meta/transcribe.ts";
 import type { WebSearch } from "../finds/webAnswer.ts";
+import { GENERAL_REPLY_LINE, firstSentenceOnly } from "../finds/general.ts";
 import { SPARK_MODEL, type InputMessage, type SparkRequest, type SparkStreamEvent, type ContentPart } from "../meta/spark.ts";
 import type { TtsChunk, TtsRequest } from "../tts/types.ts";
 import { pcmDurationMs, PCM_SAMPLE_RATE } from "../tts/types.ts";
@@ -45,7 +46,7 @@ import { MEMORY_START_BUDGET_MS, within, type MemoryRetryState, type ThreadState
 import type { Memory } from "../memory/repository.ts";
 import type { CompanionFaceResolver } from "../memory/photos.ts";
 import { FindsRunner, type FindsDeps } from "../finds/runner.ts";
-import { isOutfitAsk, isProductAsk } from "../finds/intent.ts";
+import { classifyTurn, isOutfitAsk, isProductAsk } from "../finds/intent.ts";
 import { inhalePcmBase64 } from "../watch/breath.ts";
 import { WatchController, type WatchSink } from "../watch/watch.ts";
 import { PerceptionController } from "../perception/controller.ts";
@@ -180,6 +181,8 @@ export type SessionPersonalize = {
   /** bumped by "Forget all of this": a profile read from before it is never applied */
   generation?(userId: string): number;
   voiceCorrection(userId: string, line: string, lastAssistant?: string, signal?: AbortSignal, asked?: UnknownItem | null, since?: number): Promise<VoiceUpdate | null>;
+  /** Clears volatile import material even when this line does not enter voiceCorrection. */
+  notifyForget?(userId: string): void;
   endCall(userId: string, turns: CallTurn[], asked: string | null, startedAt?: string): Promise<number>;
   /** Knows-Me S1: the user cut two long replies short → observed "short replies" line; null = not saved */
   noteShorter?(userId: string): Promise<{ text: string; fields: string[]; profile: string } | null>;
@@ -199,6 +202,9 @@ const TTS_RETRY_MS = [400, 1500];
 const COLD_WAIT_MS = 40_000;
 
 /** Demo S4: said once per call, on the first outfit ask while the Mac app is open. */
+/** Demo scene 5: the outfit verdict ends with a short offer, so a "yes" next has something to attach to. */
+export const OUTFIT_OFFER_LINE =
+  "After your pick, end with one short offer to find something that goes with it, naming it with its color, like \"Want me to find dark brown boots for it?\" (under 10 words).";
 export const SUGGEST_MAC_LINE =
   "The user's Mac is open and its bigger camera can see their whole outfit. Before giving outfit advice, warmly ask them to move this call to their Mac (Move to Mac in the menu) so you can see the whole outfit. Keep it to one or two short sentences.";
 
@@ -236,7 +242,7 @@ type Reply = {
 /** server clock (ms) for the latency breakdown; logged with turn.answered as `stages` */
 type TurnMetrics = { speechEndAt?: number; completeAt?: number; lastPartialAt?: number; specStartAt?: number };
 /** lang = the language the reply is written in (interpretation: the target) */
-type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null; images: string[]; lang: string; suggestMac?: boolean; /** any camera or shared-screen frame went with this request */ seen?: boolean };
+type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null; images: string[]; lang: string; suggestMac?: boolean; /** the shared screen right now (watch together), for Finds (Chelsea 11/4 D) */ screen?: string; /** any camera or shared-screen frame went with this request */ seen?: boolean };
 /** firstTextAt: when the speculative stream's first text arrived (it is buffered until the final transcript) */
 type Speculation = { norm: string; abort: AbortController; built: Built; stream: Eager<SparkStreamEvent>; memoryRetry: MemoryRetryState; confirm: () => void; at: number; firstTextAt?: number };
 
@@ -435,6 +441,16 @@ export const RECONNECT_LINE = "Sorry, we got cut off — where were we?";
  */
 export function greetOpenerOn(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.GENITA_GREET_OPENER !== "0";
+}
+/**
+ * DEMO 11/4 (Chelsea, build 10: "Hey Summer" … ~3 s … the rest): with the server voice the opener clip is instant but
+ * Spark's first greeting sentence takes ~2.2 s (prod p50), so the opener used to stand alone in silence. The opener now
+ * waits for Spark's first sentence, at most this long, and that sentence's voice is asked for at once: the two play
+ * back to back. GENITA_GREET_OPENER_WAIT_MS=0 = the opener at once again (no redeploy, a restart).
+ */
+export function greetOpenerWaitMs(env: NodeJS.ProcessEnv = process.env): number {
+  const v = Number(env.GENITA_GREET_OPENER_WAIT_MS ?? 2500);
+  return Number.isFinite(v) ? Math.max(0, Math.min(5000, v)) : 2500;
 }
 /** Chelsea 11/4: 3–4 variants, never the same every time; "Hey!" family without a name */
 export const GREET_OPENERS = ["Hey, {name}!", "Hi, {name}!", "Oh hey, {name}!", "Hey hey, {name}!"];
@@ -1899,6 +1915,9 @@ export class Session {
   private checkCorrection(text: string, since?: number): void {
     const p = this.deps.personalize;
     const userId = this.deps.userId;
+    // This is before every Session-side correction/budget gate. `voiceCorrection`
+    // repeats it for direct callers; invalidating the same generation twice is safe.
+    if (p && userId && isForgetRequest(text)) p.notifyForget?.(userId);
     // the profile it was said under: a line queued behind another runs with it, so a forget in between drops it (Codex #583 r14)
     const gen = since ?? (userId ? p?.generation?.(userId) : undefined);
     // "forget that …": from this line on, memory, notes and the turns handed on leave its target out (no Spark wait)
@@ -2210,7 +2229,9 @@ export class Session {
     const recent = this.history.slice(-6).map((h) => `${h.role === "user" ? "User" : "You"}: ${h.text}`);
     const afterProduct = this.finds ? this.finds.afterProduct(recent) : recent.some((l) => l.startsWith("User: ") && isProductAsk(l.slice(6)));
     const suggestMac = !this.macSuggested && isOutfitAsk(text, afterProduct) && this.deps.macNearby?.() === true;
-    const instructions = suggestMac ? `${base}\n${SUGGEST_MAC_LINE}\n` : base;
+    // scene 5: an outfit pick on camera offers the next search ("Want me to find dark brown boots for it?")
+    const outfitPick = !suggestMac && camera.length > 0 && !!this.finds && classifyTurn(text, true, afterProduct)?.kind === "outfit";
+    const instructions = suggestMac ? `${base}\n${SUGGEST_MAC_LINE}\n` : outfitPick ? `${base}\n${OUTFIT_OFFER_LINE}\n` : base;
     // said once, on the next reply the user asked for (not a greeting or an initiative turn)
     if (!greeting && !turn.cue) this.shorterLine = null;
     let finalInstructions = watch ? `${instructions}\n${watch.instructions}\n` : instructions;
@@ -2221,8 +2242,9 @@ export class Session {
     return {
       interpret,
       detected: null,
-      // Finds get the camera frames only, never the shared screen
+      // Finds get the camera frames; the shared screen goes separately (the runner picks one, Chelsea 11/4 D)
       images: camera,
+      ...(watch?.images.length ? { screen: watch.images[watch.images.length - 1] } : {}),
       seen: images.length > 0,
       lang: this.language,
       suggestMac,
@@ -2456,15 +2478,27 @@ export class Session {
     let resolveSaid: (t: string | null) => void = () => {};
     // Chelsea 11/3: a web-searched answer also lands in the sheet with its sources (not when a card runs for this turn)
     let cardTurn = false;
+    /** a general search turn: the spoken answer is one sentence (general.ts) */
+    let oneSentence = false;
     let searches: WebSearch[] = [];
     // Demo S4: the suggest turn makes no outfit card from the phone's (maybe still kitchen) frames
     if (!interpret && !self && !synthetic && this.finds && !built.suggestMac) {
       const said = new Promise<string | null>((r) => (resolveSaid = r));
       // history already holds this turn (remember above): the lines before it
       const recent = this.history.slice(-7, -1).map((h) => `${h.role === "user" ? "User" : "You"}: ${h.text}`);
-      const started = this.finds.onTurn({ text, frames: built.images, utteranceId, replyText: said, recent, unclear: built.images.length > 0 && this.framesUnclear });
+      const started = this.finds.onTurn({ text, frames: built.images, ...(built.screen ? { screen: built.screen } : {}), utteranceId, replyText: said, recent, unclear: built.images.length > 0 && this.framesUnclear });
       cardTurn = !!started;
       signal.addEventListener("abort", () => resolveSaid(null), { once: true });
+      if (started?.kind === "answer" && !started.ack) {
+        // Chelsea 11/4 "섞어": the sheet searches; the reply answers now in one sentence from what it knows, with no
+        // search of its own (a speculative reply was asked without this line: ask again)
+        oneSentence = true;
+        if (spec && speculative === "hit") { spec.abort.abort(); pre = null; }
+        req.instructions = `${req.instructions ?? ""}\n${GENERAL_REPLY_LINE}\n`;
+        req.tools = undefined;
+        req.maxOutputTokens = Math.min(req.maxOutputTokens ?? 200, 200);
+        this.log("finds.general_reply", { utteranceId });
+      }
       if (started?.ack) {
         ackTurn = true;
         // PF-1: a short line now instead of a full answer (a full answer would guess products and links);
@@ -2827,7 +2861,8 @@ export class Session {
           let status = "";
           let attemptError: unknown = null;
           try {
-            const raw = attempt === 0 ? (pre ?? this.sparkSource(req, signal, greeting?.item, !interpret && !cue, undefined, undefined, memoryRetry)) : this.sparkSource(req, signal, greeting?.item, !interpret && !cue, undefined, 1, memoryRetry);
+            const raw0 = attempt === 0 ? (pre ?? this.sparkSource(req, signal, greeting?.item, !interpret && !cue, undefined, undefined, memoryRetry)) : this.sparkSource(req, signal, greeting?.item, !interpret && !cue, undefined, 1, memoryRetry);
+            const raw = oneSentence ? firstSentenceOnly(raw0) : raw0;
             // Demo S4 (QA P2): the suggest turn must name the Mac; a reply that doesn't is swapped for the fixed line
             const stream = built.suggestMac && !interpret && !self ? mustNameMac(raw, SUGGEST_MAC_REPLIES[utteranceId % SUGGEST_MAC_REPLIES.length], this.now) : raw;
             for await (const ev of stream) {
@@ -2954,6 +2989,7 @@ export class Session {
     // out, then once the cached recovery line
     let retries = 0;
     let recovered = false;
+    let openerHeld = false; // DEMO 11/4: the greeting opener's wait for Spark's first sentence happened
     let held = false; // the hold line was tried for this reply
     let holdVoiced = false;
     let heard = false; // a clause of the reply itself was voiced (the hold line does not count)
@@ -3022,6 +3058,24 @@ export class Session {
       // (read the sentence after the check: the only sentence may have been replaced by the short reaction)
       if (askedAt(i)) continue;
       const s = sentences[i];
+      if (s.opener && !device && !reply.fellBack && reply.firstAudioAt === null && !openerHeld) {
+        // DEMO 11/4: the greeting's opener waits for Spark's first sentence (greetOpenerWaitMs), so no gap after it
+        openerHeld = true;
+        const capMs = greetOpenerWaitMs();
+        const answerAt = () => sentences.findIndex((x, k) => k > i && !x.opener && !x.drop);
+        if (capMs > 0 && answerAt() < 0) {
+          const t0 = this.now();
+          let timedOut = false;
+          const timer = setTimeout(() => { timedOut = true; waiter.wake?.(); }, capMs);
+          while (answerAt() < 0 && !sparkDone && !signal.aborted && !timedOut) await new Promise<void>((r) => (waiter.wake = r));
+          clearTimeout(timer);
+          waiter.wake = null;
+          if (signal.aborted) break;
+          this.log("call.greet_opener_held", { utteranceId, ms: Math.round(this.now() - t0), timedOut });
+        }
+        const next = answerAt();
+        if (next > 0 && !askedAt(next)) startJob(next); // its voice renders while the opener plays
+      }
       if (device || reply.fellBack) {
         if (reply.firstAudioAt === null) await this.untilUserQuiet(signal);
         if (signal.aborted) break;
@@ -3159,6 +3213,9 @@ export class Session {
           // watch together may have taken the question back (or swapped it for the short reaction) meanwhile:
           // the loop head judges it again (Codex review P2)
           jobs[i] = sentences[i] === s && !sentences[i]?.drop ? ttsJob(s, true, last && !heard ? COLD_WAIT_MS : undefined) : (undefined as never);
+          // a later clause asked for ahead (the greeting opener's answer) may hold the same outage's failure: ask again
+          // once this one is through (Codex #708 P1)
+          for (let k = i + 1; k < jobs.length; k++) if (jobs[k]) jobs[k] = undefined as never;
           i--;
           continue;
         }

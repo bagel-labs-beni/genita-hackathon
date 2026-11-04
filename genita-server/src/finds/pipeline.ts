@@ -41,6 +41,8 @@ export type PipelineCtx = {
   putImage: (slot: string, bytes: Buffer) => Promise<string>;
   /** D23: the companion says this line now (after the boxes are up); the runner announces it */
   speak?: (text: string) => void;
+  /** D (Chelsea 11/4): the frame is the Mac's shared screen, not the camera (no boxes are drawn over a share) */
+  screen?: boolean;
 };
 
 export type PipelineResult = { card: FindCard | null; timings: Record<string, number> };
@@ -653,6 +655,80 @@ export async function runOutfit(ctx: PipelineCtx): Promise<PipelineResult> {
   }
   timings.cardMs = Math.round(ctx.now() - t0);
   return { card, timings };
+}
+
+// ───────────────────────── identify ("what's this?") ─────────────────────────
+
+/** CEO demo 11/4: said when the name can't be checked (Spark NO, no SAM box, a person): never a guess. */
+export const IDENTIFY_UNSURE = "Hmm, I can't make it out clearly. Hold it a little closer?";
+/** never outlined or named as "the thing": the user (or anyone) on camera */
+const PERSON = /\b(?:faces?|person|people|man|woman|men|women|boy|girl|child|kid|baby|selfie|human|head|hair|you|yourself|me|user|someone|body|nose|noses|mouth|lips?|eyes?|eyebrows?|eyelash(?:es)?|ears?|cheeks?|chin|forehead|neck|skin|teeth|tooth|tongue|beard|mustache|moustache|hands?|fingers?|arms?|legs?|feet|foot|shoulders?|portrait)\b/i;
+const IDENTIFY_PROMPT = [
+  "The user holds something up to their camera (or points it at something) and asks what it is.",
+  "Name the one object they mean: the thing in their hand, or else the most central object in view.",
+  "Never a person, a face, a body part or the clothes they have on.",
+  'Reply with only JSON: {"name": "short lowercase common name, 1-3 words, e.g. coffee mug", "say": "one short warm spoken line, under 14 words, telling them what it is"}. If you can\'t tell, reply {"name": ""}.',
+].join("\n");
+
+/**
+ * "What's this?" with the camera on: Spark names the thing, then the same checks as the fridge (Spark YES + a SAM box)
+ * before it is outlined and said; the outline is the central match on the last frame. No card and no sheet: only
+ * observe.boxes and the spoken line (ctx.speak).
+ */
+export async function runIdentify(ctx: PipelineCtx): Promise<PipelineResult> {
+  const t0 = ctx.now();
+  const timings: Record<string, number> = {};
+  const frameIndex = ctx.frames.length - 1;
+  const frame = ctx.frames[frameIndex];
+  const unsure = () => { if (!ctx.signal.aborted) ctx.speak?.(IDENTIFY_UNSURE); return { card: null, timings }; };
+  if (!frame) return unsure();
+  const res = await withTimeout(ctx.vendors.spark({ input: userMessage(`${IDENTIFY_PROMPT}\nThey said: "${ctx.question.slice(0, 200)}"`, [frame]), effort: "minimal", maxOutputTokens: 200 }, ctx.signal), CHECK_TIMEOUT_MS, ctx.signal);
+  timings.nameMs = Math.round(ctx.now() - t0);
+  if (ctx.signal.aborted) return { card: null, timings };
+  const j = res ? lastJsonObject<{ name?: unknown; say?: unknown }>(res.text) : null;
+  const name = str(j?.name, 40).toLowerCase().replace(/[.!?]+$/, "");
+  if (!name || PERSON.test(name)) {
+    ctx.log("find.identify_none", { findId: ctx.findId, person: !!name });
+    return unsure();
+  }
+  const [yes, boxes] = await Promise.all([
+    withTimeout(ctx.vendors.spark({ input: userMessage(yesPrompt(name), [frame]), effort: "minimal", maxOutputTokens: 200 }, ctx.signal).then((r) => isYes(r.text)), CHECK_TIMEOUT_MS, ctx.signal),
+    withTimeout(ctx.vendors.sam(frame, name, ctx.signal), CHECK_TIMEOUT_MS, ctx.signal),
+  ]);
+  timings.checkMs = Math.round(ctx.now() - t0);
+  if (ctx.signal.aborted) return { card: null, timings };
+  const instances = instancesOf(boxes ?? []);
+  // the held / central thing: the match whose centre is nearest the middle of the frame
+  const dist = (b: NormBox) => Math.hypot((b.x1 + b.x2) / 2 - 0.5, (b.y1 + b.y2) / 2 - 0.5);
+  const best = [...instances].sort((a, b) => dist(a.box) - dist(b.box))[0];
+  if (yes !== true || !best) {
+    ctx.log("find.identify_unchecked", { findId: ctx.findId, yes: yes === true, box: !!best });
+    return unsure();
+  }
+  const label = capFirst(name);
+  const say0 = str(j?.say, 120);
+  // the line must name what was checked; a line about something else gets the plain one
+  const named = say0 && say0.toLowerCase().includes(name.split(" ").at(-1)!.replace(/s$/, ""));
+  const say = named ? say0 : `That's ${/^[aeiou]/.test(name) ? "an" : "a"} ${name}.`;
+  if (ctx.screen) {
+    // the Mac draws no boxes over a shared screen: the answer lands in the sheet instead (Chelsea 11/4: every ask a sheet)
+    const at = new Date();
+    const card: FindCard = {
+      id: ctx.findId, kind: "answer", createdAt: at.toISOString(), eyebrow: "From your screen", title: label, subtitle: "On your shared screen",
+      status: label, items: [], steps: [{ text: say }], options: [], why: [], ask: [], sources: [],
+      how: [`From your shared screen, ${clockLabel(at, ctx.timeZone)}.`, MODEL_CREDIT],
+    };
+    ctx.emit({ type: "find.started", findId: ctx.findId, utteranceId: ctx.utteranceId, kind: "answer", title: "Looking at your screen", detail: label });
+    ctx.emit({ type: "find.created", findId: ctx.findId, card });
+    ctx.speak?.(say);
+    timings.doneMs = Math.round(ctx.now() - t0);
+    return { card, timings };
+  }
+  const item = ctx.vendors.samMasks ? boxItems([{ label, instances: [best] }])[0] : { label, box: best.box };
+  ctx.emit({ type: "observe.boxes", findId: ctx.findId, frame: frameIndex, w: best.frame.w, h: best.frame.h, items: [item] });
+  ctx.speak?.(say);
+  timings.doneMs = Math.round(ctx.now() - t0);
+  return { card: null, timings };
 }
 
 // ───────────────────────── link ─────────────────────────

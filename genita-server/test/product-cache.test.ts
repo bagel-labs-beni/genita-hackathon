@@ -60,8 +60,10 @@ test("S5 cache: warmed at call start (shoes in each liked color); 'dark brown sh
   const t0 = performance.now();
   const started = r.onTurn({ text: "Can you find me some dark brown shoes that go with this?", frames: [], utteranceId: 2, replyText: Promise.resolve(null) });
   assert.equal(started?.kind, "product");
-  await sleep(5);
-  const created = events.find((e) => e.type === "find.created" && e.findId === started!.findId) as Extract<ServerEvent, { type: "find.created" }> | undefined;
+  // QA 11/4: a fixed 5 ms sleep missed it 1/4 under load; poll (the replay needs no search, so it lands well inside 200 ms)
+  const findCreated = () => events.find((e) => e.type === "find.created" && e.findId === started!.findId) as Extract<ServerEvent, { type: "find.created" }> | undefined;
+  for (let i = 0; i < 40 && !findCreated(); i++) await sleep(5);
+  const created = findCreated();
   assert.ok(created && performance.now() - t0 < 200, "the card is there at once");
   assert.deepEqual(created!.card.products!.map((p) => p.name), ["Dark Brown Chelsea Boot", "Dark Brown Penny Loafer"]);
   assert.ok(created!.card.products!.every((p) => p.situation === ""), "another call's situation never travels");

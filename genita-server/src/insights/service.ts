@@ -9,35 +9,24 @@
  *   verdict(user, id, …) "That's right" (kept, high) / "Not me" (removed → still learning; told to the next write
  *                       and to the call profile as not true)
  *
- * Stored in the style card (user_styles.style_json.insights) under Personalize's lock. The pasted reply itself is
- * kept in memory only (2 h, so the answers rewrite can still quote it) and never stored or logged.
+ * Stored in the style card (user_styles.style_json.insights) under Personalize's lock. Import receipts are kept in
+ * memory only (2 h, for the current-process response); the DB keeps their source labels but never pasted text.
  * GENITA_INSIGHTS=0: no Spark call, GET → none, the app keeps the old SUM.
  */
 import { createHash } from "node:crypto";
 import type { SparkRequest } from "../meta/spark.ts";
 import { museJson } from "../meta/spark.ts";
 import type { Personalize } from "../personalize/service.ts";
+import { avoidKeys, mentionsAvoided } from "../personalize/forgotten.ts";
 import { looksLikeInjection, redactSensitive, ruleLine, type StyleCard } from "../prep/importProfile.ts";
 import type { PrepStore } from "../prep/store.ts";
 import { LEARN_LABEL, OBS_MIN, OPERATIONAL, mixFrom, buildInsightRequest, editsBehind, editsFromSources, findingsBehind, linkSources, rulesBehind, picksFromAnswers, privateDetail, settingsFrom, similarClaim, scrubRemoved, toReport, withoutObservations, withoutRemoved, type InsightInputs } from "./report.ts";
-import type { InsightReport, StoredInsights } from "./profile.ts";
+import { evidenceWords, quoteWords, type InsightEvidence, type InsightReport, type StoredInsights } from "./profile.ts";
 export { insightProfileLines } from "./profile.ts";
 
 type JsonFn = <T>(req: Omit<SparkRequest, "text"> & { schemaName: string; schema: Record<string, unknown> }, signal?: AbortSignal) => Promise<T>;
 
-/** a paste quote as a short hash (the words themselves are never stored for a "not me") */
-export const quoteKey = (q: string) => createHash("sha256").update(q.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim()).digest("hex").slice(0, 16);   // punctuation-blind, like the quote check (Codex #581 r13)
-const QUOTE_STOP = new Set("i me my we you the a an to of and or but in on at for with is are was be it that this like really just so very".split(" "));
-/**
- * A quote as the hashes of its content words ("I like to cook spicy food." → cook, spicy, food). Two quotes are the
- * same evidence when one's words are all in the other's (≥ 2 words, or both a single word): "spicy food" inside
- * "I enjoy spicy food", "short, direct replies" inside a longer line — never two lines sharing "I like to"
- * (Codex #581 r15/r16). Hashes only, never the pasted words.
- */
-export function quoteWords(q: string): string[] {
-  const w = q.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim().split(" ").filter((x) => x && !QUOTE_STOP.has(x));
-  return [...new Set(w.map((x) => quoteKey(x)))];
-}
+export { quoteKey, quoteWords } from "./profile.ts";
 export function sameQuote(a: string[], b: string[]): boolean {
   if (!a.length || !b.length) return false;
   const [small, big] = a.length <= b.length ? [a, new Set(b)] : [b, new Set(a)];
@@ -46,12 +35,12 @@ export function sameQuote(a: string[], b: string[]): boolean {
 }
 
 /** an observation built on a pick / item they already said "not me" to (any claim wording) */
-export function standsOnDenied(o: { claim: string; use_in_call: string; evidence: Array<{ source: string; quote: string }> }, d: { picks?: string[]; items?: string[]; quotes?: string[][] }): boolean {
+export function standsOnDenied(o: { claim: string; use_in_call: string; evidence: Array<{ source: string; quote: string; words?: string[] }> }, d: { picks?: string[]; items?: string[]; quotes?: string[][] }): boolean {
   // the same pick / item whatever source it's cited as ("Minimal" as an answer or as an import quote, Codex #581 r21)
   const n = (t: string) => t.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
   const picks = new Set([...(d.picks ?? []), ...(d.items ?? [])].map(n));
   if (o.evidence.some((e) => picks.has(n(e.quote)))) return true;
-  if (o.evidence.some((e) => e.source !== "answer" && (d.quotes ?? []).some((q) => sameQuote(quoteWords(e.quote), q)))) return true;
+  if (o.evidence.some((e) => e.source !== "answer" && (d.quotes ?? []).some((q) => sameQuote(evidenceWords(e), q)))) return true;
   const items = (d.items ?? []).filter(Boolean);
   if (!items.length) return false;
   const re = new RegExp(`\\b(?:${items.map((x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`, "i");
@@ -73,13 +62,70 @@ const FAIL_BACKOFF_MS = 60_000;
 const DENIED_MAX = 20;
 
 type Job = { promise: Promise<void>; startedAt: number };
+type ImportQuote = Pick<InsightEvidence, "quote" | "highlight">;
+type ImportQuotes = { quotes: Map<string, ImportQuote[]>; at: number };
+
+/**
+ * Receipt owners survive filtering and reordering. The evidence identity deliberately excludes copied text: source
+ * and server-issued label are enough to distinguish an import receipt from the user's picks or chat.
+ */
+function importEvidenceKey(scope: string, e: InsightEvidence): string {
+  return `${scope}:${e.source}:${e.source_label}`;
+}
+
+function importQuotesOf(report: InsightReport): Map<string, ImportQuote[]> {
+  const quotes = new Map<string, ImportQuote[]>();
+  const remember = (scope: string, e: InsightEvidence) => {
+    if (e.source !== "import" || !e.quote) return;
+    const key = importEvidenceKey(scope, e);
+    const receipts = quotes.get(key) ?? [];
+    receipts.push({ quote: e.quote, ...(e.highlight ? { highlight: e.highlight } : {}) });
+    quotes.set(key, receipts);
+  };
+  report.observations.forEach((o) => o.evidence.forEach((e) => remember(`observation:${o.id}`, e)));
+  report.strengths.forEach((x) => remember(`strength:${x.text}`, x.evidence));
+  report.watchouts.forEach((x) => remember(`watchout:${x.text}:${x.fix}`, x.evidence));
+  report.mix.forEach((x) => remember(`mix:${x.id}`, x.evidence));
+  return quotes;
+}
+
+/** Restore only this process's import receipts; without them, omit the receipt rather than render an empty quote. */
+function responseReport(report: InsightReport, saved?: ImportQuotes): InsightReport {
+  const used = new Map<string, number>();
+  const restore = (e: InsightEvidence, key: string): InsightEvidence | null => {
+    if (e.source !== "import") return e;
+    const quote = saved?.quotes.get(key)?.[used.get(key) ?? 0];
+    used.set(key, (used.get(key) ?? 0) + 1);
+    return quote ? { ...e, ...quote } : null;
+  };
+  return {
+    ...report,
+    observations: report.observations.map((o) => ({ ...o, evidence: o.evidence.flatMap((e) => {
+      const next = restore(e, importEvidenceKey(`observation:${o.id}`, e));
+      return next ? [next] : [];
+    }) })),
+    strengths: report.strengths.flatMap((x) => {
+      const evidence = restore(x.evidence, importEvidenceKey(`strength:${x.text}`, x.evidence));
+      return evidence ? [{ ...x, evidence }] : [];
+    }),
+    watchouts: report.watchouts.flatMap((x) => {
+      const evidence = restore(x.evidence, importEvidenceKey(`watchout:${x.text}:${x.fix}`, x.evidence));
+      return evidence ? [{ ...x, evidence }] : [];
+    }),
+    // A mix always has evidence in the app's Codable model. Do not send an empty import receipt: omit that row.
+    mix: report.mix.flatMap((x) => {
+      const evidence = restore(x.evidence, importEvidenceKey(`mix:${x.id}`, x.evidence));
+      return evidence ? [{ ...x, evidence }] : [];
+    }),
+  };
+}
 
 /** what the app gets: no denied list, no internals */
-export function publicReport(s: StoredInsights | undefined | null): InsightReport | null {
+export function publicReport(s: StoredInsights | undefined | null, importQuotes?: ImportQuotes): InsightReport | null {
   if (!s) return null;
   const { denied: _denied, ...r } = s;
   // the links are the server's bookkeeping (AU-91), not part of the report the app shows
-  return { ...r, observations: r.observations.map(({ sources: _s, basis: _b, ...o }) => o) };
+  return responseReport({ ...r, observations: r.observations.map(({ sources: _s, basis: _b, ...o }) => o) }, importQuotes);
 }
 
 function cardFindings(card: StyleCard): string[] {
@@ -98,6 +144,9 @@ export class Insights {
   readonly enabled: boolean;
   private readonly jobs = new Map<string, Job>();
   private readonly texts = new Map<string, { text: string; at: number }>();
+  private readonly importQuotes = new Map<string, ImportQuotes>();
+  /** Forget invalidates only volatile paste/receipts; running report writes may still save their stripped card. */
+  private readonly importMemoryGeneration = new Map<string, number>();
   private readonly failedAt = new Map<string, number>();
   /** the newest write per user (a slower older one never lands over it) */
   private readonly seq = new Map<string, number>();
@@ -112,38 +161,107 @@ export class Insights {
     this.log = o.log ?? (() => {});
     this.now = o.now ?? (() => new Date());
     this.enabled = o.enabled ?? process.env.GENITA_INSIGHTS !== "0";
+    // A targeted forget must not cancel an accepted-answers rewrite. It only makes
+    // this process's paste and receipts ineligible to be read or re-registered.
+    this.personalize.onForget((userId) => this.invalidateImportMemory(userId));
   }
 
-  private rememberText(userId: string, text: string) {
-    const now = Date.now();
-    for (const [k, v] of this.texts) if (now - v.at > TEXT_TTL_MS) this.texts.delete(k);
-    if (this.texts.size >= TEXT_MAX_USERS) this.texts.delete(this.texts.keys().next().value!);
+  private nowMs(): number { return this.now().getTime(); }
+
+  private clearImportMemory(userId: string) {
+    this.texts.delete(userId);
+    this.importQuotes.delete(userId);
+  }
+
+  private importGeneration(userId: string): number {
+    return this.importMemoryGeneration.get(userId) ?? 0;
+  }
+
+  private invalidateImportMemory(userId: string) {
+    this.clearImportMemory(userId);
+    this.importMemoryGeneration.set(userId, this.importGeneration(userId) + 1);
+  }
+
+  private pruneImportMemory() {
+    const now = this.nowMs();
+    for (const [userId, value] of this.texts) if (now - value.at > TEXT_TTL_MS) this.clearImportMemory(userId);
+    for (const [userId, value] of this.importQuotes) if (now - value.at > TEXT_TTL_MS) this.clearImportMemory(userId);
+  }
+
+  private rememberText(userId: string, text: string, generation: number) {
+    if (this.importGeneration(userId) !== generation) return;
+    this.pruneImportMemory();
+    if (this.importGeneration(userId) !== generation) return;
+    if (this.texts.size >= TEXT_MAX_USERS) this.clearImportMemory(this.texts.keys().next().value!);
+    const now = this.nowMs();
     this.texts.set(userId, { text, at: now });
+  }
+
+  private rememberImportQuotes(userId: string, report: InsightReport, generation: number) {
+    if (this.importGeneration(userId) !== generation) return;
+    this.pruneImportMemory();
+    if (this.importGeneration(userId) !== generation) return;
+    // The original import starts the retention window. A rewrite completing
+    // after expiry cannot make a new two-hour receipt window.
+    const text = this.texts.get(userId);
+    if (!text || this.nowMs() - text.at > TEXT_TTL_MS) { this.importQuotes.delete(userId); return; }
+    const quotes = importQuotesOf(report);
+    if (!quotes.size) { this.importQuotes.delete(userId); return; }
+    this.importQuotes.set(userId, { quotes, at: text.at });
+  }
+
+  private reportFor(userId: string, card: StyleCard | null | undefined): InsightReport | null {
+    this.pruneImportMemory();
+    let saved = this.importQuotes.get(userId);
+    const removed = card?.removed ?? [];
+    const receiptAt = saved?.at;
+    // A post-receipt forget makes the entire in-process import memory ineligible, just like textOf().
+    if (receiptAt !== undefined && removed.some((r) => r.forget && Date.parse(r.at) >= receiptAt - 1000)) {
+      this.clearImportMemory(userId);
+      saved = undefined;
+    } else if (saved) {
+      const keys = avoidKeys(removed);
+      if (keys.length) {
+        const current = saved;
+        const quotes = new Map([...current.quotes]
+          .map(([key, receipts]) => [key, receipts.filter((receipt) => !mentionsAvoided(receipt.quote, keys))] as const)
+          .filter(([, receipts]) => receipts.length));
+        saved = quotes.size ? { ...saved, quotes } : undefined;
+      }
+    }
+    return publicReport(card?.insights, saved);
   }
 
   /** the kept paste, unless the user has since asked to forget something (Codex r7: it would be sent again) */
   private textOf(userId: string, card?: StyleCard | null): string | undefined {
+    this.pruneImportMemory();
     const t = this.texts.get(userId);
-    if (!t || Date.now() - t.at > TEXT_TTL_MS) return undefined;
-    if ((card?.removed ?? []).some((r) => r.forget && Date.parse(r.at) >= t.at - 1000)) { this.texts.delete(userId); return undefined; }
+    if (!t) return undefined;
+    if ((card?.removed ?? []).some((r) => r.forget && Date.parse(r.at) >= t.at - 1000)) { this.clearImportMemory(userId); return undefined; }
     return t.text;
   }
 
   /** One Spark write; a second when fewer than OBS_MIN survive the checks (the better one wins). */
-  private async write(inputs: InsightInputs, from: InsightReport["from"], settings: InsightReport["settings"], stillOk: () => Promise<boolean> = async () => true): Promise<InsightReport> {
+  private async write(inputsForSend: () => Promise<InsightInputs>, from: InsightReport["from"], settings: InsightReport["settings"], stillOk: () => Promise<boolean> = async () => true): Promise<InsightReport> {
     const t0 = performance.now();
-    // every Spark call (and each retry) first checks the user hasn't since asked to forget something (Codex r8)
+    // A full profile reset or newer write stops this job. Targeted forgets do not:
+    // they replace the next send's inputs with a current, paste-free snapshot.
     const once = async () => {
       if (!(await stillOk())) throw new Error("insights_stale: forget or a newer write since this one started");
       return onceRaw();
     };
-    const onceRaw = async () => toReport(await this.json<unknown>(buildInsightRequest(inputs), AbortSignal.timeout(SPARK_TIMEOUT_MS)), inputs, { at: this.now().toISOString(), from, settings });
+    let sent: InsightInputs | undefined;
+    const onceRaw = async () => {
+      const inputs = await inputsForSend();
+      sent = inputs;
+      return toReport(await this.json<unknown>(buildInsightRequest(inputs), AbortSignal.timeout(SPARK_TIMEOUT_MS)), inputs, { at: this.now().toISOString(), from, settings });
+    };
     // a malformed JSON reply (seen 1 in 3 on 11/4) or a 5xx: once more
     let r = await once().catch(async (err) => {
       this.log("insights.retry", { from, message: String(err).slice(0, 120) });
       return once();
     });
-    if (r.observations.length < OBS_MIN && !inputs.quick) {
+    if (r.observations.length < OBS_MIN && !sent?.quick) {
       const again = await once().catch(() => null);
       if (again && again.observations.length > r.observations.length) r = again;
     }
@@ -166,12 +284,14 @@ export class Insights {
   private start(userId: string, from: InsightReport["from"], inputsOf: (card: StyleCard | null) => InsightInputs | null, opts: { gate?: Promise<string | null>; settings?: InsightReport["settings"]; seq?: number } = {}) {
     if (!this.enabled) return;
     const mine = opts.seq ?? this.reserve(userId);
+    // A targeted forget does not advance `seq`: this write may finish, but it
+    // can never restore memory belonging to the generation it started in.
+    const importGeneration = this.importGeneration(userId);
     const promise = (async () => {
       // import: the card isn't there yet — the paste is the source
       const card = opts.gate ? null : await this.store.getStyle(userId);
       const inputs = inputsOf(card);
       if (!inputs) return;
-      const startedAt = Date.now();
       const stillOk = async () => {
         if (this.seq.get(userId) !== mine) return false;
         const latest = await this.store.getStyle(userId);
@@ -179,12 +299,22 @@ export class Insights {
         // gone ("Forget all of this") stops a non-import write too
         if (this.seq.get(userId) !== mine) return false;
         if (!latest && !opts.gate) return false;
-        return !(latest?.removed ?? []).some((r) => r.forget && Date.parse(r.at) >= startedAt - 1000);
+        return true;
       };
-      const report = await this.write(inputs, from, opts.settings ?? card?.insights?.settings ?? null, stillOk);
+      // Every send, including a Spark retry, checks the volatile-memory generation.
+      // After a targeted forget the job may still write its accepted answers, but it
+      // must rebuild from the latest card and can never resend the held paste.
+      const inputsForSend = async (): Promise<InsightInputs> => {
+        if (this.importGeneration(userId) === importGeneration) return inputs;
+        const latest = await this.store.getStyle(userId);
+        const rebuilt = inputsOf(latest);
+        return { ...(rebuilt ?? inputs), text: undefined };
+      };
+      const report = await this.write(inputsForSend, from, opts.settings ?? card?.insights?.settings ?? null, stillOk);
       const basis = opts.gate ? await opts.gate : card?.importedAt ?? null;
       if (opts.gate && !basis) return;
-      await this.personalize.patchStyle(userId, (c) => {
+      let saved: InsightReport | undefined;
+      const next = await this.personalize.patchStyle(userId, (c) => {
         if (this.seq.get(userId) !== mine) return null; // a newer write started
         if ((c.importedAt ?? null) !== basis) return null; // the card was replaced (another import / skip)
         const old = opts.gate ? undefined : c.insights;
@@ -198,8 +328,12 @@ export class Insights {
           const linked = { ...o, sources: linkSources(c, { ...o, basis: _basis }) };
           return right.has(o.id) ? { ...linked, verdict: "right" as const, confidence: "high" as const } : linked;
         });
-        return { ...c, insights: { ...kept, observations, ...(denied.length ? { denied } : {}) } };
+        saved = { ...kept, observations };
+        return { ...c, insights: { ...saved, ...(denied.length ? { denied } : {}) } };
       });
+      // A full `forget()` advances seq; a targeted forget advances import
+      // generation. Check both paths before re-registering a receipt.
+      if (next?.insights && saved && this.seq.get(userId) === mine) this.rememberImportQuotes(userId, saved, importGeneration);
       this.failedAt.delete(userId);
     })()
       .catch((err) => {
@@ -219,19 +353,20 @@ export class Insights {
 
   /** Import: the report starts on the redacted paste now; commit(importedAt) after the card is saved, cancel() if the import failed. */
   begin(userId: string, redactedText: string): { commit(importedAt: string): void; cancel(): void } {
+    const importGeneration = this.importGeneration(userId);
     let settle!: (at: string | null) => void;
     const gate = new Promise<string | null>((r) => (settle = r));
     this.start(userId, "import", () => ({ text: redactedText, findings: [], picks: [], source: "import" }), { gate });
     return {
       // the paste is kept (memory only) for the answers rewrite only once its card is the user's card
-      commit: (at) => { if (this.enabled) this.rememberText(userId, redactedText); settle(at); },
-      cancel: () => settle(null),
+      commit: (at) => { if (this.enabled) this.rememberText(userId, redactedText, importGeneration); settle(at); },
+      cancel: () => { this.clearImportMemory(userId); settle(null); },
     };
   }
 
   /** N1–N3: the skip card is saved; the report comes from the picks. */
   fromSkip(userId: string): void {
-    this.texts.delete(userId);
+    this.clearImportMemory(userId);
     this.start(userId, "skip", (card) => (card ? { findings: cardFindings(card), picks: cardPicks(card), source: "skip", unknowns: card.toConfirm } : null));
   }
 
@@ -280,9 +415,9 @@ export class Insights {
       if (card.insights?.refreshing) {
         // nothing is writing it any more (a restart): the flag goes, so the app stops waiting (Codex P2)
         const fixed = await this.personalize.patchStyle(userId, (c) => (c.insights?.refreshing && !this.jobs.has(userId) ? { ...c, insights: { ...c.insights, refreshing: false } } : null));
-        return { status: "ready", report: publicReport(fixed?.insights ?? { ...card.insights, refreshing: false }) };
+        return { status: "ready", report: this.reportFor(userId, fixed ?? { ...card, insights: { ...card.insights, refreshing: false } }) };
       }
-      if (card.insights) return { status: "ready", report: publicReport(card.insights) };
+      if (card.insights) return { status: "ready", report: this.reportFor(userId, card) };
       const failed = this.failedAt.get(userId);
       if (failed && Date.now() - failed < FAIL_BACKOFF_MS) return { status: "failed", report: null };
       this.start(userId, "card", (c) => (c ? { text: c.source === "import" ? this.textOf(userId, c) : undefined, findings: cardFindings(c), picks: cardPicks(c), source: c.source, unknowns: c.toConfirm } : null));
@@ -294,7 +429,7 @@ export class Insights {
       clearTimeout(timer);
     }
     const card = await this.store.getStyle(userId);
-    const report = publicReport(card?.insights);
+    const report = this.reportFor(userId, card);
     if (this.jobs.has(userId)) return { status: "pending", report };
     if (report) return { status: "ready", report };
     return { status: this.failedAt.has(userId) ? "failed" : "none", report: null };
@@ -306,7 +441,7 @@ export class Insights {
    * backoff — and makes any write still running land nowhere (a newer write number, and no card to land on).
    */
   forget(userId: string): void {
-    this.texts.delete(userId);
+    this.invalidateImportMemory(userId);
     this.failedAt.delete(userId);
     this.seq.set(userId, ++this.seqNext);
   }
@@ -367,14 +502,14 @@ export class Insights {
       // an item taken out of a list ("spicy"): another observation that says it goes too, one on what's left stays
       const itemRe = items.length ? new RegExp(`\\b(?:${items.map((x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`, "i") : null;
       // another observation that stands on a removed finding goes with it (its "I'll keep replies short" would stay)
-      const quotes = o.evidence.filter((e) => e.source !== "answer").map((e) => quoteWords(e.quote)).filter((w) => w.length).slice(0, 6);
+      const quotes = o.evidence.filter((e) => e.source !== "answer").map((e) => evidenceWords(e)).filter((w) => w.length).slice(0, 6);
       const alsoGone = gone.size || pickN.size || quotes.length ? ins.observations.filter((x) => {
         if (x.id === id) return false;
         const e = x.sources?.length ? editsFromSources(c, x) : editsBehind(c, x);
         // the same rule as the save path: anything standing on what they said "not me" to (Codex #581 r22)
         if (standsOnDenied(x, { picks, items, quotes })) return true;
         // the same paste quote (hash) as the one they said "not me" to, too (Codex #581 r13)
-        if (x.evidence.some((v) => v.source !== "answer" && quotes.some((d) => sameQuote(quoteWords(v.quote), d)))) return true;
+        if (x.evidence.some((v) => v.source !== "answer" && quotes.some((d) => sameQuote(evidenceWords(v), d)))) return true;
         return [...e.drop].some((t) => drop.has(t)) || e.picks.some((q) => pickN.has(q.trim().toLowerCase()))
           || (!!itemRe && [x.claim, x.use_in_call, ...x.evidence.map((v) => v.quote)].some((t) => itemRe.test(t)));
       }).map((x) => x.id) : [];
@@ -398,6 +533,6 @@ export class Insights {
     });
     if (!found || !next?.insights) throw new InsightsError(404, "not_found", "no such insight");
     this.log("insights.verdict", { verdict: b.verdict, corrected: !!correction });
-    return publicReport(next.insights)!;
+    return this.reportFor(userId, next)!;
   }
 }

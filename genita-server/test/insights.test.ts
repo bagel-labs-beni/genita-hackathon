@@ -152,13 +152,13 @@ test("settings: the old SUM four lines come from the answers; picks read the ser
 
 type Req = { schemaName: string; input: unknown; instructions?: string };
 
-function harness(handler: (req: Req) => unknown | Promise<unknown>) {
+function harness(handler: (req: Req) => unknown | Promise<unknown>, now?: () => Date) {
   const dir = mkdtempSync(join(tmpdir(), "insights-"));
   const store = new FileStore(dir);
   const calls: Req[] = [];
   const json = (async (req: Req) => { calls.push(req); return handler(req); }) as unknown as PrepDeps["spark"];
   const p = new Personalize({ store, json: json! });
-  const ins = new Insights({ json: json!, personalize: p, store });
+  const ins = new Insights({ json: json!, personalize: p, store, now });
   return { dir, store, p, ins, calls, json, cleanup: () => rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }) };
 }
 
@@ -186,6 +186,240 @@ test("service: the import's report is written in the background and saved only a
   h2.ins.begin("u1", PASTE).cancel();
   await new Promise((r) => setTimeout(r, 20));
   assert.equal((await h2.store.getStyle("u1"))!.insights, undefined);
+});
+
+test("D95: import receipts remain response-only, then disappear when their memory TTL expires", async (t) => {
+  let ms = Date.parse("2026-11-04T00:00:00Z");
+  const h = harness((req) => (req.schemaName === "insight_report" ? RAW : null), () => new Date(ms));
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  const immediate = await h.ins.get("u1", 3000);
+  assert.equal(immediate.status, "ready");
+  assert.ok(immediate.report!.observations.some((o) => o.evidence.some((e) => e.source === "import" && e.quote.includes("usually asks for two or three options"))), "the current process still receives the receipt");
+
+  const stored = JSON.stringify((await h.store.getStyle("u1"))!.insights);
+  for (const pastedSpan of ["usually asks for two or three options", "ok but which one is cheaper lol"]) {
+    assert.ok(!stored.includes(pastedSpan), `stored style leaked pasted text: ${pastedSpan}`);
+  }
+  const storedInsights = (await h.store.getStyle("u1"))!.insights!;
+  for (const o of storedInsights.observations) for (const e of o.evidence) {
+    if (e.source === "import") assert.deepEqual([e.quote, e.highlight ?? ""], ["", ""]);
+  }
+
+  ms += 2 * 60 * 60_000 + 1;
+  const afterExpiry = await h.ins.get("u1", 0);
+  assert.equal(afterExpiry.status, "ready");
+  assert.ok(afterExpiry.report!.observations.every((o) => o.evidence.every((e) => e.source !== "import" || e.quote.length > 0)), "an expired receipt is omitted rather than sent as an empty quote");
+});
+
+test("D95 r2: filtered traits keep their own receipt; import mix never persists; forget drops matching memory", async (t) => {
+  const raw = {
+    ...RAW,
+    strengths: [
+      { text: "Two or three options and you're already deciding.", trait: 0 },
+      { text: "Which one is cheaper lol keeps work light.", trait: 1 },
+    ],
+  };
+  const h = harness((req) => (req.schemaName === "insight_report" ? raw : null));
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  const first = (await h.ins.get("u1", 3000)).report!;
+  const think = first.observations.find((o) => o.category === "think")!;
+  const response = await h.ins.verdict("u1", think.id, { verdict: "not_me" });
+  assert.ok(response.strengths.every((s) => !/two or three options/i.test(s.text)), "the filtered strength is not retained");
+  assert.ok(response.strengths.some((s) => s.evidence.quote.includes("which one is cheaper lol")), "the surviving strength keeps its own receipt");
+  const stored = JSON.stringify((await h.store.getStyle("u1"))!.insights);
+  assert.ok(!stored.includes("usually asks for two or three options") && !stored.includes("which one is cheaper lol"), stored);
+  assert.ok(!stored.includes('"source":"import","quote":"') || stored.includes('"quote":""'), stored);
+
+  const legacy = toReport(RAW, INPUTS, { at: new Date().toISOString(), from: "import" });
+  legacy.mix = [{ id: "import-mix", left: "Light", right: "Serious", position: 1, evidence: { source: "import", quote: "ok but which one is cheaper lol", source_label: "From the reply you pasted" } }];
+  await h.p.replaceStyle("u1", { ...CARD, insights: legacy });
+  assert.ok(!JSON.stringify((await h.store.getStyle("u1"))!.insights).includes("which one is cheaper lol"), "the shared style persistence boundary scrubs a legacy report before any later rewrite");
+  const mixed = await h.ins.verdict("u1", legacy.observations[0].id, { verdict: "right" });
+  assert.equal(mixed.mix.length, 0, "a mix without an in-memory import receipt is omitted");
+  assert.ok(!JSON.stringify((await h.store.getStyle("u1"))!.insights).includes("which one is cheaper lol"), "a legacy import mix is scrubbed on write");
+
+  const h2 = harness((req) => (req.schemaName === "insight_report" ? RAW : { updates: [], answered: false }));
+  t.after(h2.cleanup);
+  const second = h2.ins.begin("u2", PASTE);
+  second.commit(await h2.p.replaceStyle("u2", CARD));
+  await h2.ins.get("u2", 3000);
+  await h2.p.voiceCorrection("u2", "Forget about cheaper lol.", "");
+  const afterForget = await h2.ins.get("u2", 0);
+  assert.ok(!JSON.stringify(afterForget.report).includes("which one is cheaper lol"), "a forget whose target exists only in an import receipt clears volatile receipts too");
+});
+
+test("D95 r3: a forget during an in-flight insight write cannot restore its import receipt", async (t) => {
+  let releaseSpark!: () => void;
+  const sparkGate = new Promise<void>((resolve) => { releaseSpark = resolve; });
+  const h = harness(async (req) => {
+    if (req.schemaName === "insight_report") await sparkGate;
+    return req.schemaName === "insight_report" ? RAW : { updates: [], answered: false };
+  });
+  t.after(h.cleanup);
+  const put = h.store.putStyle.bind(h.store);
+  let holdWrite = false;
+  let writeEntered!: () => void;
+  const writeStarted = new Promise<void>((resolve) => { writeEntered = resolve; });
+  let releaseWrite!: () => void;
+  const writeGate = new Promise<void>((resolve) => { releaseWrite = resolve; });
+  h.store.putStyle = async (userId, card) => {
+    if (holdWrite) {
+      holdWrite = false;
+      writeEntered();
+      await writeGate;
+    }
+    return put(userId, card);
+  };
+
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  holdWrite = true;
+  releaseSpark();
+  await writeStarted;
+  const forgetting = h.p.voiceCorrection("u1", "Forget about cheaper lol.", "");
+  await Promise.resolve(); // notifyForget runs before the forget's serialized DB update
+  releaseWrite();
+  await forgetting;
+  const after = await h.ins.get("u1", 3000);
+  assert.ok(!JSON.stringify(after.report).includes("which one is cheaper lol"), "a late patch completion did not re-register the receipt");
+});
+
+test("D95 r3: a rewrite that completes after the import TTL cannot restart receipt retention", async (t) => {
+  let ms = Date.parse("2026-11-04T00:00:00Z");
+  let reports = 0;
+  let releaseRewrite!: () => void;
+  const rewriteGate = new Promise<void>((resolve) => { releaseRewrite = resolve; });
+  let rewriteEntered!: () => void;
+  const rewriteStarted = new Promise<void>((resolve) => { rewriteEntered = resolve; });
+  const h = harness(async (req) => {
+    if (req.schemaName !== "insight_report") return null;
+    reports++;
+    if (reports === 2) {
+      rewriteEntered();
+      await rewriteGate;
+    }
+    return RAW;
+  }, () => new Date(ms));
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  await h.ins.get("u1", 3000);
+  ms += 2 * 60 * 60_000 - 1;
+  await h.ins.fromAnswers("u1", { help: "Think with me" });
+  await rewriteStarted;
+  ms += 2;
+  releaseRewrite();
+  const after = await h.ins.get("u1", 3000);
+  assert.ok(after.report!.observations.every((o) => o.evidence.every((e) => e.source !== "import")), "a post-expiry rewrite returned no renewed import receipt");
+});
+
+test("D95 r4: a short forget clears import memory before correction gates, so answers never resend the paste", async (t) => {
+  const h = harness((req) => (req.schemaName === "insight_report" ? RAW : { updates: [], answered: false }));
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  assert.ok(JSON.stringify((await h.ins.get("u1", 3000)).report).includes("which one is cheaper lol"));
+
+  await h.p.voiceCorrection("u1", "Forget it.", "");
+  assert.ok(!JSON.stringify((await h.ins.get("u1", 0)).report).includes("which one is cheaper lol"));
+  const before = h.calls.length;
+  await h.ins.fromAnswers("u1", { help: "Think with me" });
+  await h.ins.get("u1", 3000);
+  assert.ok(!h.calls.slice(before).some((c) => c.schemaName === "insight_report" && String(c.input).includes("which one is cheaper lol")), "the paste was not sent after the short forget");
+});
+
+test("D95 r4: a forget during import still saves the stripped report but never commits its volatile receipts", async (t) => {
+  const h = harness((req) => (req.schemaName === "insight_report" ? RAW : { updates: [], answered: false }));
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  await h.p.voiceCorrection("u1", "Forget it.", "");
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  const ready = await h.ins.get("u1", 3000);
+  assert.equal(ready.status, "ready");
+  assert.ok((await h.store.getStyle("u1"))!.insights, "the import report still saves through the privacy boundary");
+  assert.ok(!JSON.stringify(ready.report).includes("which one is cheaper lol"), "a pre-commit forget cannot restore import memory");
+});
+
+test("D95 r4: forget during an accepted-answers rewrite keeps the rewrite but not its import receipts", async (t) => {
+  let reports = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  const h = harness(async (req) => {
+    if (req.schemaName !== "insight_report") return { updates: [], answered: false };
+    reports++;
+    if (reports === 2) { entered(); await gate; }
+    return RAW;
+  });
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  await h.ins.get("u1", 3000);
+  await h.ins.fromAnswers("u1", { help: "Think with me" });
+  await started;
+  await h.p.voiceCorrection("u1", "Forget it.", "");
+  release();
+  const after = await h.ins.get("u1", 3000);
+  assert.equal(after.report!.settings!.why, "Think with me", "the accepted answers rewrite was not cancelled");
+  assert.ok(!JSON.stringify(after.report).includes("which one is cheaper lol"));
+});
+
+test("D95 r5: a retry after Forget it never resends the pasted reply", async (t) => {
+  let reports = 0;
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  let fail!: () => void;
+  const failure = new Promise<void>((resolve) => { fail = resolve; });
+  const h = harness(async (req) => {
+    if (req.schemaName !== "insight_report") return { updates: [], answered: false };
+    reports++;
+    if (reports === 2) { entered(); await failure; throw new Error("503"); }
+    return RAW;
+  });
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  await h.ins.get("u1", 3000);
+  await h.ins.fromAnswers("u1", { help: "Think with me" });
+  await started;
+  await h.p.voiceCorrection("u1", "Forget it.", "");
+  fail();
+  await h.ins.get("u1", 3000);
+  const retry = h.calls.filter((c) => c.schemaName === "insight_report");
+  assert.ok(retry.length >= 3, "the failed answers write retries");
+  for (const call of retry.slice(2)) assert.doesNotMatch(String(call.input), /usually asks for two or three options|which one is cheaper lol/, "the retry drops the paste after Forget it");
+});
+
+test("D95 r5: a targeted forget does not cancel a failed accepted-answers retry", async (t) => {
+  let reports = 0;
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  let fail!: () => void;
+  const failure = new Promise<void>((resolve) => { fail = resolve; });
+  const h = harness(async (req) => {
+    if (req.schemaName !== "insight_report") return { updates: [], answered: false };
+    reports++;
+    if (reports === 2) { entered(); await failure; throw new Error("503"); }
+    return RAW;
+  });
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  await h.ins.get("u1", 3000);
+  await h.ins.fromAnswers("u1", { help: "Think with me" });
+  await started;
+  await h.p.voiceCorrection("u1", "Forget about options.", "");
+  fail();
+  const after = await h.ins.get("u1", 3000);
+  assert.equal(after.report!.settings!.why, "Think with me", "the accepted answers save after a targeted forget");
+  const retry = h.calls.filter((c) => c.schemaName === "insight_report");
+  assert.ok(retry.length >= 3, "the targeted forget does not cancel the retry");
+  for (const call of retry.slice(2)) assert.doesNotMatch(String(call.input), /usually asks for two or three options|which one is cheaper lol/);
 });
 
 test("service: setup answers re-write the report (import text kept in memory only) with settings; verdicts stick", async (t) => {
@@ -722,7 +956,7 @@ test("codex r7: a minor's age never shows ('You're 15 and …'); a forget stops 
   assert.ok(!sent.includes("which one is cheaper lol"), "the paste is no longer sent after a forget");
 });
 
-test("codex r8: a retry after a forget doesn't send the paste again", async (t) => {
+test("codex r8: a retry after a forget rebuilds without the paste", async (t) => {
   let n = 0;
   let h!: ReturnType<typeof harness>;
   h = harness(async (req) => {
@@ -730,6 +964,7 @@ test("codex r8: a retry after a forget doesn't send the paste again", async (t) 
     n++;
     if (n === 2) {
       // the answers write's first call: the user says "forget …" meanwhile, then this call fails
+      h.p.notifyForget("u1");
       await h.p.patchStyle("u1", (c) => ({ ...c, removed: [...(c.removed ?? []), { text: "cheaper lol", at: new Date().toISOString(), forget: true as const }] }));
       throw new Error("504");
     }
@@ -740,8 +975,10 @@ test("codex r8: a retry after a forget doesn't send the paste again", async (t) 
   job.commit(await h.p.replaceStyle("u1", CARD));
   await h.ins.get("u1", 3000); // call 1
   await h.ins.fromAnswers("u1", { help: "Think with me" });
-  await h.ins.get("u1", 3000); // call 2 fails; no retry with the paste
-  assert.equal(n, 2, "no third call");
+  await h.ins.get("u1", 3000); // call 2 fails; retry continues without the paste
+  assert.ok(n >= 3, "targeted forget does not cancel the accepted-answers retry");
+  const retryInputs = h.calls.filter((c) => c.schemaName === "insight_report").slice(2).map((c) => String(c.input)).join("\n");
+  assert.ok(!retryInputs.includes("which one is cheaper lol"), "the retry has no paste");
 });
 
 // ───────── audit 11/4 (AU-21, AU-22, AU-23) ─────────
@@ -1006,4 +1243,22 @@ test("Codex #581 recut r3 P1: a one-item line named inside a paste quote is link
   const card = { sections: { likes: [{ text: "Food: spicy." }, { text: "Style: Minimal." }] } } as never;
   const got = linkSources(card, { evidence: [{ source: "import", quote: "I like spicy food.", source_label: "x" }, { source: "answer", quote: "Minimal", source_label: "x" }], chips: [] } as never);
   assert.deepEqual(got, [{ section: "likes", text: "Food: spicy." }, { section: "likes", text: "Style: Minimal." }]);
+});
+
+test("D95 × AU-91: a stored import receipt keeps only its word hashes, so a 'Not me' on it still blocks a reworded trait", async () => {
+  const { storedInsights, evidenceWords } = await import("../src/insights/profile.ts");
+  const { quoteWords: qw, standsOnDenied: sod } = await import("../src/insights/service.ts");
+  const quote = "Prefers short, direct replies.";
+  const ev = { source: "import" as const, quote, source_label: "From the reply you pasted", highlight: "short, direct" };
+  const obs = { id: "o1", category: "talk" as const, claim: "You keep things brief", evidence: [ev], confidence: "high" as const, score: 0.9, surprise: 0.5, use_in_call: "" };
+  const stored = storedInsights({ observations: [obs], strengths: [], watchouts: [], mix: [], learning: [] } as never);
+  const e = stored.observations[0].evidence[0];
+  assert.equal(e.quote, "");
+  assert.equal(e.highlight, "");
+  assert.ok(!JSON.stringify(stored).includes("short"), "no pasted words stored");
+  assert.deepEqual(evidenceWords(e), qw(quote), "the hashes survive the strip");
+  // the verdict path records these hashes; a reworded trait on the same quote then stands on the denial
+  const again = storedInsights(stored);
+  assert.deepEqual(again.observations[0].evidence[0].words, qw(quote), "re-saving keeps the hashes");
+  assert.equal(sod({ claim: "You like it tight", use_in_call: "", evidence: [{ source: "import", quote: "short, direct replies" }] }, { quotes: [evidenceWords(e)] }), true);
 });
