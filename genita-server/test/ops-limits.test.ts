@@ -21,7 +21,7 @@ import { migrateUp } from "../src/db/migrate.ts";
 import { createPrep } from "../src/prep/index.ts";
 import { FileStore } from "../src/prep/store.ts";
 
-const config = (env: NodeJS.ProcessEnv = {}) => loadConfig({ MODEL_API_KEY: "synthetic", PORT: "0", GENITA_SPECULATE: "0", GENITA_SPARK_HEDGE: "1", ...env });
+const config = (env: NodeJS.ProcessEnv = {}) => loadConfig({ MODEL_API_KEY: "synthetic", PORT: "0", GENITA_SPECULATE: "0", GENITA_SPARK_HEDGE: "1", GENITA_INTERPRET_ASR_CORRECT: "0", ...env });
 const logs: Array<{ event: string; data: Record<string, unknown> }> = [];
 const log = (event: string, data: Record<string, unknown>) => logs.push({ event, data });
 const originalFetch = globalThis.fetch;
