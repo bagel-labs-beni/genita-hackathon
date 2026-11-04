@@ -594,6 +594,7 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
   // the asked color first (AU-78), then proven product pages before unconfirmed ones (Codex #602 r2)
   const rank = (i: number) => (offColor(str(cands[i].item?.name, 200), colors) ? 2 : 0) + (proven(cands[i].url, facts[i]) ? 0 : 1);
   const order = cands.map((_, i) => i).sort((a, b) => rank(a) - rank(b));
+  let cardDept: Department | undefined = dept;
   order.forEach((i) => {
     const p = cands[i];
     if (products.length >= PRODUCT_COUNT) return;
@@ -604,8 +605,9 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
       return;
     }
     if (!p.inTrace) serverOpened++;
-    // the page's own title can name the other department too (Codex r1)
-    if (dept && f?.title && productDepartment(f.title) && productDepartment(f.title) !== dept) {
+    // the page's own title can name a department too (Codex r1/r2): the card keeps the first one it shows
+    const pd = productDepartment(`${str(p.item?.name, 200)} ${p.url}`) ?? (f?.title ? productDepartment(f.title) : undefined);
+    if (pd && cardDept && pd !== cardDept) {
       dropped.otherDepartment = (dropped.otherDepartment ?? 0) + 1;
       return;
     }
@@ -619,6 +621,7 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
     const price = f?.price ?? (f ? undefined : cleanPrice(str(p.item.price, 30)));
     const name = shortName(str(p.item.name, 200) || f?.title || domain);
     const picture = f?.image ?? (allowedImage(str(p.item.image, 600)) ?? undefined);
+    if (pd && !cardDept) cardDept = pd;
     products.push({
       id: `p${products.length + 1}`,
       name,

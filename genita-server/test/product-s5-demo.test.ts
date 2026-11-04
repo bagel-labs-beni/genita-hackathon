@@ -116,3 +116,18 @@ test("S5-3: the searching line names what was asked ('Shoes'), not the outfit th
   assert.match(started(events, s.findId)!.detail, /^Shoes · /);
   r.close();
 });
+
+test("S5-2 (Codex r2): departments named only by the page titles never mix either", async () => {
+  clearProductCache();
+  const { v } = vendors([
+    { name: "Chelsea Boot", url: "https://a.example.com/products/chelsea-boot-1" },
+    { name: "Lace-Up Boot", url: "https://b.example.com/products/lace-up-boot-2" },
+    { name: "Ankle Boot", url: "https://c.example.com/products/ankle-boot-3" },
+  ]);
+  v.pageFacts = async (url: string) => ({ kind: "product" as const, title: url.includes("chelsea") ? "Women's Chelsea Boot" : url.includes("lace-up") ? "Men's Lace-Up Boot" : "Ankle Boot" });
+  const { r, events } = runner(v, "");
+  const s = r.onTurn({ text: "Can you find me shoes that go with what I'm wearing right now?", frames: ["data:image/jpeg;base64,AAA"], utteranceId: 2, replyText: Promise.resolve(null) })!;
+  await r.settle();
+  assert.deepEqual(created(events, s.findId)!.card.products!.map((p) => p.name), ["Chelsea Boot", "Ankle Boot"]);
+  r.close();
+});
