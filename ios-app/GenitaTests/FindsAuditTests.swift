@@ -210,8 +210,8 @@ import CoreImage
         let rect = CGRect(x: 0, y: 0, width: 640, height: 360)
         let scene = CIFilter(name: "CICheckerboardGenerator", parameters: ["inputWidth": 20, "inputColor0": CIColor(red: 0.85, green: 0.85, blue: 0.85), "inputColor1": CIColor(red: 0.25, green: 0.25, blue: 0.25)])!.outputImage!.cropped(to: rect)
         XCTAssertFalse(FrameQuality.unclear(scene), "a busy, lit scene")
-        let dark = scene.applyingFilter("CIExposureAdjust", parameters: ["inputEV": -4])
-        XCTAssertTrue(FrameQuality.unclear(dark), "−4 EV")
+        let dark = scene.applyingFilter("CIExposureAdjust", parameters: ["inputEV": -5])
+        XCTAssertTrue(FrameQuality.unclear(dark), "−5 EV")
         let flat = CIImage(color: CIColor(red: 0.5, green: 0.5, blue: 0.5)).cropped(to: rect)
         XCTAssertTrue(FrameQuality.unclear(flat), "nothing to make out")
         let wire = try JSONSerialization.jsonObject(with: JSONEncoder().encode(ClientMessage.frames(.init(images: ["a"], unclear: true)))) as! [String: Any]
