@@ -329,6 +329,9 @@ export function guardSentence(sentence: string, ctx: GuardContext): GuardClass |
   // Codex r12: not even an AI-denial rewrite replaces it ("No, I can't call 988 for you, but you can call or text it")
   // Codex r14: "you're my lifeline" is no help line (only "988 / suicide & crisis lifeline"), and a clingy line next
   // to a help word stays guarded outside a real crisis ("Don't leave me, you're my hotline")
+  // Codex r15: a human claim next to a number is still corrected ("I'm not an AI and you can call 988" → denies_ai; the
+  // session's crisis follow-up then adds the help line), unlike "I can't call 988 for you" (a limit, not a denial)
+  if (HELP_LINE.test(sentence) && CLAIMS_HUMAN.test(sentence.replace(/[‘’ʼ]/g, "'")) && !/\bwish\b|\bif i (?:were|was)\b/i.test(sentence)) return "denies_ai";
   if (HELP_LINE.test(sentence)) return !realCrisisSignal(ctx.userText) && !EMERGENCY_HELP.test(sentence) && CLASSES.find(([c]) => c === "guilt")![1].test(sentence) ? "guilt" : null;
   if (EMERGENCY_HELP.test(sentence)) return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;
   // saving out loud is never said, even after real content (Codex gate P2: "Pistachio is elite. I'll save that detail quietly.")

@@ -1658,3 +1658,10 @@ test("Codex #545 r14: 'you're my lifeline' is no help line; AI denial and guilt 
   assert.equal(guardSentence("Don't leave me because you're my lifeline.", { camera: false, userText: "gotta go" } as any), "guilt");
   assert.equal(guardSentence("You can call or text the 988 Suicide & Crisis Lifeline right now.", { camera: false, userText: "I want to kill myself" } as any), null);
 });
+
+test("Codex #545 r15: 'I'm not an AI and you can call 988' is still an AI denial; the help line follows", async () => {
+  const { guardSentence } = await import("../src/convo/guard.ts");
+  const u = { camera: false, userText: "I'm 16. Are you an AI? I want to kill myself." } as any;
+  assert.equal(guardSentence("I'm not an AI and you can call 988 right now.", u), "denies_ai");
+  assert.equal(guardSentence("No, I can't call 988 for you, but you can call or text it right now.", u), null);
+});
