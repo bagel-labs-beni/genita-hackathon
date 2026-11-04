@@ -1259,22 +1259,53 @@ struct FindCardPage: View {
         .accessibilityElement(children: .contain).accessibilityIdentifier("productView")
     }
 
+    /// Half sheet (364 pt page, no scrolling): the picture gives way so Open in browser shows above Save to Finds
+    /// (Chelsea 11/4: the pill sat under the CTA). 364 − 40 top − 44 header − 8 − title row − 8 − 8 − (8 + 20 + 4 + 20)
+    /// name + store − 8 − 44 pill = 152 − title row; 56 at least, the square (151) at most.
+    static func halfProductPicture(titleRow: CGFloat) -> CGFloat {
+        let room: CGFloat = 152 - titleRow
+        return max(56, min(151, room))
+    }
+
+    private func openProduct(_ p: FindCard.Product) {
+        // r02: straight to the shop's page in the browser (not the in-sheet one)
+        if !offline, let url = ExternalLink.web(p.url) { openURL(url) }
+    }
+
     private func productColumn(_ p: FindCard.Product, primary: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            FindPicture(image: p.image, resolve: call.findsURL, showFailText: false, quietGlyph: "hanger")
-                .aspectRatio(1, contentMode: .fit).clipShape(RoundedRectangle(cornerRadius: 12))
-                .accessibilityLabel("Picture of \(p.name)")
-            VStack(alignment: .leading, spacing: 4) {
-                Text(p.name).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.ink).lineLimit(2).multilineTextAlignment(.leading)
-                Text(p.store + " · " + (p.price ?? "Price on site")).font(TypeStyle.body(14)).foregroundStyle(CallInk.mute).lineLimit(1)
+        let pictureHeight: CGFloat? = full ? nil : Self.halfProductPicture(titleRow: titleRowHeight > 0 ? titleRowHeight : 54)
+        return VStack(alignment: .leading, spacing: 8) {
+            // b16: the picture, the name and the store open the shop too (tapping them did nothing)
+            Button { openProduct(p) } label: {
+                VStack(alignment: .leading, spacing: 8) {
+                    Group {
+                        if let h = pictureHeight {
+                            FindPicture(image: p.image, resolve: call.findsURL, showFailText: false, quietGlyph: "hanger")
+                                .frame(maxWidth: .infinity).frame(height: h)
+                        } else {
+                            FindPicture(image: p.image, resolve: call.findsURL, showFailText: false, quietGlyph: "hanger")
+                                .aspectRatio(1, contentMode: .fit)
+                        }
+                    }.clipShape(RoundedRectangle(cornerRadius: 12))
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(p.name).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.ink).lineLimit(full ? 2 : 1).multilineTextAlignment(.leading)
+                        Text(p.store + " · " + (p.price ?? "Price on site")).font(TypeStyle.body(14)).foregroundStyle(CallInk.mute).lineLimit(1)
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
             }
-            // D4: ✦ = your style, “ = what you said (no colour legend)
-            if !p.taste.isEmpty { productChip(p.taste, mark: ProductPicks.styleMark, fg: FindsInk.blueText, bg: FindsInk.blueSoft) }
-            if !p.situation.isEmpty { productChip(p.situation, mark: ProductPicks.saidMark, fg: CallInk.ink, bg: FindsInk.skip) }
-            Button {
-                // r02: straight to the shop's page in the browser (not the in-sheet one)
-                if !offline, let url = ExternalLink.web(p.url) { openURL(url) }
-            } label: {
+            .buttonStyle(PressScale(scale: 0.98)).opacity(offline ? 0.5 : 1)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(p.name), \(p.store), \(p.price ?? "price on site")")
+            .accessibilityHint("Opens it in the browser")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityIdentifier("productCard-\(p.id)")
+            // the reason chips show in the full sheet; at half the pill comes first (it has to clear the CTA)
+            if full {
+                // D4: ✦ = your style, “ = what you said (no colour legend)
+                if !p.taste.isEmpty { productChip(p.taste, mark: ProductPicks.styleMark, fg: FindsInk.blueText, bg: FindsInk.blueSoft) }
+                if !p.situation.isEmpty { productChip(p.situation, mark: ProductPicks.saidMark, fg: CallInk.ink, bg: FindsInk.skip) }
+            }
+            Button { openProduct(p) } label: {
                 // r01: a 36 pt pill, the first card ink, the other outlined; 13 pt so it stays one line in a column
                 HStack(spacing: 4) {
                     Text("Open in browser").font(TypeStyle.body(13, .medium)).lineLimit(1).minimumScaleFactor(0.85)

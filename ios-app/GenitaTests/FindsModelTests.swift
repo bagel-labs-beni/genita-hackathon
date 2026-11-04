@@ -24,6 +24,17 @@ import XCTest
         XCTAssertLessThan(SheetState.searching.height, SheetState.half.height)
     }
 
+    /// b16: at the half sheet the product picture gives way so Open in browser sits above Save to Finds (364 pt page).
+    func testHalfProductPictureLeavesRoomForThePill() {
+        let titleRow: CGFloat = 54
+        let picture = FindCardPage.halfProductPicture(titleRow: titleRow)
+        let fixed: CGFloat = 40 + 44 + 8 + 8 + 8
+        let below: CGFloat = 8 + 20 + 4 + 20 + 8 + 44
+        XCTAssertLessThanOrEqual(fixed + titleRow + picture + below, 364, "pill above the CTA")
+        XCTAssertEqual(FindCardPage.halfProductPicture(titleRow: 300), 56, "never smaller than 56")
+        XCTAssertEqual(FindCardPage.halfProductPicture(titleRow: 0), 151, "never bigger than the square")
+    }
+
     func testSearchingThenRisingThenHalf() async throws {
         let m = FindsModel()
         m.latestFrames = [Data([0xff, 0xd8]).base64EncodedString()]

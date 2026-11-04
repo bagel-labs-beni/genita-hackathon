@@ -179,7 +179,7 @@ struct MacResultSheet: View {
                         } else {
                             HStack(alignment: .top, spacing: 12) {
                                 ForEach(Array(picks.enumerated()), id: \.element.id) { i, pick in
-                                    MacProductCard(pick: pick, primary: i == 0, imageURL: pick.image.flatMap { $0.status == .ready ? $0.url : nil }.flatMap { CallController.shared.findsURL($0) }) { open(pick) }
+                                    MacProductCard(pick: pick, primary: i == 0, compact: finds.state != .full, imageURL: pick.image.flatMap { $0.status == .ready ? $0.url : nil }.flatMap { CallController.shared.findsURL($0) }) { open(pick) }
                                 }
                                 if picks.count == 1 { Spacer(minLength: 0) }
                             }.padding(.top, 16)
@@ -282,6 +282,8 @@ struct MacResultSheet: View {
 struct MacProductCard: View {
     let pick: ProductPick
     let primary: Bool
+    /// b16: half sheet — a 72 pt picture and no chips, so Open in browser clears Save to Finds
+    var compact = false
     var imageURL: URL?
     let open: () -> Void
     @State private var hover = false
@@ -292,14 +294,14 @@ struct MacProductCard: View {
     private static let outlineBlue = Color(red: 156.0 / 255, green: 211.0 / 255, blue: 245.0 / 255)
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            picture.frame(width: 151, height: 151).clipShape(RoundedRectangle(cornerRadius: 12))
+            picture.frame(width: 151, height: compact ? 72 : 151).clipShape(RoundedRectangle(cornerRadius: 12))
             Text(pick.name).font(MacSheetInk.sans(15, .medium)).foregroundStyle(MacSheetInk.ink).lineLimit(1).padding(.top, 14)
             Text(pick.brandLine).font(MacSheetInk.sans(13)).foregroundStyle(MacSheetInk.mute).lineLimit(1).minimumScaleFactor(0.8).padding(.top, 6)
-            VStack(alignment: .leading, spacing: 6) {
+            if !compact { VStack(alignment: .leading, spacing: 6) {
                 // D4: ✦ = your style (the import), “ = what they said — PF-1's chips, no colour legend
                 if !pick.taste.isEmpty { chip(pick.taste, mark: ProductPicks.styleMark, fg: MacSheetInk.chipBlueText, bg: MacSheetInk.chipBlue).overlay(Capsule().strokeBorder(Self.outlineBlue, lineWidth: 1)).accessibilityIdentifier("macProductTaste") }
                 if !pick.situation.isEmpty { chip(pick.situation, mark: ProductPicks.saidMark, fg: MacSheetInk.ink, bg: MacSheetInk.chip).accessibilityIdentifier("macProductSituation") }
-            }.padding(.top, 10).frame(minHeight: 58, alignment: .top)
+            }.padding(.top, 10).frame(minHeight: 58, alignment: .top) }
             Button(action: open) {
                 // r01: a 36 pt pill, the first card ink, the others outlined
                 Text("Open in browser ↗").font(MacSheetInk.sans(13, .medium))
@@ -308,9 +310,13 @@ struct MacProductCard: View {
                     .background(filled ? MacSheetInk.ink : MacSheetInk.sheet, in: Capsule())
                     .overlay { if !filled { Capsule().strokeBorder(MacFindsInk.line, lineWidth: 1) } }
                     .contentShape(Capsule())
-            }.buttonStyle(.plain).onHover { hover = $0 }.padding(.top, 10)
+            }.buttonStyle(.plain).padding(.top, 10)
                 .accessibilityLabel("Open \(pick.name) in your browser").accessibilityIdentifier("macOpenInBrowser")
         }.frame(width: 151, alignment: .leading)
+        // b16: a click anywhere on the tile opens the shop (the picture and name did nothing); hovering the tile fills the pill
+        .contentShape(Rectangle())
+        .onTapGesture(perform: open)
+        .onHover { hover = $0 }
     }
 
     @ViewBuilder private var picture: some View {
