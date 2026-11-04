@@ -178,6 +178,29 @@ export function samePageKey(u: string): string {
   }
 }
 
+/**
+ * Demo 11/4: rows showed bare domains ("maangchi.com") when the model gave no title. An empty title, or one that is
+ * only the domain, is filled from the page's own path ("/recipe/kimchi-bokkeumbap" → "Kimchi bokkeumbap"), else the
+ * row's line; the domain only when there is nothing else.
+ */
+export function readableTitle(title: string, why: string, url: string, domain: string): string {
+  const t = title.trim();
+  const bare = (x: string) => x.toLowerCase().replace(/^www\./, "").replace(/\/$/, "");
+  if (t && bare(t) !== bare(domain)) return t;
+  let slug = "";
+  try {
+    const parts = new URL(url).pathname.split("/").map((p) => decodeURIComponent(p)).filter(Boolean);
+    for (let i = parts.length - 1; i >= 0 && !slug; i--) {
+      const words = parts[i].replace(/\.[a-z]{2,5}$/i, "").split(/[-_+\s]+/).filter((w) => /[a-z]/i.test(w) && !/^\d+$/.test(w) && !/^[a-f0-9]{8,}$/i.test(w));
+      if (words.length >= 2 && words.join(" ").length <= 80) slug = words.join(" ");
+    }
+  } catch { /* not a URL: the line below */ }
+  if (slug) return slug.charAt(0).toUpperCase() + slug.slice(1);
+  const line = why.trim().replace(/[.!]+$/, "");
+  if (line) return line.length > 60 ? `${line.slice(0, 57).replace(/\s+\S*$/, "")}…` : line;
+  return t || domain;
+}
+
 /** The model's results that are pages of the trace (a summary never goes on another page of the same site); one per site. */
 export function pickResults(j: GeneralJson | null, traced: string[]): Result[] {
   const byUrl = new Map<string, string>();
@@ -188,7 +211,7 @@ export function pickResults(j: GeneralJson | null, traced: string[]): Result[] {
     const domain = domainOf(url);
     if (!domain || seen.has(domain) || isBlockedSite(domain) || out.length >= GENERAL_MAX_RESULTS) return;
     seen.add(domain);
-    out.push({ title: title || domain, why, url, domain });
+    out.push({ title: readableTitle(title, why, url, domain), why, url, domain });
   };
   for (const r of Array.isArray(j?.results) ? j.results : []) {
     const url = str(r?.url, 600);
