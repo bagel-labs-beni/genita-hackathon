@@ -29,6 +29,8 @@ test("a second hello after the opener goes; the rest of the sentence stays", () 
   assert.equal(noRepeatGreeting("Look who actually stayed up late with me, Summer.", "hi"), "Hey.");
   assert.equal(noRepeatGreeting("Look who actually stayed up late with me, Summer.", "so bored"), "");
   assert.equal(noRepeatGreeting("Look who's talking, you burned toast.", "x"), "Look who's talking, you burned toast.");
+  assert.equal(noRepeatGreeting("Well look at you, Summer.", "hey"), "Hey.");
+  assert.equal(noRepeatGreeting("Look at you go, that's a clean dice.", "done chopping"), "Look at you go, that's a clean dice.");
   // Codex r1 P2: praise that happens to say "you made it"
   assert.equal(noRepeatGreeting("You made it through a tough interview without freezing.", "Did I do okay in the interview?"), "You made it through a tough interview without freezing.");
   for (const s of ["That's brutal, making you pitch his version like that.", "Black one, no contest.", "Finally, a dish that needs no oven.", "You're back to square one with the deck, huh."]) assert.equal(noRepeatGreeting(s, "x"), s);
@@ -76,8 +78,8 @@ test("eval adapter (session mirror): turn 2 drops the repeat hello, a question n
 
 test("the prompt says: greet once, goodbye only when they leave; the no-frame retry line answers without vision", () => {
   const p = buildInstructions({ persona: jin, user: { name: "Summer" }, mode: "chat", style: "v1" });
-  assert.match(p, /Greet once per call: never again say hi/);
-  assert.match(p, /Say bye only when they're leaving/);
+  assert.match(p, /Greet once; later, their hi gets a quick hey back/);
+  assert.match(p, /Bye only when they leave/);
   assert.match(NO_FRAME_RETRY_LINE, /No camera frame/);
   assert.match(NO_FRAME_RETRY_LINE, /never describe how anything looks/);
 });
