@@ -151,11 +151,14 @@ const CAMERA_WORDS = /\b(?:camera|on me|i'?m wearing|i am wearing|i have on|my o
 /** Codex r1 P2: recipe / outfit made from a shared-screen frame — its boxes are not for the camera preview (null = dropped). */
 export function screenEvent(e: ServerEvent): ServerEvent | null {
   if (e.type === "observe.boxes") return null;
-  if (e.type === "find.created" && e.card.camera) {
-    const { camera: _camera, ...card } = e.card;
-    return { ...e, card: { ...card, eyebrow: "From your screen", how: card.how.map((h) => h.replace(/\byour camera\b/gi, "your shared screen")) } };
-  }
+  if (e.type === "find.created" && e.card.camera) return { ...e, card: screenCard(e.card) };
   return e;
+}
+/** the same card as the app got: what is saved to Finds must not bring the camera picture back (Codex r2) */
+export function screenCard(c: FindCard): FindCard {
+  if (!c.camera) return c;
+  const { camera: _camera, ...card } = c;
+  return { ...card, eyebrow: "From your screen", how: card.how.map((h) => h.replace(/\byour camera\b/gi, "your shared screen")) };
 }
 /** the companion's last line offered to find something ("Want me to find a pair?") */
 const OFFER = /\b(?:want me to|should i|shall i|i can|i could|let me|how about i)\b[^.?!]{0,60}\b(?:find|look|pull|search|grab|show|hunt)\b/i;
@@ -405,6 +408,7 @@ export class FindsRunner {
       }
       return { card: null, timings: {} } as PipelineResult;
     }).then(async (r) => {
+      if (r.card && useScreen) r = { ...r, card: screenCard(r.card) };
       if (r.card) await this.persist(r.card);
       // a real search's card answers the same ask next time at once (same taste only)
       if (r.card && intent.kind === "product" && !r.timings.cached && this.deps.productCache === true) {

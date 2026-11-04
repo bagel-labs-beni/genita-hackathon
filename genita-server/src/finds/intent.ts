@@ -80,7 +80,8 @@ export function refersToScreen(text: string): boolean {
  * ("find me some", "what shoes would go with it"). The runner only takes it right after an outfit verdict.
  */
 const ACCEPT = /^(?:(?:oh |ok(?:ay)? |um+ |hmm+ )?(?:yes|yeah|yep|yup|sure|please|ok(?:ay)?|definitely|absolutely|of course|go ahead|go for it|do it|let'?s do it|let'?s see|sounds good|why not)\b[\s,.!]*(?:please|go for it|do it|go ahead|let'?s do it|let'?s see|sure|thanks|thank you)?[\s,.!]*(?:find (?:me )?(?:some|a pair|one|them)|show me(?: some)?)?[\s,.!?]*)$/i;
-const GOES_WITH_ASK = /\b(?:(?:find|show) (?:me )?(?:some|a pair|one|a couple|a few)(?: of (?:those|them|these))?(?: (?:for|to go with) (?:it|this|that|me))?[\s,.!?]*$|what (?:shoes|accessories|bag|bags|boots|jewelry|else)?\s*(?:would|could|will|might)? ?go(?:es)? with (?:it|this|that|them)|something (?:that )?(?:goes|would go) with (?:it|this|that))\b/i;
+// "Find me some." ends the line (punctuation after it is fine, Codex r2); the goes-with asks may sit anywhere
+const GOES_WITH_ASK = /\b(?:find|show) (?:me )?(?:some|a pair|one|a couple|a few)(?: of (?:those|them|these))?(?: (?:for|to go with) (?:it|this|that|me))?\b[\s,.!?]*$|\b(?:what (?:shoes|accessories|bag|bags|boots|jewelry|else)?\s*(?:would|could|will|might)? ?go(?:es)? with (?:it|this|that|them)|something (?:that )?(?:goes|would go) with (?:it|this|that))\b/i;
 /** a bare "yes / sure / go for it": only counts right after the companion offered to find something */
 export function isBareAccept(text: string): boolean {
   const t = text.trim();

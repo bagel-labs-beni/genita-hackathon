@@ -210,7 +210,7 @@ test("D runner: sharing, but the outfit question is about her: the camera frames
 // ───────────── C: scene 5 ─────────────
 
 test("C intent: follow-ups to the outfit verdict's offer", () => {
-  for (const l of ["yes", "Yes please", "sure", "Yeah, go for it", "find me some", "Find me a pair", "what shoes would go with it", "What would go with this?", "Okay, show me some"]) assert.equal(isGoesWithFollowUp(l), true, l);
+  for (const l of ["Find me some.", "Find me a pair!", "yes", "Yes please", "sure", "Yeah, go for it", "find me some", "Find me a pair", "what shoes would go with it", "What would go with this?", "Okay, show me some"]) assert.equal(isGoesWithFollowUp(l), true, l);
   for (const l of ["What do you think about my hair?", "yes, I'm going to dinner with my parents and then a movie later tonight"]) assert.equal(isGoesWithFollowUp(l), false, l);
 });
 
@@ -310,4 +310,13 @@ test("Codex r1: a recipe from the shared screen sends no camera boxes", async ()
   await new Promise((res) => setTimeout(res, 200));
   assert.ok(!cap.events.some((e) => e.type === "observe.boxes"));
   r.close();
+});
+
+test("Codex r2: a screen-made card is saved without the camera picture too", async () => {
+  const { screenCard } = await import("../src/finds/runner.ts");
+  const card = { id: "x", kind: "recipe", createdAt: "", eyebrow: "From your fridge", title: "t", subtitle: "", status: "", camera: { frame: 0, at: "", w: 1, h: 1, label: "Your camera · 5 PM" }, items: [], steps: [], options: [], why: [], ask: [], sources: [], how: ["Boxes are drawn on your camera frame."] } as unknown as import("../src/protocol.ts").FindCard;
+  const out = screenCard(card);
+  assert.equal(out.camera, undefined);
+  assert.equal(out.eyebrow, "From your screen");
+  assert.ok(!/camera/i.test(out.how.join(" ")));
 });
