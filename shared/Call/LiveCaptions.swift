@@ -19,13 +19,18 @@ struct LiveCaptions: Equatable {
 
     struct Reply: Equatable {
         var utteranceId: Int
-        /// `reply.delta` texts in order: one sentence each (PROTOCOL.md), index = the `audio.sentence` of its voice.
+        /// `reply.delta` texts in order (one sentence each). Not 1:1 with `audio.sentence`: hold beats and empty
+        /// clauses have audio and no caption, so timed words are matched to the written words by text (`revealed`).
         var sentences: [String] = []
-        /// `reply.text` once the reply is complete (used when no delta came)
+        /// `reply.text` once the reply is complete: the caption from then on (the server may have dropped a sentence)
         var finalText: String?
+        /// device voice: the `say` sentences received, in order
+        var says: [String] = []
         /// word start times per sentence (reply timeline ms): `audio.words`, replaced by `audio.timing` where it covers
         var starts: [Int: [Int]] = [:]
         var aligned: Set<Int> = []
+        /// the spoken words (`w`) beside `starts`, for matching onto the written caption
+        var spoken: [Int: [String]] = [:]
         /// last word end per sentence
         var ends: [Int: Int] = [:]
         /// first sample of each sentence's audio (`audio.offsetMs`)
@@ -85,7 +90,8 @@ struct LiveCaptions: Equatable {
 
     mutating func apply(_ event: ServerEvent, now: Double) {
         switch event {
-        case .ready:
+        case .ready, .modeChanged:
+            // a new session, or into / out of interpretation (its own bubbles): nothing carries over
             self = LiveCaptions()
         case .speechStart:
             // while the reply still plays this may be an echo or a barge-in: the reply stays until words or a cancel come
@@ -125,21 +131,26 @@ struct LiveCaptions: Equatable {
             if reply?.clauseStart[a.sentence] == nil { reply?.clauseStart[a.sentence] = a.offsetMs }
             if reply?.aligned.contains(a.sentence) != true, !a.words.isEmpty {
                 reply?.starts[a.sentence, default: []].append(contentsOf: a.words.map(\.s))
-                reply?.ends[a.sentence] = max(reply?.ends[a.sentence] ?? 0, a.words.map(\.e).max() ?? 0)
+                reply?.spoken[a.sentence, default: []].append(contentsOf: a.words.map(\.w))
+                let end = max(reply?.ends[a.sentence] ?? 0, a.words.map(\.e).max() ?? 0)
+                reply?.ends[a.sentence] = end
             }
         case let .audioTiming(t):
             guard reply?.utteranceId == t.utteranceId, !t.words.isEmpty else { break }
             reply?.aligned.insert(t.sentence)
             reply?.starts[t.sentence] = t.words.map(\.s)
+            reply?.spoken[t.sentence] = t.words.map(\.w)
             reply?.ends[t.sentence] = t.words.map(\.e).max() ?? 0
         case let .say(s):
             if reply?.utteranceId != s.utteranceId { reply = Reply(utteranceId: s.utteranceId) }
             reply?.device = true
             reply?.anyAudio = true
+            reply?.says.append(s.text)
         case let .utteranceCancelled(c):
             guard reply?.utteranceId == c.utteranceId, reply?.endedAt == nil else { break }
+            let shown = reply?.shown ?? 0
             reply?.cut = true
-            reply?.frozen = reply?.shown ?? 0
+            reply?.frozen = shown
             reply?.endedAt = now   // CAP-6 clears it like a finished reply
         default:
             break
@@ -148,6 +159,15 @@ struct LiveCaptions: Equatable {
 
     /// Server mode with device voice (`ready.tts == device`): the reply has no sample timing.
     mutating func markDevice() { reply?.device = true }
+
+    /// The app stopped this utterance itself (face tap, local barge-in) before the server's cancel: freeze it now.
+    mutating func cut(utteranceId: Int, now: Double) {
+        guard reply?.utteranceId == utteranceId, reply?.cut == false, reply?.endedAt == nil else { return }
+        let shown = reply?.shown ?? 0
+        reply?.cut = true
+        reply?.frozen = shown
+        reply?.endedAt = now
+    }
 
     private mutating func newTurn(now: Double) {
         you = nil; reply = nil
@@ -222,37 +242,59 @@ struct LiveCaptions: Equatable {
 
     /// Words of the reply as written: the deltas (or `reply.text`), split on spaces.
     private func words(of r: Reply) -> [String] {
-        let text = r.sentences.isEmpty ? (r.finalText ?? "") : r.sentences.joined()
+        let text = r.finalText ?? r.sentences.joined()
         return text.split(whereSeparator: \.isWhitespace).map(String.init)
     }
 
-    /// How many words the voice has reached. Sentence by sentence, in order, never past the playhead.
+    /// How many written words the voice has reached; never past the playhead.
     private func revealed(_ r: Reply, total: Int) -> Int {
         guard r.anyAudio else { return total }   // no audio at all: whole text (only asked after noAudioMs)
         let t = r.heardMs
-        let sentences = r.sentences.isEmpty ? [r.finalText ?? ""] : r.sentences
-        var n = 0
-        var charsBefore = 0
-        for (i, s) in sentences.enumerated() {
-            let count = s.split(whereSeparator: \.isWhitespace).count
-            if let starts = r.starts[i], !starts.isEmpty {
-                let k = starts.filter { Double($0) <= t }.count
-                if k >= starts.count && t >= Double(r.ends[i] ?? 0) { n += count; continue }
-                // timed words map onto the written words in order; a word without timing shows with the next timed one
-                n += min(k, count)
-                return n
-            } else if let c = r.clauseStart[i] {
-                guard Double(c) <= t else { return n }
-                n += count
-            } else if r.device {
-                guard Double(charsBefore) * Self.deviceMsPerChar <= t else { return n }
-                n += count
-            } else {
-                return n   // this sentence's audio hasn't come yet
+        let display = words(of: r)
+        if r.device {
+            // device voice: one `say` sentence at a time at a speaking pace, never one that hasn't been received
+            var n = 0, chars = 0
+            for say in r.says {
+                guard Double(chars) * Self.deviceMsPerChar <= t else { break }
+                n += say.split(whereSeparator: \.isWhitespace).count
+                chars += say.count
             }
-            charsBefore += s.count
+            return min(n, display.count)
         }
-        return n
+        let timed = r.starts.keys.sorted().flatMap { i in r.starts[i] ?? [] }
+        let spoken = r.starts.keys.sorted().flatMap { i in r.spoken[i] ?? [] }
+        guard !timed.isEmpty else {
+            // no word timing: a written sentence per clause whose first sample has played
+            let clauses = r.clauseStart.values.filter { Double($0) <= t }.count
+            return Self.sentenceWords(display).prefix(clauses).reduce(0, +)
+        }
+        // match the spoken words (with times) onto the written ones in order: a timed word that matches none of the
+        // next few written words is a hold beat or spoken-only (no caption); a written word nobody matched shows with
+        // the next matched one
+        var shown = 0, cursor = 0
+        for (k, start) in timed.enumerated() where Double(start) <= t {
+            let w = k < spoken.count ? Self.norm(spoken[k]) : ""
+            if let j = (cursor..<min(display.count, cursor + 4)).first(where: { Self.same(Self.norm(display[$0]), w) }) {
+                cursor = j + 1; shown = cursor
+            }
+        }
+        return shown
+    }
+
+    static func norm(_ w: String) -> String { w.lowercased().filter { $0.isLetter || $0.isNumber } }
+    /// Equal, or one starts the other (the voice's word timing can split a word across frames: "so" + "aking").
+    static func same(_ written: String, _ spoken: String) -> Bool {
+        guard !written.isEmpty, !spoken.isEmpty else { return false }
+        if written == spoken { return true }
+        return min(written.count, spoken.count) >= 2 && (written.hasPrefix(spoken) || spoken.hasPrefix(written))
+    }
+
+    /// Word counts of the written sentences (split after . ! ? …).
+    static func sentenceWords(_ words: [String]) -> [Int] {
+        var out: [Int] = [], n = 0
+        for w in words { n += 1; if let c = w.last, ".!?…".contains(c) { out.append(n); n = 0 } }
+        if n > 0 { out.append(n) }
+        return out
     }
 
     /// The newest `max` characters, cut at a word boundary. `rolled` = something older was dropped.

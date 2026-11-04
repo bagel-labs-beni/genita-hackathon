@@ -138,7 +138,45 @@ final class LiveCaptionsTests: XCTestCase {
         c.apply(delta(3, " Here it is."), now: 0)
         c.apply(ev(#"{"type":"say","utteranceId":3,"sentence":0,"text":"Sure thing.","emotion":"neutral","lang":"en-US"}"#), now: 0)
         XCTAssertEqual(c.frame(now: 10, level: nil, playheadMs: 0).reply?.text, "Sure thing.")
-        XCTAssertEqual(c.frame(now: 20, level: nil, playheadMs: 11 * 62 + 1).reply?.text, "Sure thing. Here it is.")
+        // the second sentence hasn't been received for speaking yet: never shown ahead of it (Codex P2)
+        XCTAssertEqual(c.frame(now: 20, level: nil, playheadMs: 11 * 62 + 1).reply?.text, "Sure thing.")
+        c.apply(ev(#"{"type":"say","utteranceId":3,"sentence":1,"text":"Here it is.","emotion":"neutral","lang":"en-US"}"#), now: 30)
+        XCTAssertEqual(c.frame(now: 40, level: nil, playheadMs: 11 * 62 + 2).reply?.text, "Sure thing. Here it is.")
+    }
+
+    func testHoldBeatAndSplitWordsMatchByText() {
+        var c = LiveCaptions()
+        c.apply(delta(6, "I see that golden puppy soaking up the sun."), now: 0)
+        // a hold beat ("Hmm,") is audio only (sentence 0, no caption); the answer's voice is sentence 1 and its timing
+        // splits "soaking" across two frames
+        c.apply(audio(6, sentence: 0, offset: 0, words: [("Hmm,", 0, 300)]), now: 10)
+        c.apply(audio(6, sentence: 1, offset: 400, words: [("I", 400, 450), ("see", 450, 600), ("that", 600, 700), ("golden", 700, 900),
+                                                           ("puppy", 900, 1100), ("so", 1100, 1200), ("aking", 1200, 1350), ("up", 1350, 1450)]), now: 20)
+        XCTAssertNil(c.frame(now: 30, level: nil, playheadMs: 200).reply, "the beat shows no words")
+        XCTAssertEqual(c.frame(now: 40, level: nil, playheadMs: 460).reply?.text, "I see")
+        XCTAssertEqual(c.frame(now: 50, level: nil, playheadMs: 1150).reply?.text, "I see that golden puppy soaking")
+        XCTAssertEqual(c.frame(now: 60, level: nil, playheadMs: 1400).reply?.text, "I see that golden puppy soaking up")
+    }
+
+    func testLocalStopFreezesInsteadOfShowingTheRest() {
+        var c = LiveCaptions()
+        c.apply(delta(7, "One two three four."), now: 0)
+        c.apply(audio(7, sentence: 0, offset: 0, words: [("One", 0, 100), ("two", 100, 200), ("three", 200, 300), ("four.", 300, 400)]), now: 0)
+        c.apply(reply(7, "One two three four."), now: 0)
+        XCTAssertEqual(c.frame(now: 10, level: nil, playheadMs: 150).reply?.text, "One two")
+        c.cut(utteranceId: 7, now: 20)   // face tap: CallController sees it in `cancelled` before the server's cancel
+        let f = c.frame(now: 30, level: nil, playheadMs: nil)
+        XCTAssertEqual(f.reply?.text, "One two")
+        XCTAssertEqual(f.reply?.cut, true)
+    }
+
+    func testFinalReplyTextWinsOverDeltas() {
+        var c = LiveCaptions()
+        c.apply(delta(8, "Let me check that."), now: 0)
+        c.apply(delta(8, " It's sunny."), now: 0)
+        c.apply(reply(8, "It's sunny."), now: 10)   // the server dropped the first sentence
+        c.apply(audio(8, sentence: 0, offset: 0, words: [("It's", 0, 200), ("sunny.", 200, 500)]), now: 20)
+        XCTAssertEqual(c.frame(now: 30, level: nil, playheadMs: 250).reply?.text, "It's sunny.")
     }
 
     func testReplyWithNoAudioShowsWholeAfterTheWait() {

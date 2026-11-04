@@ -27,10 +27,12 @@ struct CallCaptionLayer: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: hidden)) { _ in
-            let f = hidden ? LiveCaptions.Frame() : frame()
-            let you = micOn ? f.you : nil
-            let shown = you != nil || f.reply != nil
+        // keeps ticking while hidden: a reply that plays behind the Finds sheet still ends and clears on time
+        TimelineView(.animation(minimumInterval: 1.0 / 30)) { _ in
+            let f = frame()
+            let you = micOn && !hidden ? f.you : nil
+            let reply = hidden ? nil : f.reply
+            let shown = you != nil || reply != nil
             ZStack(alignment: .bottomLeading) {
                 // the soft ink fade behind the bottom 400 pt, only while captions show
                 LinearGradient(stops: [.init(color: style.ink.opacity(0), location: 0), .init(color: style.ink.opacity(0.38), location: 0.42),
@@ -43,7 +45,7 @@ struct CallCaptionLayer: View {
                             .id("you")
                             .transition(enter)
                     }
-                    if let reply = f.reply {
+                    if let reply {
                         CaptionReplyRow(row: reply, style: style, reduceMotion: reduceMotion)
                             .id("reply-\(reply.utteranceId)")
                             .transition(enter)
@@ -54,7 +56,7 @@ struct CallCaptionLayer: View {
                 .padding(.bottom, max(0, size.height - bottom))
                 .animation(reduceMotion ? .linear(duration: 0.12) : .spring(response: 0.18, dampingFraction: 1), value: you?.phase)
                 .animation(.easeOut(duration: 0.2), value: you?.dim)
-                .animation(f.isEmpty ? .easeOut(duration: 0.4) : .easeOut(duration: 0.16), value: f.reply?.utteranceId)
+                .animation(f.isEmpty ? .easeOut(duration: 0.4) : .easeOut(duration: 0.16), value: reply?.utteranceId)
                 .animation(.easeOut(duration: 0.4), value: shown)
                 .accessibilityElement(children: .combine)
                 .accessibilityAddTraits(.updatesFrequently)
@@ -144,7 +146,7 @@ private struct CaptionBars: View {
     let color: Color
     var body: some View {
         HStack(spacing: 2) {
-            ForEach([0.6, 1.0, 0.75], id: \.self) { m in
+            ForEach([CGFloat(0.6), 1.0, 0.75], id: \.self) { m in
                 RoundedRectangle(cornerRadius: 1.5).fill(color).frame(width: 3, height: 4 + 10 * min(1, max(0, level * m)))
             }
         }.frame(width: 16, height: 16)
