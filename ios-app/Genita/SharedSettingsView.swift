@@ -276,6 +276,7 @@ enum SettingsInk {
     static let line = Color(red: 217 / 255, green: 217 / 255, blue: 222 / 255)
     static let body = Color(red: 58 / 255, green: 58 / 255, blue: 58 / 255)
     static let danger = Color(red: 200 / 255, green: 40 / 255, blue: 30 / 255)
+    static let pending = Color(red: 107 / 255, green: 107 / 255, blue: 107 / 255)
 }
 
 /// Pretendard that follows Dynamic Type (relative to the text style it stands in for).
@@ -515,7 +516,8 @@ struct AboutYouPage: View {
             VStack(alignment: .leading, spacing: 0) {
                 Text("Still learning").font(SettingsType.font(13, .semibold, relativeTo: .footnote)).foregroundStyle(SettingsInk.header)
                     .accessibilityAddTraits(.isHeader).padding(.horizontal, 16).padding(.top, 22).padding(.bottom, 8)
-                Text("I’ll pick these up as we talk.").font(SettingsType.font(15, relativeTo: .subheadline)).foregroundStyle(SettingsInk.body)
+                // an empty slot, not an info card: the line in the secondary tone (춘식이 #6B6B6B)
+                Text("I’ll pick these up as we talk.").font(SettingsType.font(15, relativeTo: .subheadline)).foregroundStyle(SettingsInk.pending)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.vertical, 14)
                     .background(SettingsInk.card, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             }.padding(.horizontal, 16)
