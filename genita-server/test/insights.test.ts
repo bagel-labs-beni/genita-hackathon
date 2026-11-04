@@ -977,3 +977,19 @@ test("demo P0 #2 (Codex r3): a quoted phrase two profile lines share links neith
   const one = linkSources(card, { evidence: [ev("import", "tomato soup on rainy days")], chips: [] } as never);
   assert.deepEqual(one.map((l) => l.text), ["Loves tomato soup on rainy days."]);
 });
+
+test("Codex #581 recut P1: a report saved with no linked lines (sources: []) still takes the quoted list item out of the call profile", async (t) => {
+  const h = harness(() => RAW);
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  await h.ins.get("u1", 3000);
+  const c0 = (await h.store.getStyle("u1"))!;
+  const [a, ...rest] = c0.insights!.observations;
+  const likes = [{ text: "Food: spicy, seafood.", label: "explicit", scope: "any" }];
+  const quoted = { ...a, claim: "You love spicy food", chips: [], evidence: [{ source: "import", quote: "I like spicy food.", source_label: "From the reply you pasted" }], sources: [] };
+  await h.store.putStyle("u1", { ...c0, sections: { ...c0.sections, likes } as never, insights: { ...c0.insights!, observations: [quoted, ...rest] } as never });
+  await h.ins.verdict("u1", a.id, { verdict: "not_me" });
+  const card1 = (await h.store.getStyle("u1"))!;
+  assert.deepEqual(card1.sections.likes.map((f) => f.text), ["Food: seafood."], "spicy leaves the call profile");
+});
