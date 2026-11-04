@@ -211,3 +211,23 @@ test("no 'two' in titles, lines or the search prompt", () => {
   assert.match(prompt, /up to 6 products/);
   assert.match(prompt, /List up to 6 products in all/);
 });
+
+test("hedged search: a lane that wins with 2 is topped up by the lanes already back (more products, no wait)", async () => {
+  const early = { text: JSON.stringify({ items: [{ url: SIX[2].url }] }), output: [OPEN(SIX[2].url)] };
+  const win = { text: JSON.stringify({ items: [{ url: SIX[0].url }, { url: SIX[1].url }] }), output: [OPEN(SIX[0].url), OPEN(SIX[1].url)] };
+  let calls = 0;
+  const v: FindsVendors = {
+    spark(_req, signal) {
+      const k = calls++;
+      return new Promise((resolve, reject) => {
+        if (k === 0) { setTimeout(() => resolve(early), 10); return; }
+        if (k === 1) { setTimeout(() => resolve(win), 30); return; }
+        signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+    },
+    async *sparkStream() {}, async sam() { return []; }, async image() { return Buffer.alloc(0); },
+  };
+  const r = await hedgedSearch(v, "p", 3, new AbortController().signal, [], { softMs: 6000, hardMs: 16000 });
+  const urls = (JSON.parse(r!.text).items as { url: string }[]).map((i) => i.url);
+  assert.deepEqual(urls, [SIX[0].url, SIX[1].url, SIX[2].url], "the winner's own first, then the early lane's");
+});

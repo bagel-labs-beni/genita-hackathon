@@ -84,7 +84,10 @@ test("S5 cap: before the soft cap a one-pick lane still waits for a two-pick one
     async *sparkStream() {}, sam: async () => [], image: async () => Buffer.from([]),
   };
   const r = await hedgedSearch(v, "p", 2, new AbortController().signal, [], { softMs: 5_000 });
-  assert.equal(JSON.parse(r!.text).items.length, 2);
+  // the two-pick lane wins (its items first); the one-pick lane already back only tops it up (Chelsea 11/4: up to 6)
+  const urls = (JSON.parse(r!.text).items as { url: string }[]).map((i) => i.url);
+  assert.deepEqual(urls.slice(0, 2), ["https://shop-a.example.com/products/boot-1", "https://shop-b.example.com/products/boot-2"]);
+  assert.equal(new Set(urls).size, 2);
 });
 
 test("S5 cap: nothing by ~12 s → one graceful line (default), the search keeps going", async () => {
@@ -108,7 +111,8 @@ test("S5 cap (Codex #722): a category page alone never wins at the soft cap; the
     async *sparkStream() {}, sam: async () => [], image: async () => Buffer.from([]),
   };
   const r = await hedgedSearch(v, "p", 2, new AbortController().signal, [], { softMs: 40 });
-  assert.equal(JSON.parse(r!.text).items.length, 2, "waited for the lane with product pages");
+  const urls = (JSON.parse(r!.text).items as { url: string }[]).map((i) => i.url);
+  assert.deepEqual(urls.slice(0, 2), ["https://shop-a.example.com/products/boot-1", "https://shop-b.example.com/products/boot-2"], "waited for the lane with product pages (the category lane only tops it up; the card drops category pages)");
 });
 
 test("S5 hard cap (QA 11/4 #726: 26 s cards): past it one fitting page is shown instead of waiting for the stragglers", async () => {

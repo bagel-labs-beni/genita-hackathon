@@ -679,7 +679,8 @@ export async function hedgedSearch(vendors: FindsVendors, prompt: string, n: num
           if (r) {
             done.push(r);
             // the first 2 never wait for more (Chelsea 11/4): the lane's other listed pages are checked by our own reads
-            if (showableUrls(r, opts.keep).length >= PRODUCT_MIN) return resolve(r);
+            // lanes already back top it up for free (more products, no wait)
+            if (showableUrls(r, opts.keep).length >= PRODUCT_MIN) return resolve(done.length > 1 ? mergeLanes(r, done) : r);
             if (pastSoft) enough();
           }
           finish();
