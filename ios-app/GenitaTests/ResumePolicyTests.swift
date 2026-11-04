@@ -44,4 +44,23 @@ final class ResumePolicyTests: XCTestCase {
         // older server that doesn't report calls: unknown is off (privacy)
         XCTAssertFalse(HandoffCameraPolicy.movedFromPhoneCall(previousOwner: .phone, peerInCall: nil))
     }
+    // b14 (Chelsea 11/4): the first move to a Mac paired a moment ago, iPhone camera on.
+    func testPairedIPhoneSaysItsCallOverTheLocalLink() {
+        XCTAssertTrue(HandoffCameraPolicy.movedFromPhoneCall(previousOwner: .phone, peerInCall: nil, linkInCall: true))
+        XCTAssertFalse(HandoffCameraPolicy.movedFromPhoneCall(previousOwner: .phone, peerInCall: nil, linkInCall: false))
+        XCTAssertFalse(HandoffCameraPolicy.movedFromPhoneCall(previousOwner: .mac, peerInCall: nil, linkInCall: true))
+    }
+    func testIPhoneCameraOnStartsTheMacCameraWithoutARememberedTap() {
+        XCTAssertTrue(HandoffCameraPolicy.startsCamera(fromPhone: true, phoneCamera: true, cameraRemembered: false, cameraAuthorized: true))
+        // never asked on this Mac yet: the iPhone's camera-on may ask once
+        XCTAssertTrue(HandoffCameraPolicy.startsCamera(fromPhone: true, phoneCamera: true, cameraRemembered: false, cameraAuthorized: false, cameraUndetermined: true))
+        // denied stays off
+        XCTAssertFalse(HandoffCameraPolicy.startsCamera(fromPhone: true, phoneCamera: true, cameraRemembered: true, cameraAuthorized: false))
+        // the user turned it off on the iPhone: off here too, whatever the last tap on the Mac
+        XCTAssertFalse(HandoffCameraPolicy.startsCamera(fromPhone: true, phoneCamera: false, cameraRemembered: true, cameraAuthorized: true))
+        // a call opened on the Mac itself never starts it
+        XCTAssertFalse(HandoffCameraPolicy.startsCamera(fromPhone: false, phoneCamera: true, cameraRemembered: true, cameraAuthorized: true))
+        // without the iPhone's word an unasked Mac never shows a dialog by itself
+        XCTAssertFalse(HandoffCameraPolicy.startsCamera(fromPhone: true, cameraRemembered: true, cameraAuthorized: false, cameraUndetermined: true))
+    }
 }

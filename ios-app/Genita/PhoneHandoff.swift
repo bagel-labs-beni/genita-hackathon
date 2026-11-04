@@ -97,7 +97,7 @@ import ARKit
         }
         // the live call owns camera and mic (CallController); Dyno's tracking hooks attach to it
         CallController.shared.beforeCameraStart = { [weak self] in self?.trackingStarted=false;self?.tracker.stop() }
-        CallController.shared.onCameraChange = { [weak self] in self?.updateTracking() }
+        CallController.shared.onCameraChange = { [weak self] in self?.updateTracking();self?.sendCallState() }
         CallController.shared.onConnected = { [weak self] in self?.startConnections() }
         link.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in:&subscriptions)
         server.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in:&subscriptions)
@@ -124,7 +124,7 @@ import ARKit
         pending=nil;motion=nil;renderedMotionID=nil;feedback.cancel()
         moving=false;moveFailed=false;pairingFailed=false;code="";settings=false
         registering=false;registeringVisible=false;registeredToast=false;autoPrompted=false
-        trackingURL=nil;trackingStarted=false;tracker.stop();lastPing=0;snapshot=""
+        trackingURL=nil;trackingStarted=false;tracker.stop();lastPing=0;snapshot="";sentCallState=nil
         media.stopAll()
         ownership.useAccount(accountID)
         if let carry {code=carry.code;settings=carry.settings}
@@ -244,7 +244,7 @@ import ARKit
         }
     }
     private func ownerChanged(from old:ConversationDevice,to new:ConversationDevice) {
-        moving=false;moveAttempt+=1
+        moving=false;moveAttempt+=1;sentCallState=nil  // holding it again: the Mac hears the call state anew
         // the conversation left: P01/P02 (opened by itself or from the menu) must not cover R1's Continue here (Codex P2)
         if new == .mac,settings {closePairing()}
         if new == .mac {media.stopAll();CallController.shared.suspend()}
@@ -279,7 +279,20 @@ import ARKit
         case .peerChanged: refreshSurface()
         }
     }
+    /// b14 (Chelsea 11/4 "camera doesn't turn on after the pairing code"): the paired Mac hears this call's state over
+    /// the local link — in a call, camera on — so a move carries the camera even when the server doesn't report the
+    /// call (HandoffCameraPolicy). Only while this iPhone holds the conversation: the camera closing because it moved
+    /// away is not the user's choice. Sent on connect, on every camera change and when the call starts or ends.
+    private var sentCallState:[Bool]?
+    private func sendCallState() {
+        guard accountScope.accountID != nil,link.connected,ownership.isOwner else{return}
+        let state=[CallController.shared.link != .idle,CallController.shared.cameraOn]
+        guard state != sentCallState else{return}
+        sentCallState=state
+        link.send(["type":"callState","inCall":state[0],"camera":state[1]])
+    }
     private func refreshSurface() {
+        sendCallState()
         // The Mac counts as reachable over the local link (pings) or the server (presence).
         let reachable=debugPeerReachable ?? ((link.connected && Date().timeIntervalSince1970-lastPing<3) || server.peerOnline)
         let next=ownership.surface(peerReachable:reachable)
@@ -305,6 +318,7 @@ import ARKit
             if let size=PhoneDisplayGeometry.meters {hello["phoneHeight"]=size.height;hello["phoneWidth"]=size.width}
             link.send(hello)
             ownership.publishCurrent()
+            sentCallState=nil;sendCallState()
             if moving && !server.peerActive {link.send(["type":"moveRequest"])}
             // P02 (Paired) follows the code. Without position tracking there is nothing to set up, so it closes.
             if link.pairedWithCode && !proximitySupported {settings=false}
@@ -344,7 +358,7 @@ import ARKit
             }
         case "disconnected":
             // The local link is only the effect layer. Losing it never changes who owns the conversation.
-            generation+=1;pending=nil;motion=nil;feedback.cancel();registering=false
+            generation+=1;pending=nil;motion=nil;feedback.cancel();registering=false;sentCallState=nil
             updateTracking();refreshSurface()
         case "cancel":
             generation+=1;pending=nil;motion=nil;feedback.cancel()
