@@ -12,7 +12,7 @@ import { avoidKeys, isForgetRequest, mentionsAvoided, type Removed } from "../pe
 import { realCrisisSignal } from "./guard.ts";
 
 // Codex #547 r7: an emergency the detector may miss ("I swallowed bleach"), or a turn Genita answered with emergency help
-const EMERGENCY_USER = /\b(?:swallowed|ingested|drank|took|overdosed|choking|can'?t breathe|bleeding|unconscious|passed out|poisoned)\b[^.!?]{0,40}\b(?:bleach|poison|pills?|tablets?|medicine|meds|detergent|antifreeze|cleaner|chemicals?|blood|breathe|all)\b|\b(?:overdos(?:e|ed|ing)|poison control)\b|\b(?:punched|hit|beat|beats|choked|chokes|hurt|kicked|slapped|threatened|threatening|attacked|raped|assaulted|grabbed|stalking|following)\s+me\b|\b(?:knife|gun|weapon)\b/i;
+const EMERGENCY_USER = /\b(?:swallowed|ingested|drank|took|overdosed|choking|can'?t breathe|bleeding|unconscious|passed out|poisoned)\b[^.!?]{0,40}\b(?:bleach|poison|pills?|tablets?|medicine|meds|detergent|antifreeze|cleaner|chemicals?|blood|breathe|all)\b|\b(?:overdos(?:e|ed|ing)|poison control|can'?t breathe|cannot breathe|can barely breathe|not breathing|choking|unconscious|passed out|seizure|heart attack|chest (?:pain|hurts)|stroke)\b|\b(?:punched|hit|beat|beats|choked|chokes|hurt|kicked|slapped|threatened|threatening|attacked|raped|assaulted|grabbed|stalking|following)\s+me\b|\b(?:knife|gun|weapon)\b/i;
 // Codex #547 r8: police / a safe place too (guard.ts EMERGENCY_HELP's words)
 const HELP_REPLY = /\b(?:911|988|112|999|poison control|emergency|ambulance|crisis (?:text )?line|hotline|call for help|police|cops|somewhere safe|(?:a )?safe place|get to safety|domestic violence)\b/i;
 /** Codex #547 r8: "Don't forget that I need a vegetarian option." asks to KEEP it */

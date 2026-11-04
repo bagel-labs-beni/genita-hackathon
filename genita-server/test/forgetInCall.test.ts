@@ -117,3 +117,12 @@ test("Codex #547 r8: violence + police advice survive a forget; 'Don't forget th
   ];
   assert.equal(forgetInCall(v).length, 3);
 });
+
+test("Codex #547 r9: 'I can't breathe' alone is never forgotten, even before any reply", () => {
+  const h = [
+    { role: "user" as const, text: "I can't breathe" },
+    { role: "user" as const, text: "Forget I said that" },
+    { role: "user" as const, text: "Can I lie down?" },
+  ];
+  assert.ok(forgetInCall(h).map((x) => x.text).includes("I can't breathe"));
+});
