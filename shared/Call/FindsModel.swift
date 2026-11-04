@@ -391,6 +391,19 @@ struct FindEntry: Identifiable, Equatable {
         send(.findFocus(findId: entries[page].id))
     }
 
+    /// MO-05: missing ingredients (tier .buy, "+") the user added to this recipe's shopping list, per find. Local only:
+    /// the protocol has no message for it (`find.confirm` means "is that X?" and would mark it as on the camera).
+    private(set) var addedItems: [String: Set<String>] = [:]
+
+    func isAdded(_ itemId: String, in findId: String) -> Bool { addedItems[findId]?.contains(itemId) == true }
+
+    /// "+" → added (✓); tap again to take it off the list.
+    func toggleAdded(_ itemId: String, in findId: String) {
+        var set = addedItems[findId] ?? []
+        if set.contains(itemId) { set.remove(itemId) } else { set.insert(itemId) }
+        addedItems[findId] = set
+    }
+
     func tapItem(_ item: FindItem) {
         selectedItem = selectedItem == item.id ? nil : item.id
         boxes.highlight(selectedItem == nil ? nil : item.name)
@@ -466,6 +479,7 @@ struct FindEntry: Identifiable, Equatable {
         page = 0
         selectedItem = nil
         doneSteps = [:]
+        addedItems = [:]
         pendingItems = [:]
         latestFrames = []
     }
