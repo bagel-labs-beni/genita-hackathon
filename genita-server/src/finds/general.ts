@@ -263,7 +263,8 @@ export async function runGeneral(ctx: PipelineCtx): Promise<PipelineResult> {
   timings.cardJsonMs = Math.round(ctx.now() - t0);
   const results = pickResults(j, traced);
   if (!results.length) {
-    ctx.emit({ type: "find.failed", findId: ctx.findId, reason: "search_failed", message: "I couldn't find anything solid on that. Ask me another way?" });
+    // Chelsea 11/4: conversation first, finds only add a sheet — a failed search is silent (no line, no fail sheet)
+    ctx.emit({ type: "find.failed", findId: ctx.findId, reason: "stopped", message: "" });
     return { card: null, timings };
   }
   const n = results.length;

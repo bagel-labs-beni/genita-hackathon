@@ -245,6 +245,8 @@ test("general pipeline: no usable JSON but the search ran → the search's own p
   const r2 = await runGeneral(ctxFor(fakeVendors("{}", []), none));
   assert.equal(r2.card, null);
   assert.deepEqual(none.map((e) => e.type), ["find.started", "find.failed"]);
+  const failed = none.find((e) => e.type === "find.failed") as Extract<ServerEvent, { type: "find.failed" }>;
+  assert.deepEqual([failed.reason, failed.message], ["stopped", ""], "a failed search is silent (Chelsea 11/4: finds only add a sheet)");
   for (const e of none) assert.deepEqual(checkServerEvent(e), [], JSON.stringify(e));
 });
 
