@@ -74,6 +74,7 @@ export const STAYS_SPOKEN = [
   "오늘 서울 날씨 알려줬네",
   // P0 11/4 (device test): personal advice / opinion is a spoken answer from the camera and her profile, never a web sheet
   "Recommend black or white for me",
+  "Recommend black or white for my phone",
   "Recommend black or white",
   "Black or white?",
   "Which is better, black or white?",

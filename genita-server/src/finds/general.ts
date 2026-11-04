@@ -168,7 +168,8 @@ export function assessLine(text: string, env: NodeJS.ProcessEnv = process.env): 
   if (YOU.test(t) && !searchVerb) return "spoken";
   if (SELF_STATE.test(t)) return "spoken";
   // "recommend … for me" is advice, unless the ask is a plain outside fact ("a dinner place near Gangnam for me", Codex r1)
-  const outside = (REC.test(t) && EXTERNAL.test(t)) || (TOPIC.test(t) && !/\b(?:i|my|me)\b(?! ?(?:near|nearby))/.test(t.replace(/\bfor me\b/, "")));
+  // a choice for them ("black or white for my phone") is advice, whatever the category (Codex judge r4)
+  const outside = (REC.test(t) && EXTERNAL.test(t) && !CHOICE.test(t)) || (TOPIC.test(t) && !/\b(?:i|my|me)\b(?! ?(?:near|nearby))/.test(t.replace(/\bfor me\b/, "")));
   if (SELF.test(t.replace(BENIGN_ME, "")) && !HOWTO.test(t) && !searchVerb && !outside) return "spoken";
   if (PERSONAL_KO.test(t) && !searchVerb) return "spoken";
   const n = words(t);
