@@ -21,6 +21,7 @@ import { parseTaggedSentence } from "../text/tags.ts";
 import { fallbackLine, guardSentence, mayBeSelfHarm, neverSpoken, realCrisisSignal, type GuardClass } from "./guard.ts";
 import { noteHook, openerBlock, openerKind, pickOpenerHook, profileHooks } from "./opener.ts";
 import { noInventedOpener, noRepeatGreeting, noUnpromptedGoodbye } from "./greetOnce.ts";
+import { noPolicyTalk } from "./faceTalk.ts";
 import { initiativeBlock, initiativeInput, type InitiativeSource } from "./initiative.ts";
 import { cueRhythm, moodFrom, moodLine, turnHints } from "./rhythm.ts";
 import { holdsSteady, personaBaseline } from "./moodState.ts";
@@ -73,7 +74,7 @@ export const adapter = {
   request(ctx: Ctx): SparkRequest | null {
     const s = ctx.scenario;
     const t = ctx.turn;
-    const base = { persona: s.persona, user: s.user, memories: undefined, mode: "chat" as const, language: "English", style: "v1" as const };
+    const base = { persona: s.persona, user: s.user, memories: undefined, mode: "chat" as const, language: "English", style: "v1" as const, cameraAttached: !!ctx.camera };
     if (t.kind === "greet") {
       const o = { hasProfile: !!s.user.profile, sinceLastMs: s.callNumber <= 1 ? null : (s.gapHours ?? 24) * H, hasItem: !!s.opening };
       const kind = openerKind(o);
@@ -90,7 +91,8 @@ export const adapter = {
       // the governor's budget is unit-tested; here every scripted cue is one allowed initiative
       const source: InitiativeSource = t.kind === "perception" && t.trigger ? (t.trigger as PerceptionTriggerKind) : "silence";
       const replies = ctx.history.filter((h) => h.role === "assistant").slice(-3).map((h) => h.text);
-      const instructions = buildInstructions({ ...base, initiative: cueRhythm(initiativeBlock(source, threads(s)), source, replies) });
+      const said = ctx.history.filter((h) => h.role === "assistant").map((h) => h.text).slice(-6);
+      const instructions = buildInstructions({ ...base, initiative: cueRhythm(initiativeBlock(source, threads(s), { said, camera: !!ctx.camera }), source, replies) });
       return { instructions, input: [...msgs(ctx.history), { role: "user", content: initiativeInput(source) }], maxOutputTokens: 800, effort: "minimal" };
     }
     // P1 "This turn:" line, as session.v1Extras builds it (closeness, question rhythm, mood, landed, recall)
@@ -126,6 +128,7 @@ export const adapter = {
       if (tts) tts = dropRepeatedName(tts, ctx.scenario.user.name, [...recent.slice(-2), ...kept]);
       // prompt-100: as the session, no second hello once the call has our reply, no send-off to a question
       if (tts && ctx.turn.kind === "user") tts = noUnpromptedGoodbye(ctx.history.some((h) => h.role === "assistant") ? noRepeatGreeting(tts, userText) : tts, userText);
+      if (tts && ctx.turn.kind === "user") tts = noPolicyTalk(tts, userText);
       if (tts && ctx.turn.kind === "greet") tts = noInventedOpener(tts, { first: !kept.length, name: ctx.scenario.user.name });
       if (tts) tts = unseenToHeard(tts, !!ctx.camera); // scripted calls send no frames unless the turn says so
       if (tts) tts = unbackedPast(tts, { past: hasPast(ctx.scenario), userText, callText: ctx.history.map((h) => h.text).join(" ") });

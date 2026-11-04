@@ -124,3 +124,40 @@ test("r3: the profile block tells the model to follow the import's Rules when on
   const p = buildInstructions({ persona: jin, user: { name: "Summer", profile: "Rules:\n- When I'm stressed about work: make me laugh first, then help" }, mode: "chat", style: "v1" });
   assert.match(p, /do what its Rules say when one applies/);
 });
+
+test("r4 (prod 22:04): opener stands alone, initiatives never repeat a topic or opening, face questions get a friend's answer", async () => {
+  const { noInventedOpener } = await import("../src/convo/greetOnce.ts");
+  const { noPolicyTalk, FACE_RETRY_LINE } = await import("../src/convo/faceTalk.ts");
+  const { initiativeBlock, freshThreads } = await import("../src/convo/initiative.ts");
+  const { openerBlock } = await import("../src/convo/opener.ts");
+  const { pickGreetOpener } = await import("../src/session/session.ts");
+  // 1. "Hi, summer! Or did one win?"
+  assert.equal(noInventedOpener("Or did one win?", { first: true, name: "summer", greeted: true }), "What are you up to?");
+  assert.equal(noInventedOpener("So how'd Thursday go at the studio?", { first: true, name: "Summer", greeted: true }), "So how'd Thursday go at the studio?");
+  assert.equal(pickGreetOpener("summer", () => 0.3), "Hi, Summer!");
+  const follow = openerBlock({ hasProfile: true, sinceLastMs: 30 * 3_600_000, hasItem: true, hook: "deciding between two Seoul barbecue spots" });
+  assert.match(follow, /names it in full, so it makes sense with no earlier context/);
+  // 2. "Still putting my money on that Seoul barbecue spot…" then "Still plotting that Korea food run…"
+  const said = ["<happy> Still putting my money on that Seoul barbecue spot living up to the hype.", "Got it, dropped."];
+  const block = initiativeBlock("silence", ["Summer wants to try a famous Seoul barbecue spot", "Summer started a pottery class"], { said, camera: true });
+  assert.match(block, /Pick a different topic, and don't start with "Still" or "Got"/);
+  assert.match(block, /Their camera is on: if something in it right now is worth a word/);
+  assert.doesNotMatch(block, /barbecue spot"/);
+  assert.match(block, /pottery class/);
+  assert.deepEqual(freshThreads(["Summer wants to try a famous Seoul barbecue spot"], said), []);
+  // 3./4. "Can't do face details, but…", "Can't call likeness from faces here, summer. That lacy pajama set…"
+  assert.equal(noPolicyTalk("Can't do face details, but you two look like you're having the best night.", "describe that person's face."), "You two look like you're having the best night.");
+  assert.equal(noPolicyTalk("Can't call likeness from faces here, summer.", "she's my sister. Do we look alike?"), "");
+  assert.equal(noPolicyTalk("That lacy pajama set is doing all the talking though.", "she's my sister. Do we look alike?"), "");
+  assert.equal(noPolicyTalk("You two have the exact same grin going, that's sister energy.", "she's my sister. Do we look alike?"), "You two have the exact same grin going, that's sister energy.");
+  // not a face turn: pajamas are fine; "she" alone is not a face turn
+  assert.equal(noPolicyTalk("Pajama day is a whole vibe.", "I'm still in my pajamas lol"), "Pajama day is a whole vibe.");
+  assert.equal(noPolicyTalk("That's rough, she shouldn't talk to you like that.", "she said my body looks weird"), "That's rough, she shouldn't talk to you like that.");
+  assert.match(FACE_RETRY_LINE, /don't say you can't/);
+  // 5. kept: "Yeah I can see you, just sideways like your phone took a nap."
+  assert.equal(noPolicyTalk("Yeah I can see you, just sideways like your phone took a nap.", "or can you see"), "Yeah I can see you, just sideways like your phone took a nap.");
+  const p = buildInstructions({ persona: jin, user: { name: "summer" }, mode: "chat", style: "v1", cameraAttached: true });
+  assert.match(p, /The user's name is Summer;/);
+  assert.match(p, /never say you can't or name a rule/);
+  assert.match(p, /Never talk about anyone else's clothes, sleepwear or body/);
+});

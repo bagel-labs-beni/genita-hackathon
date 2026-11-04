@@ -1507,6 +1507,28 @@ test("prompt-100 r3 (Codex P2): with the name opener out, an invented first line
   session.close();
 });
 
+test("prompt-100 r4 (session, prod 22:04): a face question answered only with a policy line + sleepwear is retried as a friend", { skip: !v1 }, async () => {
+  const { FACE_RETRY_LINE } = await import("../src/convo/faceTalk.ts");
+  const calls: SparkRequest[] = [];
+  const client = new Client();
+  const session = new Session("p100-face", client, {
+    config, openAsr: () => { throw new Error("no asr"); },
+    async *spark(req): AsyncGenerator<SparkStreamEvent> {
+      calls.push(req);
+      const retry = (req.instructions ?? "").includes(FACE_RETRY_LINE);
+      yield { type: "text", delta: retry ? "<happy> Sisters, I love that, you two clearly get along." : "<neutral> Can't call likeness from faces here, summer. That lacy pajama set is doing all the talking though." };
+      yield { type: "done", responseId: "r", text: "", status: "completed" };
+    },
+    async *tts() {},
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", user: { name: "summer" } }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "she's my sister. Do we look alike?" }));
+  const reply = await client.waitFor((m) => m.type === "reply" && m.final === true, 5000);
+  assert.equal(reply.text, "Sisters, I love that, you two clearly get along.");
+  assert.ok(calls.at(-1)?.instructions?.includes(FACE_RETRY_LINE));
+  session.close();
+});
+
 // ───────────── #345 what landed, read from their face ─────────────
 test("#345: a smile or laugh the camera saw at the last reply keeps that lane (and never mentions the face)", async () => {
   const { turnHints } = await import("../src/convo/rhythm.ts");

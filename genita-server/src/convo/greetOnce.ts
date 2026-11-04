@@ -90,7 +90,9 @@ export function noInventedOpener(sentence: string, opts: { first: boolean; name?
   if (HELP.test(body)) return sentence;
   // only the "at last you're here" finally ("good to finally catch you", "finally caught you"), never "did you finally try it?"
   body = body.replace(/\b((?:good|nice|glad) to )finally (?=(?:catch|see|talk|hear|meet)\b)/i, "$1").replace(/\bfinally (?=(?:caught|catch) you\b)/i, "");
-  if (!INVENTED.test(body)) return `${lead}${cap(body.trim())}`;
+  // prod 22:04 "Hi, summer! Or did one win?": a first line that leans on a thread it never names
+  const fragment = opts.first && /^(?:or|and|but)\b|^(?:did|has|have|was|is) (?:one|it|that|they) (?:win|won|work|happen|go|end|pan)\b/i.test(body.trim());
+  if (!INVENTED.test(body) && !fragment) return `${lead}${cap(body.trim())}`;
   if (!opts.first) return "";
   if (opts.greeted) return `${lead}What are you up to?`;
   const first = opts.name?.trim().split(/\s+/)[0];
