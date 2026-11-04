@@ -539,3 +539,10 @@ test("QA K-test P3: a shopping price range always lands in likes as one Budget l
   assert.equal(r.card.sections.likes[0].text, "Budget: usually under $100.");
   assert.ok(!r.card.sections.interests.some((x) => /\$100/.test(x.text)));
 });
+
+test("TF 331: HISY card body never restates its title (an item that only says the headline again is dropped)", () => {
+  const card = rawCard({ communication: [f("Warm, direct and informal.")], response: [f("Quick replies in the morning.", "observed")] });
+  const { cards } = toStory({ cards: [sc("talk", { headline: "Warm and direct.", items: [{ text: "You want it warm and direct.", evidence: "explicit" }, { text: "Mornings, you want quick replies.", evidence: "explicit" }] })], topics: [] }, card);
+  const talk = cards.find((c) => c.id === "talk")!;
+  assert.deepEqual(talk.items.map((i) => [i.text, i.evidence]), [["Mornings, you want quick replies.", "observed"]]);
+});
