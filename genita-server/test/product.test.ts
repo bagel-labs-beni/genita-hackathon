@@ -31,7 +31,7 @@ test("product intent: voice alone starts it; shopping beats the camera; other as
   assert.equal(classifyTurn("I love this jacket", false), null);
   assert.ok(isProductAsk("재킷 좀 찾아줘"));
   // Codex review P2: an outfit question with the camera is not a shopping search
-  assert.deepEqual(classifyTurn("Does this jacket match my style?", true), { kind: "outfit" });
+  assert.equal(classifyTurn("Does this jacket match my style?", true), null, "P0 11/4: one item, a spoken answer");
   assert.equal(classifyTurn("Does this match my style?", false), null);
   assert.deepEqual(classifyTurn("Can you make them match my style?", false, true), { kind: "product" }, "after a product search it refines");
 });

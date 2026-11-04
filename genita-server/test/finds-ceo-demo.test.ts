@@ -331,3 +331,15 @@ test("QA: 'shoes that would go with this' with a share open still looks at the c
   assert.ok(!JSON.stringify(cap.prompts).includes("SCREEN"));
   r.close();
 });
+
+test("P0 11/4: describe / observe questions about clothes stay spoken (no find), choices keep the outfit card", () => {
+  for (const l of ["What am I wearing?", "How do I look?", "Do you like my shirt?", "What color is this?", "Describe my outfit", "Does this look good on me?", "Is this jacket too big?"]) {
+    assert.equal(classifyTurn(l, true), null, l);
+  }
+  for (const l of ["Which one should I wear tonight?", "Which one looks better on me, the white one or the black one?", "What should I wear to dinner?", "Help me pick a jacket", "뭐 입을까?", "Should I go with the coat or the blazer?"]) {
+    assert.deepEqual(classifyTurn(l, true), { kind: "outfit" }, l);
+  }
+  // S5 keeps its routes
+  assert.deepEqual(classifyTurn("Can you find me shoes that would go with this?", true), { kind: "product" });
+  assert.equal(isGoesWithFollowUp("Find me some."), true);
+});

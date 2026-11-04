@@ -604,7 +604,8 @@ export async function runOutfit(ctx: PipelineCtx): Promise<PipelineResult> {
     .map((o) => ({ label: capFirst(str(o.label, 40)), frame: Math.min(ctx.frames.length - 1, Math.max(0, Number(o.frame) || 0)) }))
     .filter((o) => o.label);
   if (!j || options.length < 2) {
-    ctx.emit({ type: "find.failed", findId: ctx.findId, reason: "unclear", message: "Can’t tell them apart. Hold them up one at a time?" });
+    // one garment is not "them" (P0 11/4): ask for a second one instead
+    ctx.emit({ type: "find.failed", findId: ctx.findId, reason: "unclear", message: options.length === 1 ? "Show me one more to compare?" : "Can’t tell them apart. Hold them up one at a time?" });
     return { card: null, timings };
   }
   const pick = Math.min(options.length - 1, Math.max(0, Number(j.pick) || 0));
