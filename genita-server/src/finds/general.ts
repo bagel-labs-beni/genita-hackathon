@@ -6,20 +6,28 @@
  * results land in the Finds sheet as an "answer" card: the results as takeaways, each page as a tappable source.
  * Kind "answer" is already on the wire (webAnswer.ts); apps that predate it decode it as `.unknown` and show the
  * link layout (takeaways + Sources), so no app build is needed. Chit-chat, feelings, things in view ("is this one
- * better?") and crisis lines never search. Spoken: a short reaction now, "Here's what I found." when the card
- * lands; the results are never read aloud. GENITA_WEB_SEARCH=0 (the companion's web search switch) turns it off.
+ * better?") and crisis lines never search. GENITA_WEB_SEARCH=0 (the companion's web search switch) turns it off.
+ *
+ * Spoken (Chelsea 11/4 "섞어"): the turn answers at once in ONE sentence from what the companion already knows (a
+ * natural hedge when it doesn't), with no search of its own, while the sheet fills; "I put a few links up for you."
+ * when the card lands (after that sentence). The results are never read aloud.
  */
 import type { FindCard } from "../protocol.ts";
+import type { SparkStreamEvent } from "../meta/spark.ts";
+import { SentenceSplitter } from "../text/sentences.ts";
+import { parseTaggedSentence } from "../text/tags.ts";
+import { isInterjectionOnly, isProcessLine, isToolNarration } from "../text/toolNarration.ts";
 import { realCrisisSignal } from "../convo/guard.ts";
 import { domainOf, lastJsonObject, str, strList } from "./parse.ts";
 import type { PipelineCtx, PipelineResult } from "./pipeline.ts";
 import { userMessage, type OutputItem } from "./vendors.ts";
 import { answerTitle, isBlockedSite } from "./webAnswer.ts";
 
-/** said instead of a full answer while the search runs (no "let me look that up": tool narration is never said) */
-export const GENERAL_ACK = "Ooh, good question.";
-/** said when the card lands */
-export const GENERAL_SAY = "Here's what I found.";
+/** said when the card lands (after the one-sentence answer) */
+export const GENERAL_SAY = "I put a few links up for you.";
+/** rides the turn's reply instructions (session.ts) when the sheet is searching */
+export const GENERAL_REPLY_LINE =
+  "Web results for this question are about to appear on their screen. Answer right now in ONE short sentence (under 20 words) from what you already know. No links, no site names, no lists, and don't say you're searching or looking it up. If you don't know, or it changes often (news, scores, prices, hours), make that one sentence a natural hedge, like \"Not sure off the top of my head, pulling up a few sources.\"";
 export const GENERAL_MAX_RESULTS = 5;
 export const GENERAL_TIMEOUT_MS = 25_000;
 
@@ -248,4 +256,73 @@ export async function runGeneral(ctx: PipelineCtx): Promise<PipelineResult> {
   timings.cardMs = Math.round(ctx.now() - t0);
   ctx.log("find.general", { findId: ctx.findId, results: n, traced: traced.length });
   return { card, timings };
+}
+
+// ───────── the spoken side: one sentence ─────────
+
+/** a word that is a link: never said */
+const LINKISH = /^(?:https?:\/\/|www\.)|^\S+\.(?:com|org|net|io|ai|co|gov|edu|kr|jp|uk|dev|app)(?:\/\S*)?[)"'”’.,!?]*$/i;
+function scrubWord(w: string): string {
+  // markdown "[official](https://…)" keeps its words, drops the link
+  // only a markdown link's brackets go: "[smile]" / "[whispers]" voice tags stay (Codex mix r2)
+  const md = /\]\(/.test(w) ? w.replace(/\]\([^)\s]*\)?/g, "").replace(/^\[/, "") : w;
+  const core = md.replace(/^["'“‘(<]+/, "");
+  return LINKISH.test(core) ? "" : md;
+}
+const scrub = (t: string) => t.split(/(\s+)/).map((w) => (/^\s+$/.test(w) ? w : scrubWord(w))).join("").replace(/ {2,}/g, " ");
+/** a line the voice drops anyway ("I'll look that up.", "Hmm."): not the one sentence */
+const unsaid = (raw: string) => {
+  // judged on what is said, without "<warm>" / "[smile]" tags (Codex mix r2)
+  const s = parseTaggedSentence(raw).displayText.trim();
+  return !s || isToolNarration(s) || isProcessLine(s) || isInterjectionOnly(s);
+};
+
+/**
+ * The reply as one sentence: whole words go out as they arrive (first audio is not held back), link-looking words
+ * are dropped, and nothing after the first sentence the voice would say is spoken. The stream is still read to its
+ * end so tool calls after the sentence (remember) still happen (Codex mix r1). Sentence ends come from the
+ * session's own SentenceSplitter ("Mt.", "U.S.", full-width marks).
+ */
+export async function* firstSentenceOnly(src: AsyncIterable<SparkStreamEvent>): AsyncIterable<SparkStreamEvent> {
+  const splitter = new SentenceSplitter({ firstClauseMaxChars: Number.POSITIVE_INFINITY });
+  let all = "";
+  let emitted = 0;
+  let cursor = 0;
+  let stopAt: number | null = null;
+  let said = "";
+  const take = (upto: number): string => {
+    if (upto <= emitted) return "";
+    let t = scrub(all.slice(emitted, upto));
+    emitted = upto;
+    if (/\s$/.test(said) || !said) t = t.replace(/^\s+/, "");
+    said += t;
+    return t;
+  };
+  for await (const ev of src) {
+    if (ev.type === "done") {
+      if (stopAt === null) {
+        const t = take(all.length);
+        if (t) yield { type: "text", delta: t };
+      }
+      yield { ...ev, text: said };
+      return;
+    }
+    if (ev.type !== "text") { yield ev; continue; }
+    if (stopAt !== null) continue;
+    all += ev.delta;
+    for (const sentence of splitter.push(ev.delta)) {
+      const at = all.indexOf(sentence, cursor);
+      const end = at >= 0 ? at + sentence.length : all.length;
+      cursor = end;
+      if (stopAt === null && !unsaid(sentence)) stopAt = end;
+    }
+    // whole words only, so a link is seen whole before anything of it is said
+    const lastSpace = all.search(/\s\S*$/);
+    const t = take(stopAt ?? (lastSpace >= 0 ? lastSpace + 1 : emitted));
+    if (t) yield { type: "text", delta: t };
+  }
+  if (stopAt === null) {
+    const t = take(all.length);
+    if (t) yield { type: "text", delta: t };
+  }
 }

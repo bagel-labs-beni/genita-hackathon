@@ -7,10 +7,10 @@ import { test } from "node:test";
 import { EventEmitter } from "node:events";
 import { loadConfig } from "../src/config.ts";
 import { Session, type SessionDeps, type ClientSink } from "../src/session/session.ts";
-import type { SparkStreamEvent } from "../src/meta/spark.ts";
+import type { SparkRequest, SparkStreamEvent } from "../src/meta/spark.ts";
 import assert from "node:assert/strict";
 import { classifyTurn } from "../src/finds/intent.ts";
-import { GENERAL_ACK, GENERAL_SAY, isGeneralAsk, runGeneral } from "../src/finds/general.ts";
+import { GENERAL_REPLY_LINE, GENERAL_SAY, firstSentenceOnly, isGeneralAsk, runGeneral } from "../src/finds/general.ts";
 import { FindsRunner } from "../src/finds/runner.ts";
 import { MemoryFindsStore } from "../src/finds/store.ts";
 import type { PipelineCtx } from "../src/finds/pipeline.ts";
@@ -225,7 +225,7 @@ test("general pipeline: no usable JSON but the search ran → the search's own p
   for (const e of none) assert.deepEqual(checkServerEvent(e), [], JSON.stringify(e));
 });
 
-test("general runner: an info question gets a short spoken ack, the card lands in the sheet, then one line", async () => {
+test("general runner (mix): no fixed ack — the turn answers in one sentence itself; the card lands, then one line", async () => {
   const json = JSON.stringify({ title: "Ramen in Seoul", results: [{ title: "Time Out", why: "Roundup.", url: "https://www.timeout.com/seoul/restaurants/best-ramen-in-seoul" }] });
   const events: ServerEvent[] = [];
   const said: string[] = [];
@@ -233,15 +233,55 @@ test("general runner: an info question gets a short spoken ack, the card lands i
   const started = r.onTurn({ text: "What's the best ramen place in Seoul?", frames: [], utteranceId: 1, replyText: Promise.resolve(null) });
   assert.ok(started);
   assert.equal(started.kind, "answer");
-  assert.equal(started.ack, GENERAL_ACK);
+  assert.equal(started.ack, undefined, "no fixed line: the reply answers from what it knows");
   await r.settle();
   assert.ok(events.some((e) => e.type === "find.created" && e.card.kind === "answer"));
   assert.deepEqual(said, [GENERAL_SAY]);
   assert.equal(r.onTurn({ text: "How are you?", frames: [], utteranceId: 2, replyText: Promise.resolve(null) }), null);
 });
 
-// ───────── in a call: the ack is said, the results are not ─────────
+const collect = async (src: AsyncIterable<SparkStreamEvent>) => { const out: SparkStreamEvent[] = []; for await (const e of src) out.push(e); return out; };
+async function* chunks(parts: string[]): AsyncIterable<SparkStreamEvent> {
+  for (const p of parts) yield { type: "text", delta: p };
+  yield { type: "done", responseId: "r", text: parts.join(""), status: "completed" };
+}
+const textOf = (evs: SparkStreamEvent[]) => evs.filter((e) => e.type === "text").map((e) => (e as { delta: string }).delta).join("");
 
+test("firstSentenceOnly: one sentence, words streamed as they come, no links, abbreviations kept", async () => {
+  const a = await collect(firstSentenceOnly(chunks(["It's Shuntaro ", "Furukawa, the pres", "ident. He has led ", "it since 2018."])));
+  assert.equal(textOf(a).trim(), "It's Shuntaro Furukawa, the president.");
+  assert.equal(a.at(-1)?.type, "done");
+  assert.ok(a.filter((e) => e.type === "text").length >= 2, "streamed, not held to the end");
+  const b = await collect(firstSentenceOnly(chunks(["The U.S. Open is in New York, see https://usopen.org", " for tickets. More here."])));
+  assert.equal(textOf(b).trim(), "The U.S. Open is in New York, see for tickets.");
+  const c = await collect(firstSentenceOnly(chunks(["Not sure off the top of my head, pulling up a few sources"])));
+  assert.equal(textOf(c).trim(), "Not sure off the top of my head, pulling up a few sources");
+  // Codex mix r1
+  const d = await collect(firstSentenceOnly(chunks(["Mt. Everest is the tallest ", "mountain in the world. It is in Nepal."])));
+  assert.equal(textOf(d).trim(), "Mt. Everest is the tallest mountain in the world.");
+  const e = await collect(firstSentenceOnly(chunks(["I'll look that up. ", "Paris is the capital of France. ", "It is lovely."])));
+  assert.match(textOf(e), /Paris is the capital of France\.$/, "a line the voice drops is not the one sentence");
+  assert.doesNotMatch(textOf(e), /lovely/);
+  const f = await collect(firstSentenceOnly(chunks(['See "https://example.com" or the [official site](https://example.dev) for details. More.'])));
+  assert.doesNotMatch(textOf(f), /https?:|example\./, textOf(f));
+  assert.match(textOf(f), /official site/);
+  // Codex mix r2: tags don't hide a narration line, voice tags are kept
+  const h = await collect(firstSentenceOnly(chunks(["<warm> I'll look that up. ", "<warm> [smile] Paris is the capital of France. ", "More."])));
+  assert.match(textOf(h), /\[smile\] Paris is the capital of France\.$/, textOf(h));
+  // a tool call after the sentence still reaches the session
+  async function* withTool(): AsyncIterable<SparkStreamEvent> {
+    yield { type: "text", delta: "Got it, more words here. " };
+    yield { type: "text", delta: "And another sentence. " };
+    yield { type: "function_call", name: "remember", call_id: "c1", arguments: "{}" };
+    yield { type: "done", responseId: "r", text: "", status: "completed" };
+  }
+  const g = await collect(firstSentenceOnly(withTool()));
+  assert.ok(g.some((x) => x.type === "function_call"), "remember still runs");
+  assert.doesNotMatch(textOf(g), /another/);
+  assert.equal(g.at(-1)?.type, "done");
+});
+
+// ───────── in a call (mix): one sentence now, the sheet fills, then one line ─────────
 
 class Client implements ClientSink {
   events: ServerEvent[] = [];
@@ -251,33 +291,49 @@ class Client implements ClientSink {
 }
 const waitFor = async (check: () => boolean, ms = 5000) => { const end = Date.now() + ms; while (!check()) { if (Date.now() > end) throw new Error("timed out"); await new Promise((r) => setTimeout(r, 2)); } };
 
-test("general in a call: a short reaction is said, the card lands in the sheet, the results are never read aloud", async () => {
-  const json = JSON.stringify({ title: "Nintendo's CEO", results: [{ title: "Nintendo IR: management", why: "Shuntaro Furukawa has been president since 2018.", url: "https://www.nintendo.co.jp/ir/en/management" }] });
+test("general in a call (mix): one spoken sentence before the search lands, no links or result titles; the sheet fills; then one line", async () => {
+  const json = JSON.stringify({ title: "Nintendo's CEO", results: [{ title: "Nintendo IR: management page", why: "Shuntaro Furukawa has been president since 2018.", url: "https://www.nintendo.co.jp/ir/en/management" }] });
   const trace = [searchItem("Nintendo CEO", ["https://www.nintendo.co.jp/ir/en/management"])];
+  // the search takes a while; the spoken answer must not wait for it
+  let releaseSearch: () => void = () => {};
+  const searchGate = new Promise<void>((r) => (releaseSearch = r));
+  const vendors = fakeVendors(json, trace);
+  const slow: FindsVendors = { ...vendors, async spark(req, signal) { await searchGate; return vendors.spark(req, signal); } };
   const asr = Object.assign(new EventEmitter(), { isOpen: false, async connect() { this.isOpen = true; }, sendAudio() {}, end() { this.isOpen = false; } });
   const client = new Client();
-  let replies = 0;
+  const reqs: SparkRequest[] = [];
   const deps: SessionDeps = {
     config: { ...loadConfig({ MODEL_API_KEY: "fake-meta" }), port: 0, speculate: false, sparkHedge: 1 },
     openAsr: () => asr,
     userId: "acct",
-    // a full spoken answer would name him: it must never be what's said
-    async *spark(): AsyncIterable<SparkStreamEvent> { replies++; yield { type: "text", delta: "It's Shuntaro Furukawa." }; yield { type: "done", responseId: "r", text: "", status: "completed" }; },
+    async *spark(req): AsyncIterable<SparkStreamEvent> {
+      reqs.push(req);
+      yield* chunks(["It's Shuntaro Furukawa, ", "Nintendo's president. ", "Check https://www.nintendo.co.jp/ir for more. ", "He took over in 2018."]);
+    },
     async *tts() {},
-    finds: { vendors: fakeVendors(json, trace), store: new MemoryFindsStore(), images: false, imageBase: "/v1/finds" },
+    finds: { vendors: slow, store: new MemoryFindsStore(), images: false, imageBase: "/v1/finds" },
   };
   const s = new Session("g1", client, deps);
   await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Rio" }, mic: false }));
+  const spokenNow = () => client.events.filter((e) => e.type === "say" || e.type === "reply").map((e) => String((e as { text?: string }).text ?? "")).join(" | ");
   await s.onClientText(JSON.stringify({ type: "text", text: "Hey Rio, who's the CEO of Nintendo now?" }));
+  await waitFor(() => /Furukawa/.test(spokenNow()));
+  assert.ok(!client.events.some((e) => e.type === "find.created"), "spoken before the search resolved");
+  assert.ok(client.events.some((e) => e.type === "find.started" && e.kind === "answer"), "the sheet starts at once");
+  const reply = reqs.at(-1)!;
+  assert.equal(reply.tools, undefined, "the reply itself never searches (the sheet does)");
+  assert.ok(String(reply.instructions).includes(GENERAL_REPLY_LINE), "the one-sentence line rides the reply");
+  releaseSearch();
   await waitFor(() => client.events.some((e) => e.type === "find.created"));
-  const said = () => client.events.filter((e) => e.type === "say" || e.type === "reply").map((e) => String((e as { text?: string }).text ?? "")).join(" | ");
-  await waitFor(() => said().includes(GENERAL_SAY), 8000).catch(() => {});
+  await waitFor(() => spokenNow().includes(GENERAL_SAY), 8000).catch(() => {});
   const card = (client.events.find((e) => e.type === "find.created") as { card: FindCard }).card;
   assert.equal(card.kind, "answer");
   assert.deepEqual(card.sources.map((x) => x.domain), ["nintendo.co.jp"]);
-  const spoken = said();
-  assert.match(spoken, /good question/i, spoken);
+  const spoken = spokenNow();
+  const answer = spoken.split(GENERAL_SAY)[0];
+  assert.doesNotMatch(answer, /https?:|www\.|nintendo\.co/i, `no links: ${spoken}`);
+  assert.doesNotMatch(answer, /Nintendo IR: management page/, "no result titles");
+  assert.doesNotMatch(answer, /2018/, `one sentence only: ${spoken}`);
   assert.ok(spoken.includes(GENERAL_SAY), `the card's line is said when it lands: ${spoken}`);
-  assert.doesNotMatch(spoken, /Furukawa/, "the results are not read aloud");
   s.close();
 });
