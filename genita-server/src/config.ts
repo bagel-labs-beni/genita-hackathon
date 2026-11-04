@@ -54,6 +54,11 @@ export type Config = {
   interpretAsrCorrect?: boolean;
   /** longest the correction may hold a Korean translation back (ms) */
   interpretAsrCorrectMs?: number;
+  /**
+   * Interpret mode: the pair follows the languages heard, "translate to Japanese" switches it, and Genita asks once
+   * when unclear (interpret/interpreter.ts). Off when unset; GENITA_INTERPRET_FREE_LANG=0 turns it off in loadConfig.
+   */
+  interpretFreeLang?: boolean;
 };
 
 export type VoiceConfig = {
@@ -167,5 +172,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     speculateStableMs: num(env.GENITA_SPECULATE_STABLE_MS, 250),
     interpretAsrCorrect: env.GENITA_INTERPRET_ASR_CORRECT !== "0",
     interpretAsrCorrectMs: Math.max(100, Math.min(3000, num(env.GENITA_INTERPRET_ASR_CORRECT_MS, 800))),
+    interpretFreeLang: env.GENITA_INTERPRET_FREE_LANG !== "0",
   };
 }

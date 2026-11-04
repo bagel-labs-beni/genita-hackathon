@@ -1345,6 +1345,7 @@ export class Session {
       speculate: this.deps.config.speculate && !this.deps.turnGate && !(this.deps.ops ?? getOps()).cappedUser(this.limitUserId()),
       speculateStableMs: this.deps.config.speculateStableMs,
       asrCorrect: this.deps.config.interpretAsrCorrect ? { timeoutMs: this.deps.config.interpretAsrCorrectMs ?? CORRECT_DEFAULT_TIMEOUT_MS } : null,
+      freeLang: !!this.deps.config.interpretFreeLang,
     });
     this.interp.begin();
     if (this.interp.source === "call") void this.ensureCallAsr();
