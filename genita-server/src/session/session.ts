@@ -39,6 +39,7 @@ import {
   type TtsMode,
 } from "../protocol.ts";
 import { Interpreter, type InterpretHost } from "../interpret/interpreter.ts";
+import { CORRECT_DEFAULT_TIMEOUT_MS } from "../interpret/asrCorrect.ts";
 import { interpretCommand } from "../interpret/language.ts";
 import { initialTurnState, reduceTurn, type Effect, type TurnEvent, type TurnState } from "./turnMachine.ts";
 import { MemoryCall, type MemoryService, type UsPhotoService } from "../memory/index.ts";
@@ -1340,6 +1341,7 @@ export class Session {
       // capped accounts don't guess on partials: a guess calls Spark before the turn is admitted
       speculate: this.deps.config.speculate && !this.deps.turnGate && !(this.deps.ops ?? getOps()).cappedUser(this.limitUserId()),
       speculateStableMs: this.deps.config.speculateStableMs,
+      asrCorrect: this.deps.config.interpretAsrCorrect ? { timeoutMs: this.deps.config.interpretAsrCorrectMs ?? CORRECT_DEFAULT_TIMEOUT_MS } : null,
     });
     this.interp.begin();
     if (this.interp.source === "call") void this.ensureCallAsr();

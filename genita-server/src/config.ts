@@ -47,6 +47,13 @@ export type Config = {
   speculate: boolean;
   /** an unpunctuated partial counts as likely-final after this long unchanged */
   speculateStableMs: number;
+  /**
+   * Interpret mode: one fast Spark pass fixes misheard Korean (interpret/asrCorrect.ts) before translating.
+   * Off when unset; GENITA_INTERPRET_ASR_CORRECT=0 turns it off in loadConfig.
+   */
+  interpretAsrCorrect?: boolean;
+  /** longest the correction may hold a Korean translation back (ms) */
+  interpretAsrCorrectMs?: number;
 };
 
 export type VoiceConfig = {
@@ -158,5 +165,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     httpKeepAliveMs: Math.max(0, num(env.GENITA_HTTP_KEEPALIVE_MS, 60_000)),
     speculate: env.GENITA_SPECULATE !== "0",
     speculateStableMs: num(env.GENITA_SPECULATE_STABLE_MS, 250),
+    interpretAsrCorrect: env.GENITA_INTERPRET_ASR_CORRECT !== "0",
+    interpretAsrCorrectMs: Math.max(100, Math.min(3000, num(env.GENITA_INTERPRET_ASR_CORRECT_MS, 800))),
   };
 }

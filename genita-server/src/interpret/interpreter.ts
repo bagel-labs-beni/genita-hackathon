@@ -33,6 +33,7 @@ import { SentenceSplitter } from "../text/sentences.ts";
 import { Eager } from "../util/eager.ts";
 import { containment, detectLanguage, type Speaker } from "./language.ts";
 import { buildTranslateInstructions } from "./prompt.ts";
+import { CORRECT_CONTEXT_LINES, correctKorean, type ContextLine } from "./asrCorrect.ts";
 
 export type Channel = "mic" | "call";
 
@@ -66,6 +67,8 @@ export type InterpretOptions = {
   app?: string;
   speculate?: boolean;
   speculateStableMs?: number;
+  /** Korean ASR post-correction before translating (asrCorrect.ts); null/unset = off */
+  asrCorrect?: { timeoutMs: number } | null;
 };
 
 type Lang = string;
@@ -144,6 +147,9 @@ export class Interpreter {
   private speakTimers = new Map<number, NodeJS.Timeout>();
   private echo: { text: string; until: number }[] = [];
   private stopped = false;
+  private readonly asrCorrect: { timeoutMs: number } | null;
+  /** last relayed originals (both sides), context for the Korean ASR correction */
+  private recent: ContextLine[] = [];
 
   constructor(host: InterpretHost, opts: InterpretOptions) {
     this.host = host;
@@ -154,6 +160,7 @@ export class Interpreter {
     this.otherFixed = !!this.other;
     this.speculate = opts.speculate ?? true;
     this.stableMs = opts.speculateStableMs ?? 250;
+    this.asrCorrect = opts.asrCorrect ?? null;
   }
 
   get pair(): { user: Lang; other: Lang | null } {
@@ -255,7 +262,49 @@ export class Interpreter {
       }
     }
     stream ??= new Eager(this.host.translate(this.request(clean, r.from, r.to), abort.signal));
+    const context = this.recent.slice();
+    const line: ContextLine = { speaker: r.speaker, lang: r.from, text: clean };
+    this.remember(line);
+    if (this.asrCorrect && r.from === "Korean") {
+      // the raw translation keeps running (buffered) while the correction is asked; the job owns a new controller
+      const rawAbort = abort;
+      abort = new AbortController();
+      abort.signal.addEventListener("abort", () => rawAbort.abort(), { once: true });
+      stream = this.corrected(bubble, line, context, stream, rawAbort, abort.signal, r.from, r.to, this.asrCorrect.timeoutMs);
+    }
     this.enqueue(bubble, stream, abort, speculative, { speechEndAt, completeAt, startAt: completeAt }, r.to);
+  }
+
+  private remember(line: ContextLine): void {
+    this.recent.push(line);
+    if (this.recent.length > CORRECT_CONTEXT_LINES) this.recent.shift();
+  }
+
+  /**
+   * Korean ASR post-correction: waits (bounded) for the fixed line; unchanged → the raw translation,
+   * changed → the bubble shows the fixed line and it is translated instead.
+   */
+  private async *corrected(
+    bubble: Bubble,
+    line: ContextLine,
+    context: ContextLine[],
+    raw: AsyncIterable<SparkStreamEvent>,
+    rawAbort: AbortController,
+    signal: AbortSignal,
+    from: Lang,
+    to: Lang,
+    timeoutMs: number,
+  ): AsyncGenerator<SparkStreamEvent> {
+    const original = line.text;
+    const res = await correctKorean((req, s) => this.host.translate(req, s), original, context, { timeoutMs, signal, now: () => this.host.now() });
+    if (signal.aborted) return;
+    this.host.log("interpret.asr_correct", { outcome: res.outcome, ms: res.ms, chars: [...original].length });
+    if (!res.text) return yield* raw;
+    rawAbort.abort();
+    line.text = res.text;
+    bubble.original = { lang: from, text: res.text };
+    this.emit(bubble);
+    yield* new Eager(this.host.translate(this.request(res.text, from, to), signal));
   }
 
   /** Typed text while interpreting: the user's own words, for the other person. */
@@ -271,6 +320,7 @@ export class Interpreter {
     }
     bubble.original = { lang: this.user, text: clean };
     if (!this.host.admitTurn()) return this.closeBubble(bubble, "cancelled"); // refused by a daily cap: no open bubble
+    this.remember({ speaker: "me", lang: this.user, text: clean });
     const abort = new AbortController();
     const now = this.host.now();
     const stream = new Eager(this.host.translate(this.request(clean, this.user, this.other), abort.signal));
