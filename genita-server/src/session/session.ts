@@ -2084,7 +2084,7 @@ export class Session {
         }
         // CV-01 (eval v2 11/4): no past in this call → no habit "again" / "like usual", no claimed earlier talk (convo/pastGuard.ts)
         if (this.v1 && tts && !interpret && !self) {
-          const kept = unbackedPast(tts, { past: this.hasPast(), userText: guardCtx.userText, callText: this.history.filter((h) => h.role === "user").map((h) => h.text).join(" ") });
+          const kept = unbackedPast(tts, { past: this.hasPast(), userText: guardCtx.userText, callText: this.history.map((h) => h.text).join(" ") }); // Codex #536 r6: what Genita itself said this call counts too ("We talked about kimchi fried rice")
           if (kept !== tts) { tts = kept; this.log("convo.unbacked_past", { utteranceId, dropped: !kept }); }
         }
         // AI sweep C1: "I'm really glad you told me — …" then "…, and I'm really glad you told me." — said once per reply

@@ -69,3 +69,9 @@ test("Codex #536 r5: a police / safety instruction is never cut", () => {
   const t = "Try to remember when you last saw her and call the police now.";
   assert.equal(unbackedPast(t, { past: false, userText: "Someone has taken my daughter." }), t);
 });
+
+test("Codex #536 r6: a danger turn is never filtered; what Genita said this call grounds a recall", () => {
+  const t = "Try to remember when you last saw him and get to a safe place now.";
+  assert.equal(unbackedPast(t, { past: false, userText: "My ex is outside with a knife." }), t);
+  assert.equal(unbackedPast("We talked about kimchi fried rice.", { past: false, userText: "What did you suggest?", callText: "What should I make for dinner? Kimchi fried rice." }), "We talked about kimchi fried rice.");
+});

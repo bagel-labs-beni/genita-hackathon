@@ -10,6 +10,7 @@
  *     "I remember the vibe…") is dropped (the caller never empties a reply).
  * Whatever the user's own line says is fair to echo ("rejected again?" after "got rejected again"). Pure.
  */
+import { realCrisisSignal } from "./guard.ts";
 export type PastContext = { past: boolean; userText: string; /** this call's user lines so far (what was really said) */ callText?: string };
 
 const HABIT = /,?\s*\b(?:all over )?(?:again|as usual|like usual|like always|as always|per usual)\b(?=\s*[,.!?…]|\s*$)/giu;
@@ -55,9 +56,10 @@ const STILL = /\b(you(?:'re| are)?|u|are you|you guys)\s+still\b\s*(?=(?:on|into
 
 // Codex #536 r3: emergency / help sentences are never touched ("If you remember when it started, tell the emergency services")
 // Codex #536 r5: police / a safe place too ("Try to remember when you last saw her and call the police now.")
-const HELP = /\b(?:911|988|112|999|emergency|ambulance|hospital|doctor|crisis|hotline|helpline|poison control|police|cops|authorities|amber alert|fire department|somewhere safe|call for help|nine[- ]one[- ]one|nine[- ]eight[- ]eight)\b/i;
+const HELP = /\b(?:911|988|112|999|emergency|ambulance|hospital|doctor|crisis|hotline|helpline|poison control|police|cops|authorities|amber alert|fire department|somewhere safe|(?:a )?safe place|call for help|nine[- ]one[- ]one|nine[- ]eight[- ]eight)\b/i;
 export function unbackedPast(sentence: string, ctx: PastContext): string {
-  if (!sentence.trim() || HELP.test(sentence)) return sentence;
+  // Codex #536 r6: a real crisis / danger turn is never filtered here ("…and get to a safe place now")
+  if (!sentence.trim() || HELP.test(sentence) || realCrisisSignal(ctx.userText ?? "")) return sentence;
   const user = ctx.userText ?? "";
   if (ctx.past) {
     if (USER_HABIT.test(user)) return sentence;
