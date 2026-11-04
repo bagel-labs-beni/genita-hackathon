@@ -12,11 +12,16 @@ import Foundation
 enum BrowserPreview {
     static let argument = "--browser-preview"
     static let isActive: Bool = ProcessInfo.processInfo.arguments.contains(argument)
+    /// The stand-in camera: the fridge frame the recorded recipe run's boxes were found on (`observe.boxes` frame 1 of
+    /// finds-fixture.json, the same frame the CAM-H UI tests use). Build 10 showed frame 0 (the camera before it moved
+    /// down a shelf), so every box sat ~140 pt above its item (UI QA CW, half sheet up); the real app maps boxes onto the
+    /// live preview and hides them when the phone moved since that frame (D63).
+    static let fixtureCamera = "bundle:finds-frame-fridge-1"
 
     /// Environment the stubs read, set once at launch (never overwrites a value given on the command line).
     static func prepare() {
         guard isActive else { return }
-        for (key, value) in ["GENITA_FIXTURE_SCRIPT": "none", "GENITA_CALL_AUTOMIC": "1", "GENITA_PREVIEW_SESSION": "r1", "GENITA_FIXTURE_CAMERA": "bundle:finds-frame-fridge-0"] { setenv(key, value, 0) }
+        for (key, value) in ["GENITA_FIXTURE_SCRIPT": "none", "GENITA_CALL_AUTOMIC": "1", "GENITA_PREVIEW_SESSION": "r1", "GENITA_FIXTURE_CAMERA": fixtureCamera] { setenv(key, value, 0) }
     }
 
     /// Menu choices: set (or clear) the stub variables the next call screen reads. The fixture camera is always there
@@ -27,7 +32,7 @@ enum BrowserPreview {
         put("GENITA_PREVIEW_SESSION", session)
         put("GENITA_FINDS_STATE", findsState.map(String.init))
         put("GENITA_FINDS_TAB", findsTab)
-        put("GENITA_FIXTURE_CAMERA", "bundle:finds-frame-fridge-0")
+        put("GENITA_FIXTURE_CAMERA", fixtureCamera)
         put("GENITA_CALL_AUTOCAMERA", camera ? "1" : nil)
     }
 }

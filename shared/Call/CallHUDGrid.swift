@@ -108,6 +108,21 @@ struct CallHUDGrid: Equatable {
     }
     /// The sheet states that move the rail and the self view (CameraBoxes.railShift ≠ 0).
     static func sheetUp(_ s: SheetState) -> Bool { s != .idle && s != .dismissed }
+
+    // MARK: Finds undo toast (r03 #17, "In Finds · Undo")
+
+    /// The toast's height: the Undo button's 44 pt touch row.
+    static let toastHeight: CGFloat = 44
+    /// Centre line of the undo toast (centred across). `top` is ConversationView's board offset (safe top − 44).
+    /// Camera off: y 210 + top, over the face (r03). Camera on: 8 pt under the companion window (96 × 128, its centre
+    /// at 184 + top) and, while it is up, the FT-NOSEE card (124 + top, `noSeeHeight` tall), so the toast never
+    /// covers "I don’t see kimchi" or the face (UI QA CW-01, build 10: it sat on the card's third row).
+    static func toastCenterY(top: CGFloat, cameraOn: Bool, noSeeHeight: CGFloat?) -> CGFloat {
+        guard cameraOn else { return 210 + top }
+        let window = 184 + 64 + top
+        let card = noSeeHeight.map { 124 + top + $0 } ?? -.greatestFiniteMagnitude
+        return max(window, card) + 8 + toastHeight / 2
+    }
 }
 
 /// The status pill's box (HUD r01 A). Position comes from `CallHUDGrid`; how the pill moves (width spring, text

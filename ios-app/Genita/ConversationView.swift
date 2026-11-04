@@ -232,7 +232,10 @@ struct ConversationView: View {
                                 .accessibilityLabel("Back to half height").accessibilityIdentifier("findsPip").transition(.opacity)
                         }
                         if sheet == .dismissed {
-                            FindsToast(finds: call.finds).position(x: full.size.width / 2, y: 210 + top).genitaToastTransition()
+                            // CW-01 (build 11): with the camera on, under the companion window and the FT-NOSEE card, never on them
+                            FindsToast(finds: call.finds).position(x: full.size.width / 2, y: CallHUDGrid.toastCenterY(top: top, cameraOn: call.cameraOn,
+                                                                                                                       noSeeHeight: call.cameraOn && !connecting ? call.finds.noSee?.cardHeight : nil))
+                                .genitaToastTransition()
                         }
                         // The call cue belongs to S09. Keep it below the Finds tab so it cannot cover that
                         // screen's title or subtitle; closing Finds immediately resumes the current call cue.
@@ -617,31 +620,21 @@ struct ConversationView: View {
             }.frame(width: width - 48, height: 44).contentShape(Self.menuRowHitShape)
         }.buttonStyle(.plain).position(x: width / 2, y: y + 22 + top).accessibilityLabel("Move to Mac")
     }
-    /// Self view: the call's front camera when on (one owner: CallController), Dyno's flip button, the placeholder when off.
+    /// Self view, camera off: the glass tile. With the camera on the camera is the stage (CameraStage) and this tile is not
+    /// drawn, so its flip button never showed (build 11 cleanup); the rail's flip button (#717) and double-tap flip instead.
     @ViewBuilder var selfView: some View {
-        if call.cameraOn {
-            ZStack(alignment: .bottomLeading) {
-                SelfCameraView(session: call.cameraSession).frame(width: 113, height: 211).background(CallInk.ink)
-                if call.canFlipCamera {
-                    Button { call.flipCamera() } label: {
-                        Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 15)).foregroundStyle(.white).frame(width: 44, height: 44).contentShape(Rectangle())
-                    }.buttonStyle(.plain).accessibilityLabel("Flip camera").accessibilityIdentifier("flipCamera")
-                }
-            }.frame(width: 113, height: 211).clipShape(RoundedRectangle(cornerRadius: 16)).accessibilityElement(children: .contain).accessibilityLabel("Your camera")
-        } else {
-            // HUD r01 A: camera off = a small glass tile (72 × 96), not the old 113 × 211 dark box
-            let shape = RoundedRectangle(cornerRadius: 16)
-            ZStack {
-                shape.fill(.ultraThinMaterial).environment(\.colorScheme, .dark)
-                shape.fill(Color.black.opacity(0.28))
-                Image(systemName: "video.slash").font(.system(size: 18, weight: .regular)).foregroundStyle(Color.white.opacity(0.7))
-            }
-            .overlay(shape.strokeBorder(Color.white.opacity(0.35), lineWidth: 0.7))
-            .frame(width: CallHUDGrid.selfOff.width, height: CallHUDGrid.selfOff.height)
-            .accessibilityElement().accessibilityLabel("Your camera is off").accessibilityIdentifier("selfViewOff")
-            // D22: double-tap the self view → the camera on, facing back
-            .onTapGesture(count: 2) { call.useBackCamera() }.accessibilityAction(named: "Use back camera") { call.useBackCamera() }
+        // HUD r01 A: camera off = a small glass tile (72 × 96), not the old 113 × 211 dark box
+        let shape = RoundedRectangle(cornerRadius: 16)
+        ZStack {
+            shape.fill(.ultraThinMaterial).environment(\.colorScheme, .dark)
+            shape.fill(Color.black.opacity(0.28))
+            Image(systemName: "video.slash").font(.system(size: 18, weight: .regular)).foregroundStyle(Color.white.opacity(0.7))
         }
+        .overlay(shape.strokeBorder(Color.white.opacity(0.35), lineWidth: 0.7))
+        .frame(width: CallHUDGrid.selfOff.width, height: CallHUDGrid.selfOff.height)
+        .accessibilityElement().accessibilityLabel("Your camera is off").accessibilityIdentifier("selfViewOff")
+        // D22: double-tap the self view → the camera on, facing back
+        .onTapGesture(count: 2) { call.useBackCamera() }.accessibilityAction(named: "Use back camera") { call.useBackCamera() }
     }
     /// What the framed scene is drawn from: the scene bytes, the server's crop and the overscan (reduce motion).
     private var framedSceneID: String {

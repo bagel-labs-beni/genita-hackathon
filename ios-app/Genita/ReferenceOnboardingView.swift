@@ -303,7 +303,9 @@ import UniformTypeIdentifiers
             HStack(spacing: 8) {
                 appButton("Open ChatGPT", app: "chatgpt://", web: "https://chatgpt.com/")
                 appButton("Open Claude", app: "claude://", web: "https://claude.ai/new")
-            }.frame(width: width - 48).position(x: width / 2, y: cardBottom + 32)
+            // P2 I01 (build 11): the row lines up with the card and the heading above it (31 pt, Figma "Your prompt" x 31 w 328),
+            // not 24 pt; the row isn't in Figma (PRD v12 B-defaults), so it takes the card's column
+            }.frame(width: width - 62).position(x: width / 2, y: cardBottom + 32)
             if copiedToast {
                 Text("Prompt copied").font(TypeStyle.body(13, .medium)).foregroundStyle(CallInk.onInk).padding(.horizontal, 14).frame(height: 30)
                     .background(CallInk.ink.opacity(0.84), in: Capsule()).transition(.opacity)
