@@ -4,9 +4,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { styleProfileText, toStyleCard } from "../src/prep/importProfile.ts";
+import { styleProfileText, toStyleCard, type Finding, type StyleCard } from "../src/prep/importProfile.ts";
 
-const f = (text: string, label = "explicit", extra: Record<string, unknown> = {}) => ({ text, label, scope: "any", ...extra });
+const f = (text: string, label = "explicit", extra: Record<string, unknown> = {}) => ({ text, label, scope: "any", ...extra }) as Finding;
 const long = (s: string, i: number) => `${s} ${i}: ${"detail ".repeat(14).trim()}`;
 
 function bigCard() {
@@ -26,7 +26,7 @@ function bigCard() {
     rules: [{ when: "I'm stressed about work", then: "make me laugh first, then help", label: "explicit" }],
     to_confirm: ["what they do for work"],
   });
-  card.removed = [{ text: "K-pop (aespa)", forget: true }, { text: "my old roommate Jess", forget: true }];
+  card.removed = [{ text: "K-pop (aespa)", forget: true, at: "2026-11-04" }, { text: "my old roommate Jess", forget: true, at: "2026-11-04" }];
   for (const k of ["likes", "interests", "help", "support", "approach"] as const) card.sections[k].push(f(long(`Suggested ${k}`, 0), "suggested"));
   return card;
 }
@@ -62,8 +62,8 @@ test("a 6000-char import keeps the never-bring-up list, the boundaries, the rule
 });
 
 test("a small import is unchanged by the trim", () => {
-  const card = toStyleCard({ sections: { likes: [f("Late-night ramen")], boundaries: [f("No diet advice")] }, rules: [] });
-  card.removed = [{ text: "K-pop", forget: true }];
+  const card = toStyleCard({ sections: { likes: [f("Late-night ramen")], boundaries: [f("No diet advice")] } as StyleCard["sections"], rules: [] });
+  card.removed = [{ text: "K-pop", forget: true, at: "2026-11-04" }];
   const out = styleProfileText(card, 2000);
   assert.equal(out, "How the user wants to be treated:\n- Taste: Late-night ramen\n- Boundaries: No diet advice\nNever bring these up, and never say you were asked to forget or drop them; talk as if you never knew them:\n- K-pop");
 });
