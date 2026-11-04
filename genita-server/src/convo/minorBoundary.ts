@@ -8,11 +8,11 @@
 const AGE_WORD = "(?:[5-9]|1[0-7]|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen)";
 const ADULT_WORD = "(?:1[89]|[2-9]\\d|eighteen|nineteen|twenty|thirty|forty|fifty|sixty)";
 // a quantity, not an age: "15 minutes away", "17 dollars short", "20 hours into", "18 months sober", "9 out of 10"
-const QUANTITY = String.raw`(?!\s*(?:seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?|months?|dollars?|bucks|k\b|%|percent|pounds?|lbs?|kg|miles?|km|feet|ft|inches?|cm|times?|pages?|points?|steps?|blocks?|stops?|episodes?|chapters?|questions?|reps?|games?|levels?|out of|of\b|short|behind|ahead|away|late|early|deep|years? (?:into|in|at|of(?!\s+age)|younger|older|sober|clean|married)))`;
+const QUANTITY = String.raw`(?!['’]\s*\d|\s*(?:seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?|months?|dollars?|bucks|k\b|%|percent|pounds?|lbs?|kg|miles?|km|feet|ft|inches?|cm|times?|pages?|points?|steps?|blocks?|stops?|episodes?|chapters?|questions?|reps?|games?|levels?|out of|of\b|short|behind|ahead|away|late|early|deep|years? (?:into|in|at|of(?!\s+age)|younger|older|sober|clean|married)))`;
 const SELF = String.raw`\b(?:i'?m|i am|im)\s+(?:still\s+|only\s+|just\s+|now\s+)?`;
 const OWN_MINOR_AGE = new RegExp(`${SELF}(?:${AGE_WORD}\\b${QUANTITY}|an?\\s+${AGE_WORD}[- ]?(?:year|yr)s?[- ]?old\\b)`, "i");
-const OWN_ADULT_AGE = new RegExp(`${SELF}${ADULT_WORD}\\b${QUANTITY}`, "i");
-const UNDER_18 = new RegExp(`${SELF}(?:under\\s+(?:18|eighteen)\\b${QUANTITY}|a\\s+minor\\b|not\\s+(?:18|eighteen)\\s+yet\\b|underage\\b)`, "i");
+const OWN_ADULT_AGE = new RegExp(`${SELF}(?:${ADULT_WORD}\\b${QUANTITY}|an?\\s+${ADULT_WORD}[- ]?(?:year|yr)s?[- ]?old\\b)`, "i");
+const UNDER_18 = new RegExp(`${SELF}(?:under\\s+(?:18|eighteen)\\b${QUANTITY}|a\\s+minor\\b(?![\\s-]+(?:league|leaguer|key|chord|detail|thing|issue|injury|role|character|scale|change|setback|inconvenience|surgery|crash|fan))|not\\s+(?:18|eighteen)\\s+yet\\b|underage\\b)`, "i");
 const TEEN_PHRASE = /\b(?:i'?m|i am|im)\s+(?:a\s+)?(?:teen(?:ager)?|in (?:middle|high) school|a (?:freshman|sophomore|junior|senior) in high school)\b/i;
 // someone else's words: My sister said, "I'm 15"
 // someone else's words: My sister said, "I'm 15" — but "I told him I'm 15" is their own (Codex #640 r4)
@@ -25,7 +25,8 @@ function own(re: RegExp, t: string): boolean {
   for (const m of t.matchAll(g)) {
     const before = t.slice(0, m.index);
     // the nearest attribution before it decides (Codex #640 r5: 'mom said "Be honest" and I said "I'm 15"' is theirs)
-    const last = [...before.matchAll(ATTRIBUTION)].at(-1);
+    // an attribution inside a quote ("Dad said hi") is not the speaker of what follows the quote (Codex #640 r7)
+    const last = [...before.matchAll(ATTRIBUTION)].filter((a) => (before.slice(0, a.index).match(/"/g) ?? []).length % 2 === 0).at(-1);
     const tail = last ? before.slice(last.index! + last[0].length) : "";
     // fail-safe (Codex #640 r6): skipped only INSIDE an open quote that someone else said; an unquoted or closed-quote
     // age is theirs ("My mom said "hi", I'm 15"), and a doubtful case keeps the boundary (no flirting is the safe side)
@@ -36,7 +37,8 @@ function own(re: RegExp, t: string): boolean {
 }
 /** what one user line says about their own age */
 export function ageSays(line: string): AgeSay {
-  const t = line.replace(/[’‘]/g, "'").replace(/[“”]/g, '"');
+  // single quotes used as quotes (not apostrophes) count as quotes too (Codex #640 r7: My daughter said 'I'm 15')
+  const t = line.replace(/[“”]/g, '"').replace(/(^|[\s(,:])['‘’]/g, '$1"').replace(/['‘’](?=[\s.,!?;:)]|$)/g, '"').replace(/[’‘]/g, "'");
   return { minor: own(OWN_MINOR_AGE, t) || own(UNDER_18, t), adult: own(OWN_ADULT_AGE, t), teen: own(TEEN_PHRASE, t) };
 }
 /** a whole call's age picture: an explicit minor age always wins; a teen phrase only without an adult age */

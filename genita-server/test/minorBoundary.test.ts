@@ -28,3 +28,8 @@ test("Codex #640 r5: the nearest attribution decides", () => {
   assert.ok(minorLine(['My sister said, "I\'m 17", but I\'m 15.']));
   assert.equal(minorLine(['My sister said, "I\'m 15".']), null);
 });
+
+test("Codex #640 r7: nested quote attribution, single-quoted others, height, minor league, articled adult age", () => {
+  assert.ok(minorLine(['My mom said "Dad said hi", I\'m 15.']));
+  for (const t of ["I'm 30. My daughter said 'I'm 15'.", "I'm 30 and I'm 5'7\" tall.", "I'm a minor league baseball fan.", "I'm a 30-year-old and a teenager at heart"]) assert.equal(minorLine([t]), null, t);
+});
