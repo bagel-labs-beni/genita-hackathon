@@ -1,5 +1,8 @@
 import AVFoundation
 import os
+#if os(iOS)
+import UIKit
+#endif
 
 /// F4-L10 · Call audio: echo-cancelled mic → PCM s16le 24 kHz 80 ms frames, and a playback queue for the
 /// companion's PCM chunks that can be flushed at once (barge-in).
@@ -79,7 +82,7 @@ import os
     }
 
     func stop() {
-        flush()
+        flush(restart: false)
         micOpen = false
         pipeline?.enabled = false
         if engineHasMic { engine.inputNode.removeTap(onBus: 0) }
@@ -124,8 +127,7 @@ import os
         guard !floats.isEmpty, let buffer = AVAudioPCMBuffer(pcmFormat: playFormat, frameCapacity: AVAudioFrameCount(floats.count)) else { return }
         buffer.frameLength = AVAudioFrameCount(floats.count)
         floats.withUnsafeBufferPointer { buffer.floatChannelData![0].update(from: $0.baseAddress!, count: floats.count) }
-        if !engine.isRunning { try? engine.start() }
-        guard engine.isRunning else { log.error("engine not running; chunk dropped"); return }
+        guard ensureRunning(), Self.ready(player, in: engine) else { log.error("engine not running; chunk dropped"); return }
         let begin = schedule(buffer, utteranceId: utteranceId)
         if utteranceStart[utteranceId] == nil { utteranceStart[utteranceId] = begin }
         outputSpans.append(OutputSpan(start: begin, levels: VoiceLevel.steps(floats, stepSamples: OutputSpan.stepSamples)))
@@ -134,7 +136,7 @@ import os
 
     /// Puts one buffer at the end of the player's queue; returns the sample time it starts at.
     @discardableResult private func schedule(_ buffer: AVAudioPCMBuffer, utteranceId: Int) -> AVAudioFramePosition {
-        if !player.isPlaying { player.play() }
+        if !player.isPlaying { play(player) }
         let begin = max(scheduledEnd, nowSample() ?? 0)
         scheduledEnd = begin + AVAudioFramePosition(buffer.frameLength)
         let gen = generation
@@ -161,10 +163,9 @@ import os
               let buffer = AVAudioPCMBuffer(pcmFormat: playFormat, frameCapacity: AVAudioFrameCount(floats.count)) else { return }
         buffer.frameLength = AVAudioFrameCount(floats.count)
         floats.withUnsafeBufferPointer { buffer.floatChannelData![0].update(from: $0.baseAddress!, count: floats.count) }
-        if !engine.isRunning { try? engine.start() }
-        guard engine.isRunning else { return }
+        guard ensureRunning(), Self.ready(cuePlayer, in: engine) else { return }
         pipeline?.silence(for: Double(floats.count) / playFormat.sampleRate + 0.3)
-        if !cuePlayer.isPlaying { cuePlayer.play() }
+        if !cuePlayer.isPlaying { play(cuePlayer) }
         cuePlayer.scheduleBuffer(buffer, at: nil, options: .interrupts, completionHandler: nil)
     }
 
@@ -192,7 +193,11 @@ import os
     }
 
     /// Stop now and drop everything queued (utterance.cancelled, disconnect, background).
-    func flush() {
+    func flush() { flush(restart: true) }
+
+    /// `restart`: the player is left running for the next chunk (not when the call stops: TF 331 CRASH-1 played here
+    /// from a background expiry).
+    private func flush(restart: Bool) {
         stopCue()
         generation += 1
         if player.engine != nil { player.stop() }   // before start() the node has no engine
@@ -203,7 +208,7 @@ import os
         scheduled.removeAll()
         outputSpans.removeAll()
         scheduledEnd = 0
-        if engine.isRunning { player.play() }
+        if restart { play(player) }
         releaseMicIfIdle()
     }
 
@@ -291,7 +296,9 @@ import os
         engine.connect(cuePlayer, to: engine.mainMixerNode, format: playFormat)
         cuePlayer.volume = 0.6
         engine.prepare()
-        do { try engine.start(); player.play() } catch { log.error("engine start: \(error.localizedDescription, privacy: .public)") }
+        if Self.mayStartAudio() {
+            do { try engine.start(); play(player) } catch { log.error("engine start: \(error.localizedDescription, privacy: .public)") }
+        }
         log.info("engine built mic=\(self.engineHasMic) aec=\(self.voiceProcessing)")
         resume(carry, startOf: startOf)
     }
@@ -325,6 +332,48 @@ import os
     private func releaseMicIfIdle() {
         guard engineHasMic, !micOpen, queuedBuffers == 0 else { return }
         buildEngine(withMic: false)
+    }
+
+    // MARK: safe start (TF 331 CRASH-1)
+
+    /// iOS takes the audio away from an app without the audio background mode: in the background nothing starts
+    /// (the 14:25 crash played from a background-task expiry, the call hanging up).
+    static func mayStartAudio() -> Bool {
+        #if os(iOS)
+        return UIApplication.shared.applicationState != .background
+        #else
+        return true
+        #endif
+    }
+
+    /// The node can play: on this engine, connected to an output, the engine running.
+    static func ready(_ node: AVAudioPlayerNode, in engine: AVAudioEngine) -> Bool {
+        guard let owner = node.engine, owner === engine, engine.isRunning else { return false }
+        return !engine.outputConnectionPoints(for: node, outputBus: 0).isEmpty
+    }
+
+    /// Starts the engine for a chunk or a cue when it stopped (an interruption, a route change it did not rebuild for).
+    /// A node that lost its connection gets a fresh graph first. Never in the background.
+    private func ensureRunning() -> Bool {
+        guard Self.mayStartAudio() else { return false }
+        if engine.isRunning, Self.ready(player, in: engine) { return true }
+        if player.engine !== engine || engine.outputConnectionPoints(for: player, outputBus: 0).isEmpty {
+            buildEngine(withMic: engineHasMic)
+        } else if !engine.isRunning {
+            do { try engine.start() } catch { log.error("engine restart: \(error.localizedDescription, privacy: .public)") }
+        }
+        return engine.isRunning
+    }
+
+    /// play() raises an Objective-C exception (uncatchable in Swift, SIGABRT) when the engine is stopped or the node
+    /// is detached: only a ready node plays, and one that raises anyway is logged instead of taking the app down.
+    @discardableResult private func play(_ node: AVAudioPlayerNode) -> Bool {
+        guard Self.mayStartAudio(), Self.ready(node, in: engine) else { return false }
+        if let e = GenitaCatchObjC({ node.play() }) {
+            log.error("player.play raised \(e.name.rawValue, privacy: .public): \(e.reason ?? "", privacy: .public)")
+            return false
+        }
+        return true
     }
 
     private func observe() {
