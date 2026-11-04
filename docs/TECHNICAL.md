@@ -4,7 +4,7 @@ Part of the [Genita README](../README.md).
 
 ## Meta AI integration
 
-Every AI model Genita calls at runtime is a Meta model, with one on-device exception: on the iPhone, the "hold to say" field for editing your profile card uses Apple's on-device dictation (`SFSpeechRecognizer`). Paths are relative to this repository.
+Every AI model Genita calls at runtime is a Meta model, including the "hold to say" field for editing your profile card, which sends the clip to Muse Voice Transcribe through `POST /v1/transcribe`. Paths are relative to this repository.
 
 | Model (exact name) | Where it runs | Feature it powers | Input → processing → output | Why this model | Implementation |
 | --- | --- | --- | --- | --- | --- |
@@ -20,7 +20,7 @@ Notes:
 
 - **Muse Spark Open was tried, not used.** The server can send background JSON jobs (memory extraction, call summaries, profile writing) to Muse Spark Open (`meta-models/muse-spark-open-1026`) on Baseten, but in the production logs we measured Baseten never listed the model (`llm.spark_open status:"not_listed"`, HTTP 404), so every one of those jobs ran on Muse Spark 1.3. We do not count it as a model we use. Local mode does not contact Baseten.
 - **On the device.** App code draws the face from the Muse Image stills: [`FaceRenderer.swift`](../shared/GenitaKit/Sources/GenitaKit/Face/FaceRenderer.swift), [`FlowMorph.swift`](../shared/GenitaKit/Sources/GenitaKit/Face/FlowMorph.swift) (optical-flow blend between mouth shapes), [`LipTimeline.swift`](../shared/GenitaKit/Sources/GenitaKit/Lips/LipTimeline.swift). This is rule code, not a model.
-- **Operating-system features, not AI model calls:** Sign in with Apple; ARKit and Apple Vision rectangle detection (finding the Mac screen for the move); Multipeer Connectivity and Core Bluetooth (devices nearby); ScreenCaptureKit (Mac window share); Apple's on-device dictation (`SFSpeechRecognizer`) in the hold-to-speak field when you correct a profile card. The apps never speak with the system voice: the companion is heard only in its server voice.
+- **Operating-system features, not AI model calls:** Sign in with Apple; ARKit and Apple Vision rectangle detection (finding the Mac screen for the move); Multipeer Connectivity and Core Bluetooth (devices nearby); ScreenCaptureKit (Mac window share). The apps never speak with the system voice: the companion is heard only in its server voice.
 - **Development tools are not runtime.** We used AI coding assistants while writing code. Genita does not call them, or ChatGPT, Claude or any non-Meta AI, at runtime. The profile you import is text you chose to copy from your own assistant.
 
 ## What we built on top of the Meta models
