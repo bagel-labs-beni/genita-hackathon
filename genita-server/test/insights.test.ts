@@ -1000,3 +1000,10 @@ test("Codex #581 recut r2 P1: a list item named inside a paste quote is linked t
   const got = linkSources(card, { evidence: [{ source: "import", quote: "I like spicy food.", source_label: "x" }, { source: "answer", quote: "Minimal", source_label: "x" }], chips: [] } as never);
   assert.deepEqual(got, [{ section: "likes", text: "Food: spicy, seafood.", item: "spicy" }, { section: "likes", text: "Style: Minimal." }]);
 });
+
+test("Codex #581 recut r3 P1: a one-item line named inside a paste quote is linked too", async () => {
+  const { linkSources } = await import("../src/insights/report.ts");
+  const card = { sections: { likes: [{ text: "Food: spicy." }, { text: "Style: Minimal." }] } } as never;
+  const got = linkSources(card, { evidence: [{ source: "import", quote: "I like spicy food.", source_label: "x" }, { source: "answer", quote: "Minimal", source_label: "x" }], chips: [] } as never);
+  assert.deepEqual(got, [{ section: "likes", text: "Food: spicy." }, { section: "likes", text: "Style: Minimal." }]);
+});

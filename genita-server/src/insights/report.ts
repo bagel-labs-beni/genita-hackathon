@@ -296,7 +296,8 @@ export function linkSources(card: Pick<StyleCard, "sections">, o: Pick<Observati
       // cited, its pick's line, said whole, or the whole line inside a longer quote ("usually asks for two or three
       // options before deciding" ⊃ "Asks for two or three options before deciding.")
       if (basis.has(line) || mapped.has(line) || exact.includes(line) || (line.split(" ").length >= 3 && exact.some((q) => wordIn(line, q))) || inLine.some((q) => wordIn(q, line))) { add({ section, text: f.text }); continue; }
-      if (parts.length === 1 && exact.includes(norm(parts[0]))) add({ section, text: f.text });
+      // a one-item list line too: said whole, or named inside a paste quote (Codex #581 recut r3 P1)
+      if (parts.length === 1 && (exact.includes(norm(parts[0])) || pasteQ.some((q) => wordIn(norm(parts[0]), q)))) add({ section, text: f.text });
     }
   }
   return out;
