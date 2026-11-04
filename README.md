@@ -1,35 +1,67 @@
+<div align="center">
+
 # Genita
 
-> **Everything in this demo was built during the hackathon on Meta models; none of our earlier products' code is used.** Genita is a new app, first commit October 31, 2026. The only third-party code is open-source libraries, listed in [Credits](#credits).
+### Easy to start. Personal from the first hello.
 
-### Easy to start, personal from the first hello: Genita is the AI companion that already knows you, sees what you see, and follows you from iPhone to Mac.
+**The AI companion that already knows you, sees what you see, and follows you from iPhone to Mac.**
 
-Genita is a face-to-face video call with an AI companion. It starts out knowing you from the AI assistant you already use, looks through your camera and your Mac screen with you, answers with cards you can act on, and carries the same conversation from your iPhone to your Mac.
+<br/>
 
-**Five Meta models power Genita: Muse Spark, Muse Voice Transcribe, Muse Image, SAM 3.1 and SeamlessM4T v2.** We built all of it during the Meta Global AI Developer Hackathon.
+[![Download on TestFlight](https://img.shields.io/badge/iPhone-TestFlight-0D96F6?style=for-the-badge&logo=apple&logoColor=white)](https://testflight.apple.com/join/Ybqh482p)
+[![Download for Mac](https://img.shields.io/badge/Mac-Download%20DMG-111111?style=for-the-badge&logo=apple&logoColor=white)](https://bagel-labs-beni.github.io/genita-legal/mac/Genita-latest.dmg)
+[![Watch the demo](https://img.shields.io/badge/Demo-3%20min-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://youtu.be/O2b4_xFajqE)
+
+**Judge access code: `GENITA-3ANZMN`** · tap **Judge access** on the first screen, no Apple ID or email needed
+
+![Muse Spark](https://img.shields.io/badge/Meta-Muse%20Spark%201.3-0467DF?logo=meta&logoColor=white)
+![Muse Voice Transcribe](https://img.shields.io/badge/Meta-Muse%20Voice%20Transcribe-0467DF?logo=meta&logoColor=white)
+![Muse Image](https://img.shields.io/badge/Meta-Muse%20Image%201.0-0467DF?logo=meta&logoColor=white)
+![SAM 3.1](https://img.shields.io/badge/Meta-SAM%203.1-0467DF?logo=meta&logoColor=white)
+![SeamlessM4T v2](https://img.shields.io/badge/Meta-SeamlessM4T%20v2-0467DF?logo=meta&logoColor=white)
 
 **Track:** Startups · **Topic:** Build for Your World
 
-| Try it | |
-| --- | --- |
-| 📱 iPhone (TestFlight) | **https://testflight.apple.com/join/Ybqh482p** |
-| 💻 Mac (notarized DMG) | **https://bagel-labs-beni.github.io/genita-legal/mac/Genita-latest.dmg** |
-| 🔑 Judge access code | **`GENITA-3ANZMN`**: tap **Judge access** on the first screen. No Apple ID or email needed. |
-| 🎬 Demo video (3 min) | **https://youtu.be/O2b4_xFajqE** |
+</div>
+
+> **Everything in this demo was built during the hackathon on Meta models; none of our earlier products' code is used.** Genita is a new app, first commit October 31, 2026. The only third-party code is open-source libraries, listed in [Credits](#credits).
 
 ---
 
-## Why we built it
+## The pitch
 
-For a lot of people, ChatGPT is already a friend: they talk to it every day about what to cook, what to wear and what they're watching. **We want to build the most emotive, adaptive companion for daily life**: one with a face and a voice, that reacts to you, adapts to who you are, and is there on whatever screen you're using.
+For a lot of people, ChatGPT is already a friend. They talk to it every day about what to cook, what to wear and what they're watching. But it lives in a text box, forgets who you are the moment you open a new app, and can't see anything you see.
 
-Today three things still break:
+**We are building the most emotive, adaptive companion for daily life.** A face and a voice you chose. A friend who reacts to you, adapts to who you are, and is there on whatever screen you're using.
 
-1. **Every new AI starts from zero.** You introduce yourself again and again.
-2. **It can't see your world.** You describe your fridge, your outfit or your screen in words.
-3. **The conversation dies when you switch devices.** Phone to laptop means starting over.
+<table>
+<tr>
+<td width="33%" valign="top">
 
-Genita fixes all three in a single call, on two devices.
+### 🧠 It knows you
+Bring one reply from the AI you already use. From the first hello, Genita talks like someone who knows your taste, and it keeps learning from every call.
+
+</td>
+<td width="33%" valign="top">
+
+### 👀 It sees with you
+Point your camera or share your Mac screen. It names what it sees, outlines it, and answers with cards you can act on.
+
+</td>
+<td width="33%" valign="top">
+
+### 🔁 It follows you
+Start on your iPhone, move to your Mac with one tap. Same companion, same conversation, never two devices talking at once.
+
+</td>
+</tr>
+</table>
+
+### At a glance
+
+| **5** | **1** | **2.7 s** | **2** | **0** |
+| :---: | :---: | :---: | :---: | :---: |
+| Meta models working together in one call | photo to make a talking face, no video model | median from your last word to its first word | devices, one conversation | shop links it didn't actually open |
 
 ## Everything Genita does
 
@@ -205,7 +237,7 @@ The full source (iOS and Mac apps in SwiftUI, the Node/TypeScript server, the GP
 
 ## Team
 
-We're Summer and Dyno, a two-person team that has been building together since we met through hackathons in 2020. We're both full-stack builders: between the two of us we designed, coded and shipped every part of Genita, from the iOS and Mac apps to the server, the Meta model pipelines and the cloud deployment. We bring together experience in AI products, product strategy and commercialization.
+We're Summer and Dyno, a two-person team that has been building together since we met through hackathons in 2020. We're both full-stack builders: between the two of us we designed, coded and shipped every part of Genita, from the iOS and Mac apps to the server, the Meta model pipelines and the cloud deployment. We bring together experience in AI products, product strategy and commercialization. Our team also runs Beni, a separate companion app used by 33,000 people; that is where we learned what people want from a companion, and Genita is the new product we built from scratch for this hackathon.
 
 **Summer (Chaeeun Lee)** · Founder & Product Lead · Full-stack builder · [X: @dearsummer0](https://x.com/dearsummer0)
 Founder and CEO of Bagel Labs, the company behind Beni and Genita. Previously Lead Product Manager at Supertone, HYBE's AI audio subsidiary, and Founding Product Owner at Modhaus. Her background spans consumer AI, voice technology, and taking products from early concept to launch, and she writes the code herself, across the apps, the server and the AI pipelines.
