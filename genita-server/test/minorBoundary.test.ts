@@ -67,3 +67,8 @@ test("Codex #640 r12: 'N years out of / away from' is a span; 'not quite 18 yet'
   for (const t of ["I'm 5 years out of college", "I'm 10 years away from retirement", "I'm 14 years into my career"]) assert.equal(minorLine([t]), null, t);
   for (const t of ["I'm not quite 18 yet", "I haven't turned 18 yet", "I'm 16 from California", "I'm 15 years old.", "I'm 15 years of age"]) assert.ok(minorLine([t]), t);
 });
+
+test("Codex #640 r14: 'almost 18', 'turn 18 tomorrow' are minors; '10 or so minutes', '5-ish minutes' are not ages; 'was like' quotes someone else", () => {
+  for (const t of ["I'm almost 18", "I turn 18 tomorrow", "I'm turning 18 next month", "I was like, \"I'm 16, leave me alone.\""]) assert.ok(minorLine([t]), t);
+  for (const t of ["I'm 10 or so minutes away", "I'm 5-ish minutes away", "My daughter was like, \"I'm 16, leave me alone.\"", "she's like \"I'm 15\" lol", "I'm 25"]) assert.equal(minorLine([t]), null, t);
+});
