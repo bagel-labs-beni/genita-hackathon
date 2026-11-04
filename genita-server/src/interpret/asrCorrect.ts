@@ -80,6 +80,9 @@ export function acceptCorrection(raw: string, answer: string): string | null {
   const ratio = [...b].length / len;
   if (ratio < 0.6 || ratio > 1.5) return null;
   if (editDistance(a, b) > Math.max(1, Math.ceil(len * 0.34))) return null;
+  // amounts and quantities are never "misheard syllables": 30만원 → 300만원 is a different sentence
+  const digits = (s: string) => (s.match(/[\d.,]+/g) ?? []).map((d) => d.replace(/[.,]+$/, "")).filter((d) => /\d/.test(d)).join(" ");
+  if (digits(raw) !== digits(fixed)) return null;
   return fixed;
 }
 
@@ -100,20 +103,22 @@ export async function correctKorean(
   opts.signal.addEventListener("abort", onAbort, { once: true });
   let timer: NodeJS.Timeout | null = null;
   const timeout = new Promise<"timeout">((r) => (timer = setTimeout(() => r("timeout"), opts.timeoutMs)));
-  const run = (async (): Promise<string> => {
+  // a cut or failed answer (incomplete, stream_ended, …) would drop the rest of the line: only "completed" counts
+  const run = (async (): Promise<string | null> => {
     let text = "";
-    const req: SparkRequest = { instructions: buildCorrectionInstructions(), input: buildCorrectionInput(raw, context), maxOutputTokens: 80 };
+    const req: SparkRequest = { instructions: buildCorrectionInstructions(), input: buildCorrectionInput(raw, context), maxOutputTokens: Math.min(400, 40 + [...raw].length * 3) };
     for await (const ev of translate(req, ac.signal)) {
       if (ev.type === "text") text += ev.delta;
-      else if (ev.type === "done") return ev.text || text;
+      else if (ev.type === "done") return ev.status === "completed" ? ev.text || text : null;
     }
-    return text;
+    return null;
   })();
   try {
     const out = await Promise.race([run, timeout]);
     const ms = Math.round(opts.now() - t0);
     if (opts.signal.aborted) return { text: null, ms, outcome: "aborted" };
     if (out === "timeout") return { text: null, ms, outcome: "timeout" };
+    if (out === null) return { text: null, ms, outcome: "rejected" };
     if (out.trim() === raw.trim()) return { text: null, ms, outcome: "unchanged" };
     const fixed = acceptCorrection(raw, out);
     return fixed ? { text: fixed, ms, outcome: "changed" } : { text: null, ms, outcome: "rejected" };

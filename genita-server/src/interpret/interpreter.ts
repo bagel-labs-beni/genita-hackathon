@@ -33,7 +33,7 @@ import { SentenceSplitter } from "../text/sentences.ts";
 import { Eager } from "../util/eager.ts";
 import { containment, detectLanguage, type Speaker } from "./language.ts";
 import { buildTranslateInstructions } from "./prompt.ts";
-import { CORRECT_CONTEXT_LINES, correctKorean, type ContextLine } from "./asrCorrect.ts";
+import { CORRECT_CONTEXT_LINES, correctKorean, type ContextLine, type CorrectResult } from "./asrCorrect.ts";
 
 export type Channel = "mic" | "call";
 
@@ -270,7 +270,9 @@ export class Interpreter {
       const rawAbort = abort;
       abort = new AbortController();
       abort.signal.addEventListener("abort", () => rawAbort.abort(), { once: true });
-      stream = this.corrected(bubble, line, context, stream, rawAbort, abort.signal, r.from, r.to, this.asrCorrect.timeoutMs);
+      // asked now, not when the job reaches the head of the queue, so queued lines don't add up waits
+      const fix = correctKorean((req, s) => this.host.translate(req, s), clean, context, { timeoutMs: this.asrCorrect.timeoutMs, signal: abort.signal, now: () => this.host.now() });
+      stream = this.corrected(bubble, line, fix, stream, rawAbort, abort.signal, r.from, r.to);
     }
     this.enqueue(bubble, stream, abort, speculative, { speechEndAt, completeAt, startAt: completeAt }, r.to);
   }
@@ -287,16 +289,15 @@ export class Interpreter {
   private async *corrected(
     bubble: Bubble,
     line: ContextLine,
-    context: ContextLine[],
+    fix: Promise<CorrectResult>,
     raw: AsyncIterable<SparkStreamEvent>,
     rawAbort: AbortController,
     signal: AbortSignal,
     from: Lang,
     to: Lang,
-    timeoutMs: number,
   ): AsyncGenerator<SparkStreamEvent> {
     const original = line.text;
-    const res = await correctKorean((req, s) => this.host.translate(req, s), original, context, { timeoutMs, signal, now: () => this.host.now() });
+    const res = await fix;
     if (signal.aborted) return;
     this.host.log("interpret.asr_correct", { outcome: res.outcome, ms: res.ms, chars: [...original].length });
     if (!res.text) return yield* raw;

@@ -176,3 +176,40 @@ test("asr correct: correctKorean resolves within the timeout and passes the cont
   assert.equal(input, buildCorrectionInput("대다 안 되나", [{ speaker: "them", lang: "Korean", text: "만나서 얘기할까요?" }]));
   assert.match(input, /- B \(Korean\): 만나서 얘기할까요\?\n\nUtterance: 대다 안 되나$/);
 });
+
+test("asr correct: numbers must survive (30만원 → 300만원 is not a slip)", () => {
+  assert.equal(acceptCorrection("이거 30만원 맞아요?", "이거 300만원 맞아요?"), null);
+  assert.equal(acceptCorrection("약은 0.5mg씩 먹어요.", "약은 50mg씩 먹어요."), null);
+  assert.equal(acceptCorrection("3시에 대다 안 되나", "3시에 대면 안 되나"), "3시에 대면 안 되나");
+});
+
+test("asr correct: a cut answer (status incomplete) keeps the raw line", async () => {
+  const r = await correctKorean(
+    () => (async function* (): AsyncGenerator<SparkStreamEvent> {
+      yield { type: "text", delta: "대면 안" };
+      yield { type: "done", responseId: null, text: "대면 안", status: "incomplete" };
+    })(),
+    "대다 안 되나",
+    [],
+    { timeoutMs: 300, signal: new AbortController().signal, now: () => Date.now() },
+  );
+  assert.equal(r.text, null);
+  assert.equal(r.outcome, "rejected");
+});
+
+test("asr correct: queued Korean lines ask for their corrections at once (waits don't add up)", async () => {
+  const asked: number[] = [];
+  const t0 = Date.now();
+  const h = harness({
+    asrCorrect: { timeoutMs: 1000 },
+    fix: (raw) => {
+      asked.push(Date.now() - t0);
+      return { out: raw, delayMs: 150 };
+    },
+  });
+  h.say("대다 안 되나");
+  h.say("내일 만나면 되지");
+  await h.done();
+  assert.equal(asked.length, 2);
+  assert.ok(asked[1] < 100, `second correction asked at ${asked[1]} ms, not after the first finished`);
+});
