@@ -157,10 +157,15 @@ export class Insights {
    * stored and says which card (its importedAt). Saved only onto the card it was made from, only if no newer write
    * started for this user meanwhile (Codex P1/P2), and filtered again by the latest "not me" list; "right" carries over.
    */
-  private start(userId: string, from: InsightReport["from"], inputsOf: (card: StyleCard | null) => InsightInputs | null, opts: { gate?: Promise<string | null>; settings?: InsightReport["settings"] } = {}) {
-    if (!this.enabled) return;
+  private reserve(userId: string): number {
     const mine = ++this.seqNext;
     this.seq.set(userId, mine);
+    return mine;
+  }
+
+  private start(userId: string, from: InsightReport["from"], inputsOf: (card: StyleCard | null) => InsightInputs | null, opts: { gate?: Promise<string | null>; settings?: InsightReport["settings"]; seq?: number } = {}) {
+    if (!this.enabled) return;
+    const mine = opts.seq ?? this.reserve(userId);
     const promise = (async () => {
       // import: the card isn't there yet — the paste is the source
       const card = opts.gate ? null : await this.store.getStyle(userId);
@@ -205,7 +210,8 @@ export class Insights {
         if (this.jobs.get(userId)?.promise === promise) this.jobs.delete(userId);
         // the last write is done (saved, failed or stale): the report is no longer "refreshing"
         if (this.seq.get(userId) === mine) {
-          await this.personalize.patchStyle(userId, (c) => (c.insights?.refreshing ? { ...c, insights: { ...c.insights, refreshing: false } } : null)).catch(() => {});
+          // checked again under the lock: newer answers may have reserved and set it meanwhile (Codex P2)
+          await this.personalize.patchStyle(userId, (c) => (c.insights?.refreshing && this.seq.get(userId) === mine ? { ...c, insights: { ...c.insights, refreshing: false } } : null)).catch(() => {});
         }
       });
     this.jobs.set(userId, { promise, startedAt: Date.now() });
@@ -235,10 +241,13 @@ export class Insights {
     const a = answers as Record<string, unknown>;
     const settings = settingsFrom(a);
     const answerPicks = picksFromAnswers(a);
-    // demo P0 (11/4): the rewrite takes 15–50 s, SUM opens seconds later. The answers' own parts (the four setup lines,
-    // "Your mix") go on the stored report now, marked refreshing; the traits follow when Spark lands.
+    // demo P0 #1 (11/4): the rewrite took 27–51 s while the app waited ~18 s, so SUM sat on the import-only report.
+    // The answers' own parts (the four setup lines, "Your mix") go on the stored report now, marked refreshing (the
+    // app shows "Adding your answers…" and keeps asking ~60 s); the traits follow from ONE minimal-effort Spark write.
+    // The write's turn is reserved before the patch, so an older write ending meanwhile can't clear the new flag (Codex P2).
+    const mine = this.enabled ? this.reserve(userId) : 0;
     if (this.enabled) {
-      await this.personalize.patchStyle(userId, (c) => (c.insights ? { ...c, insights: { ...c.insights, settings, mix: mixFrom([...cardPicks(c), ...answerPicks]), refreshing: true } } : null));
+      await this.personalize.patchStyle(userId, (c) => (c.insights && this.seq.get(userId) === mine ? { ...c, insights: { ...c.insights, settings, mix: mixFrom([...cardPicks(c), ...answerPicks]), refreshing: true } } : null));
     }
     this.start(userId, "answers", (card) => {
       if (!card) return null;
@@ -258,7 +267,7 @@ export class Insights {
         unknowns: card.toConfirm,
         quick: true,
       };
-    }, { settings });
+    }, { settings, seq: mine });
   }
 
   /** GET: the stored report, after waiting up to waitMs for one being written. No report and no write → one starts from the card. */
@@ -268,6 +277,11 @@ export class Insights {
     if (!job) {
       const card = await this.store.getStyle(userId);
       if (!card) return { status: "none", report: null };
+      if (card.insights?.refreshing) {
+        // nothing is writing it any more (a restart): the flag goes, so the app stops waiting (Codex P2)
+        const fixed = await this.personalize.patchStyle(userId, (c) => (c.insights?.refreshing && !this.jobs.has(userId) ? { ...c, insights: { ...c.insights, refreshing: false } } : null));
+        return { status: "ready", report: publicReport(fixed?.insights ?? { ...card.insights, refreshing: false }) };
+      }
       if (card.insights) return { status: "ready", report: publicReport(card.insights) };
       const failed = this.failedAt.get(userId);
       if (failed && Date.now() - failed < FAIL_BACKOFF_MS) return { status: "failed", report: null };

@@ -270,6 +270,9 @@ export function linkSources(card: Pick<StyleCard, "sections">, o: Pick<Observati
   const mapped = new Set(picks.map((q) => SKIP_REPLIES[q] ?? SKIP_AVOID_TEXT[q.toLowerCase()] ?? N3_CHATS_NO[q.toLowerCase()]).filter(Boolean).map((t) => norm(t!)));
   const exact = [...picks, ...(o.chips ?? []).map((c) => c.label), ...o.evidence.filter((e) => e.source !== "answer").map((e) => e.quote)].map((q) => norm(q)).filter(Boolean);
   const basis = new Set((o.basis ?? []).map((t) => norm(t)));
+  // demo P0 #2 (11/4): a paste quote of 3+ words said whole inside a line ("tomato soup on rainy days" in "Loves tomato
+  // soup on rainy days.") is that line — the import's report cites the paste, not the card, so this was its only link
+  const inLine = o.evidence.filter((e) => e.source === "import").map((e) => norm(e.quote)).filter((q) => q.split(" ").length >= 3);
   for (const [section, list] of Object.entries(card.sections ?? {})) {
     if (!Array.isArray(list) || OPERATIONAL.has(section)) continue;
     for (const f of list as Array<{ text: string }>) {
@@ -286,7 +289,7 @@ export function linkSources(card: Pick<StyleCard, "sections">, o: Pick<Observati
       }
       // cited, its pick's line, said whole, or the whole line inside a longer quote ("usually asks for two or three
       // options before deciding" ⊃ "Asks for two or three options before deciding.")
-      if (basis.has(line) || mapped.has(line) || exact.includes(line) || (line.split(" ").length >= 3 && exact.some((q) => wordIn(line, q)))) { add({ section, text: f.text }); continue; }
+      if (basis.has(line) || mapped.has(line) || exact.includes(line) || (line.split(" ").length >= 3 && exact.some((q) => wordIn(line, q))) || inLine.some((q) => wordIn(q, line))) { add({ section, text: f.text }); continue; }
       if (parts.length === 1 && exact.includes(norm(parts[0]))) add({ section, text: f.text });
     }
   }

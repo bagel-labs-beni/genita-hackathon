@@ -884,7 +884,8 @@ test("demo P0: setup answers land on the stored report at once (settings, mix, r
   assert.equal(now.report!.settings!.why, "Be there");
   assert.ok(now.report!.mix.some((m) => m.id === "pace"), "Your mix from the answers");
   assert.equal(now.report!.refreshing, true);
-  const sent = h.calls.at(-1)!;
+  await new Promise((r) => setTimeout(r, 30)); // the rewrite reads the card, then sends
+  const sent = h.calls.filter((c) => c.schemaName === "insight_report").at(-1)!;
   assert.equal((sent as unknown as { effort?: string }).effort, "minimal", "quick rewrite");
   release();
   const done = await h.ins.get("u1", 3000);
@@ -902,4 +903,68 @@ test("demo P0: setup answers land on the stored report at once (settings, mix, r
   await h2.ins.get("u1", 3000);
   await new Promise((r) => setTimeout(r, 30));
   assert.ok(!(await h2.store.getStyle("u1"))!.insights!.refreshing);
+});
+
+test("demo P0 #1 (Codex P2): an older write failing while new answers land doesn't clear their 'refreshing'", async (t) => {
+  let failOld!: () => void;
+  const oldGate = new Promise<void>((r) => (failOld = r));
+  let n = 0;
+  let releaseNew!: () => void;
+  const newGate = new Promise<void>((r) => (releaseNew = r));
+  const h = harness(async (req) => {
+    if (req.schemaName !== "insight_report") return null;
+    const k = n++;
+    if (k === 0) return RAW; // the import's report
+    if (k === 1) { await oldGate; throw new Error("504"); } // the first answers' rewrite: fails late
+    await newGate; return RAW; // the second answers' rewrite
+  });
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  await h.ins.get("u1", 3000);
+  await h.ins.fromAnswers("u1", { help: "Be there" });
+  await new Promise((r) => setTimeout(r, 30));
+  // the old write fails while the new answers are being saved
+  const second = h.ins.fromAnswers("u1", { help: "Be there", pace: 4 });
+  failOld();
+  await second;
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal((await h.ins.get("u1", 0)).report!.refreshing, true, "still adding the newer answers");
+  releaseNew();
+  const done = await h.ins.get("u1", 3000);
+  assert.ok(!done.report!.refreshing);
+  assert.equal(h.calls.filter((c) => c.schemaName === "insight_report").length, 3, "one rewrite per answers POST, no second try");
+});
+
+test("demo P0 #2: 'Not quite' / Remove takes the profile lines the trait rests on out of the call profile", async (t) => {
+  const SOUP = "Loves tomato soup on rainy days.";
+  const card = toStyleCard({ sections: { tendencies: [f("Asks for two or three options before deciding.")], communication: [f("Jokes even in work threads.")], response: [], help: [], support: [], interests: [], likes: [f(SOUP), f("Style: Clean, minimal clothes.")], boundaries: [], approach: [] }, rules: [], to_confirm: [] }, "import");
+  const raw = { ...RAW, observations: [...RAW.observations, obs({ category: "taste", claim: "You make rain an excuse for soup.", evidence: [ev("import", "tomato soup on rainy days")], surprise: 1, use_in_call: "I'll bring up soup when it rains." })] };
+  const h = harness(() => raw);
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", `${PASTE}\n- ${SOUP}`);
+  job.commit(await h.p.replaceStyle("u1", card));
+  const r = (await h.ins.get("u1", 3000)).report!;
+  const soup = r.observations.find((o) => /soup/.test(o.claim))!;
+  assert.match(styleProfileText((await h.store.getStyle("u1"))!), /tomato soup/);
+  await h.ins.verdict("u1", soup.id, { verdict: "not_me" });
+  const after = (await h.store.getStyle("u1"))!;
+  assert.ok(!after.sections.likes.some((x) => /tomato/.test(x.text)), "the source line left the profile");
+  assert.ok(!/tomato soup on rainy/i.test(styleProfileText(after).split("Never bring")[0]), "not a fact in the call profile");
+  assert.ok(after.sections.likes.some((x) => /Clean, minimal/.test(x.text)), "other lines stay");
+  assert.ok(after.sections.tendencies.length === 1, "an unrelated section stays");
+});
+
+test("demo P0 #1 (Codex P2): a 'refreshing' flag left by a restart (no write running) is cleared on read", async (t) => {
+  const h = harness(() => RAW);
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  await h.ins.get("u1", 3000);
+  // a restart: the flag is stored, no write runs
+  await h.p.patchStyle("u1", (c) => ({ ...c, insights: { ...c.insights!, refreshing: true } }));
+  const fresh = new Insights({ json: h.json!, personalize: h.p, store: h.store });
+  const r = await fresh.get("u1", 0);
+  assert.equal(r.report!.refreshing, false);
+  assert.ok(!(await h.store.getStyle("u1"))!.insights!.refreshing);
 });
