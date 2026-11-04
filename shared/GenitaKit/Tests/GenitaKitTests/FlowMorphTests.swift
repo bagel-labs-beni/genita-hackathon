@@ -452,6 +452,16 @@ struct FramingTests {
     }
 }
 
+struct ChinWarpTests {
+    /// Prep sends `chinWarp` for animals (px, springMs, from, sideW); a bad block keeps the defaults, values are clamped.
+    @Test func chinWarpDecodes() throws {
+        let m = try JSONDecoder().decode(FlowMap.self, from: Data(#"{"ladder":{"viseme":"A","steps":[["AH",0]],"gain":[1,0]},"mix":{},"consonant":{},"consonantJaw":{"key":"AH","from":0.5,"gain":0},"fallback":{},"smoothing":{"fps":25,"attack":0.7,"release":0.5},"focus":1,"colourEdge":0.2,"chinWarp":{"px":7,"springMs":170,"from":"lip","sideW":0.2}}"#.utf8))
+        #expect(m.chinWarp?.px == 7 && m.chinWarp?.springMs == 170 && m.chinWarp?.sideW == 0.2)
+        let bad = try JSONDecoder().decode(FlowMap.ChinWarp.self, from: Data(#"{"px":99,"sideW":"x"}"#.utf8))
+        #expect(bad.px == 20 && bad.sideW == 0.2)
+    }
+}
+
 struct RigRobustnessTests {
     /// Codex P2: a rig / framing / alive block of the wrong shape keeps the rest of the map.
     @Test func aBadOptionalBlockKeepsTheMap() throws {
