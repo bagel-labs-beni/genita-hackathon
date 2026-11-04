@@ -62,6 +62,7 @@ extension AppState {
     func restoreCompanion(for request: OnboardingSessionGeneration.Snapshot? = nil) async {
         let launchRequest = launchAuthSnapshot
         let request = request ?? onboardingSnapshot()
+        let forgets = profileForgets   // a "Forget all of this" while this reads: its profile is old (Codex #583 r20)
         guard let c = try? await onboarding.companion(), launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled,
               ownsOnboardingResponse(request) else { return }
         setup.companionName = c.name
@@ -71,7 +72,7 @@ extension AppState {
         setup.companionDemo = c.demo
         if let p = c.session?.persona { setup.serverPersona = p }
         // a "Forget all of this" not yet confirmed: never bring the profile back onto the phone (Codex #583 r19)
-        if setup.forgetPending != true, let profile = c.session?.user?.profile, !profile.isEmpty { setup.styleProfile = profile }
+        if setup.forgetPending != true, profileForgets == forgets, let profile = c.session?.user?.profile, !profile.isEmpty { setup.styleProfile = profile }
         prep = c.prep
         // the face on this phone: the companion's call scene (the original photo isn't downloadable)
         // (Meta-only `sceneUrl` is a token-protected server path, so it goes through the account client)
