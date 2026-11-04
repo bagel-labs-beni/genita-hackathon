@@ -77,10 +77,11 @@ struct MacConversationView: View {
                         // iPhone S09 HUD A (#530) on the Mac: a glass tile at the bottom left, 16 from the edge, its
                         // bottom on the control rail's bottom (724 + 82); camera on grows it 72×96 → 108×144
                         selfView.frame(width: selfSize.width, height: selfSize.height)
-                            .position(x: 16 + selfSize.width / 2, y: 806 - selfSize.height / 2 - railShift).opacity(sheetCovers ? 0 : 1)
+                            .position(x: 16 + selfSize.width / 2, y: selfBottom - selfSize.height / 2).opacity(selfCovered ? 0 : 1)
                             .animation(reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.85), value: call.cameraOn)
                             // camera boxes: the tile grows 2.2× (bottom-left anchored) while the server's boxes show, back when they fade
                             .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.86), value: boxesShown)
+                            .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.86), value: boxesOverSheet)
                     } else {
                         selfView.position(x: 87.5, y: 700.5 - railShift).opacity(sheetCovers ? 0 : 1)
                     }
@@ -271,8 +272,18 @@ struct MacConversationView: View {
     /// Camera boxes (iPhone CAM-H on the Mac's self view): grown 2.2× (238×317) while they show, so the boxes read.
     private var selfSize: CGSize {
         guard call.cameraOn else { return CGSize(width: 72, height: 96) }
-        return boxesShown ? CGSize(width: 238, height: 317) : CGSize(width: 108, height: 144)
+        guard boxesShown else { return CGSize(width: 108, height: 144) }
+        guard boxesOverSheet else { return CGSize(width: 238, height: 317) }
+        // over a rising / half sheet: as big as fits between the top HUD row and the sheet top, 3:4 kept
+        let h = max(96, min(317, selfBottom - (topRowY + 23 + 12)))
+        return CGSize(width: (h * 3 / 4).rounded(), height: h.rounded())
     }
+    /// The recipe sheet goes straight to half: while the boxes show, the grown tile sits 12 above the sheet's top
+    /// instead of hiding under it (full still hides it); back to the normal rule when they fade.
+    private var boxesOverSheet: Bool { MacDesignV2.enabled && boxesShown && linkOpened == nil && [.rising, .half].contains(call.finds.state) }
+    private var selfCovered: Bool { sheetCovers && !boxesOverSheet }
+    /// The self tile's bottom edge: the control rail's bottom (806, moved up over searching / peek), or above the sheet.
+    private var selfBottom: CGFloat { boxesOverSheet ? 844 - call.finds.state.macHeight - 12 : 806 - railShift }
     /// The server found items in the camera picture and they are on screen (fade 4 s after, CameraBoxes).
     private var boxesShown: Bool { call.cameraOn && call.finds.boxes.visible && !call.finds.boxes.boxes.isEmpty }
     @ViewBuilder private var selfView: some View {
