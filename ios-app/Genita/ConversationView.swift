@@ -534,6 +534,8 @@ struct CallGlassControl: View {
     let icon: String
     var size: CGFloat
     var slashed = false
+    /// mic / camera off: the SF Symbols slash glyph instead of the bitmap (GlassGlyph.offSymbol)
+    var off = false
     var body: some View {
         ZStack {
             if #available(iOS 26.0, *) {
@@ -546,6 +548,8 @@ struct CallGlassControl: View {
             // glyph = 55 % of the circle (GlassGlyph); ⋮ as three dots
             if icon == GlassGlyph.moreIcon {
                 GlassDots(diameter: size)
+            } else if off, let symbol = GlassGlyph.offSymbol(for: icon) {
+                GlassOffSymbol(name: symbol, diameter: size)
             } else if let url = Bundle.main.url(forResource: icon, withExtension: "png"), let image = UIImage(contentsOfFile: url.path) {
                 let g = GlassGlyph.size(pixels: CGSize(width: image.size.width * image.scale, height: image.size.height * image.scale), diameter: size)
                 Image(uiImage: image).resizable().frame(width: g.width, height: g.height)

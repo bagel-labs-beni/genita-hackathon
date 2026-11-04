@@ -327,7 +327,7 @@ struct CallToggleGlass: View {
     let on: Bool
     var body: some View {
         ZStack {
-            CallGlassControl(icon: icon, size: CallHUDGrid.button)
+            CallGlassControl(icon: icon, size: CallHUDGrid.button, off: !on)
             if on {
                 Circle().fill(CallInk.onInk)
                 if let url = Bundle.main.url(forResource: icon, withExtension: "png"), let image = UIImage(contentsOfFile: url.path) {
