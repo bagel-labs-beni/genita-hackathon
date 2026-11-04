@@ -23,6 +23,8 @@ extension AppState {
     /// `afterSignIn`: a returning account goes to its call even if A03's Next was already tapped.
     /// Token, authentication lifetime and cancellation are checked after each request.
     func routeOnLaunch(afterSignIn: Bool = false) async {
+        // LG-03: whatever this decides (or if it can't), the root stops holding the launch ground
+        defer { launchRouting = false }
         let launchRequest = launchAuthSnapshot
         let request = onboardingSnapshot()
         // what this phone knew when /me was asked: a companion made while it was on its way is not "missed" (Codex P2)
