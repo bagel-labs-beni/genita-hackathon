@@ -16,6 +16,7 @@ import type { FindCard, FindKind, ServerEvent } from "../protocol.ts";
 import { classifyTurn, isBareAccept, isGoesWithFollowUp, isLinksAsk, isProductAsk, refersToScreen } from "./intent.ts";
 import { PRODUCT_COUNT, SEARCH_TITLE, decidePick, guessLabel, runProduct, shortLabel, tasteLines as productTaste } from "./product.ts";
 import { runNamedRecipe } from "./namedRecipe.ts";
+import { walkPlan, type WalkPlan, type WalkState } from "./walkthrough.ts";
 import { choiceForSearch, isColorWord } from "./choice.ts";
 import { confirmItem, FRIDGE_UNCLEAR, IDENTIFY_UNSURE, runIdentify, runLink, runOutfit, runRecipe, type PipelineCtx, type PipelineResult } from "./pipeline.ts";
 import { cacheGet, cacheKey, cachePut, cardFitsColors, cardIsKind, categoryOf, claimWarm, colorAsks, colorPhrases, colorsOf, plainAsk, releaseWarm, type CachedProducts } from "./productCache.ts";
@@ -209,6 +210,8 @@ export class FindsRunner {
   private readonly cards = new Map<string, FindCard>();
   private readonly running = new Map<string, Running>();
   private focusId: string | null = null;
+  /** P0 11/4: guided cooking of a recipe card ("Walk me through it"), or null */
+  private walk: WalkState | null = null;
   private closed = false;
   private prefetched: Prefetch | null = null;
   /** cache warm-up / refresh searches of this call (stopped when it ends) */
@@ -306,6 +309,17 @@ export class FindsRunner {
   /** Starts a card pipeline if the turn asks for one. Returns the find (and what to say first) or null. */
   onTurn(input: TurnInput): TurnStarted | null {
     if (this.closed || (this.owner && this.deps.store.work.isDeleted(this.owner))) return null;
+    // P0 11/4: "Walk me through it" / "next" while cooking is the conversation's (walkthrough.ts), never a new search
+    const walk = this.walkTurn(input.text);
+    if (walk) {
+      this.walk = walk.state;
+      this.hooks.log("finds.walkthrough", { step: walk.state?.step ?? -1, quiet: walk.quiet });
+      if (walk.quiet) {
+        this.judgeAbort?.abort();
+        this.judgeAbort = null;
+        return null;
+      }
+    }
     let t = input;
     /** P0 11/4: a camera find that can't see clearly closes quietly — the spoken reply already answered */
     const afterProduct = this.afterProduct(t.recent);
@@ -925,6 +939,12 @@ export class FindsRunner {
       const why = c.why.length ? ` why: ${c.why.join(" ")}` : c.evidence?.style ? ` why: ${c.evidence.style}` : "";
       return `${i + 1}. ${c.title}${what ? `: ${what}` : ""}.${why}`;
     }).join(" ").slice(0, 700);
+  }
+
+  /** Pure: what this turn means for guided cooking of the card on screen (the prompt line; onTurn keeps the step). */
+  walkTurn(text: string): WalkPlan {
+    const card = this.focusId ? this.cards.get(this.focusId) : undefined;
+    return walkPlan(text, this.walk, card, this.focusId);
   }
 
   /** One line for the system prompt about the card on screen, or undefined. Data only. */
