@@ -111,3 +111,66 @@ test("self_speak (card line) starts a reply only into silence", () => {
   const talking = reduceTurn(initialTurnState(), { type: "speech_start" }, cfg);
   assert.deepEqual(reduceTurn(talking.state, { type: "self_speak", text: "x", origin: "watch" }, cfg).effects, []);
 });
+
+// ── barge-in echo guard (iPhone build 13, 11/4): words mode ──
+const wcfg = { bargeInMinMs: 400, bargeInMinWords: 2, words: true };
+function playW(events: (TurnEvent & { at?: number })[], state: TurnState) {
+  const effects: Effect[] = [];
+  for (const { at, ...e } of events) {
+    const r = reduceTurn(state, e as TurnEvent, { ...wcfg, now: at ?? 0 });
+    state = r.state;
+    effects.push(...r.effects);
+  }
+  return { state, effects };
+}
+const speakingW = () => playW([{ type: "speech_complete", text: "x" }, { type: "first_audio", utteranceId: 1 }], initialTurnState()).state;
+
+test("words mode: VAD speech alone (no words) during a reply never cancels, however long it lasts", () => {
+  const r = playW([{ type: "speech_start" }, { type: "barge_timer" }, { type: "partial", text: "[noise]" }, { type: "partial", text: "mm" }], speakingW());
+  assert.ok(!kinds(r.effects).includes("cancel_reply"));
+  assert.equal(r.state.phase, "speaking");
+  // the old rule (kill switch) cancelled on the same timer
+  const old = play([{ type: "speech_start" }, { type: "barge_timer" }], speakingW());
+  assert.ok(kinds(old.effects).includes("cancel_reply"));
+});
+
+test("words mode: a partial flagged as the companion's own echo never cancels", () => {
+  const r = playW([{ type: "speech_start" }, { type: "partial", text: "so tell me about your day", echo: true }, { type: "barge_timer" }], speakingW());
+  assert.ok(!kinds(r.effects).includes("cancel_reply"));
+  // and its final is not answered as a user turn
+  const f = playW([{ type: "speech_end" }, { type: "speech_complete", text: "so tell me about your day", echo: true }], r.state);
+  assert.ok(!kinds(f.effects).includes("start_reply"));
+  assert.ok(!kinds(f.effects).includes("cancel_reply"));
+});
+
+test("words mode: two real words from the user cancel; one word cancels once speech lasted bargeInMinMs", () => {
+  const two = playW([{ type: "speech_start" }, { type: "partial", text: "wait stop" }], speakingW());
+  assert.deepEqual(two.effects.find((f) => f.type === "cancel_reply"), { type: "cancel_reply", utteranceId: 1, reason: "barge_in" });
+  const oneEarly = playW([{ type: "speech_start" }, { type: "partial", text: "wait" }], speakingW());
+  assert.ok(!kinds(oneEarly.effects).includes("cancel_reply"));
+  const oneThenTimer = playW([{ type: "barge_timer" }], oneEarly.state);
+  assert.ok(kinds(oneThenTimer.effects).includes("cancel_reply"));
+  const timerThenOne = playW([{ type: "speech_start" }, { type: "barge_timer" }, { type: "partial", text: "stop" }], speakingW());
+  assert.ok(kinds(timerThenOne.effects).includes("cancel_reply"));
+});
+
+test("words mode: a real interruption whose partials came late still takes the turn on its final", () => {
+  const r = playW([{ type: "speech_start" }, { type: "speech_end" }, { type: "speech_complete", text: "no wait, I meant tomorrow" }], speakingW());
+  assert.ok(kinds(r.effects).includes("cancel_reply"));
+  assert.deepEqual(r.effects.find((f) => f.type === "start_reply"), { type: "start_reply", text: "no wait, I meant tomorrow", utteranceId: 2 });
+});
+
+test("words mode: barge-in cancels at most once per 1.5 s (no cancel/resume flapping)", () => {
+  const first = playW([{ type: "speech_start", at: 1000 }, { type: "partial", text: "hey listen", at: 1100 }], speakingW());
+  assert.equal(first.effects.filter((f) => f.type === "cancel_reply").length, 1);
+  // a new reply starts and speaks, then another barge 600 ms later is held off
+  const again = playW([
+    { type: "speech_complete", text: "hey listen", at: 1200 }, { type: "first_audio", utteranceId: 2, at: 1300 },
+    { type: "speech_start", at: 1400 }, { type: "partial", text: "no no stop", at: 1700 },
+  ], first.state);
+  assert.ok(!kinds(again.effects).includes("cancel_reply"));
+  assert.equal(again.state.phase, "speaking");
+  // past the window, real words cancel again
+  const later = playW([{ type: "partial", text: "okay stop now", at: 2700 }], again.state);
+  assert.ok(kinds(later.effects).includes("cancel_reply"));
+});

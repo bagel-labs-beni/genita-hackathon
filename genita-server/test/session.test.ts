@@ -293,6 +293,26 @@ test("barge-in: two words while speaking cancel Spark+TTS, tell the app, and sto
   session.close();
 });
 
+test("barge-in echo guard (iPhone speaker): VAD alone and the companion's own line heard back never cut the reply", async () => {
+  const { asr, client, session } = setup({
+    sparkText: "<warm> Once upon a time there was a fox. It lived in a forest. It loved snow. The end.",
+    ttsChunks: 50,
+    ttsDelayMs: 5,
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona }));
+  asr.fire({ type: "speechComplete", turnId: 0, text: "tell me a story" });
+  await client.waitFor((m) => m.type === "state" && m.state === "speaking");
+  asr.fire({ type: "speechStart", turnId: 1 });
+  await sleep(500); // past bargeInMinMs (400): sustained sound with no words
+  asr.fire({ type: "partial", text: "once upon a time there was" }); // the reply, heard back through the mic
+  await sleep(30);
+  assert.ok(!client.json.some((m) => m.type === "utterance.cancelled"), "no cancel on VAD or echo");
+  asr.fire({ type: "partial", text: "hey wait stop" }); // real words from the user
+  const cancelled = await client.waitFor((m) => m.type === "utterance.cancelled");
+  assert.equal(cancelled.reason, "barge_in");
+  session.close();
+});
+
 test("GENITA_ENGLISH_ONLY=0: a Korean transcript in chat mode is interpreted, not answered as chat", async () => {
   process.env.GENITA_ENGLISH_ONLY = "0";
   try {

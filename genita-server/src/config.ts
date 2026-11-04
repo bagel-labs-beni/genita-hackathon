@@ -33,6 +33,8 @@ export type Config = {
   asrLanguages: string[];
   bargeInMinMs: number;
   bargeInMinWords: number;
+  /** barge-in echo guard (11/4): only real, non-echo words cut a reply. GENITA_BARGE_IN_WORDS=0 = VAD + min ms alone; default on */
+  bargeInWords?: boolean;
   maxSessions: number;
   maxSessionMs: number;
   sparkFirstTokenTimeoutMs: number;
@@ -158,6 +160,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     asrLanguages: (env.GENITA_ASR_LANGUAGES ?? "English,Korean").split(",").map((s) => s.trim()).filter(Boolean),
     bargeInMinMs: num(env.GENITA_BARGE_IN_MIN_MS, 400),
     bargeInMinWords: num(env.GENITA_BARGE_IN_MIN_WORDS, 2),
+    bargeInWords: env.GENITA_BARGE_IN_WORDS !== "0",
     maxSessions: num(env.GENITA_MAX_SESSIONS, 16),
     maxSessionMs: num(env.GENITA_MAX_SESSION_MS, 30 * 60_000),
     sparkFirstTokenTimeoutMs: num(env.GENITA_SPARK_TIMEOUT_MS, 8000),

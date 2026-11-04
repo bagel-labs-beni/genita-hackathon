@@ -42,6 +42,7 @@ import { Interpreter, type InterpretHost } from "../interpret/interpreter.ts";
 import { CORRECT_DEFAULT_TIMEOUT_MS } from "../interpret/asrCorrect.ts";
 import { interpretCommand } from "../interpret/language.ts";
 import { initialTurnState, reduceTurn, type Effect, type TurnEvent, type TurnState } from "./turnMachine.ts";
+import { isEchoOf } from "./bargeEcho.ts";
 import { MemoryCall, type MemoryService, type UsPhotoService } from "../memory/index.ts";
 import { MEMORY_START_BUDGET_MS, within, type MemoryRetryState, type ThreadState , replyMemoryTools } from "../memory/call.ts";
 import type { Memory } from "../memory/repository.ts";
@@ -81,6 +82,8 @@ import { forgetOpenerTopics, pickOpenerTopic, storedTopics } from "../convo/open
 import { InitiativeGovernor, initiativeBlock, initiativeInput, type InitiativeSource } from "../convo/initiative.ts";
 import { cueRhythm } from "../convo/rhythm.ts";
 import type { PerceptionSource } from "../convo/types.ts";
+/** the speaker's echo of a line can still reach the ASR this long after the line ended */
+const ECHO_TAIL_MS = 2000;
 
 export { PROTOCOL_VERSION, FRAME_HEADER_BYTES, FRAME_KIND_TTS_PCM } from "../protocol.ts";
 
@@ -675,7 +678,9 @@ export class Session {
   /** replies whose first sound waits for the user to stop talking */
   private quietWaiters: (() => void)[] = [];
   private metrics: TurnMetrics = {};
-  private bargeCfg: { bargeInMinMs: number; bargeInMinWords: number };
+  private bargeCfg: { bargeInMinMs: number; bargeInMinWords: number; words: boolean };
+  /** barge-in echo guard: the companion's last line, still echoing back through the mic until `until` */
+  private echoTail: { text: string; until: number } | null = null;
   private readonly client: ClientSink;
   private finds: FindsRunner | null = null;
   /** FD-01: the in-flight read of a card named by find.focus; a typed turn waits for it */
@@ -725,7 +730,7 @@ export class Session {
     this.ownedVoice = this.companionVoice();
     this.ownedName = this.boundedLookup(deps.companionName, 80);
     this.accountName = this.boundedLookup(deps.accountName, 80);
-    this.bargeCfg = { bargeInMinMs: deps.config.bargeInMinMs, bargeInMinWords: deps.config.bargeInMinWords };
+    this.bargeCfg = { bargeInMinMs: deps.config.bargeInMinMs, bargeInMinWords: deps.config.bargeInMinWords, words: deps.config.bargeInWords !== false };
     if (deps.config.perception) {
       this.perceptionCtl = new PerceptionController({
         spark: deps.spark,
@@ -1567,7 +1572,7 @@ export class Session {
         const text = this.held ? joinSegments(this.held.text, e.text) : e.text;
         this.backchannel?.partial(text);
         this.client.sendJson({ type: "transcript", final: false, text });
-        this.dispatch({ type: "partial", text });
+        this.dispatch({ type: "partial", text, echo: this.isEcho(e.text) });
         return this.considerSpeculation(text);
       }
       case "speechEnd":
@@ -1652,7 +1657,9 @@ export class Session {
     this.cuedTurn = false;
     this.backchannel?.stop();
     this.client.sendJson({ type: "transcript", final: true, text, turnId, source: "voice" });
-    this.dispatch({ type: "speech_complete", text });
+    const echo = this.isEcho(text);
+    if (echo) this.log("barge.echo_dropped", { words: text.split(/\s+/).filter(Boolean).length });
+    this.dispatch({ type: "speech_complete", text, echo });
     // not consumed by a reply (backchannel / empty): stop the guess
     this.dropSpeculation();
   }
@@ -1799,7 +1806,7 @@ export class Session {
     if (this.closed) return;
     if (e.type === "speech_start" || e.type === "text") this.pendingAnnounce = null;
     if (this.initiative && (e.type === "speech_start" || e.type === "partial" || e.type === "speech_complete" || (e.type === "text" && e.text !== this.cueTurn?.input && e.text !== GREET_PROMPT))) this.initiative.userSpoke(this.now());
-    const r = reduceTurn(this.turn, e, this.bargeCfg);
+    const r = reduceTurn(this.turn, e, { ...this.bargeCfg, now: this.now() });
     const reply = r.effects.find((fx) => fx.type === "start_reply");
     // The reducer is pure: admit only actual user replies before committing thinking or running effects.
     // Preserve any barge-in cancellation, but never start a reply or emit thinking on a cap rejection.
@@ -1881,6 +1888,7 @@ export class Session {
     r.abort.abort();
     if (r.doneTimer) clearTimeout(r.doneTimer);
     this.reply = null;
+    this.keepEchoTail(r);
     if (r.spoken.length) this.remember("assistant", r.spoken.join(" ") + " —");
     // the user talked over a reply that was already a sentence or more in: they want it shorter
     // long = two sentences or ~80 characters already out (a "Sure thing." cut is not a long reply — Codex round 6)
@@ -3495,10 +3503,25 @@ export class Session {
     return from;
   }
 
+  /** words mode: a transcript of the line playing now (or just ended) is the companion's own echo */
+  private isEcho(text: string): boolean {
+    if (!this.bargeCfg.words || !text.trim()) return false;
+    const playing = this.reply?.spoken.join(" ") ?? "";
+    if (playing && isEchoOf(text, playing)) return true;
+    const tail = this.echoTail;
+    return !!tail && this.now() < tail.until && isEchoOf(text, tail.text);
+  }
+
+  private keepEchoTail(r: Reply): void {
+    const text = r.spoken.join(" ").trim();
+    if (text) this.echoTail = { text, until: this.now() + ECHO_TAIL_MS };
+  }
+
   private finishReply(reply: Reply): void {
     reply.doneTimer = null;
     if (this.reply !== reply) return;
     this.reply = null;
+    this.keepEchoTail(reply);
     const card = reply.webAnswer;
     reply.webAnswer = null;
     if (card && !reply.abort.signal.aborted && !this.closed && this.mode !== "interpret") card();
