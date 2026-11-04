@@ -55,12 +55,17 @@ struct CompanionFaceView: View {
     /// the poster and the live face that follow land on its pixels. Never the upload photo.
     var framedStill: CGImage? = nil
     var lip: LipSource = .none
+    /// The companion is speaking (CallController.companionSpeaking): with no live face, the still moves a little.
+    var speaking: Bool = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         ZStack {
-            if let framedStill { Image(decorative: framedStill, scale: 1).resizable().scaledToFill() }
-            else if let still { still.resizable().scaledToFill() } else { CallInk.ink }
-            if let poster { Image(decorative: poster, scale: 1).resizable().scaledToFill() }
+            ZStack {
+                if let framedStill { Image(decorative: framedStill, scale: 1).resizable().scaledToFill() }
+                else if let still { still.resizable().scaledToFill() } else { CallInk.ink }
+                if let poster { Image(decorative: poster, scale: 1).resizable().scaledToFill() }
+            }
+            .modifier(StillSpeech(on: speaking && face == nil && !CallMotion.reviewStill, reduceMotion: reduceMotion))
             if let face {
                 // S09-P (D28, AU-25): a face set that lands mid-call fades in over the still once (the reveal)
                 FaceFrameView(driver: face, still: faceStill).transition(.opacity)
@@ -78,6 +83,43 @@ struct CompanionFaceView: View {
     }
     /// What's on top, for UI tests: live (the talking face) > poster (its rest frame) > still (scene / fixture) > ground.
     static func layer(face: Bool, poster: Bool, still: Bool) -> String { face ? "live" : poster ? "poster" : still ? "still" : "ground" }
+}
+
+/// DEMO P0 (11/4, Chelsea: "when she speaks the face moves, in every case"): while there is no live face yet (face set
+/// missing or still loading) and the companion speaks, the still breathes (scale 1.00 → 1.015 about the bottom) and
+/// bobs up to 1.5 pt with a syllable-like level, and a soft glow low in the frame follows that level. It stops with the
+/// speech. Reduce Motion: the glow's opacity only. The level is synthetic (3.7 Hz, uneven): the player's own level is
+/// unreadable in the same broken-engine state that left the face without a clock.
+struct StillSpeech: ViewModifier {
+    let on: Bool
+    let reduceMotion: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if on {
+            TimelineView(.animation) { timeline in
+                let t = timeline.date.timeIntervalSinceReferenceDate
+                let level = Self.level(at: t)
+                content
+                    .scaleEffect(reduceMotion ? 1 : CGFloat(1 + 0.0075 * (1 - cos(t * 2 * .pi * 0.5))), anchor: .bottom)
+                    .offset(y: reduceMotion ? 0 : CGFloat(-1.5 * level))
+                    .overlay {
+                        RadialGradient(colors: [Color.white.opacity(0.16 * level), Color.white.opacity(0)],
+                                       center: UnitPoint(x: 0.5, y: 0.7), startRadius: 0, endRadius: 140)
+                            .allowsHitTesting(false)
+                    }
+            }
+        } else {
+            content
+        }
+    }
+
+    /// Syllable-like loudness 0…1.
+    static func level(at t: Double) -> Double {
+        let syllable = 0.5 + 0.5 * sin(t * 2 * .pi * 3.7)
+        let phrase = 0.5 + 0.5 * sin(t * 2 * .pi * 1.3 + 1.1)
+        return min(1, max(0, syllable * (0.4 + 0.6 * phrase)))
+    }
 }
 
 struct LipLayer: View {
