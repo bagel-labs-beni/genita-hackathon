@@ -181,8 +181,8 @@ export const START_CLAIM_WAIT_MS = 1500;
  * judged when the claim lands: the greeting's opener comes from a cache in ~5 ms, before the claim, and was
  * dropped as "not the owner" (prod a5e2c4c 11/4: "Hey, Q!" shown, first sound only ~3 s later).
  */
-export function gateCall(hub: HandoffHub, userId: string, device: HandoffDevice, sink: ClientSink, stop: () => void, known: { owner: HandoffDevice; epoch: number } | null = null): { sink: ClientSink; call: CallHandle } {
-  const call = hub.attachCall(userId, device, { stop, send: (m) => sink.sendJson(m as never), known });
+export function gateCall(hub: HandoffHub, userId: string, device: HandoffDevice, sink: ClientSink, stop: () => void, known: { owner: HandoffDevice; epoch: number } | null = null, inactive?: () => void): { sink: ClientSink; call: CallHandle } {
+  const call = hub.attachCall(userId, device, { stop, send: (m) => sink.sendJson(m as never), known, inactive });
   type Held = { json: Parameters<ClientSink["sendJson"]>[0] } | { bin: Buffer };
   let held: Held[] | null = null; // non-null: waiting for the start claim
   let readySeen = false;

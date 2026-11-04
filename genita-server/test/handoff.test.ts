@@ -339,3 +339,16 @@ test("review P2: only ?device= opts a call into the gate; the token's device alo
   assert.equal(gatedCallDevice("iphone", new URL("ws://x/v1/session?device=mac")), "iphone", "the token wins when both are present");
   assert.equal(gatedCallDevice("dev", new URL("ws://x/v1/session?device=phone")), "iphone");
 });
+
+test("hub: a device locking tells its calls (the Mac's share stops), unless another app of it is still active", () => {
+  const hub = new HandoffHub(new MemoryOwnershipStore());
+  const macA = device(hub, "u", "mac");
+  const macB = device(hub, "u", "mac");
+  const locked: HandoffDevice[] = [];
+  hub.attachCall("u", "mac", { stop: () => {}, send: () => {}, inactive: () => locked.push("mac") });
+  hub.attachCall("u", "iphone", { stop: () => {}, send: () => {}, inactive: () => locked.push("iphone") });
+  macA.conn.setActive(false);
+  assert.deepEqual(locked, [], "the other Mac is still active");
+  macB.conn.setActive(false);
+  assert.deepEqual(locked, ["mac"], "only the Mac's call hears it");
+});

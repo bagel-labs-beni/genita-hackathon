@@ -28,7 +28,7 @@ export type Trigger = "button" | "touch" | "continue" | "start" | "sync" | "move
 
 /** seenAt: when the socket opened or last became active — `move.request` goes to the most recent one (MV-01) */
 type Conn = { device: HandoffDevice; send: (m: Msg) => void; active: boolean; seenAt: number };
-type Call = { device: HandoffDevice; stop: () => void; send: (m: Msg) => void };
+type Call = { device: HandoffDevice; stop: () => void; send: (m: Msg) => void; inactive?: () => void };
 type UserState = {
   id: string;
   record: OwnershipRecord | null;
@@ -143,6 +143,8 @@ export class HandoffHub {
         conn.active = active;
         if (active) conn.seenAt = this.now();
         if (!active && conn.device === "iphone") this.proximityRevoke(u, conn);
+        // the device locked (no other active app of it left): its calls hear it (a Mac's screen share stops)
+        if (!active && !this.isPresent(u.id, conn.device)) for (const c of u.calls) if (c.device === conn.device) c.inactive?.();
         this.peerChanged(u, conn.device);
       },
       proximityArm: () => this.proximityArm(u, conn),
@@ -161,9 +163,9 @@ export class HandoffHub {
    * presence `hello` does — a newer claim made while the server didn't hear it (presence down) wins, an older one
    * changes nothing — so a call that opts into the gate is never left silent by a stale server owner.
    */
-  attachCall(userId: string, device: HandoffDevice, opts: { stop: () => void; send: (m: Msg) => void; known?: { owner: HandoffDevice; epoch: number } | null }): CallHandle {
+  attachCall(userId: string, device: HandoffDevice, opts: { stop: () => void; send: (m: Msg) => void; known?: { owner: HandoffDevice; epoch: number } | null; inactive?: () => void }): CallHandle {
     const u = this.user(userId);
-    const call: Call = { device, stop: opts.stop, send: opts.send };
+    const call: Call = { device, stop: opts.stop, send: opts.send, inactive: opts.inactive };
     u.calls.add(call);
     void this.load(u).catch(() => {});
     return {

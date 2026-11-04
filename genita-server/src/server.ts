@@ -573,7 +573,7 @@ export async function startServer(
     // F6-L7: a call that names its device plays only while that device owns the conversation.
     // Calls without a device (older builds, smoke) are not gated.
     const ref: { session?: Session } = {};
-    const gated = device ? gateCall(handoff, who.userId, device, raw, () => ref.session?.stopForHandoff(), known) : null;
+    const gated = device ? gateCall(handoff, who.userId, device, raw, () => ref.session?.stopForHandoff(), known, () => ref.session?.watchDeviceLocked()) : null;
     const sink = gated?.sink ?? raw;
     // F2-L26: a rename said in the call is saved to this user's own companion (no-op without one)
     const rename = deps.renameCompanion ?? ((userId: string, name: string) => renameCompanion(prep.deps.store, userId, name));

@@ -1703,3 +1703,110 @@ test("D67: the nonverbal keeps the 30 s gap both ways — 26 s after the last on
   feed(q, 36_400, [...quiet, 0.17, 0.19]); // ~40.1 s: 31 s later
   assert.equal(q.nv.length, 2, "31 s: fires");
 });
+
+// ───────────────────────── stale share after a move / lock (11/4) ─────────────────────────
+
+test("session: watch black → handoff to the iPhone → no black-screen line, no blank hint, no restart", async () => {
+  const { s, client, tts, sparkCalls } = session();
+  await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" } }));
+  const sink = new FakeSink();
+  const watch = s.attachWatch(sink)!;
+  watch.onMessage({ type: "start", source: "YouTube" });
+  watch.onMessage({ type: "frame", image: frame });
+  // the Mac locks: its capture turns black
+  watch.onMessage({ type: "frame", image: frame, blank: true });
+  // the conversation moves to the iPhone before the next tick could say the black-screen line
+  s.stopForHandoff();
+  assert.equal(watch.isSharing, false, "the Mac's watch stops with the move");
+  assert.deepEqual(sink.events.at(-1), { type: "state", sharing: false, blank: false, source: "YouTube" });
+  // the Mac's uplink is still alive: its black frames, a fresh `start` and a reconnect start nothing
+  watch.onMessage({ type: "frame", image: frame, blank: true });
+  watch.onMessage({ type: "start", source: "YouTube" });
+  watch.onMessage({ type: "frame", image: frame });
+  assert.equal(watch.isSharing, false, "no share starts while the conversation is on the other device");
+  s.attachWatch(new FakeSink());
+  assert.equal(watch.isSharing, false);
+  await wait(650); // past a real 500 ms tick
+  const said = [...tts.map((t) => t.text), ...client.json.filter((m) => m.type === "reply").map((m) => String(m.text))];
+  assert.equal(said.some((t) => /black/i.test(t)), false, `no black-screen line: ${JSON.stringify(said)}`);
+  assert.equal(watch.questionContext(), null, "no watch hint on a question");
+  const built = (s as unknown as { buildRequest(t: string): { req: SparkRequest } }).buildRequest("what do you see?");
+  assert.doesNotMatch(built.req.instructions ?? "", /shows up black|shared screen/);
+  assert.equal(sparkCalls.length, 0);
+  s.close();
+});
+
+test("session: the conversation coming back lets the same uplink's next clear frame pick the share up", async () => {
+  const { s } = session();
+  await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" } }));
+  const watch = s.attachWatch(new FakeSink())!;
+  watch.onMessage({ type: "start", source: "YouTube" });
+  watch.onMessage({ type: "frame", image: frame });
+  s.stopForHandoff();
+  watch.onMessage({ type: "frame", image: frame });
+  assert.equal(watch.isSharing, false);
+  // the move did not happen after all: this device's mic is fed again (server.ts feeds only the owner)
+  s.onClientAudio(Buffer.alloc(960));
+  watch.onMessage({ type: "frame", image: frame });
+  assert.equal(watch.isSharing, true, "resumed on a clear frame");
+  s.close();
+});
+
+test("session: camera frames win over a black watch; a clear watch still rides along", async () => {
+  const { s } = session();
+  await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" } }));
+  const watch = s.attachWatch(new FakeSink())!;
+  watch.onMessage({ type: "start", source: "YouTube" });
+  watch.onMessage({ type: "frame", image: frame, blank: true });
+  const priv = s as unknown as { setFrames(f: unknown): void; buildRequest(t: string): { req: SparkRequest; images: string[] } };
+  priv.setFrames(["data:image/jpeg;base64,CAMERA"]);
+  const black = priv.buildRequest("what's this?");
+  assert.doesNotMatch(black.req.instructions ?? "", /shows up black|shared screen/);
+  watch.onMessage({ type: "frame", image: frame });
+  priv.setFrames(["data:image/jpeg;base64,CAMERA"]);
+  const clear = priv.buildRequest("what's this?");
+  assert.match(clear.req.instructions ?? "", /shared screen/);
+  s.close();
+});
+
+test("watch: black for 10 s → stopped, no line or hint after; a clear frame resumes the same share", () => {
+  const { c, sink, reacted, at } = controller([], { quiet: false });
+  c.onMessage({ type: "start", source: "Safari" });
+  c.onMessage({ type: "context", title: "Cat video - YouTube" });
+  at(1000);
+  c.onMessage({ type: "frame", image: frame });
+  at(2000);
+  c.onMessage({ type: "frame", image: frame, blank: true });
+  at(11_000);
+  c.tick();
+  assert.equal(c.isSharing, true, "under 10 s: still the MS-3 black episode");
+  at(12_500);
+  c.tick();
+  assert.equal(c.isSharing, false, "black for 10 s: stale, stopped");
+  assert.deepEqual(sink.events.at(-1), { type: "state", sharing: false, blank: false, source: "Safari" });
+  assert.equal(c.questionContext(), null, "no blank hint (and no \"they stopped sharing\") once stale");
+  c.onMessage({ type: "frame", image: frame, blank: true });
+  assert.equal(c.isSharing, false, "more black frames don't restart it");
+  assert.deepEqual(reacted, [], "the conversation was busy: nothing said, and nothing later");
+  at(14_000);
+  c.onMessage({ type: "frame", image: frame });
+  assert.equal(c.isSharing, true, "a clear picture picks it up");
+  const q = c.questionContext()!;
+  assert.match(q.instructions, /Cat video/, "the window's title comes back with it");
+  assert.doesNotMatch(q.instructions, /shows up black/);
+  c.close();
+});
+
+test("watch: the Mac locks (presence inactive) → stopped at once, no black-screen line", () => {
+  const { c, reacted, at } = controller([]);
+  c.onMessage({ type: "start", source: "YouTube" });
+  at(1000);
+  c.onMessage({ type: "frame", image: frame });
+  c.pause("device_locked");
+  c.onMessage({ type: "frame", image: frame, blank: true });
+  c.tick();
+  assert.equal(c.isSharing, false);
+  assert.deepEqual(reacted, []);
+  assert.equal(c.questionContext(), null);
+  c.close();
+});
