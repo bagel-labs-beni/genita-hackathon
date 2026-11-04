@@ -113,3 +113,16 @@ test("Codex #726: duplicates across lanes don't crowd out the third lane's secon
   const r = await runProduct(ctx);
   assert.deepEqual(r.card!.products!.map((p) => p.name).sort(), ["White Sneaker A", "White Sneaker E"]);
 });
+
+test("QA 11/4 D: vision decisions get room to finish (200 tokens came back empty on a 1024 px screen frame, 4/4)", async () => {
+  const { runIdentify } = await import("../src/finds/pipeline.ts");
+  const budgets: number[] = [];
+  const v: FindsVendors = {
+    async spark(req) { budgets.push(req.maxOutputTokens ?? 0); return { text: JSON.stringify(PICK), output: [] }; },
+    async *sparkStream() {}, sam: async () => [], image: async () => Buffer.from([]),
+  };
+  await decidePick(v, { question: "q", recent: [], taste: [], frames: ["data:image/jpeg;base64,AAA"], signal: new AbortController().signal });
+  await runIdentify({ findId: "i", utteranceId: 1, kind: "answer", question: "What's this?", frames: ["data:image/jpeg;base64,AAA"], memories: [], replyText: Promise.resolve(null), vendors: v, emit() {}, signal: new AbortController().signal, now: () => 0, log() {}, images: false, putImage: async () => "", speak() {} });
+  assert.ok(budgets.length >= 2);
+  assert.ok(budgets.every((b) => b >= 800), JSON.stringify(budgets));
+});

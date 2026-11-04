@@ -545,7 +545,7 @@ export function pickPrompt(o: { question: string; recent: string[]; taste: strin
 /** The pick (≈1–2 s, minimal effort). null = none in time: the search goes as before and nothing specific is said. */
 export async function decidePick(vendors: FindsVendors, o: { question: string; recent: string[]; taste: string[]; frames: string[]; signal: AbortSignal; timeoutMs?: number }): Promise<Pick | null> {
   const look = o.frames.length ? [o.frames[o.frames.length - 1]] : [];
-  const r = await withTimeout(vendors.spark({ input: userMessage(pickPrompt({ question: o.question, recent: o.recent, taste: o.taste, seeing: look.length > 0 }), look), effort: "minimal", maxOutputTokens: 200 }, o.signal), o.timeoutMs ?? 3500, o.signal);
+  const r = await withTimeout(vendors.spark({ input: userMessage(pickPrompt({ question: o.question, recent: o.recent, taste: o.taste, seeing: look.length > 0 }), look), effort: "minimal", maxOutputTokens: 800 }, o.signal), o.timeoutMs ?? 3500, o.signal);
   const j = r ? lastJsonObject<{ item?: unknown; color?: unknown; say?: unknown }>(r.text) : null;
   const item = str(j?.item, 40).toLowerCase();
   const color = str(j?.color, 24).toLowerCase();

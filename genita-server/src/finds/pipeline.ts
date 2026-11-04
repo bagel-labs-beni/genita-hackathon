@@ -665,6 +665,8 @@ export async function runOutfit(ctx: PipelineCtx): Promise<PipelineResult> {
 // ───────────────────────── identify ("what's this?") ─────────────────────────
 
 /** CEO demo 11/4: said when the name can't be checked (Spark NO, no SAM box, a person): never a guess. */
+/** QA 11/4: minimal-effort vision on a 1024 px frame ran out of room at 200 tokens (reasoning "incomplete", text "") */
+export const VISION_DECISION_TOKENS = 800;
 export const IDENTIFY_UNSURE = "Hmm, I can't make it out clearly. Hold it a little closer?";
 /** never outlined or named as "the thing": the user (or anyone) on camera */
 const PERSON = /\b(?:faces?|person|people|man|woman|men|women|boy|girl|child|kid|baby|selfie|human|head|hair|you|yourself|me|user|someone|body|nose|noses|mouth|lips?|eyes?|eyebrows?|eyelash(?:es)?|ears?|cheeks?|chin|forehead|neck|skin|teeth|tooth|tongue|beard|mustache|moustache|hands?|fingers?|arms?|legs?|feet|foot|shoulders?|portrait)\b/i;
@@ -687,7 +689,7 @@ export async function runIdentify(ctx: PipelineCtx): Promise<PipelineResult> {
   const frame = ctx.frames[frameIndex];
   const unsure = () => { if (!ctx.signal.aborted) ctx.speak?.(IDENTIFY_UNSURE); return { card: null, timings }; };
   if (!frame) return unsure();
-  const res = await withTimeout(ctx.vendors.spark({ input: userMessage(`${IDENTIFY_PROMPT}\nThey said: "${ctx.question.slice(0, 200)}"`, [frame]), effort: "minimal", maxOutputTokens: 200 }, ctx.signal), CHECK_TIMEOUT_MS, ctx.signal);
+  const res = await withTimeout(ctx.vendors.spark({ input: userMessage(`${IDENTIFY_PROMPT}\nThey said: "${ctx.question.slice(0, 200)}"`, [frame]), effort: "minimal", maxOutputTokens: VISION_DECISION_TOKENS }, ctx.signal), CHECK_TIMEOUT_MS, ctx.signal);
   timings.nameMs = Math.round(ctx.now() - t0);
   if (ctx.signal.aborted) return { card: null, timings };
   const j = res ? lastJsonObject<{ name?: unknown; say?: unknown }>(res.text) : null;
@@ -697,7 +699,7 @@ export async function runIdentify(ctx: PipelineCtx): Promise<PipelineResult> {
     return unsure();
   }
   const [yes, boxes] = await Promise.all([
-    withTimeout(ctx.vendors.spark({ input: userMessage(yesPrompt(name), [frame]), effort: "minimal", maxOutputTokens: 200 }, ctx.signal).then((r) => isYes(r.text)), CHECK_TIMEOUT_MS, ctx.signal),
+    withTimeout(ctx.vendors.spark({ input: userMessage(yesPrompt(name), [frame]), effort: "minimal", maxOutputTokens: VISION_DECISION_TOKENS }, ctx.signal).then((r) => isYes(r.text)), CHECK_TIMEOUT_MS, ctx.signal),
     withTimeout(ctx.vendors.sam(frame, name, ctx.signal), CHECK_TIMEOUT_MS, ctx.signal),
   ]);
   timings.checkMs = Math.round(ctx.now() - t0);
