@@ -633,12 +633,14 @@ enum MicStall {
     /// iOS P0 (TF 341): an engine change never turns the user's mic off. A rebuild takes the mic when the user has it on.
     static func rebuildWithMic(micOpen: Bool, engineHasMic: Bool) -> Bool { micOpen || engineHasMic }
 
-    /// When the watch may heal now. An engine with a mic tap waits for the reply to finish playing (Codex #705 P1);
-    /// an engine with no mic at all (it came up while the input reported 0 Hz) has nothing to lose but the reply's
-    /// carried audio, so it is rebuilt every second until the input is back, then backs off like any other heal.
+    /// When the watch may heal now. Never while a reply is still queued (a failed restart would drop the rest of it and
+    /// report it played, Codex #705 P1 / #728 P1): the user's next turn comes after it anyway. An engine with no mic at
+    /// all (it came up while the input reported 0 Hz) is rebuilt every second once the reply is done, until the input
+    /// is back (5 tries), then backs off like any other heal.
     static func mayHeal(now: TimeInterval, lastHeal: TimeInterval, heals: Int, engineHasMic: Bool, queuedBuffers: Int) -> Bool {
+        guard queuedBuffers == 0 else { return false }
         if !engineHasMic { return now - lastHeal >= (heals < 5 ? 1 : gap(afterHeals: heals - 4)) }
-        return queuedBuffers == 0 && now - lastHeal >= gap(afterHeals: heals)
+        return now - lastHeal >= gap(afterHeals: heals)
     }
     /// `since`: when the current input was opened or last rebuilt (it gets `thresholdS` to deliver its first buffer).
     static func stalled(now: TimeInterval, lastBuffer: TimeInterval?, since: TimeInterval) -> Bool {

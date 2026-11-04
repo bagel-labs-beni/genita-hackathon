@@ -58,8 +58,9 @@ final class MicStallTests: XCTestCase {
         XCTAssertFalse(MicStall.rebuildWithMic(micOpen: false, engineHasMic: false))
     }
 
-    func testAnEngineWithNoMicIsRebuiltEverySecondEvenWhileAReplyPlays() {
-        XCTAssertTrue(MicStall.mayHeal(now: 10, lastHeal: 8.9, heals: 1, engineHasMic: false, queuedBuffers: 12))
+    func testAnEngineWithNoMicIsRebuiltEverySecondOnceTheReplyIsDone() {
+        XCTAssertFalse(MicStall.mayHeal(now: 10, lastHeal: 0, heals: 0, engineHasMic: false, queuedBuffers: 12), "never over a queued reply")
+        XCTAssertTrue(MicStall.mayHeal(now: 10, lastHeal: 8.9, heals: 1, engineHasMic: false, queuedBuffers: 0))
         XCTAssertFalse(MicStall.mayHeal(now: 10, lastHeal: 9.5, heals: 1, engineHasMic: false, queuedBuffers: 0))
         XCTAssertFalse(MicStall.mayHeal(now: 10, lastHeal: 8, heals: 6, engineHasMic: false, queuedBuffers: 0), "after 5 tries it backs off")
     }
