@@ -708,7 +708,8 @@ struct FindCardPage: View {
             ingredientStrip.findsRise(4)
         }
         if let sel = card.items.first(where: { $0.id == finds.selectedItem }), sel.tier == .maybe { confirmRow(sel) }
-        if !card.steps.isEmpty { stepCards(doneButtons: true).findsRise(4) }
+        // id "steps": "Walk me through it" scrolls here (#767 walkThrough → scrollTarget "steps")
+        if !card.steps.isEmpty { stepCards(doneButtons: true).findsRise(4).id("steps") }
     }
 
     private func sectionLabel(_ text: String) -> some View {
@@ -955,33 +956,30 @@ struct FindCardPage: View {
 
     // MARK: Finds r01 ② results: each result once. #1 big with its photo, the rest as 64 pt thumbnail rows.
 
-    /// #1's photo: its og:image (`source-0`), else the card hero the server already sends for #1; nil → rows only (④).
-    private var topPhoto: FindImage? {
-        if let img = card.sources.first?.image, img.status != .failed { return img }
-        if let hero = card.hero, hero.status != .failed { return hero }
-        return nil
+    /// The rows under the top pick: every result once, in order, without the one shown big.
+    private var restRows: [(offset: Int, element: FindCard.Source)] {
+        let top = card.topPick?.index
+        return card.sources.enumerated().filter { $0.offset != top }.map { (offset: $0.offset, element: $0.element) }
     }
 
     @ViewBuilder private var resultList: some View {
-        let sources = card.sources
-        let photo = topPhoto
-        if let photo, let first = sources.first {
-            topPick(first, photo: photo).findsRise(3)
+        let pick = card.topPick
+        if let pick {
+            topPick(card.sources[pick.index], index: pick.index, photo: pick.photo).findsRise(3)
         }
-        let rest = Array(sources.enumerated()).dropFirst(photo == nil ? 0 : 1)
         VStack(spacing: 0) {
-            ForEach(Array(rest.enumerated()), id: \.element.element.url) { n, item in
+            ForEach(Array(restRows.enumerated()), id: \.element.element.url) { n, item in
                 resultRow(item.element, index: item.offset, divider: n > 0).findsRise(min(4 + n, 8))
             }
-        }.padding(.top, photo == nil ? 4 : 6)
+        }.padding(.top, pick == nil ? 4 : 6)
     }
 
     private func openSource(_ s: FindCard.Source) {
         if !offline { withAnimation(.drawer) { finds.state = .full; finds.browser = s } }
     }
 
-    private func topPick(_ s: FindCard.Source, photo: FindImage) -> some View {
-        let why = Self.why(s, index: 0, steps: card.steps, sourceCount: card.sources.count)
+    private func topPick(_ s: FindCard.Source, index: Int, photo: FindImage) -> some View {
+        let why = Self.why(s, index: index, steps: card.steps, sourceCount: card.sources.count)
         return Button { openSource(s) } label: {
             VStack(alignment: .leading, spacing: 0) {
                 FindPicture(image: photo, resolve: call.findsURL, showFailText: false, quietGlyph: "photo")
@@ -1108,21 +1106,19 @@ struct FindCardPage: View {
     // rows with the rating line and the address instead of the reason
 
     @ViewBuilder private var placeList: some View {
-        let sources = card.sources
-        let photo = topPhoto
-        if let photo, let first = sources.first {
-            placeTop(first, photo: photo).findsRise(3)
+        let pick = card.topPick
+        if let pick {
+            placeTop(card.sources[pick.index], index: pick.index, photo: pick.photo).findsRise(3)
         }
-        let rest = Array(sources.enumerated()).dropFirst(photo == nil ? 0 : 1)
         VStack(spacing: 0) {
-            ForEach(Array(rest.enumerated()), id: \.element.element.url) { n, item in
+            ForEach(Array(restRows.enumerated()), id: \.element.element.url) { n, item in
                 placeRow(item.element, index: item.offset, divider: n > 0).findsRise(min(4 + n, 8))
             }
-        }.padding(.top, photo == nil ? 4 : 10)
+        }.padding(.top, pick == nil ? 4 : 10)
         .accessibilityElement(children: .contain).accessibilityIdentifier("placeList")
     }
 
-    private func placeTop(_ s: FindCard.Source, photo: FindImage) -> some View {
+    private func placeTop(_ s: FindCard.Source, index: Int, photo: FindImage) -> some View {
         let place = s.place
         return VStack(alignment: .leading, spacing: 0) {
             Button { openSource(s) } label: {
@@ -1139,7 +1135,7 @@ struct FindCardPage: View {
                     if let place { placeMeta(place).padding(.top, 3) }
                     if let address = place?.address, !address.isEmpty {
                         Text(address).font(TypeStyle.body(14)).foregroundStyle(CallInk.mute).lineLimit(2).multilineTextAlignment(.leading).padding(.top, 2)
-                    } else if let why = Self.why(s, index: 0, steps: card.steps, sourceCount: card.sources.count) {
+                    } else if let why = Self.why(s, index: index, steps: card.steps, sourceCount: card.sources.count) {
                         Text(why).font(TypeStyle.body(14)).foregroundStyle(Self.whyInk).lineLimit(2).multilineTextAlignment(.leading).padding(.top, 3)
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
