@@ -1324,7 +1324,7 @@ enum CallStop: Equatable {
             return true
         case let .face(key, set):
             if face != nil, faceKey == key { return true }
-            let prepared = await PreparedFace.build(set, reduceMotion: faceReduceMotion)
+            let prepared = await PreparedFace.build(set, key: key, reduceMotion: faceReduceMotion)
             guard !Task.isCancelled, owner == Self.tokenSubject(currentEndpoint.token) else { return false }
             timing.mark("renderer")
             useFace(set, key: key, owner: owner, reduceMotion: faceReduceMotion, prepared: prepared)
