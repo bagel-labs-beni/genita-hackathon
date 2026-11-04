@@ -26,6 +26,17 @@
 
 > **Everything in this demo was built during the hackathon on Meta models; none of our earlier products' code is used.** Genita is a new app, first commit October 31, 2026. The only third-party code is open-source libraries, listed in [Credits](#credits).
 
+## Submission overview
+
+| Criterion | Where to look |
+| --- | --- |
+| **Eligibility** | Meta Global AI Developer Hackathon · Track: **Startups** · Topic: **Build for Your World**<br>Built from scratch since **October 31, 2026** by Summer and Dyno · public repo, Apache-2.0 · [Built during the hackathon ↓](#built-during-the-hackathon) |
+| **Impact** | People already treat an AI assistant as a daily friend, but it lives in a text box, forgets them in every new app and can't see their world. Genita gives that relationship a face, a voice, eyes and continuity across iPhone and Mac, for anyone who can talk and point a camera, no prompt skills needed. [The pitch ↓](#the-pitch) |
+| **Use of Meta AI** | **Five Meta models in one call:** Muse Spark 1.3 (reply, vision, web search, JSON cards, taste, memory, translation), Muse Voice Transcribe (streaming, end of speech, barge-in, a second session for shared-video audio), Muse Image 1.0 (a talking face from one photo, card illustrations), SAM 3.1 (outlines from the companion's own words, face-edit quality gate), SeamlessM4T v2 (self-hosted voice and lip timing). [How Genita uses Meta AI ↓](#how-genita-uses-meta-ai) |
+| **Technical depth** | Speculative replies from partial transcripts, sentence-by-sentence voice, barge-in that ignores "yeah" and echo, a server-owned conversation that moves between devices without two devices ever talking at once, verified-link cards with a three-step picture fallback. Median **2.7 s** from your last word to the companion's first sound on production logs. Server suite **2,631 tests, 0 failing** at the deployed commit. [What we built on top ↓](#what-we-built-on-top-of-the-models) |
+| **Demo** | [3-minute demo video](https://youtu.be/O2b4_xFajqE) · [iPhone via TestFlight](https://testflight.apple.com/join/Ybqh482p) · [Mac DMG](https://bagel-labs-beni.github.io/genita-legal/mac/Genita-latest.dmg) · Judge access code `GENITA-3ANZMN` · [Try it ↓](#try-it-step-by-step) |
+| **Who built it** | Two humans directing a fleet of coding agents: **95.6 %** of our commits were co-written by Claude Code. [Who built what ↓](#who-built-what) |
+
 ---
 
 ## The pitch
@@ -242,6 +253,21 @@ The full source is in this repository: the iOS and Mac apps (SwiftUI) in `ios-ap
 | [Measured results and limitations](docs/RESULTS.md) | Latency from production logs, card times, known limits |
 | [Built during the hackathon](docs/BUILT_DURING_HACKATHON.md) | Feature-by-feature first commits and how to verify them |
 | [Credits](docs/CREDITS.md) · [NOTICE](NOTICE.md) · [Third-party notices](THIRD_PARTY_NOTICES.md) | Every model, library, font and service with its license |
+
+## Who built what
+
+**We are a fully AI-native team: two humans directing a fleet of coding agents.** Summer and Dyno set the product, the design and every decision; AI coding agents wrote most of the code, in parallel lanes, each with its own branch, tests and review.
+
+| Who | Role |
+| --- | --- |
+| **Summer** (human) | Product, conversation design, direction and review of every lane, release decisions, device QA |
+| **Dyno** (human) | Design prototype and first app commits, product and brand direction |
+| **Claude Code** (Anthropic) | Lead implementation agent: ran parallel lanes for the server, the iOS and Mac apps, QA (simulator, iPhone Mirroring, Mac), evals against real Muse Spark, deployment and this repository |
+| **Codex** (OpenAI) | Pair implementation on some lanes and an independent cross-review before merges |
+
+**Commit audit.** In our working history, **1,854 of 1,940** non-merge commits (**95.6 %**) carried a Claude Code co-author line and **74** (**3.8 %**) a Codex one. We removed those lines from this public history so the repository's contributor list shows only the registered team members; the commits and their dates are otherwise unchanged.
+
+The agents are development tools only. At runtime Genita calls Meta models alone.
 
 ## Team
 
