@@ -16,6 +16,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 
 | date | change |
 |---|---|
+| 11/4 | Handoff: a call's `start` now takes the conversation when the recorded owner has no live connection (no presence, no call; e.g. the Mac app was quit), and the call URL's `owner=` for an offline other device is ignored. A connected owner still keeps it. Server-only, no message changes; fixes the iPhone call staying silent after the Mac app quit. Additive. |
 | 11/4 | `backchannel.kind: "inhale"` (watch together, lead's call): a big move on the shared screen → the companion's instant nonverbal reaction, a small inhale in `audio` (≤ 0.45 s, ~−30 dBFS), no words; the spoken reaction follows as before. Apps that know it also raise the face's brows for ≤ 0.5 s; older apps just play the audio (the field is a string; nothing else changes). ≥ 30 s apart, shares the reaction gap. `GENITA_WATCH_NONVERBAL=0` turns it off. Additive. |
 | 11/4 | Companion reset: `POST /v1/companion/reset` (PREP_API.md) closes the account's live calls with **`4410` `companion_reset`** (new, additive). Clients: stop reconnecting and route like `/me` with no companion (iPhone → V01, Mac → "Set up on iPhone"). Older clients treat it like any other close and reconnect; the next `/me` routes them. |
 | 11/4 | `proximity.seen` accepts optional `requestId` (nonempty string, ≤128 characters); all `proximity.result` replies to it echo `requestId` and `token`. Macs match both, ignore superseded/uncorrelated replies, and treat a 5 s timeout as unconfirmed while keeping the leave-range latch. Additive: requests without an ID keep the legacy result shape. |
@@ -648,7 +649,9 @@ presence and call socket of the user, (4) opens the gate for the new owner after
 
 On `/v1/session?device=…` (the query opts in; a JWT's device alone does not gate an older build): `audio` events and binary frames go only to the owner; mic audio from a non-owner is dropped;
 captions and state still flow. A `start` on a conversation nobody holds (fresh, or released) makes that device the owner;
-a `start` while the other device owns it does not move it.
+a `start` while the other device owns it does not move it — unless that device has no live connection (no presence socket
+and no call: the app was quit), then the start takes it (`ownership`, trigger `start`). The call URL's `owner=` is applied
+only for the calling device itself or for the other device while it is connected.
 
 HTTP (same auth): `GET /v1/handoff` → `{owner, epoch, conversationId}` ·
 `POST /v1/handoff/claim {device, epoch?, trigger?}` / `POST /v1/handoff/release {device, epoch?}` → `{accepted, owner, epoch, conversationId}` (400 on a bad device or an epoch outside int4).
