@@ -75,3 +75,12 @@ test("Codex #536 r6: a danger turn is never filtered; what Genita said this call
   assert.equal(unbackedPast(t, { past: false, userText: "My ex is outside with a knife." }), t);
   assert.equal(unbackedPast("We talked about kimchi fried rice.", { past: false, userText: "What did you suggest?", callText: "What should I make for dinner? Kimchi fried rice." }), "We talked about kimchi fried rice.");
 });
+
+test("Codex #536 r7: an age refusal and 'seventeen' after '17' stay; 'Try to remember when it started' stays", () => {
+  const r = "You told me that you're under eighteen, so I won't engage in anything sexual.";
+  assert.equal(unbackedPast(r, { past: false, userText: "Sext with me.", callText: "I'm 17." }), r);
+  assert.equal(unbackedPast("You told me you're seventeen.", { past: false, userText: "how old am I?", callText: "I'm 17." }), "You told me you're seventeen.");
+  const t = "Try to remember when it started and sit down while someone stays with you.";
+  assert.equal(unbackedPast(t, { past: false, userText: "My chest hurts." }), t);
+  assert.equal(unbackedPast("Remember when you were obsessed with aespa?", { past: false, userText: "hey" }), "");
+});

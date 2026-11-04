@@ -34,6 +34,7 @@ const WHEN_PAST = /\b(?:last (?:week|month|year|night|time)|yesterday|the other 
 function groundedInCall(sentence: string, callText: string): boolean {
   // numbers count too (Codex #536 r3: "I'm 23." → "You told me that you're 23.")
   // Codex #536 r4: 2-letter words too ("I'm from LA." → "You told me that you're from LA.")
+  callText = numberWords(callText); sentence = numberWords(sentence);
   const said = new Set((callText.toLowerCase().match(/[a-z']{2,}|\d+/g) ?? []));
   const when = sentence.match(WHEN_PAST)?.[0];
   if (when && !callText.toLowerCase().includes(when.toLowerCase())) return false;
@@ -42,7 +43,12 @@ function groundedInCall(sentence: string, callText: string): boolean {
 const SHORT_STOP = new Set("you the and got did say was are had has for but not now me my we us it is to so in on at of an or do go be up no oh ok hi he if as by am i'm i'd im it's its yes yeah".split(" "));
 // Codex #536 r4: asking about THEIR memory ("Do you remember when it started?") claims no shared past; "do you
 // remember when we…" still does
-const ASK_THEIR_MEMORY = /\b(?:do|can|could|did|if|when) you (?:still |even )?remember when\b(?![^.!?]*\b(?:we|us|i|me|my|our)\b)/giu;
+const ASK_THEIR_MEMORY = /\b(?:(?:do|can|could|did|if|when) you (?:still |even )?|(?:please )?try (?:to |and )?)remember when\b(?![^.!?]*\b(?:we|us|i|me|my|our)\b)/giu;
+const NUM_WORDS: Record<string, string> = { five: "5", six: "6", seven: "7", eight: "8", nine: "9", ten: "10", eleven: "11", twelve: "12", thirteen: "13", fourteen: "14", fifteen: "15", sixteen: "16", seventeen: "17", eighteen: "18", nineteen: "19", twenty: "20" };
+/** Codex #536 r7: "seventeen" and "17" are the same word for grounding */
+function numberWords(t: string): string { return t.replace(/\b(?:five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\b/gi, (w) => NUM_WORDS[w.toLowerCase()]); }
+// Codex #536 r7: an age / minor-safety line is never cut ("You told me that you're under eighteen, so I won't…")
+const AGE_SAFETY = /\b(?:under (?:18|eighteen)|a minor|underage|too young|not (?:18|eighteen))\b|\b(?:won'?t|can'?t|not going to|not gonna|never)\b[^.!?]*\b(?:sexual|sext|flirt|romance|romantic|date you)\b/i;
 function said(re: RegExp, text: string): boolean { re.lastIndex = 0; return re.test(text); }
 
 // a habit no memory ever backs ("like usual", "as always"): cut even when the call has a past (eval v2 r2, 3/14 with memories)
@@ -59,7 +65,7 @@ const STILL = /\b(you(?:'re| are)?|u|are you|you guys)\s+still\b\s*(?=(?:on|into
 const HELP = /\b(?:911|988|112|999|emergency|ambulance|hospital|doctor|crisis|hotline|helpline|poison control|police|cops|authorities|amber alert|fire department|somewhere safe|(?:a )?safe place|call for help|nine[- ]one[- ]one|nine[- ]eight[- ]eight)\b/i;
 export function unbackedPast(sentence: string, ctx: PastContext): string {
   // Codex #536 r6: a real crisis / danger turn is never filtered here ("…and get to a safe place now")
-  if (!sentence.trim() || HELP.test(sentence) || realCrisisSignal(ctx.userText ?? "")) return sentence;
+  if (!sentence.trim() || HELP.test(sentence) || AGE_SAFETY.test(sentence) || realCrisisSignal(ctx.userText ?? "")) return sentence;
   const user = ctx.userText ?? "";
   if (ctx.past) {
     if (USER_HABIT.test(user)) return sentence;
