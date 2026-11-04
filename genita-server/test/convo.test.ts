@@ -1530,6 +1530,35 @@ test("prompt-100 r4 (session, prod 22:04): a face question answered only with a 
   session.close();
 });
 
+test("prompt-100 style (session): a style ask on camera gets the personal-reason line, the coloring question once, the follow-up keeps the reason; GENITA_STYLE_REASON=0 is off", { skip: !v1 }, async () => {
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString("base64");
+  const { client, session, calls } = setup(["<happy> The cream one, it warms you right up."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999, user: { name: "Summer", profile: "- Likes & dislikes: Black basics" } }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "which one should I wear tonight?", frames: [jpeg] }));
+  await client.waitFor((m) => m.type === "reply" && m.final === true);
+  const first = calls.at(-1)!.instructions ?? "";
+  assert.match(first, /Style call: say your pick first, then one personal reason/);
+  assert.match(first, /warm or cool tones usually work for you\?/, "coloring unknown → asked once");
+  await session.onClientText(JSON.stringify({ type: "text", text: "and does this one suit me?", frames: [jpeg] }));
+  await client.waitFor((m) => m.type === "reply" && m.final === true && calls.length >= 2);
+  const second = calls.at(-1)!.instructions ?? "";
+  assert.doesNotMatch(second, /warm or cool tones usually work for you\?/, "never asked twice");
+  assert.match(second, /use a different one now/);
+  await session.onClientText(JSON.stringify({ type: "text", text: "find me some shoes for it" }));
+  await client.waitFor((m) => m.type === "reply" && m.final === true && calls.length >= 3);
+  assert.match(calls.at(-1)!.instructions ?? "", /going warm-toned like we said/);
+  session.close();
+  process.env.GENITA_STYLE_REASON = "0";
+  try {
+    const off = setup(["<happy> The cream one."]);
+    await off.session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
+    await off.session.onClientText(JSON.stringify({ type: "text", text: "which one should I wear tonight?", frames: [jpeg] }));
+    await off.client.waitFor((m) => m.type === "reply" && m.final === true);
+    assert.doesNotMatch(off.calls.at(-1)!.instructions ?? "", /Style call/);
+    off.session.close();
+  } finally { delete process.env.GENITA_STYLE_REASON; }
+});
+
 // ───────────── #345 what landed, read from their face ─────────────
 test("#345: a smile or laugh the camera saw at the last reply keeps that lane (and never mentions the face)", async () => {
   const { turnHints } = await import("../src/convo/rhythm.ts");

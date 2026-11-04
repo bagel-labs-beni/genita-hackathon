@@ -5,6 +5,7 @@
  * "맞아?" answers, and gives the session one line of context about the card
  * on screen so "Ask about this" follow-ups make sense.
  */
+import { STYLE_SEARCH_HINT, styleReasonOn } from "../convo/styleReason.ts";
 import { webAnswerCard, type WebSearch } from "./webAnswer.ts";
 import { applySourceImage, assessLine, runGeneral } from "./general.ts";
 import { JUDGE_TIMEOUT_MS, judgeEnabled, judgeWithin, sparkJudge, type Judge, type JudgeResult } from "./judge.ts";
@@ -326,7 +327,7 @@ export class FindsRunner {
     if (choice === false) { this.hooks.log("finds.choice_unclear", {}); return null; }
     if (followUp) {
       this.lastOutfit = null;
-      t = { ...t, text: `Find what you offered to find for the look they just picked (shoes or accessories that go with it). What you told them: "${outfit!.said.slice(0, 300)}". They answered: "${t.text.slice(0, 100)}".${choice ? ` You picked ${choice} out loud: find ${choice} ones only, never the other option.` : ""}` };
+      t = { ...t, text: `Find what you offered to find for the look they just picked (shoes or accessories that go with it). What you told them: "${outfit!.said.slice(0, 300)}". They answered: "${t.text.slice(0, 100)}".${choice ? ` You picked ${choice} out loud: find ${choice} ones only, never the other option.` : ""}${styleReasonOn() ? ` ${STYLE_SEARCH_HINT}` : ""}` };
     }
     // Chelsea 11/4 D: while the Mac shares its screen, a question takes the shared frame (fresher than the camera,
     // ≤1 s old), unless it's about them or what they hold; "on my screen" / "this video" always mean the share
