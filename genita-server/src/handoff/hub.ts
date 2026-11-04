@@ -175,16 +175,11 @@ export class HandoffHub {
         const k = opts.known;
         const skipped = !!k && k.owner !== device && !this.connected(u, k.owner);
         if (k && !skipped) await this.claimFor(userId, k.owner, k.epoch, "sync", null);
-        // A skipped claim's epoch is still outrun, so the app's own (owner=mac, epoch) never beats this start on the tie
-        // rule (equal epochs → the Mac) when it hears the new owner or says hello on presence.
-        let epoch: number | null = null;
-        if (skipped && k) {
-          const cur = await this.load(u);
-          if (k.epoch >= cur.epoch && k.epoch < MAX_EPOCH) epoch = k.epoch + 1;
-        }
         // Checked again inside the serial section: a claim that lands first wins. The start doesn't steal from an owner
         // that is connected (that is the "Continue on your Mac" case); an owner with no presence and no call is taken over.
-        const out = await this.claimFor(userId, device, epoch, "start", null, true);
+        // A skipped claim's epoch is still outrun (even when this device already owns it at a lower epoch), so the app's
+        // own (owner=mac, epoch) never beats this start on the tie rule when it hears the owner or says hello on presence.
+        const out = await this.claimFor(userId, device, null, "start", null, true, undefined, skipped ? k?.epoch : undefined);
         if (!out.changed) call.send(this.ownershipEvent(out.state, null, "current"));
       },
       close: () => void u.calls.delete(call),
@@ -362,7 +357,8 @@ export class HandoffHub {
   }
 
   /** `check` runs inside the serial section on the loaded record; false = do nothing (proximity re-validation). */
-  private claimFor(userId: string, device: HandoffDevice, epoch: number | null, trigger: Trigger, from: Conn | null, onlyIfFree = false, check?: (before: OwnershipRecord) => boolean): Promise<ClaimOutcome> {
+  /** `above`: claim at an epoch above this one when the stored epoch isn't already higher (decided inside the serial section) */
+  private claimFor(userId: string, device: HandoffDevice, epoch: number | null, trigger: Trigger, from: Conn | null, onlyIfFree = false, check?: (before: OwnershipRecord) => boolean, above?: number): Promise<ClaimOutcome> {
     const u = this.user(userId);
     const t0 = Date.now();
     // Predict from the cache synchronously so the old device stops first, even with queued claims.
@@ -374,7 +370,8 @@ export class HandoffHub {
       try {
         const before = await this.load(u);
         const prev = before.owner;
-        if (onlyIfFree && prev !== null && (prev === device || this.connected(u, prev))) return { accepted: prev === device, changed: false, state: { ...before } };
+        if (above !== undefined && above >= before.epoch && above < MAX_EPOCH) epoch = above + 1;
+        if (onlyIfFree && prev !== null && (prev === device ? epoch === null : this.connected(u, prev))) return { accepted: prev === device, changed: false, state: { ...before } };
         if (check && !check(before)) return { accepted: false, changed: false, state: { ...before } };
         // A claim that was not predicted to change (e.g. cache cold) still stops the old device first.
         const late = !shut && (epoch === null ? before.owner !== device : claimWins(before, { owner: device, epoch })) && this.shutGate(u, device);

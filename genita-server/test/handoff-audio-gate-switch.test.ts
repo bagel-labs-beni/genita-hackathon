@@ -125,3 +125,19 @@ test("control: with no owner yet (fresh record) the iPhone call gets the convers
   assert.equal(call.mayPlay(), true);
   call.close();
 });
+
+test("Codex P1: the iPhone already owns it at a lower epoch than the URL's stale owner=mac (Mac offline) → the start lifts its epoch above it", async () => {
+  const hub = await staleMacHub(1); // mac @1
+  await hub.claimHttp("u1", "iphone", null, "button"); // iphone @2
+  const m = msgs();
+  const call = hub.attachCall("u1", "iphone", { stop() {}, send: m.send, known: callClaim(url("?device=iphone&owner=mac&epoch=3")) });
+  await call.started();
+  assert.deepEqual(hub.ownership("u1"), { owner: "iphone", epoch: 4 }, "above the app's mac@3, so the app's tie rule agrees");
+  assert.equal(call.mayPlay(), true);
+  assert.ok(m.out.some((x) => x.type === "ownership" && x.owner === "iphone" && x.epoch === 4));
+  // the iPhone presence's hello with its stale (mac, 3) can't flip it back
+  const p = hub.connect("u1", { device: "iphone", send() {} });
+  await p.hello({ owner: "mac", epoch: 3 });
+  assert.equal(hub.ownership("u1")?.owner, "iphone");
+  p.close(); call.close();
+});
