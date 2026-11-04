@@ -82,3 +82,8 @@ test("Codex #640 r16: 'I'll be 17', 'I'll turn 18' are minors; 'five or ten minu
   for (const t of ["I'll be 17 next month", "I'll turn 18 tomorrow", "I'm 16 looking for my first job."]) assert.ok(minorLine([t]), t);
   for (const t of ["I'm 30. I'm five or ten minutes away", "I'm 30. I'm 15 fucking minutes late", "I'm 30. I'm not quite 18 months sober yet"]) assert.equal(minorLine([t]), null, t);
 });
+
+test("coordinator 11/4 P1 set: common self-age phrasings always get the line", () => {
+  for (const t of ["I'm 15", "im 16", "15 years old", "I'm only 14", "I'm 17 lol", "I'm a sophomore in high school", "i am 13", "I'm fifteen", "I'm 16 years old", "I'm in high school", "I'm a teenager", "I'm 14, why", "I'm under 18", "I'm a minor", "I'm 17 btw", "i'm 16 and bored"]) assert.ok(minorLine([t]), t);
+  for (const t of ["I'm 25", "I'm 30 and single", "hey what's up", "I had 15 minutes to spare", "my 16-year-old son is driving me crazy"]) assert.equal(minorLine([t]), null, t);
+});

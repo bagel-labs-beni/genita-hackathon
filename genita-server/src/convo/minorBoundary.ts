@@ -16,7 +16,7 @@ const QUANTITY = String.raw`(?!\s*[-–]\s*(?!years?[- ]old|yrs?[- ]old|yo\b)[a-
 const SELF = String.raw`\b(?:(?:i'?m|i am|im)\s+(?:(?:still|only|just|now|currently|actually|literally|really|honestly|basically|technically|barely|like|almost|nearly|about|gonna be|going to be|about to (?:be|turn)|turning)\s+){0,2}|i\s*(?:just\s+|recently\s+)?(?:turned|turn|will be|will turn|'ll be|'ll turn)\s+)`;
 // Codex #640 r11: "16yo", "16y/o", "16yrs old" (a suffix glued to the number)
 const GLUED_AGE = String.raw`(?:yo|y\/o|yrs?\s*old|years?\s*old)\b`;
-const OWN_MINOR_AGE = new RegExp(`(?:${SELF}(?:aged\\s+)?(?:${AGE_WORD}${GLUED_AGE}|${AGE_WORD}\\b${QUANTITY}|an?\\s+${AGE_WORD}[- ]?(?:year|yr)s?[- ]?old\\b)|\\bmy age is\\s+${AGE_WORD}\\b${QUANTITY})`, "i");
+const OWN_MINOR_AGE = new RegExp(`(?:${SELF}(?:aged\\s+)?(?:${AGE_WORD}${GLUED_AGE}|${AGE_WORD}\\b${QUANTITY}|an?\\s+${AGE_WORD}[- ]?(?:year|yr)s?[- ]?old\\b)|\\bmy age is\\s+${AGE_WORD}\\b${QUANTITY}|^\\s*(?:(?:and|but|well|um|uh|oh|lol|haha|yeah|ok|okay)[,!.\\s]+)?${AGE_WORD}\\s*(?:years?[- ]?old|yrs?[- ]?old|yo\\b|y\\/o))`, "i");
 const OWN_ADULT_AGE = new RegExp(`${SELF}(?:${ADULT_WORD}\\b${QUANTITY}|an?\\s+${ADULT_WORD}[- ]?(?:year|yr)s?[- ]?old\\b)`, "i");
 // Codex #640 r12: "I haven't turned 18 yet", "I'm not quite 18 yet"
 // Codex #640 r14: "I'm almost 18", "I turn 18 tomorrow" are not 18 yet
