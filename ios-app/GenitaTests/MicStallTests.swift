@@ -75,9 +75,10 @@ final class MicStallTests: XCTestCase {
 
     private func change(now: TimeInterval = 10, lastBuild: TimeInterval = 9.6, wantMic: Bool = true, hasMic: Bool = true,
                         builtIn: Double = 48_000, nowIn: Double = 48_000, builtOut: Double = 48_000, nowOut: Double = 48_000,
-                        running: Bool = true, recent: Int = 0) -> MicStall.ConfigAction {
+                        running: Bool = true, recent: Int = 0, vp: Bool = true, stopped: Bool = false) -> MicStall.ConfigAction {
         MicStall.onConfigChange(now: now, lastBuild: lastBuild, wantMic: wantMic, hasMic: hasMic, builtIn: builtIn, nowIn: nowIn,
-                                builtOut: builtOut, nowOut: nowOut, running: running, recentRebuilds: recent)
+                                builtOut: builtOut, nowOut: nowOut, running: running, recentRebuilds: recent,
+                                voiceProcessing: vp, stoppedWithQueue: stopped)
     }
 
     func testAChangeRightAfterOurOwnBuildWaitsForTheWindowToPass() {
@@ -106,5 +107,14 @@ final class MicStallTests: XCTestCase {
         XCTAssertTrue(MicStall.silentSinceBuild(now: 11.2, lastNonZero: nil, since: 10))
         XCTAssertTrue(MicStall.silentSinceBuild(now: 11.2, lastNonZero: 9.9, since: 10), "a sample from the engine before does not count")
         XCTAssertFalse(MicStall.silentSinceBuild(now: 11.2, lastNonZero: 10.3, since: 10))
+    }
+
+    /// TF 351 19:17–19:18: heals and config rebuilds kept going ~1/s for 17 s, then crashed. One gate for both.
+    func testHealsAndConfigRebuildsShareOneCapAndAStoppedReplyIsCarried() {
+        XCTAssertTrue(MicStall.mayRebuild(recent: 2))
+        XCTAssertFalse(MicStall.mayRebuild(recent: 3))
+        XCTAssertEqual(change(lastBuild: 0, running: false, recent: 3, stopped: true), .rebuild, "a queued reply is carried, never dropped")
+        XCTAssertEqual(change(lastBuild: 0, nowOut: 44_100, running: false, vp: false), .restart, "no voice processing: restart only")
+        XCTAssertEqual(change(lastBuild: 0, wantMic: true, hasMic: false, builtIn: 0, nowIn: 0, vp: false), .rebuild, "…unless the mic is gone")
     }
 }
