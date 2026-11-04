@@ -75,7 +75,9 @@ enum InsightCopy {
     }
 
     static func quote(_ e: InsightEvidence, ai: String?) -> String {
-        e.source == "answer" ? "You picked “\(e.quote)”" : "“\(e.quote)”" + (e.source == "import" ? " · \(ai ?? "your reply")" : " · our call")
+        // which AI wrote the paste is never known for sure (the I01 button isn't proof): no source label rather than a
+        // guess ("· Claude" on TF 331)
+        e.source == "answer" ? "You picked “\(e.quote)”" : "“\(e.quote)”" + (e.source == "chat" ? " · our call" : "")
     }
 }
 
@@ -149,14 +151,17 @@ struct InsightReportView: View {
     private var header: some View {
         HStack(spacing: 12) {
             Group {
-                // the companion's face (its generated scene), never the uploaded photo (AU-24); else the initial
-                if let data = model.sceneImageData, let img = UIImage(data: data) {
+                // the same face as NM01 / PREP-1: the call scene → the V02 polished photo → the orb. Never the raw upload
+                // (AU-24), never an initial (TF 331 showed "J")
+                if let data = model.sceneImageData ?? model.polishedImage, let img = UIImage(data: data) {
                     Image(uiImage: img).resizable().scaledToFill()
                 } else {
-                    Circle().fill(InsightInk.blueSoft).overlay(Text(String(name.prefix(1)).uppercased()).insightText(15, .semibold, line: 20, color: InsightInk.blueText))
+                    Image(resource: "reference-orb-round").resizable().scaledToFit().scaleEffect(1.5)
                 }
             }
             .frame(width: 40, height: 40).clipShape(Circle()).accessibilityHidden(true)
+            // the scene may still be on the server (prep started at V01): fetch it like PREP-1 does
+            .task(id: model.prep?.sceneURL) { if model.sceneImageData == nil { await model.loadScene() } }
             VStack(alignment: .leading, spacing: 0) {
                 Text(name).insightText(15, .semibold, line: 20)
                 Text("Here’s my read on you.").insightText(13, line: 18, color: InsightInk.mute)

@@ -25,7 +25,8 @@ enum InsightFixture {
     /// `longName`: a type name too long for one line at 44 pt (R1 header fit check, Chelsea 11/4)
     static func report(empty: Bool, longName: Bool = false) -> InsightReport? {
         guard var r = try? JSONDecoder().decode(InsightReport.self, from: Data(json.utf8)) else { return nil }
-        if longName { r.type?.name = "The Quick Dry Side-by-Side Decider"; r.share?.title = "{name} is The Quick Dry Side-by-Side Decider" }
+        // TF 331's exact title (it split into "The Quick / Dry / Decider.")
+        if longName { r.type?.name = "The Quick Dry Decider"; r.share?.title = "{name} is The Quick Dry Decider" }
         if empty { r.observations = []; r.type = nil; r.share = nil; r.strengths = []; r.watchouts = []; r.chain = nil; r.mix = []; r.headline = "You gave me a good start." }
         return r
     }
