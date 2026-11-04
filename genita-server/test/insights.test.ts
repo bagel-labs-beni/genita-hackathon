@@ -993,3 +993,10 @@ test("Codex #581 recut P1: a report saved with no linked lines (sources: []) sti
   const card1 = (await h.store.getStyle("u1"))!;
   assert.deepEqual(card1.sections.likes.map((f) => f.text), ["Food: seafood."], "spicy leaves the call profile");
 });
+
+test("Codex #581 recut r2 P1: a list item named inside a paste quote is linked too, next to another linked line", async () => {
+  const { linkSources } = await import("../src/insights/report.ts");
+  const card = { sections: { likes: [{ text: "Food: spicy, seafood." }, { text: "Style: Minimal." }] } } as never;
+  const got = linkSources(card, { evidence: [{ source: "import", quote: "I like spicy food.", source_label: "x" }, { source: "answer", quote: "Minimal", source_label: "x" }], chips: [] } as never);
+  assert.deepEqual(got, [{ section: "likes", text: "Food: spicy, seafood.", item: "spicy" }, { section: "likes", text: "Style: Minimal." }]);
+});
