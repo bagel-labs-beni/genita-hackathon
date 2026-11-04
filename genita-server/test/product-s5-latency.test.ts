@@ -39,22 +39,37 @@ test("S5: find.started goes out in the same tick the product intent fires, even 
   r.close();
 });
 
-test("S5 cap: one lane with a proven pick is used at the soft cap instead of waiting for slower lanes", async () => {
+test("S5 cap: past the soft cap two lanes with one product page each make the card (topped up), not the straggler", async () => {
   let calls = 0;
   const v: FindsVendors = {
     async spark() {
       calls++;
-      // lane 1: one opened product page at 20 ms; lane 2: never returns (a 35 s straggler)
       if (calls === 1) { await sleep(20); return lane(1); }
+      if (calls === 2) { await sleep(30); return { ...lane(2), text: JSON.stringify({ items: [{ name: "Boot 2", url: "https://shop-b.example.com/products/boot-2", store: "S", price: "", image: "", taste: "", situation: "" }] }), output: [{ type: "web_search_call", status: "completed", action: { type: "open_page", url: "https://shop-b.example.com/products/boot-2" } }] }; }
       return new Promise(() => {});
     },
     async *sparkStream() {}, sam: async () => [], image: async () => Buffer.from([]),
   };
   const t0 = performance.now();
-  const r = await hedgedSearch(v, "p", 2, new AbortController().signal, [], { softMs: 80 });
+  const r = await hedgedSearch(v, "p", 3, new AbortController().signal, [], { softMs: 80 });
   const ms = performance.now() - t0;
-  assert.ok(r, "the one-pick lane is returned");
+  assert.equal(JSON.parse(r!.text).items.length, 2, "the winner topped up from the other lane");
   assert.ok(ms < 400, `returned at the soft cap, not the straggler (${Math.round(ms)} ms)`);
+});
+
+test("S5 cap (QA 11/4): one product page alone at the soft cap keeps waiting for a second (no one-link card)", async () => {
+  let calls = 0;
+  const v: FindsVendors = {
+    async spark() {
+      calls++;
+      if (calls === 1) { await sleep(10); return lane(1); }
+      await sleep(150);
+      return lane(2);
+    },
+    async *sparkStream() {}, sam: async () => [], image: async () => Buffer.from([]),
+  };
+  const r = await hedgedSearch(v, "p", 2, new AbortController().signal, [], { softMs: 40 });
+  assert.ok(JSON.parse(r!.text).items.length >= 2);
 });
 
 test("S5 cap: before the soft cap a one-pick lane still waits for a two-pick one", async () => {

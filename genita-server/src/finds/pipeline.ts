@@ -43,7 +43,12 @@ export type PipelineCtx = {
   speak?: (text: string) => void;
   /** D (Chelsea 11/4): the frame is the Mac's shared screen, not the camera (no boxes are drawn over a share) */
   screen?: boolean;
+  /** S5 (QA 11/4): the one item + colour the companion says out loud; the product search shops exactly that */
+  pick?: Promise<ProductPick | null>;
 };
+
+/** S5: one decision behind both the spoken line and the search ("white sneakers" said = "white sneakers" searched). */
+export type ProductPick = { item: string; color: string; say: string };
 
 export type PipelineResult = { card: FindCard | null; timings: Record<string, number> };
 
