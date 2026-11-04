@@ -48,6 +48,10 @@ export const OPENS_SHEET = [
   "who is the ceo of nintendo?",
   "닌텐도 CEO 누구야?",
   "Can you recommend a good dinner place near Gangnam for me?",
+  // Codex r2 (narrowing)
+  "where is the eiffel tower?",
+  "에펠탑은 어디에 있어?",
+  "Recommend a good cafe for me",
   // Codex r3
   "Jin, search Nintendo CEO",
   "What's the population of the US?",
@@ -127,6 +131,7 @@ test("general: chit-chat, feelings, things in view and crisis lines stay spoken"
 test("general (Codex r1): cooking with the camera stays a recipe even with 'near' / 'place' in it", () => {
   assert.deepEqual(classifyTurn("What can I make with ingredients near their expiration date?", true), { kind: "recipe" });
   assert.deepEqual(classifyTurn("How should I place ingredients in a bowl for dinner?", true), { kind: "recipe" });
+  assert.deepEqual(classifyTurn("How do I make restaurant-style pasta with these ingredients?", true), { kind: "recipe" });
 });
 
 test("general: the demo lines keep their own cards", () => {

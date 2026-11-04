@@ -62,6 +62,8 @@ const EXTERNAL =
 const LOCATION = /\b(?:seoul|suwon|gangnam|hongdae|itaewon|busan|incheon|jeju|tokyo|osaka|new york|nyc|london|paris|san francisco)\b/i;
 /** a fact about a role of a thing, any casing ("who is the ceo of nintendo?") */
 const ROLE_Q = /^(?:who|what)(?:'s| is| was| are| were)? (?:the )?(?:ceo|president|founder|owner|capital|population|prime minister|mayor|leader|director|author|singer|members?|head|chairman) of \w+/;
+/** "where is the eiffel tower" / "who is taylor swift" / "what is the louvre": a thing, not the conversation */
+const THING_Q = /^(?:where|who|what|when)(?:'s| is| was| are| were) (?:the |a |an )?(?:[a-z][\w'-]+ ){0,3}([a-z][\w'-]{2,})\s*[?.!]*$/;
 const ROLE_KO = /CEO|ceo|대표|사장|회장|대통령|수도|인구|창업자|감독|작가|가수/;
 const CAPITAL_PLACE = /\b(?:in|near|around)\s+(?:the\s+)?[A-Z][\w'-]+/;
 /** a named real-world thing: a capitalised word that doesn't start the sentence (Nintendo, Eiffel Tower, World Series) */
@@ -148,7 +150,7 @@ export function isGeneralAsk(text: string, env: NodeJS.ProcessEnv = process.env)
   if (YOU.test(t) && !searchVerb) return false;
   if (SELF_STATE.test(t)) return false;
   // "recommend … for me" is advice, unless the ask is a plain outside fact ("a dinner place near Gangnam for me", Codex r1)
-  const outside = (REC.test(t) && EXTERNAL.test(t) && (CAPITAL_PLACE.test(country) || LOCATION.test(t))) || (TOPIC.test(t) && !/\b(?:i|my|me)\b(?! ?(?:near|nearby))/.test(t.replace(/\bfor me\b/, "")));
+  const outside = (REC.test(t) && EXTERNAL.test(t)) || (TOPIC.test(t) && !/\b(?:i|my|me)\b(?! ?(?:near|nearby))/.test(t.replace(/\bfor me\b/, "")));
   if (SELF.test(t.replace(BENIGN_ME, "")) && !HOWTO.test(t) && !searchVerb && !outside) return false;
   if (PERSONAL_KO.test(t) && !searchVerb) return false;
   const n = words(t);
@@ -165,13 +167,16 @@ export function isGeneralAsk(text: string, env: NodeJS.ProcessEnv = process.env)
   // a who/what/where question about a named real-world thing ("who's the CEO of Nintendo", "where is the Eiffel Tower")
   if (WH.test(t) && n >= 4 && (named || place)) return true;
   if (ROLE_Q.test(t)) return true;
+  // "where is the eiffel tower?" in any casing: a fact about a thing (Codex r2)
+  const thing = t.match(THING_Q);
+  if (thing && !CONTEXT_WORD.test(thing[1])) return true;
   // a how-to for a concrete task ("how do I get a red wine stain out of a carpet")
   if (HOWTO.test(t) && n >= 6) return true;
   const fact = t.match(SHORT_FACT);
   if (fact && !CONTEXT_WORD.test(fact[1].replace(/[.-]+$/, ""))) return true;
   if (TOPIC_KO.test(t) && n >= 2 && KO_ASK.test(t)) return true;
   if (REC_KO.test(t) && EXTERNAL_KO.test(t) && n >= 2 && KO_ASK.test(t)) return true;
-  if (WH_KO.test(t) && n >= 3 && KO_ASK.test(t) && (EXTERNAL_KO.test(t) || ROLE_KO.test(country))) return true;
+  if (WH_KO.test(t) && n >= 3 && KO_ASK.test(t) && (EXTERNAL_KO.test(t) || ROLE_KO.test(country) || /어디/.test(t))) return true;
   return false;
 }
 
