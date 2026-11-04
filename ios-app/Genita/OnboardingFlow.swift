@@ -873,6 +873,8 @@ extension AppState {
     func saveSetupAndPrepare() {
         guard serverWired else { go(.bringing); return }
         savingPrefs = true
+        // the rows below are this account's, as it was before any "Forget all of this" (Codex P1 ×2)
+        let request = onboardingSnapshot(), forgets = profileForgets
         Task {
             defer { savingPrefs = false }
             await companionTask?.value
@@ -881,7 +883,9 @@ extension AppState {
                 setupSummary = r.summary
                 if let p = r.session?.persona { setup.serverPersona = p }
                 // About you: the six rows now carry the P answers too, not the import alone (TF 331, Chelsea 11/4)
-                if let rows = r.rows, !rows.isEmpty { setup.styleRows = rows; setup.stylePartial = rows.contains { $0.items.isEmpty } }
+                if let rows = r.rows, !rows.isEmpty, ownsOnboardingResponse(request), profileForgets == forgets, setup.forgetPending != true {
+                    setup.styleRows = rows; setup.stylePartial = rows.contains { $0.items.isEmpty }
+                }
             } catch { route(error) }
             // PREP-1 opens on the real state: a prep that is already ready draws "ready" from the first frame
             // (no 0.5 s of empty "Bringing … to life" rows), with its scene already in
