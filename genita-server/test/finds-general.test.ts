@@ -40,8 +40,18 @@ export const OPENS_SHEET = [
   // Codex r2
   "Google ramen restaurants in Seoul",
   "Search Nintendo CEO",
-  "How come the sky is blue?",
   "오늘 서울 날씨 알려줄 수 있어",
+  // P0 11/4 (device test): external, look-up-able only
+  "Recommend a good dinner place near Gangnam",
+  "Best KBBQ in Suwon?",
+  // Codex r1 (narrowing)
+  "who is the ceo of nintendo?",
+  "닌텐도 CEO 누구야?",
+  "Can you recommend a good dinner place near Gangnam for me?",
+  // Codex r2 (narrowing)
+  "where is the eiffel tower?",
+  "에펠탑은 어디에 있어?",
+  "Recommend a good cafe for me",
   // Codex r3
   "Jin, search Nintendo CEO",
   "What's the population of the US?",
@@ -82,6 +92,26 @@ export const STAYS_SPOKEN = [
   "How long does it take to get there?",
   "How long does it take to get there by train?",
   "오늘 서울 날씨 알려줬네",
+  // P0 11/4 (device test): personal advice / opinion is a spoken answer from the camera and her profile, never a web sheet
+  "Recommend black or white for me",
+  "Recommend black or white for my phone",
+  "Recommend black or white",
+  "Black or white?",
+  "Which is better, black or white?",
+  "What should I eat for dinner?",
+  "Which color suits me?",
+  "Should I get bangs?",
+  "Suggest something to wear for me",
+  "What's the best thing to do when you're bored?",
+  "How come the sky is blue?",
+  "What makes a good friend?",
+  "Does black or white look good in daylight?",
+  // Codex r3 (narrowing)
+  "What's good?",
+  "What's the vibe?",
+  "What's the next step?",
+  "어디까지 얘기 했지?",
+  "행복은 어디서 오는 걸까?",
   // demo runbook (QA 11/4): other paths own these
   "I have no idea what to wear today. It's for the Halloween party tonight. Jin, can you help me pick an outfit?",
   "Find me some.",
@@ -103,6 +133,13 @@ test("general: chit-chat, feelings, things in view and crisis lines stay spoken"
     // with the camera on a card kind may still take it ("what should I eat tonight?" → recipe), never a search
     assert.notEqual(classifyTurn(line, true)?.kind, "answer", `camera on: ${line}`);
   }
+});
+
+test("general (Codex r1): cooking with the camera stays a recipe even with 'near' / 'place' in it", () => {
+  assert.deepEqual(classifyTurn("What can I make with ingredients near their expiration date?", true), { kind: "recipe" });
+  // (#738: a recipe card needs "what can I make / cook with these"; a plating how-to isn't one)
+  assert.deepEqual(classifyTurn("What could I cook with these for a dinner party?", true), { kind: "recipe" });
+  assert.deepEqual(classifyTurn("How do I make restaurant-style pasta with these ingredients?", true), { kind: "recipe" });
 });
 
 test("general: the demo lines keep their own cards", () => {
@@ -221,6 +258,8 @@ test("general pipeline: no usable JSON but the search ran → the search's own p
   const r2 = await runGeneral(ctxFor(fakeVendors("{}", []), none));
   assert.equal(r2.card, null);
   assert.deepEqual(none.map((e) => e.type), ["find.started", "find.failed"]);
+  const failed = none.find((e) => e.type === "find.failed") as Extract<ServerEvent, { type: "find.failed" }>;
+  assert.deepEqual([failed.reason, failed.message], ["stopped", ""], "a failed search is silent (Chelsea 11/4: finds only add a sheet)");
   for (const e of none) assert.deepEqual(checkServerEvent(e), [], JSON.stringify(e));
 });
 

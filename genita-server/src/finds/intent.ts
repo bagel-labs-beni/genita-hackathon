@@ -131,8 +131,9 @@ function cardIntent(text: string, hasFrames: boolean, afterProduct = false): Int
   // "what should I wear to dinner?" names a meal but asks about clothes (AU-60); only a choice opens the outfit card —
   // "what am I wearing?" / "how do I look?" / "do you like my shirt?" are answered out loud from the frame (P0 11/4)
   if (clothes && (!cook || ON_ME.test(text)) && CHOOSE.test(text)) return { kind: "outfit" };
-  // P0 11/4 ("recommend a dinner menu" opened the fridge card): only "what can I make with these / what's in here"
-  if (cook && RECIPE_ASK.test(text)) return { kind: "recipe" };
+  // P0 11/4 ("recommend a dinner menu" opened the fridge card): only "what can I make with these / what's in here";
+  // never a restaurant search ("a dinner place near Gangnam", #735)
+  if (cook && RECIPE_ASK.test(text) && !/\brestaurants? (?:near|in|around)\b|\b(?:dinner|lunch|brunch|breakfast) (?:places?|spots?)\b|\bplaces? to eat\b|\bspots? to eat\b|\b(?:near|around) [A-Z]|\bin [A-Z][a-z]+\b/.test(text)) return { kind: "recipe" };
   if (isIdentifyAsk(text)) return { kind: "identify" };
   return null;
 }

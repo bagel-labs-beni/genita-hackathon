@@ -41,6 +41,8 @@ export const GENERAL_TITLE_FALLBACK = "Looking it up";
 
 /** "hey Jin," / "so," / "Jin," before the ask */
 const LEAD_IN = /^(?:(?:hey|hi|hello|ok(?:ay)?|so|um+|uh+|oh|yo|alright|well)\b[,!\s]+)+(?:[a-z]+,\s*)?|^[a-z]+,\s+/;
+/** LEAD_IN on the original casing ("Hey Jin, Who…" keeps "Who" capitalised for NAMED) */
+const LEAD_IN_ORIG = /^(?:(?:hey|hi|hello|ok(?:ay)?|so|um+|uh+|oh|yo|alright|well)\b[,!\s]+)+(?:[A-Za-z]+,\s*)?|^[A-Za-z]+,\s+/i;
 /** the polite wrapper around the real question: "can you tell me…", "do you know…", "look up…" */
 const PREAMBLE =
   /^(?:(?:can|could|would|will) you (?:please )?(?:tell me|let me know|check|find out|look up|search(?: for)?|google)?|do you (?:happen to )?know|(?:please )?tell me|i (?:wonder|want to know|wanna know|'d like to know)|any idea|please|quick question[,:]?)\s*/;
@@ -51,9 +53,34 @@ const SEARCH_VERB =
 const NO_SEARCH = /\b(?:don'?t|do not|no need to|never|stop|without)\s+(?:\w+\s+)?(?:search\w*|googl\w*|look\w* (?:\w+ )?up)\b|검색\s*(?:하지\s*마|말고)/;
 const SEARCH_KO = /검색|찾아\s*봐|찾아\s*줄래|찾아\s*줘|알아\s*봐|알아\s*줘/;
 /** words that mean "the web knows this" */
+/** P0 11/4 (device test: "recommend black or white for me" opened a design-colour sheet): only external, look-up-able
+ * facts search. These words are facts on their own */
 const TOPIC =
-  /\b(?:news|latest|headlines?|price|prices|cost|costs|how much|weather|forecast|rain|snow|temperature|score|scores|who won|reviews?|ratings?|best|top \d+|recommend\w*|suggest\w*|near me|open(?:ing)? (?:now|hours)|hours|schedule|release date|showtimes?|population|capital of|tickets?)\b/;
-const TOPIC_KO = /뉴스|가격|얼마|날씨|추천|맛집|최신|제일|가장|순위|후기/;
+  /\b(?:news|latest|headlines?|price|prices|cost|costs|how much|weather|forecast|rain|snow|temperature|score|scores|who won|open(?:ing)? (?:now|hours)|hours|schedule|release date|showtimes?|population|capital of|tickets?|near me|nearby)\b/;
+/** these only with an external category or a place ("best KBBQ in Suwon", "recommend a dinner place near Gangnam") */
+const REC = /\b(?:recommend\w*|suggest\w*|best|top \d+|good|great|reviews?|ratings?|popular|famous)\b/;
+const EXTERNAL =
+  /\b(?:restaurants?|places?|spots?|caf[eé]s?|coffee shops?|bars?|pubs?|bakery|bakeries|shops?|stores?|malls?|markets?|hotels?|hostels?|museums?|galleries|parks?|beaches?|hikes?|trails?|movies?|films?|shows?|series|dramas?|books?|novels?|podcasts?|songs?|albums?|artists?|games?|apps?|phones?|laptops?|tablets?|cameras?|headphones?|earbuds|tvs?|cars?|brands?|products?|kbbq|bbq|barbecue|ramen|sushi|pizza|burgers?|tacos?|galbi|noodles?|pho|brunch|steak(?:house)?s?|dim sum)\b/;
+/** a place named after "in / near / around" (checked on the original text: "in Suwon", "near Gangnam") or a known one */
+// known places by name only: "in daylight" / "at home" are not places (Codex r1); "in Suwon" is CAPITAL_PLACE on the original
+const LOCATION = /\b(?:seoul|suwon|gangnam|hongdae|itaewon|busan|incheon|jeju|tokyo|osaka|new york|nyc|london|paris|san francisco)\b/i;
+/** a fact about a role of a thing, any casing ("who is the ceo of nintendo?") */
+const ROLE_Q = /^(?:who|what)(?:'s| is| was| are| were)? (?:the )?(?:ceo|president|founder|owner|capital|population|prime minister|mayor|leader|director|author|singer|members?|head|chairman) of \w+/;
+/** "where is the eiffel tower" / "who is taylor swift" / "what is the louvre": a thing, not the conversation */
+// a name of 2+ words ("the eiffel tower", "taylor swift"): "what's good?" / "what's the vibe?" are chat (Codex r3)
+const THING_Q = /^(?:where|who|what|when)(?:'s| is| was| are| were) (?:the |a |an )?([a-z][\w'-]+(?: [a-z][\w'-]+){1,3})\s*[?.!]*$/;
+const CHAT_WORD = /^(?:vibe|deal|story|thing|things|tea|plan|step|move|idea|point|problem|matter|news|next|last|first|up|new|going|happening|wrong|good|best|better)$/;
+/** "에펠탑은 어디에 있어?": a named thing before 어디 (not "어디까지 얘기했지?" / "행복은 어디서 오는 걸까?", Codex r3) */
+const WHERE_THING_KO = /[가-힣A-Za-z]{2,}(?:은|는|이|가)\s*어디(?:에|야|있)/;
+const ROLE_KO = /CEO|ceo|대표|사장|회장|대통령|수도|인구|창업자|감독|작가|가수/;
+const CAPITAL_PLACE = /\b(?:in|near|around)\s+(?:the\s+)?[A-Z][\w'-]+/;
+/** a named real-world thing: a capitalised word that doesn't start the sentence (Nintendo, Eiffel Tower, World Series) */
+const NAMED = /(?:^|[^.!?]\s)[A-Za-z][\w'-]*\s+(?:\w+\s+)*?[A-Z][a-zA-Z]{1,}/;
+/** a choice between two things with nothing external ("black or white?"): an opinion, spoken */
+const CHOICE = /\b\w+ or \w+\b/;
+const TOPIC_KO = /뉴스|가격|얼마|날씨|최신/;
+const REC_KO = /추천|맛집|제일|가장|순위|후기/;
+const EXTERNAL_KO = /맛집|식당|카페|가게|호텔|영화|드라마|책|노래|여행지|관광지|집\s|집[?？]|라멘|고기|갈비|국밥|곳|서울|수원|강남|홍대|부산|제주|근처|에서/;
 const WH = /^(?:who|who's|what|what's|whats|where|where's|when|when's|which|how)\b/;
 /** a short fact question: "who invented penicillin?", "what is photosynthesis?", "where is Seoul?" (Codex r1) */
 const SHORT_FACT = /^(?:who|what|where|when) (?:invented|discovered|wrote|founded|painted|directed|created|owns|is|was|are|were) ([a-z][a-z.-]{3,})\s*[?.!]*$/;
@@ -67,13 +94,14 @@ const IMPERATIVE = /^(?:recommend|suggest|list|name|give me|show me)\b/;
 const YOU = /\b(?:you|your|yours|yourself|you're|youre|ur)\b|\bu\b(?!\.)/;
 const SELF = /\b(?:i|i'm|im|i've|i'd|i'll|me|my|mine|myself|we|we're|us|our)\b/;
 /** "for me" / "show me" / "near me" keep a lookup a lookup */
-const BENIGN_ME = /\b(?:for|recommend|suggest|show|tell|give|get|find|send|near) me\b/g;
+/** "near me" / "show me" keep a lookup a lookup; "recommend … for me" is personal advice (P0 11/4) */
+const BENIGN_ME = /\b(?:show|tell|give|get|find|send|near) me\b/g;
 /** "how do I make kimchi", "where can I get…": a how-to, the web helps */
 const HOWTO = /^(?:how (?:do|can|should|would) (?:i|we)\b|how to\b|where (?:can|do|should) (?:i|we)\b)|\bhow to\b/;
 const SELF_STATE = /\bhow (?:do|did) (?:i|we) (?:look|seem|sound|do)\b|\bhow am i\b/;
 const FEELING = /\b(?:feel|feeling|felt|sad|lonely|bored|tired|stressed|anxious|upset|angry|happy|love|miss|hate|worried|scared)\b/;
 const SMALL_TALK = /^(?:how about|what about|what if|thanks|thank you|ok|okay|cool|nice|great|wow|lol|haha|yes|no|yeah|nope|sure|bye|good (?:morning|night)|what'?s up|what'?s new|what'?s going on|how'?s it going|what are you (?:up to|doing))\b/;
-const PERSONAL_KO = /(?:^|\s)(?:너|넌|너는|니가|네가|너도|당신|나|난|나는|내가|내|제가|저는|저도|우리)(?:\s|$)|기분|사랑|보고\s*싶|심심|외로|우울|힘들|피곤|지내|안녕|고마워|괜찮아/;
+const PERSONAL_KO = /(?:^|\s)(?:너|넌|너는|니가|네가|너도|당신|나|난|나는|내가|내|제가|저는|저도|우리|나한테|내게|저한테|제게|나랑)(?:\s|$)|어울려|어울리|기분|사랑|보고\s*싶|심심|외로|우울|힘들|피곤|지내|안녕|고마워|괜찮아/;
 
 /** about something already in the conversation or on screen ("how long does it take?", "how old is he?"): the companion answers */
 const PRONOUN = /\b(?:it|its|it's|they|them|their|they're|he|him|his|he's|she|her|she's)\b/;
@@ -129,17 +157,35 @@ export function isGeneralAsk(text: string, env: NodeJS.ProcessEnv = process.env)
   if (FEELING.test(t) && !searchVerb) return false;
   if (YOU.test(t) && !searchVerb) return false;
   if (SELF_STATE.test(t)) return false;
-  if (SELF.test(t.replace(BENIGN_ME, "")) && !HOWTO.test(t) && !searchVerb) return false;
+  // "recommend … for me" is advice, unless the ask is a plain outside fact ("a dinner place near Gangnam for me", Codex r1)
+  // a choice for them ("black or white for my phone") is advice, whatever the category (Codex judge r4)
+  const outside = (REC.test(t) && EXTERNAL.test(t) && !CHOICE.test(t)) || (TOPIC.test(t) && !/\b(?:i|my|me)\b(?! ?(?:near|nearby))/.test(t.replace(/\bfor me\b/, "")));
+  if (SELF.test(t.replace(BENIGN_ME, "")) && !HOWTO.test(t) && !searchVerb && !outside) return false;
   if (PERSONAL_KO.test(t) && !searchVerb) return false;
   const n = words(t);
   if (searchVerb) return n >= 2;
+  const original = country.replace(LEAD_IN_ORIG, "");
+  const place = CAPITAL_PLACE.test(original) || LOCATION.test(t);
+  const named = NAMED.test(original);
   const question = /\?\s*$/.test(t) || WH.test(t) || IMPERATIVE.test(t);
+  const external = (REC.test(t) && (EXTERNAL.test(t) || place)) || (EXTERNAL.test(t) && place);
+  // "black or white?" / "which is better, A or B?" with nothing external, factual or named: an opinion (P0 11/4)
+  if (CHOICE.test(t) && !place && !named && !TOPIC.test(t) && !EXTERNAL.test(t)) return false;
   if (TOPIC.test(t) && question && n >= 3) return true;
-  if (WH.test(t) && n >= 4) return true;
+  if (external && (question || n >= 3)) return true;
+  // a who/what/where question about a named real-world thing ("who's the CEO of Nintendo", "where is the Eiffel Tower")
+  if (WH.test(t) && n >= 4 && (named || place)) return true;
+  if (ROLE_Q.test(t)) return true;
+  // "where is the eiffel tower?" in any casing: a fact about a thing (Codex r2)
+  const thing = t.match(THING_Q);
+  if (thing && !thing[1].split(" ").some((w) => CONTEXT_WORD.test(w) || CHAT_WORD.test(w))) return true;
+  // a how-to for a concrete task ("how do I get a red wine stain out of a carpet")
+  if (HOWTO.test(t) && n >= 6) return true;
   const fact = t.match(SHORT_FACT);
   if (fact && !CONTEXT_WORD.test(fact[1].replace(/[.-]+$/, ""))) return true;
   if (TOPIC_KO.test(t) && n >= 2 && KO_ASK.test(t)) return true;
-  if (WH_KO.test(t) && n >= 3 && KO_ASK.test(t)) return true;
+  if (REC_KO.test(t) && EXTERNAL_KO.test(t) && n >= 2 && KO_ASK.test(t)) return true;
+  if (WH_KO.test(t) && n >= 3 && KO_ASK.test(t) && (EXTERNAL_KO.test(t) || ROLE_KO.test(country) || WHERE_THING_KO.test(t))) return true;
   return false;
 }
 
@@ -310,7 +356,8 @@ export async function runGeneral(ctx: PipelineCtx): Promise<PipelineResult> {
   timings.cardJsonMs = Math.round(ctx.now() - t0);
   const results = pickResults(j, traced);
   if (!results.length) {
-    ctx.emit({ type: "find.failed", findId: ctx.findId, reason: "search_failed", message: "I couldn't find anything solid on that. Ask me another way?" });
+    // Chelsea 11/4: conversation first, finds only add a sheet — a failed search is silent (no line, no fail sheet)
+    ctx.emit({ type: "find.failed", findId: ctx.findId, reason: "stopped", message: "" });
     return { card: null, timings };
   }
   const n = results.length;
