@@ -55,6 +55,9 @@ import type { CallTurn } from "../personalize/extract.ts";
 import { ASK_TURNS, replyAsks } from "../personalize/unknowns.ts";
 import { mightBeCorrection } from "../personalize/corrections.ts";
 import { ageSays, foldAge, isMinor, MINOR_LINE, NO_AGE, type AgeSay } from "../convo/minorBoundary.ts";
+import { cameraOffHint } from "../convo/cameraAsk.ts";
+import { unbackedPast } from "../convo/pastGuard.ts";
+import { forgetInCall, forgetKeyText, isAnaphoricForget, isCorrection, isRememberRequest, pointedLine } from "../convo/forgetInCall.ts";
 import { avoidKeys, forgetTarget, isForgetRequest, mentionsAvoided, scrubHistory, type Removed } from "../personalize/forgotten.ts";
 import { isForgetRequest as isMemoryForgetRequest } from "../memory/extract.ts";
 import { localTimeLine } from "../personalize/knows.ts";
@@ -63,7 +66,7 @@ import type { TasteLine } from "../personalize/reasons.ts";
 import { backchannelOn, convoV1, englishOnly, eotHoldOn, initiativeOn } from "../convo/flags.ts";
 import { Backchannel } from "../convo/backchannel.ts";
 import { EOT, eotTuning, joinSegments, judgeEndOfTurn, type EotKind, type EotVerdict } from "../convo/endOfTurn.ts";
-import { addressUser, thirdPersonCouldBeUser, fallbackLine, guardSentence, neverSpoken, NO_ANSWER_LINE, LOST_LINE, UPSTREAM_RETRY_MS, realCrisisSignal, nameAsYou, type GuardClass } from "../convo/guard.ts";
+import { addressUser, thirdPersonCouldBeUser, fallbackLine, guardSentence, neverSpoken, NO_ANSWER_LINE, LOST_LINE, UPSTREAM_RETRY_MS, realCrisisSignal, mayBeSelfHarm, nameAsYou, type GuardClass } from "../convo/guard.ts";
 import { isInterjectionOnly } from "../text/toolNarration.ts";
 import { daySeed, openerBlock, openerKind, profileHooks } from "../convo/opener.ts";
 import { mentionsProfile, moodFrom, moodLine, turnHints, type Mood } from "../convo/rhythm.ts";
@@ -315,6 +318,27 @@ export function stripCueEcho(text: string): string {
 export const CRISIS_HELP_LINE = "<sad> Please reach out right now: call or text a crisis line, like 988 in the US, or your local emergency number, or someone you trust. I'm right here.";
 /** real help outside the call — "reach out to me" is not one (Codex #423 final P1) */
 const HELP_POINTER = /\b(?:988|911|112|999|nine eight eight|nine one one|crisis (?:line|text line)|hotline|emergency (?:services|number|room)|someone you trust|samaritans|lifeline|a doctor|a counselor)\b/i;
+/** lead 11/4 (intel eval crisis-means: 1/5 said "emergency services or a crisis helpline" with no number): a real number */
+export const CRISIS_NUMBER_LINE = "<sad> You can call or text 988 any time in the US, or your local emergency number.";
+/** what a real crisis reply still needs: the whole help line (no pointer at all), just the number line, or nothing */
+// Codex r8: only explicit crisis services earn the number line (not "someone you trust", not a generic hotline)
+export function crisisFollowUp(said: string[]): string | null {
+  // Codex r10: main's rule only (no help pointer at all → the help line); the number comes from the prompt's "988 in the
+  // US" (sweep: the model said it 20/20), so no new forced path versus main
+  return said.some((x) => HELP_POINTER.test(x.replace(/[‘’ʼ]/g, "'").replace(SAID_I_CANT, " "))) ? null : CRISIS_HELP_LINE;
+}
+/** Codex r13: "No, I can't call a crisis line for you." names a line but points nowhere; that clause earns no pass */
+const SAID_I_CANT = /\b(?:(?:no|nope|sorry),?\s*)?i\s*(?:can't|cannot|can not|won't|couldn't|am not able to|'m not able to|am unable to|'m unable to|don't have)\b[^,.;!?]*/gi;
+/**
+ * The follow-up for this turn: on a real signal (detector) the full rule above; otherwise, when the user's words come
+ * near harm AND the model itself pointed to help (it judged it a crisis), just the number if it left one out. A
+ * detector miss ("thinking of ending everything tonight") still ends with a number; an idiom with no help pointer gets
+ * nothing (integration 11/4: number 20/20 on real lines, forced 988 0 on ordinary ones).
+ */
+export function crisisFollowUpFor(userText: string, said: string[]): string | null {
+  // Codex r7: no number line on a detector miss (the sweep used it 0×; the prompt's "988 in the US" gives the number)
+  return realCrisisSignal(userText) ? crisisFollowUp(said) : null;
+}
 const QUESTION_START = /^(?:(?:hey|hi|okay|ok|so|wait|yo)\b[^,.!?]{0,20},?\s*)?(?:so,?\s*)?(?:(?:how|what|when|where|who|why|which)(?:'s|'re|'d| is| am| are| was| were| did| do| does| has| have| had| will| would| can| could| should)\b|(?:did|do|does|are|is|was|were|have|has|can|could|will|would) (?:you|it|they|we|that|this|he|she)\b|you (?:feeling|ready|nervous|excited)\b)/i;
 /** Demo S4 (QA P2: Spark ignored SUGGEST_MAC_LINE 1/4 and gave outfit advice in 8.5 s): the iPhone's outfit ask with the
  * Mac open always gets this line, at once (no Spark); rotates by utterance */
@@ -945,6 +969,7 @@ export class Session {
         if (this.segmentOpen) { this.dropLateFinal = true; this.segmentOpen = false; }
         this.dropSpeculation(); this.dispatch({ type: "client_barge_in" });
         this.history = []; this.recentReplies = []; this.memories = []; this.greeting = null;
+        this.handedPast = false; // Codex #536 r2: after a Forget the other device's turns are gone as a past too
         this.historyRevision = revision;
         // #341: what greetings opened on goes too (Codex #352)
         this.openerRecent = [];
@@ -996,10 +1021,14 @@ export class Session {
           // Codex #640 r4: fold the flags (never a bare "minor" from a partial history; an adult age can still win)
           this.ageSaid = foldAge(this.ageSaid, server?.length ? seed.filter((h) => h.role === "user").reduce((a, h) => foldAge(a, ageSays(h.text)), NO_AGE) : claimedAge(msg.history));
           // a handoff is the same conversation: one thread, one summary (iPhone and Mac write the same row)
-          this.memoryCall?.continueThread(server?.length ? this.deps.priorThread?.(revision) ?? null : null, this.history);
+          const prior = server?.length ? this.deps.priorThread?.(revision) ?? null : null;
+          // Codex #547 P1: the other device's forgotten lines keep this call's input, memory and notes clear of them too
+          if (prior?.removed?.length) this.removedLines = [...this.removedLines, ...prior.removed].slice(-40);
+          this.memoryCall?.continueThread(prior, this.history);
           this.recentReplies = [...this.recentReplies, ...this.history.filter((h) => h.role === "assistant").map((h) => h.text)].slice(-3);
           this.greeting = null;
           this.continued = true;
+          this.handedPast = true;
           this.log("history.seeded", { turns: this.history.length, from: server?.length ? "server" : "start" });
         });
       };
@@ -1076,8 +1105,9 @@ export class Session {
         if (got?.nod) this.nod = got.nod;
         // what they removed from their profile stays out of memory, notes and the handed-off turns
         if (got?.removed?.length) {
-          this.removedLines = got.removed;
-          this.memoryCall?.setAvoid(got.removed);
+          // keep what a handed-off call already forgot (Codex #547 P1) alongside the profile's removed lines
+          this.removedLines = [...got.removed, ...this.removedLines.filter((r) => !got.removed!.includes(r))].slice(-40);
+          this.memoryCall?.setAvoid(this.removedLines);
           this.history = scrubHistory(this.history, avoidKeys(got.removed));
         }
         if (got?.calls) this.callNumber = got.calls;
@@ -1839,9 +1869,14 @@ export class Session {
     // the profile it was said under: a line queued behind another runs with it, so a forget in between drops it (Codex #583 r14)
     const gen = since ?? (userId ? p?.generation?.(userId) : undefined);
     // "forget that …": from this line on, memory, notes and the turns handed on leave its target out (no Spark wait)
-    if (isForgetRequest(text) && this.mode === "chat") {
-      const target = forgetTarget(text);
-      if (target) { this.removedLines = [...this.removedLines, { text: target, forget: true }].slice(-40); this.memoryCall?.setAvoid(this.removedLines); }
+    // "forget I said that" points back: the line to forget is their previous one (strict match, not loose words of
+    // "i don't wanna get into it" — intel eval 11/4)
+    const pointsBack = isAnaphoricForget(text);
+    if ((isForgetRequest(text) || pointsBack) && !isCorrection(text) && !isRememberRequest(text) && this.mode === "chat") {
+      const prev = pointsBack ? pointedLine(this.history) : null;
+      // anaphoric: the pointed-at line's distinctive words, loosely (Codex #547 P1: "Likes jasmine tea." must go too)
+      const removed: Removed | null = pointsBack ? (prev && forgetKeyText(prev) ? { text: forgetKeyText(prev), forget: true } : null) : forgetTarget(text) ? { text: forgetTarget(text), forget: true } : null;
+      if (removed) { this.removedLines = [...this.removedLines, removed].slice(-40); this.memoryCall?.setAvoid(this.removedLines); }
     }
     const asked = this.awaitingAnswer;
     this.awaitingAnswer = null;
@@ -1900,7 +1935,7 @@ export class Session {
   }
 
   /** Conversation engine v1 inputs for this turn: style, the greeting's opener, an initiative block, the camera lines. */
-  private v1Extras(turn: { greeting?: { item: Memory | null } | null; cue?: { block: string } | null }, userText = ""): Partial<Parameters<typeof buildInstructions>[0]> {
+  private v1Extras(turn: { greeting?: { item: Memory | null } | null; cue?: { block: string } | null }, userText = "", cameraFrames = 0, screenFrames = 0): Partial<Parameters<typeof buildInstructions>[0]> {
     const last = this.lastMessageAt;
     let opener: string | undefined;
     if (turn.greeting) {
@@ -1933,6 +1968,12 @@ export class Session {
       perception = this.perception?.contextLine() ?? undefined;
       perceptionHint = turn.greeting || turn.cue ? undefined : this.perception?.pendingHint() ?? undefined;
     } catch { /* the reply never fails on the camera lane */ }
+    // intel eval 11/4: "do I look ok?" with the camera off got an empty reply (the unseen guard dropped "You look great")
+    // Codex #541 P2: an explicit "do I look ok?" beats a lingering face hint, and shared-screen images count as seeing
+    // Codex #541 r2: only this turn's camera frames say the camera is on (a cached face line can outlive it); a shared
+    // screen counts for "look at this", never for "do I look ok?"
+    // Codex #541 r3: never on a crisis line or in a call that had one (no "playful" nudge there)
+    if (!turn.greeting && !turn.cue && userText && !realCrisisSignal(userText) && !this.crisisInCall) { const off = cameraOffHint(userText, cameraFrames > 0, screenFrames > 0); if (off) perceptionHint = off; }
     // P1: closeness, question rhythm, mood, what landed, recall — one "This turn:" line on a user turn (never a greeting / cue)
     let turnLine: string | undefined;
     this.subscribePerception();
@@ -2026,6 +2067,14 @@ export class Session {
     return picked.map((m) => m.text);
   }
 
+  /** CV-01: anything from before this call reached the model (memories, notes, last call, recall, the other device's turns) */
+  /** the other device's turns came with this call (cleared by a Forget) */
+  private handedPast = false;
+  private hasPast(): boolean {
+    // a handoff's turns count only while they're still here (Codex #536 P2: a Forget clears them, the flag stayed)
+    return this.handedPast || this.memories.length > 0 || !!this.memoryCall?.pastShown;
+  }
+
   /** Session memory: this call's conversation thread, for the account's next device after a handoff. */
   threadInfo(): ThreadState | null {
     return this.memoryCall?.threadState() ?? null;
@@ -2034,7 +2083,7 @@ export class Session {
   /** This call's turns (copy) — for the account's next device after a handoff. */
   historySnapshot(): HistoryItem[] {
     // the next device never gets a "forget that…" turn or what it removed (QA post-deploy 11/3)
-    return scrubHistory(this.history, avoidKeys(this.removedLines)).map((h) => ({ ...h }));
+    return forgetInCall(this.history, this.removedLines).map((h) => ({ ...h }));
   }
 
   /** Revision of these turns, not the latest revision at socket close (which may arrive after Forget). */
@@ -2060,7 +2109,7 @@ export class Session {
   private remember(role: "user" | "assistant", text: string): void {
     // whole call, not just the kept history: a forget request anywhere keeps this call's raw lines out of a return visit
     // either detector: #442's (personalize, drives the do-not-mention scrub) or memory's broader one (#443)
-    if (role === "user" && (isForgetRequest(text) || isMemoryForgetRequest(text))) this.forgetAsked = true;
+    if (role === "user" && (isForgetRequest(text) || isMemoryForgetRequest(text) || isAnaphoricForget(text))) this.forgetAsked = true;
     if (role === "user" && realCrisisSignal(text)) this.crisisInCall = true;
     // Codex #640: kept for the whole call (the 16-line history trim would drop the "I'm 15" line)
     if (role === "user") this.ageSaid = foldAge(this.ageSaid, ageSays(text));
@@ -2096,10 +2145,11 @@ export class Session {
       ? [{ type: "input_text", text }, ...images.map((u) => ({ type: "input_image" as const, image_url: u }))]
       : text;
     const input: InputMessage[] = [
-      ...this.history.map((h): InputMessage => (h.role === "user" ? { role: "user", content: h.text } : { role: "assistant", content: h.text })),
+      // intel eval 11/4: what they asked to forget in this call is not sent back to Spark either (convo/forgetInCall.ts)
+      ...forgetInCall(this.history, this.removedLines).map((h): InputMessage => (h.role === "user" ? { role: "user", content: h.text } : { role: "assistant", content: h.text })),
       { role: "user", content },
     ];
-    const v1 = this.v1 ? this.v1Extras(turn, text) : {};
+    const v1 = this.v1 ? this.v1Extras(turn, text, camera.length, images.length - camera.length) : {};
     const base = buildInstructions({
       persona,
       user: this.user,
@@ -2168,7 +2218,12 @@ export class Session {
         (e) => e.type === "function_call");
     };
     const last = typeof req.input === "string" ? req.input : req.input.at(-1);
-    const query = typeof last === "string" ? last : last && "role" in last && typeof last.content === "string" ? last.content : "";
+    // Codex r4 P2: a camera turn's content is an array (input_text + images) — its text is the query too
+    const content = last && typeof last !== "string" && "role" in last ? last.content : undefined;
+    const query = typeof last === "string" ? last : typeof content === "string" ? content
+      : Array.isArray(content) ? content.map((p) => (p && typeof p === "object" && "type" in p && p.type === "input_text" && "text" in p ? String(p.text) : "")).join(" ").trim() : "";
+    // Codex r8: a crisis line earlier in THIS call also keeps the "no hotlines" check-in away
+    if (this.memoryCall) this.memoryCall.callHadCrisis = this.crisisInCall || realCrisisSignal(query);
     return this.memoryCall && useMemory ? this.memoryCall.stream(req, signal, source, query, opening, confirmed, memoryRetry) : source(req, signal);
   }
 
@@ -2478,7 +2533,7 @@ export class Session {
     // #194 GK-1: this turn carries the call's one still-to-confirm question; the guard lets that question through
     // (read from the request itself: it was built before this turn was counted)
     const askTurn = !synthetic && !interpret && !!this.ask && (req.instructions ?? "").includes(this.ask.line);
-    const guardCtx = { camera: (built?.images.length ?? 0) > 0, userText: synthetic ? "" : text, askTurn };
+    const guardCtx = { camera: (built?.images.length ?? 0) > 0, userText: synthetic ? "" : text, askTurn, crisisInCall: this.crisisInCall };
     let cutBefore = false;
     const enqueueSentences = (list: string[], keepOpener = false) => {
       for (const raw of list) {
@@ -2510,6 +2565,11 @@ export class Session {
         if (this.v1 && tts && !interpret && !self) {
           const you = nameAsYou(tts, this.user?.name);
           if (you !== tts) { tts = you; this.log("convo.name_to_you", { utteranceId }); }
+        }
+        // CV-01 (eval v2 11/4): no past in this call → no habit "again" / "like usual", no claimed earlier talk (convo/pastGuard.ts)
+        if (this.v1 && tts && !interpret && !self) {
+          const kept = unbackedPast(tts, { past: this.hasPast(), userText: guardCtx.userText, callText: this.history.map((h) => h.text).join(" ") }); // Codex #536 r6: what Genita itself said this call counts too ("We talked about kimchi fried rice")
+          if (kept !== tts) { tts = kept; this.log("convo.unbacked_past", { utteranceId, dropped: !kept }); }
         }
         // AI sweep C1: "I'm really glad you told me — …" then "…, and I'm really glad you told me." — said once per reply
         if (this.v1 && tts && !interpret && !self && sentences.some((x) => /\bglad you told me\b/i.test(x.display))) {
@@ -2757,7 +2817,7 @@ export class Session {
           // AI sweep 11/3 [P1 safety] (2/13): a real crisis hint answered with a promise or "I'm staying with you" and no
           // pointer to real help gets one fixed line (DESIGN §8.1)
           // a reply the help line now covers is not an error card either (Codex gate P2)
-          if (this.v1 && !interpret && !self && !synthetic && realCrisisSignal(text) && !sentences.some((x) => HELP_POINTER.test(x.display))) { enqueueSentences([CRISIS_HELP_LINE], true); lostLine = true; }
+          if (this.v1 && !interpret && !self && !synthetic) { const need = crisisFollowUpFor(text, sentences.filter((x) => !x.drop).map((x) => x.display)); if (need) { enqueueSentences([need], true); lostLine = true; } }
           // S4: a guard dropped the Mac sentence ("You look great already, but move our call to your Mac…", camera off):
           // the ask is still said (Codex #423 final P2)
           if (built.suggestMac && !interpret && !self && !sparkError && (guarded.first || guarded.narration) && sentences.length && !sentences.some((x) => /\bMac\b/i.test(x.display))) enqueueSentences([SUGGEST_MAC_TAIL], true);
@@ -2798,7 +2858,7 @@ export class Session {
           // AI sweep 11/3 [P1 safety] (2/13): a real crisis hint answered with a promise or "I'm staying with you" and no
           // pointer to real help gets one fixed line (DESIGN §8.1)
           // a reply the help line now covers is not an error card either (Codex gate P2)
-          if (this.v1 && !interpret && !self && !synthetic && realCrisisSignal(text) && !sentences.some((x) => HELP_POINTER.test(x.display))) { enqueueSentences([CRISIS_HELP_LINE], true); lostLine = true; }
+          if (this.v1 && !interpret && !self && !synthetic) { const need = crisisFollowUpFor(text, sentences.filter((x) => !x.drop).map((x) => x.display)); if (need) { enqueueSentences([need], true); lostLine = true; } }
           // S4: a guard dropped the Mac sentence ("You look great already, but move our call to your Mac…", camera off):
           // the ask is still said (Codex #423 final P2)
           if (built.suggestMac && !interpret && !self && !sparkError && (guarded.first || guarded.narration) && sentences.length && !sentences.some((x) => /\bMac\b/i.test(x.display))) enqueueSentences([SUGGEST_MAC_TAIL], true);

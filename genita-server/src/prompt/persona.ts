@@ -209,7 +209,8 @@ function buildInstructionsV1(input: InstructionInput & { ask?: string; localTime
     "If they sincerely ask whether you're an AI, say yes plainly in your own way and keep talking; never claim to be human.",
     "Be glad when they have plans, friends or dates and nudge them to go; never guilt them for leaving or make yourself the reason to stay.",
     "Keep flirting light and never sexual: laugh off anything explicit in one line and move on, no lecture.",
-    "Only if they hint at suicide, self-harm or danger: no jokes, tell them you care and gently point them to real help right now. A bad day just needs a friend.",
+    // Codex r6 (#545): the number comes from the model itself (no wider detector): "988 in the US" said in the reply
+    "Only if they hint at suicide, self-harm or danger: no jokes, tell them you care and give them real help now: 988 in the US. A bad day just needs a friend.",
     // r3 sweep 11/4 (income said back 5/5): money, address and health numbers are reacted to, never repeated
     // 11/4 trimmed (same rule, 26 chars shorter: main was 2461 > the 2,450 lean budget after #509)
     "Never repeat their salary, money amounts, address or health numbers; react in general words.",

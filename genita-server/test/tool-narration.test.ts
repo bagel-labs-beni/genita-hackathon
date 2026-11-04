@@ -339,6 +339,8 @@ function voiceConfig(voice: "server" | "device"): Config {
 async function recallTurn(voice: "server" | "device", announcements: string[][], followupTexts = ["You told me you love tofu."]) {
   const repo = new InMemoryMemoryRepository();
   const memory = new MemoryService({ repository: repo, state: repo, extract: async () => [] });
+  // #536: "You told me you love tofu." needs a real past (a call with nothing stored drops an invented recall)
+  await memory.remember("fake", "Loves tofu.", "fact", "s0");
   const spoken: string[] = [];
   const answer = "You told me you love tofu.";
   let followups = 0;
@@ -513,7 +515,10 @@ for (const voice of ["server", "device"] as const) {
 
   for (const text of ["I'll remember that. Hmm.", "I'll remember that. Hmm", "Hmm,", "Hmm.", "Hmm. I'll search my memory for that.", "Hmm. I remember you love tofu.", "Hmm, I'll search my memory for that.", "One sec; looking that up.", "One sec; the tofu is burning.", "One sec， looking that up.", "One sec， the tofu is burning."]) {
     test(`no-tool reply preserves ${JSON.stringify(text)} (${voice})`, async () => {
+      // #536: a recall sentence needs a real past (a call with nothing stored drops an invented "I remember you…")
+      const past = /remember you/.test(text) ? await (async () => { const repo = new InMemoryMemoryRepository(); const memory = new MemoryService({ repository: repo, state: repo, extract: async () => [] }); await memory.remember("fake", "Loves tofu.", "fact", "s0"); return { memory, userId: "fake" }; })() : {};
       const { events } = await turn({
+        ...past,
         config: voiceConfig(voice),
         async *spark(): AsyncGenerator<SparkStreamEvent> {
           for (const delta of text.match(/.{1,5}/gs) ?? []) {

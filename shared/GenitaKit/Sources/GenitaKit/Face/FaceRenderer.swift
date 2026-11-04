@@ -47,6 +47,10 @@ public final class FaceRenderer: @unchecked Sendable {
     private let browLift: CGFloat
     /// on/off (rollback); map-free on purpose: a tiny, speech-locked accent
     nonisolated(unsafe) public static var browFlash = true
+    /// Share of the speech sway non-people get (CA-09).
+    nonisolated(unsafe) public static var nonHumanSway = 0.5
+    /// Sway drive low-pass (s) for non-people (CA-09: fur / line-art shimmer); people keep the unfiltered sway.
+    nonisolated(unsafe) public static var nonHumanSwaySmoothing = 0.25
     /// 11/4 mouth inside (lips together while listening, teeth lit like the face): nil = the map's `rig.interior`
     /// (default on); tools force it (FaceRender FACE_MOUTH_INTERIOR=0 renders build 6).
     nonisolated(unsafe) public static var mouthInterior: Bool? = nil
@@ -180,6 +184,13 @@ public final class FaceRenderer: @unchecked Sendable {
             motion.rollGain = a.rollGain ?? a.headGain; motion.nodWidth = a.nodWidth; motion.cameraGain = a.camera
             motion.lockVertical = a.lockY
             motion.swayGain = a.sway
+        }
+        // 11/4 CA-09: fur and line art (animals, 2D / 3D characters) turn the sway into local shimmer after
+        // stabilization (dog 0.69 / 2D 0.72 vs the 0.56 gate; 0.44 at half sway): half the sway, on a smoothed path,
+        // for non-people — also when their map has no `alive` block
+        if (faceSet.flow?.kind ?? "human") != "human" {   // no kind = a person (as in `framing`)
+            motion.swayGain *= Self.nonHumanSway
+            motion.swaySmoothing = Self.nonHumanSwaySmoothing
         }
         let fr = Self.framing(faceSet)
         framingZoom = fr.zoom
@@ -465,9 +476,14 @@ public final class FaceRenderer: @unchecked Sendable {
         return (m.head, m.body, m.camera)
     }
 
+    /// Output px per still px as drawn (the aspect fill in `image(at:)` × overscan × framing zoom): the sway cap's units.
+    var screenScale: CGFloat {
+        max(outputSize.width / extent.width, outputSize.height / extent.height) * AliveMotion.overscan * max(1, framingZoom)
+    }
+
     private func motionState(at t: Double, open: Double, face: CGRect) -> (head: CGAffineTransform, body: CGAffineTransform, camera: CGAffineTransform) {
         lock.lock(); defer { lock.unlock() }
-        return motion.transforms(at: t, open: open, face: face, extent: extent, outputWidth: outputSize.width)
+        return motion.transforms(at: t, open: open, face: face, extent: extent, outputWidth: outputSize.width, screenScale: screenScale)
     }
 
     /// Head layer ellipse (image coordinates, y up): hair and face; fully opaque inside

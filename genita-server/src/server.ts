@@ -57,6 +57,7 @@ import { createEventsRoute } from "./events/routes.ts";
 import { HandoffHub } from "./handoff/hub.ts";
 import { MemoryOwnershipStore, PgOwnershipStore } from "./handoff/store.ts";
 import { forgetOpenerTopics } from "./convo/openerTopics.ts";
+import { safetyTurn } from "./convo/forgetInCall.ts";
 import { attachPresence, deviceFor, gatedCallDevice, gateCall, handleHandoffHttp, handoffHttpPaths } from "./handoff/routes.ts";
 import { createAppConfigSource, handleAppConfig, isAppConfigRoute } from "./appconfig/appConfig.ts";
 
@@ -411,7 +412,7 @@ export async function startServer(
       dropLastTurns(userId);
       cached = undefined;
     }
-    let best: HistoryItem[] | null = cached?.turns ?? null;
+    let best: HistoryItem[] | null = cached?.turns.length ? cached.turns : null;
     let thread = cached?.thread ?? null;
     let bestProgress = cached?.progress ?? zero;
     // the winner was a call the user hung up on this same device (cached, or stopped with its socket still closing)
@@ -424,11 +425,15 @@ export async function startServer(
     let crisisInCall = !!cached?.crisisInCall;
     // Codex #640: a minor's boundary rides the same handoff as the crisis flag
     let ageSaid: AgeSay = cached?.ageSaid ?? NO_AGE;
+    // Codex #547 r4: a cached call with no turns left (all forgotten) still had its crisis
+    let crisisAny = !!cached && !cached.turns.length && !!cached.crisisInCall;
     let bestGen = cached?.gen ?? 0;
     for (const [sid, u] of sessionUsers) {
       if (u !== userId || sid === self) continue;
       const session = sessions.get(sid);
       if (!session) continue;
+      // Codex #547 r3: a crisis in the other device's call goes with the move even when its forgets left no turns
+      if (session.crisisInCall) crisisAny = true;
       const t = session.historyForgetRevision === revision ? session.historySnapshot() : null;
       const p = progress.get(sid) ?? zero;
       const g = sessionGens.get(sid) ?? 0;
@@ -445,7 +450,7 @@ export async function startServer(
       }
     }
     // a crisis earlier in the conversation goes with it (next device or a quick call-back): no take nudge (Codex #502 P1 r3)
-    if (best && crisisInCall) { const me = sessions.get(self); if (me) me.crisisInCall = true; }
+    if ((best && crisisInCall) || crisisAny) { const me = sessions.get(self); if (me) me.crisisInCall = true; }
     // the three age flags as they were (Codex #640 r3: a teen phrase stays a teen phrase, an adult age can still win)
     if (best && (ageSaid.minor || ageSaid.adult || ageSaid.teen)) { const me = sessions.get(self); if (me) me.ageSaid = foldAge(me.ageSaid, ageSaid); }
     // Hung up on this same device and called again: a return visit (greeting + the last call's notes). A call
@@ -455,7 +460,8 @@ export async function startServer(
       // ...but its last lines go along right away as "the call that just ended" (P1 FILM 11/3): the summary and
       // memories of that call are written in the background and can take longer than a quick call-back
       // a call with a forget request anywhere in it (even before the kept lines) hands over nothing raw (Codex 11/3)
-      if (!forgetAsked) lastCallFor.set(self, { turns: best, threadId: thread?.threadId ?? null, covered: thread?.covered ?? 0 });
+      // Codex #547 r6: after a forget, the call's crisis lines (kept by forgetInCall) still go to the quick call-back
+      if (!forgetAsked || crisisInCall || best.some((h, i) => h.role === "user" && safetyTurn(h.text, best![i + 1]?.role === "assistant" ? best![i + 1].text : undefined))) lastCallFor.set(self, { turns: best, threadId: thread?.threadId ?? null, covered: thread?.covered ?? 0 });
       return null;
     }
     if (best) {
@@ -495,7 +501,7 @@ export async function startServer(
       if (u === userId && sid !== self && sessionDevices.get(sid) !== device) return true;
     }
     const cached = lastTurns.get(userId);
-    return !!cached && cached.device !== device && Date.now() - cached.at < 10 * 60_000;
+    return !!cached && cached.turns.length > 0 && cached.device !== device && Date.now() - cached.at < 10 * 60_000;
   }
   function priorThread(self: string): ThreadState | null {
     const t = handedThread.get(self) ?? null;
@@ -507,7 +513,8 @@ export async function startServer(
     const thread = session.threadInfo();
     const revision = session.historyForgetRevision;
     const p = progress.get(session.id) ?? zero;
-    if (!turns.length || deletedUsers.has(userId)) return;
+    // Codex #547 r4: a call whose forgets left no turns still carries its crisis to the next socket
+    if ((!turns.length && !session.crisisInCall) || deletedUsers.has(userId)) return;
     const save = () => {
       const cached = lastTurns.get(userId);
       const now = Date.now();
