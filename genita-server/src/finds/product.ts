@@ -404,6 +404,8 @@ export type ProductCtx = PipelineCtx & {
   hedge?: number;
   /** demo S5 prefetch: send all frames (the outfit options), not only the latest */
   allFrames?: boolean;
+  /** S5 latency: the account's likes still loading — find.started goes out first, the search waits for them */
+  likesLater?: Promise<string[] | undefined>;
 };
 
 type SearchResult = Awaited<ReturnType<FindsVendors["spark"]>>;
@@ -459,7 +461,29 @@ function give(): void {
 /** For tests: slots in use right now. */
 export const searchSlotsUsed = () => slots.used;
 
-export async function hedgedSearch(vendors: FindsVendors, prompt: string, n: number, signal: AbortSignal, images: string[] = [], opts: { background?: boolean } = {}): Promise<SearchResult | null> {
+/** opened pages the answer lists that don't read as a list / category page (what the soft cap may show, Codex #722) */
+function showableCount(r: SearchResult): number {
+  const j = lastJsonObject<ProductJson>(r.text);
+  const opened = completedOpens(r.output);
+  const items = Array.isArray(j?.items) ? (j!.items as ItemJson[]) : [];
+  return items.filter((i) => {
+    const hit = matchOpened(str(i?.url, 600), opened);
+    const url = hit ? httpsOf(hit) : null;
+    // the same URL-only rule a page nobody could read gets in the card (category / collection slugs never count)
+    return !!url && isProductPage(url, null) && !looksLikeList(url, str(i?.name, 200));
+  }).length;
+}
+
+/**
+ * Demo S5 latency (lead 11/4): after this long a lane that already proved one product page is shown instead of
+ * waiting for slower lanes (a 2-pick lane still wins before it). GENITA_PRODUCT_SOFT_MS, default 10 s (+ pages ≈ 12 s).
+ */
+export function productSoftMs(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number(env.GENITA_PRODUCT_SOFT_MS);
+  return Number.isFinite(n) && n >= 1000 && n <= 60_000 ? n : 10_000;
+}
+
+export async function hedgedSearch(vendors: FindsVendors, prompt: string, n: number, signal: AbortSignal, images: string[] = [], opts: { background?: boolean; softMs?: number } = {}): Promise<SearchResult | null> {
   // up to 6 lanes (the S5 prefetch asks for 5; a normal search for GENITA_PRODUCT_HEDGE, default 3); the first one
   // waits for a search slot, the others run only if one is free right now
   // a free slot is taken synchronously (the calls start in this tick); only a full server waits
@@ -474,23 +498,32 @@ export async function hedgedSearch(vendors: FindsVendors, prompt: string, n: num
   signal.addEventListener("abort", stopAll, { once: true });
   const done: SearchResult[] = [];
   try {
+    let soft: ReturnType<typeof setTimeout> | null = null;
     return await new Promise<SearchResult | null>((resolve) => {
       let left = runs.length;
+      let pastSoft = false;
+      const best = () => {
+        done.sort((a, b) => provenCount(b) - provenCount(a) || completedOpens(b.output).length - completedOpens(a.output).length);
+        return done[0] ?? null;
+      };
       const finish = () => {
         if (--left > 0) return;
-        done.sort((a, b) => provenCount(b) - provenCount(a) || completedOpens(b.output).length - completedOpens(a.output).length);
-        resolve(done[0] ?? null);
+        resolve(best());
       };
+      // past the soft cap, the best lane with at least one proven page is enough
+      const enough = () => { const b = done.filter((r) => showableCount(r) >= 1).sort((x, y) => showableCount(y) - showableCount(x))[0]; if (b) resolve(b); };
+      if (opts.softMs && runs.length > 1) soft = setTimeout(() => { pastSoft = true; enough(); }, opts.softMs);
       for (const a of runs) {
         withTimeout(vendors.spark({ input: userMessage(prompt, images), tools: [{ type: "web_search" }], effort: "minimal", maxOutputTokens: 3000 }, AbortSignal.any([a.signal, signal])), SEARCH_TIMEOUT_MS, signal).then((r) => {
           if (r) {
             done.push(r);
             if (provenCount(r) >= PRODUCT_COUNT) return resolve(r);
+            if (pastSoft) enough();
           }
           finish();
         });
       }
-    });
+    }).finally(() => { if (soft) clearTimeout(soft); });
   } finally {
     stopAll();
     signal.removeEventListener("abort", stopAll);
@@ -511,6 +544,13 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
   // the search picks one)
   const startStyle = taste[0] ?? "";
   ctx.emit({ type: "find.started", findId: ctx.findId, utteranceId: ctx.utteranceId, kind: "product", title: SEARCH_TITLE, detail: `${shortLabel(label0)} · searching shops`, ...(startStyle ? { evidence: { style: startStyle, situation: "" } } : {}) });
+  // S5 latency: the sheet is up; now the likes (read once at call start, normally already in)
+  if (ctx.likesLater) {
+    const likes = await ctx.likesLater.catch(() => undefined);
+    if (ctx.signal.aborted) return { card: null, timings };
+    ctx = { ...ctx, likes };
+    taste.splice(0, taste.length, ...tasteLines(ctx.likes, ctx.profile, ctx.memories));
+  }
 
   const today = new Intl.DateTimeFormat("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: ctx.timeZone ?? "UTC" }).format(at);
   // Demo S5: with the camera on, the search also sees the latest frame (vision + web search in one call)
@@ -519,7 +559,7 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
   const department = departmentOf([ctx.profile ?? "", ...(ctx.likes ?? [])].join("\n"));
   const prompt = productPrompt({ question: ctx.question, recent: ctx.recent ?? [], taste, previous: ctx.previous, city: cityOf(ctx.timeZone), region: ctx.region ?? "US", today, seeing: look.length > 0, screen: ctx.screen === true && look.length > 0, oneSearch: process.env.GENITA_PRODUCT_ONE_SEARCH !== "0", department });
 
-  const res = await hedgedSearch(vendors, prompt, ctx.hedge ?? 2, ctx.signal, look, { background: ctx.background });
+  const res = await hedgedSearch(vendors, prompt, ctx.hedge ?? 2, ctx.signal, look, { background: ctx.background, ...(ctx.background ? {} : { softMs: productSoftMs() }) });
   timings.searchMs = ms();
   if (ctx.signal.aborted) return { card: null, timings };
   let j = res ? lastJsonObject<ProductJson>(res.text) : null;
