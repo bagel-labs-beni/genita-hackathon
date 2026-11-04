@@ -2938,7 +2938,7 @@ export class Session {
           // a real crisis turn never gets "say that again": the help line instead (AI sweep, P1 safety)
           // a general search turn: the sheet is already filling, so the hedge, never "lost you" (P0 11/4)
           enqueueSentences([this.v1 && realCrisisSignal(text) ? CRISIS_HELP_LINE : oneSentence ? GENERAL_HEDGE : LOST_LINE], true);
-          lostLine = !oneSentence;
+          lostLine = true;
           this.log("spark.lost_line", { utteranceId, cause: emptyCause, error: sparkError instanceof Error ? sparkError.message.slice(0, 120) : null });
         }
       } catch (err) {

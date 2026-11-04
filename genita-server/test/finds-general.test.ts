@@ -371,6 +371,14 @@ test("P0: a general turn whose only sentence is a lookup announcement, a bare ta
   }
 });
 
+test("P0 (Codex): the voice model failing twice on a general turn → the hedge, no error card / retry UI", async () => {
+  // eslint-disable-next-line require-yield
+  const r = await callWith(async function* () { throw new Error("upstream 503"); });
+  assert.match(r.spoken, /off the top of my head/i, r.spoken);
+  assert.doesNotMatch(r.spoken, /lost you/i);
+  assert.ok(!r.events.some((e) => e.type === "error"), `no spark_unavailable: ${JSON.stringify(r.events.filter((e) => e.type === "error"))}`);
+});
+
 test("P0: the general reply keeps the normal output budget (reasoning spends ~120 tokens before any text)", async () => {
   const r = await callWith(() => chunks(["Galbi spots near Suwon station are a safe bet. "]));
   const req = r.reqs.at(-1)!;
