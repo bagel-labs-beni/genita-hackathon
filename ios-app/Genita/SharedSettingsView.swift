@@ -346,6 +346,22 @@ struct SettingsPage<Content: View>: View {
                 .padding(.bottom, 32)
         }
         .background(SettingsInk.page.ignoresSafeArea())
+        .modifier(SettingsSolidBar())
+    }
+}
+
+/// TF 331 (Chelsea 15:39): the inline "Settings" bar was see-through, so the first group slid under the title and the
+/// Done pill as a blur once scrolled. The bar is the page colour, always shown, with a hard edge (iOS 26).
+private struct SettingsSolidBar: ViewModifier {
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        let solid = content
+            .toolbarBackground(SettingsInk.page, for: .navigationBar)
+            .toolbarBackgroundVisibility(.visible, for: .navigationBar)
+        if #available(iOS 26.0, *) { solid.scrollEdgeEffectStyle(.hard, for: .top) } else { solid }
+        #else
+        content
+        #endif
     }
 }
 
