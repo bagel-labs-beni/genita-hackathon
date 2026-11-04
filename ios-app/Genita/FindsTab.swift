@@ -148,10 +148,12 @@ struct FindRowView: View {
     let call: CallController
     let row: FindsRow
     let frames: [Data]
+    /// b16: the picture failed to load → the row goes text-only (no grey box)
+    @State private var broken = false
 
     var body: some View {
         HStack(spacing: 12) {
-            thumb.frame(width: 44, height: 44).clipShape(RoundedRectangle(cornerRadius: 12))
+            if hasThumb { thumb.frame(width: 44, height: 44).clipShape(RoundedRectangle(cornerRadius: 12)) }
             VStack(alignment: .leading, spacing: 0) {
                 Text(row.title).font(TypeStyle.text(16, .medium)).foregroundStyle(CallInk.ink).lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 Text(row.subtitle).font(TypeStyle.text(14)).foregroundStyle(CallInk.mute).lineLimit(1)
@@ -165,28 +167,23 @@ struct FindRowView: View {
         .accessibilityAddTraits(.isButton)
     }
 
-    /// The card's own picture; an outfit without one shows the option it picked, cut from the frame the phone kept.
-    @ViewBuilder private var thumb: some View {
+    /// b16 (Chelsea "never show empty picture content"): the find's first ready picture (hero, results, products,
+    /// steps, ingredients); an outfit without one shows the option it picked, cut from the frame the phone kept;
+    /// nothing at all → a text-only row (no grey kind-glyph tile).
+    private var picture: FindImage? { broken ? nil : row.card.firstReadyPicture }
+    private var outfitCrop: (frame: Data, box: NormBox?)? {
         let card = row.card
-        if let hero = card.hero, card.kind != .link || hero.status == .ready {
-            FindPicture(image: hero, resolve: call.findsURL, showFailText: false)
-        } else if card.kind == .outfit, let option = card.options.first(where: \.picked) ?? card.options.first, frames.indices.contains(option.frame) {
-            OptionCrop(frame: frames[option.frame], box: option.box, height: 44)
-        } else {
-            ZStack {
-                FindsInk.skip
-                Image(systemName: glyph).font(.system(size: 18, weight: .medium)).foregroundStyle(CallInk.ink)
-            }
-        }
+        guard card.kind == .outfit, let option = card.options.first(where: \.picked) ?? card.options.first, frames.indices.contains(option.frame) else { return nil }
+        return (frames[option.frame], option.box)
     }
+    private var hasThumb: Bool { picture != nil || outfitCrop != nil }
 
-    private var glyph: String {
-        switch row.card.kind {
-        case .recipe: "fork.knife"
-        case .outfit: "tshirt"
-        case .link: "link"
-        case .product: "bag"
-        case .unknown: "bookmark"
+    @ViewBuilder private var thumb: some View {
+        if let picture {
+            FindPicture(image: picture, resolve: call.findsURL, showFailText: false)
+                .environment(\.findsPhotoBroken) { _ in Task { @MainActor in broken = true } }
+        } else if let crop = outfitCrop {
+            OptionCrop(frame: crop.frame, box: crop.box, height: 44)
         }
     }
 }

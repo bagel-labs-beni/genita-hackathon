@@ -121,6 +121,12 @@ extension FindCard.Source {
 }
 
 extension FindCard {
+    /// The first picture that is really there (`ready`): hero, then results, products, steps, ingredients. nil → none.
+    var firstReadyPicture: FindImage? {
+        let all: [FindImage?] = [hero] + sources.map(\.image) + (products ?? []).map(\.image) + steps.map(\.image) + items.map(\.image)
+        return all.compactMap { $0 }.first { $0.status == .ready && $0.url != nil }
+    }
+
     /// The card without the pictures that failed to load here (keyed by url, else slot): every layout then treats them
     /// as missing and draws no box for them (b16, Chelsea 11/4 "never show empty picture content").
     func hidingPhotos(_ broken: Set<String>) -> FindCard {
