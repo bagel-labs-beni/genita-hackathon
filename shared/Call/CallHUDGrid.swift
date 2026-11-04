@@ -28,22 +28,33 @@ struct CallHUDGrid: Equatable {
 
     var menuCenter: CGPoint { CGPoint(x: Self.margin + Self.button / 2, y: rowY) }
 
-    // MARK: control rail (camera, mic, more — top to bottom)
+    // MARK: control rail (flip, camera, mic, more — top to bottom)
 
-    enum RailButton: Int, CaseIterable { case camera = 2, mic = 1, more = 0 }
+    /// `flip` (build 10, Chelsea): a fourth glass button one step above the camera, only while the camera is on and can
+    /// flip (`showsFlip`). Same 44 pt, same 12 pt gap.
+    enum RailButton: Int, CaseIterable { case flip = 3, camera = 2, mic = 1, more = 0 }
+    /// The rail's flip button shows while the camera is on and can flip, and the Finds sheet is not half up or more
+    /// (there the rail rises 440 and a fourth button would reach the top row on small screens; More keeps Flip camera).
+    static func showsFlip(cameraOn: Bool, canFlip: Bool, sheet: SheetState) -> Bool {
+        cameraOn && canFlip && sheet != .half && sheet != .rising && sheet != .full
+    }
+    /// The rail's top button: flip when it shows, else camera.
+    static func railTop(flip: Bool) -> RailButton { flip ? .flip : .camera }
     var railX: CGFloat { size.width - Self.margin - Self.button / 2 }
     /// While the Finds sheet is up the rail and the self view keep the board's line (806 on 390 × 844, + the screen's
     /// extra height), so the sheet's shift clears them on every screen (SE has no home bar: the HUD baseline sits
     /// 27 pt lower than the board's there, and the half sheet covered More — Codex P2).
     var sheetBaseline: CGFloat { size.height - 844 + 806 }
-    /// Centre y of a rail button before the Finds sheet shift: more = baseline − 22, mic − 78, camera − 134.
+    /// Centre y of a rail button before the Finds sheet shift: more = baseline − 22, mic − 78, camera − 134, flip − 190.
     func railY(_ b: RailButton, sheetUp: Bool = false) -> CGFloat {
         (sheetUp ? sheetBaseline : baseline) - Self.button / 2 - CGFloat(b.rawValue) * (Self.button + Self.gap)
     }
 
-    /// Live captions r01: the caption block's bottom edge, 16 pt above the camera button's top (626 on 390 × 844).
-    /// The caller adds the Finds sheet's rail shift, like the rail.
-    func captionBottom(sheetUp: Bool = false) -> CGFloat { railY(.camera, sheetUp: sheetUp) - Self.button / 2 - 16 }
+    /// Live captions r01: the caption block's bottom edge, 16 pt above the rail's top button (camera: 626 on 390 × 844;
+    /// flip, when it shows: 570). The caller adds the Finds sheet's rail shift, like the rail.
+    func captionBottom(sheetUp: Bool = false, flip: Bool = false) -> CGFloat {
+        railY(Self.railTop(flip: flip), sheetUp: sheetUp) - Self.button / 2 - 16
+    }
 
     // MARK: status pill
 

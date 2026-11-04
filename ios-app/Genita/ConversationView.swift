@@ -186,6 +186,15 @@ struct ConversationView: View {
                             }
                         }.frame(width: full.size.width, height: full.size.height)
                             .animation(reduceMotion || CallMotion.reviewStill ? .easeOut(duration: 0.2) : .spring(response: 0.4, dampingFraction: 0.85), value: call.cameraOn)
+                        if CallHUDGrid.showsFlip(cameraOn: call.cameraOn, canFlip: call.canFlipCamera, sheet: sheet) {
+                            // build 10 (Chelsea): flip camera one step above the camera button while the camera is on — same glass button as More
+                            Button { call.flipCamera() } label: { CallGlassControl(icon: "arrow.triangle.2.circlepath.camera", size: CallHUDGrid.button, symbol: true) }
+                                .buttonStyle(PreviewControlStyle()).disabled(connecting).modifier(CallControlEntrance(shown: !connecting, index: 1))
+                                .accessibilityLabel("Flip camera").accessibilityIdentifier("railFlipCamera")
+                                .position(x: grid.railX, y: grid.railY(.flip, sheetUp: CallHUDGrid.sheetUp(sheet)) + railShift(sheet))
+                                .animation(.drawer, value: sheet)
+                                .transition(reduceMotion ? .opacity : .scale(scale: 0.6).combined(with: .opacity))
+                        }
                         Button { cameraTapped() } label: { CallToggleGlass(icon: "glass-camera-icon", on: call.cameraOn) }
                             .buttonStyle(PreviewControlStyle()).disabled(connecting).modifier(CallControlEntrance(shown: !connecting, index: 1)).accessibilityLabel(call.cameraOn ? "Turn camera off" : "Turn camera on").accessibilityIdentifier("cameraToggle").position(x: grid.railX, y: grid.railY(.camera, sheetUp: CallHUDGrid.sheetUp(sheet)) + railShift(sheet))
                             .opacity(sheet == .full ? 0 : 1).accessibilityHidden(sheet == .full).animation(.drawer, value: sheet)
@@ -526,7 +535,7 @@ struct ConversationView: View {
     @ViewBuilder private func captionLayer(grid: CallHUDGrid, size: CGSize, sheet: SheetState, hidden: Bool) -> some View {
         if appConfig.config.flag("liveCaptions", default: true) {
             CallCaptionLayer(style: CaptionStyle(ink: CallInk.ink, onInk: CallInk.onInk, blue: CallInk.blueOnInk, font: { TypeStyle.body($0, $1) }),
-                             size: size, bottom: grid.captionBottom(sheetUp: CallHUDGrid.sheetUp(sheet)) + railShift(sheet),
+                             size: size, bottom: grid.captionBottom(sheetUp: CallHUDGrid.sheetUp(sheet), flip: CallHUDGrid.showsFlip(cameraOn: call.cameraOn, canFlip: call.canFlipCamera, sheet: sheet)) + railShift(sheet),
                              hidden: hidden || sheet == .half || sheet == .rising || sheet == .full,
                              micOn: call.micOn, frame: { call.captionFrame() }, level: { call.inputLevel }, still: CallMotion.reviewStill)
         }
@@ -681,6 +690,8 @@ struct CallGlassControl: View {
     var slashed = false
     /// mic / camera off: the SF Symbols slash glyph instead of the bitmap (GlassGlyph.offSymbol)
     var off = false
+    /// `icon` is an SF Symbol, not a bundled bitmap (the rail's flip button), drawn like the off glyphs
+    var symbol = false
     var body: some View {
         ZStack {
             if #available(iOS 26.0, *) {
@@ -693,6 +704,8 @@ struct CallGlassControl: View {
             // glyph = 55 % of the circle (GlassGlyph); ⋮ as three dots
             if icon == GlassGlyph.moreIcon {
                 GlassDots(diameter: size)
+            } else if symbol {
+                GlassOffSymbol(name: icon, diameter: size)
             } else if off, let symbol = GlassGlyph.offSymbol(for: icon) {
                 GlassOffSymbol(name: symbol, diameter: size)
             } else if let url = Bundle.main.url(forResource: icon, withExtension: "png"), let image = UIImage(contentsOfFile: url.path) {
