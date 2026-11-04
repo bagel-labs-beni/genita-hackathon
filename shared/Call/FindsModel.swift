@@ -244,11 +244,14 @@ struct FindEntry: Identifiable, Equatable {
     }
     func pipTapped() { if state == .full { state = .half } }
 
-    /// Masks landed just after their card rose by itself (the server runs the recipe and SAM side by side): within 4 s
+    /// Anything the user does on the card: a card they're using is never folded back for late masks (Codex r2).
+    private func userActed() { autoRaised = nil }
+
+    /// Masks landed just after their card rose by itself (the server runs the recipe and SAM side by side): within 3 s
     /// and before the user touched it, the card folds back to peek and waits for them like a card that came second.
     private func boxesHoldStarted(_ findId: String) {
         guard let a = autoRaised, a.id == findId, current?.id == findId, state == .rising || state == .half,
-              !touching, selectedItem == nil, newFind == nil, ContinuousClock.now - a.at < .seconds(4) else { return }
+              !touching, selectedItem == nil, newFind == nil, ContinuousClock.now - a.at < .seconds(3) else { return }
         risingTask?.cancel()
         state = .peek
         heldAtPeek = findId
@@ -352,6 +355,7 @@ struct FindEntry: Identifiable, Equatable {
     }
 
     func viewNewFind() {
+        userActed()
         guard let id = newFind, let i = entries.firstIndex(where: { $0.id == id }) else { return }
         page = i
         newFind = nil
@@ -361,6 +365,7 @@ struct FindEntry: Identifiable, Equatable {
     }
 
     func showPage(_ i: Int) {
+        userActed()
         guard entries.indices.contains(i), entries[i].card != nil else { return }
         page = i
         selectedItem = nil
@@ -376,6 +381,7 @@ struct FindEntry: Identifiable, Equatable {
     }
 
     func toggleSave() {
+        userActed()
         guard let f = current else { return }
         let id = f.id
         let want = !f.saved
@@ -432,6 +438,7 @@ struct FindEntry: Identifiable, Equatable {
 
     /// "Talk about this on a call": the card stays up over the call, questions are about it from here on.
     func talkAboutThis() {
+        userActed()
         guard entries.indices.contains(page) else { return }
         entries[page].reopened = false
         // the server learns which card: questions in the call are about it, even one from an earlier call (AU-70)
@@ -446,18 +453,21 @@ struct FindEntry: Identifiable, Equatable {
 
     /// "+" → added (✓); tap again to take it off the list.
     func toggleAdded(_ itemId: String, in findId: String) {
+        userActed()
         var set = addedItems[findId] ?? []
         if set.contains(itemId) { set.remove(itemId) } else { set.insert(itemId) }
         addedItems[findId] = set
     }
 
     func tapItem(_ item: FindItem) {
+        userActed()
         selectedItem = selectedItem == item.id ? nil : item.id
         boxes.highlight(selectedItem == nil ? nil : item.name)
     }
 
     /// "맞아?" answer (IC-3).
     func confirm(_ item: FindItem, yes: Bool) {
+        userActed()
         guard let f = current else { return }
         send(.findConfirm(.init(findId: f.id, itemId: item.id, yes: yes)))
         selectedItem = nil
@@ -465,6 +475,7 @@ struct FindEntry: Identifiable, Equatable {
     }
 
     func toggleStep(_ index: Int) {
+        userActed()
         guard let f = current else { return }
         var set = doneSteps[f.id] ?? []
         if set.contains(index) { set.remove(index) } else { set.insert(index) }
@@ -473,6 +484,7 @@ struct FindEntry: Identifiable, Equatable {
 
     /// "Ask about this": the question goes out as the user's words, about this card.
     func ask(_ text: String) {
+        userActed()
         guard canAsk, let f = current else { return }
         send(.text(.init(text: text, frames: nil, findId: f.id)))
     }

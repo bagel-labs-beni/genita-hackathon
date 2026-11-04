@@ -219,6 +219,14 @@ import XCTest
         n.state = .full
         n.apply(.observeBoxes(event(find: "s4", [("Tomato", egg)])))
         XCTAssertEqual(n.state, .full)
+        // Codex r2: saved (or any other tap on the card) before the masks came: left at half
+        let o = FindsModel()
+        o.saveRemote = { _, _ in true }
+        o.apply(try ServerEvent.decode(#"{"type":"find.started","findId":"s5","utteranceId":1,"kind":"recipe","title":"t","detail":"d"}"#))
+        o.apply(created("s5"))
+        o.toggleSave()
+        o.apply(.observeBoxes(event(find: "s5", [("Tomato", egg)])))
+        XCTAssertEqual(o.state, .rising)
     }
 
     func testCardWithoutBoxesRisesStraightAway() {
