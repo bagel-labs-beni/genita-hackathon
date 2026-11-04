@@ -49,7 +49,11 @@ struct ConversationView: View {
         // the pauses between failed retries are idle (the 20 s cap applies)
         return prepRunning || call.faceFetching || call.face != nil || !waitCapOver
     }
-    private var hasFacePicture: Bool { companionImage != nil || call.facePoster != nil || call.faceStill != nil || liveFrameDrawn }
+    /// cheap: `companionImage` decodes the photo on every read, and this is read several times per body pass (that
+    /// starved the main thread enough to stall the face set load on CI — testFixtureFaceSetReachesTheCall)
+    private var hasFacePicture: Bool {
+        model.companionFaceData != nil || !model.serverWired || call.facePoster != nil || call.faceStill != nil || liveFrameDrawn
+    }
     /// the live face drew its first frame (it can beat the poster; Codex P2)
     @State private var liveFrameDrawn = false
     /// the wait stage gives up after this long when nothing is being made (a scene or face set that never loads)
