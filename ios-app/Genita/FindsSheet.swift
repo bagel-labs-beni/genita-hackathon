@@ -14,6 +14,11 @@ enum FindsInk {
     static let skip = Color(red: 239 / 255, green: 239 / 255, blue: 239 / 255)
     static let boxLine = Color(red: 253 / 255, green: 253 / 255, blue: 253 / 255).opacity(0.82)
     static let white = Color.white
+    /// D4: product picture that didn't come — warm neutral, not grey
+    static let photoMissing = Color(red: 243 / 255, green: 241 / 255, blue: 237 / 255)
+    static let photoMissingGlyph = Color(red: 185 / 255, green: 178 / 255, blue: 166 / 255)
+    /// D4: "From your style and what you said · …" Regular 13/18 #6E6E73
+    static let sourceLine = Color(red: 110 / 255, green: 110 / 255, blue: 115 / 255)
 }
 
 /// D48 ③ reason chips under the card title: blue "Your style/taste: …" from the profile, grey "You said: …" from
@@ -80,7 +85,11 @@ struct FindPicture: View {
     }
     @ViewBuilder private var failed: some View {
         if let quietGlyph {
-            Image(systemName: quietGlyph).font(.system(size: 28, weight: .light)).foregroundStyle(CallInk.mute.opacity(0.7)).accessibilityHidden(true)
+            // D4: a shop with no readable picture is a warm neutral tile (#F3F1ED) with a 34 pt line glyph (#B9B2A6), not a grey "broken" box
+            ZStack {
+                FindsInk.photoMissing
+                Image(systemName: quietGlyph).font(.system(size: 34, weight: .light)).foregroundStyle(FindsInk.photoMissingGlyph)
+            }.accessibilityHidden(true)
         } else {
         VStack(spacing: 4) {
             if showFailText { Text("Picture didn’t load").font(TypeStyle.body(12)).foregroundStyle(CallInk.mute) }
@@ -741,15 +750,16 @@ struct FindCardPage: View {
 
     private func productColumn(_ p: FindCard.Product) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            FindPicture(image: p.image, resolve: call.findsURL, showFailText: false, quietGlyph: "bag")
+            FindPicture(image: p.image, resolve: call.findsURL, showFailText: false, quietGlyph: "hanger")
                 .aspectRatio(1, contentMode: .fit).clipShape(RoundedRectangle(cornerRadius: 12))
                 .accessibilityLabel("Picture of \(p.name)")
             VStack(alignment: .leading, spacing: 4) {
                 Text(p.name).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.ink).lineLimit(2).multilineTextAlignment(.leading)
                 Text(p.store + " · " + (p.price ?? "Price on site")).font(TypeStyle.body(14)).foregroundStyle(CallInk.mute).lineLimit(1)
             }
-            if !p.taste.isEmpty { productChip(p.taste, fg: FindsInk.blueText, bg: FindsInk.blueSoft) }
-            if !p.situation.isEmpty { productChip(p.situation, fg: CallInk.ink, bg: FindsInk.skip) }
+            // D4: ✦ = your style, “ = what you said (no colour legend)
+            if !p.taste.isEmpty { productChip(p.taste, mark: ProductPicks.styleMark, fg: FindsInk.blueText, bg: FindsInk.blueSoft) }
+            if !p.situation.isEmpty { productChip(p.situation, mark: ProductPicks.saidMark, fg: CallInk.ink, bg: FindsInk.skip) }
             Button {
                 if !offline { withAnimation(.drawer) { finds.state = .full; finds.browser = FindCard.Source.make(title: p.name, url: p.url, domain: p.domain) } }
             } label: {
@@ -765,9 +775,15 @@ struct FindCardPage: View {
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func productChip(_ text: String, fg: Color, bg: Color) -> some View {
-        Text(text).font(TypeStyle.body(12, .medium)).foregroundStyle(fg).fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, 12).padding(.vertical, 4).background(bg, in: RoundedRectangle(cornerRadius: 12))
+    private func productChip(_ text: String, mark: String, fg: Color, bg: Color) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            Text(mark).font(TypeStyle.body(13, .medium)).accessibilityHidden(true)
+            Text(text).font(TypeStyle.body(12, .medium)).fixedSize(horizontal: false, vertical: true)
+        }
+        .foregroundStyle(fg)
+        .padding(.horizontal, 12).padding(.vertical, 4).background(bg, in: RoundedRectangle(cornerRadius: 12))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(mark == ProductPicks.styleMark ? "Your style: \(text)" : "You said: \(text)")
     }
 
     // MARK: shared sections
@@ -812,11 +828,29 @@ struct FindCardPage: View {
         }.padding(.top, 8)
     }
 
-    // r03 #19 "How I found this"
-    private var howSection: some View {
+    // r03 #19 "How I found this"; D4: a product card says it in one line instead of a colour legend
+    @ViewBuilder private var howSection: some View {
+        if card.kind == .product && card.evidence != nil {
+            // one line when it fits; else the sites on their own line (3x check: "…what you said ·" ended a line)
+            let parts = ProductPicks.sourceParts(card)
+            ViewThatFits(in: .horizontal) {
+                Text(ProductPicks.sourceLine(card)).lineLimit(1)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(parts.from)
+                    if let sites = parts.sites { Text(sites) }
+                }
+            }
+            .font(TypeStyle.body(13)).foregroundStyle(FindsInk.sourceLine)
+            .padding(.top, 8).accessibilityElement(children: .combine).accessibilityIdentifier("findHow")
+        } else {
+            howList
+        }
+    }
+    private var howList: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("How I found this").font(TypeStyle.body(12, .medium)).foregroundStyle(CallInk.mute)
-            ForEach(card.how, id: \.self) { line in
+            // D4: never the old colour legend (cards saved before the marks, or an older server)
+            ForEach(card.how.filter { !ProductPicks.isLegend($0) }, id: \.self) { line in
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     // PF-1b has no icons here: the lines use the full column (Figma 179:68)
                     if card.kind != .product {

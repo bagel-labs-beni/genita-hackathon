@@ -930,6 +930,36 @@ test("Codex #502 P1 r5: with memory on, a client-claimed handoff history of 20 k
   ws.terminate();
 });
 
+test("AU-42: a Mac start without a name uses the name the account's iPhone sent (greeting + name guards work on the Mac)", { timeout: 30_000 }, async (t) => {
+  const never: Summarizer = () => new Promise(() => {});
+  const { deps, requests } = setup(never);
+  const logs: string[] = [];
+  const server = await startServer({ ...config, sessionToken: "test-token" }, (e) => { logs.push(e); }, { ...deps, log: (e) => { logs.push(e); } }, {}, null);
+  t.after(() => new Promise<void>((r) => server.close(() => r())));
+  const addr = server.address(); assert.ok(addr && typeof addr === "object");
+  const headers = { authorization: "Bearer test-token", "x-genita-user": "acct-au42" };
+  const sockets: WebSocket[] = [];
+  const open = (device: string) => new Promise<{ ws: WebSocket; replies: () => number }>((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${addr.port}/v1/session?device=${device}`, { headers });
+    sockets.push(ws); let n = 0;
+    ws.on("message", (d, bin) => { if (bin) return; const m = JSON.parse(String(d)); if (m.type === "reply") n++; });
+    ws.once("open", () => resolve({ ws, replies: () => n })); ws.once("error", reject);
+  });
+  const phone = await open("iphone");
+  phone.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false, user: { name: "Summer" } }));
+  await waitFor(() => phone.replies() >= 1);
+  phone.ws.send(JSON.stringify({ type: "stop" })); await waitFor(() => logs.includes("session.close"));
+  requests.length = 0;
+  const mac = await open("mac");
+  mac.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  // (right after the iPhone call the Mac may continue it without a greeting: ask something instead)
+  await pause(); const n = mac.replies(); mac.ws.send(JSON.stringify({ type: "text", text: "what should I eat" }));
+  try {
+    await waitFor(() => mac.replies() > n);
+    assert.match(requests.at(-1)!.instructions ?? "", /The user's name is Summer/);
+  } finally { for (const w of sockets) w.terminate(); }
+});
+
 test("CA-14 × Forget (#585 Codex P1): a turn held open at the Forget is dropped — never answered, never saved after it", async () => {
   const { memory, deps, requests } = setup();
   const asr = deps.openAsr([]) as unknown as EventEmitter;
@@ -981,4 +1011,64 @@ test("CA-14 × Forget (Codex P1 r2): the user resumed the held turn when the For
   assert.doesNotMatch(JSON.stringify(requests), /jasmine|Daniel/);
   s.close(); await memory.drain();
   assert.doesNotMatch(JSON.stringify(await memory.list("acct-a")), /jasmine|Daniel/);
+});
+
+test("Codex #640: a minor's boundary travels with the conversation to the other device, past the history trim", { timeout: 30_000 }, async (t) => {
+  const { deps, requests } = setup();
+  const logs: string[] = [];
+  const server = await startServer({ ...config, sessionToken: "test-token" }, (e) => { logs.push(e); }, { ...deps, log: (e) => { logs.push(e); } }, {}, null);
+  t.after(() => new Promise<void>((r) => server.close(() => r())));
+  const addr = server.address(); assert.ok(addr && typeof addr === "object");
+  const headers = { authorization: "Bearer test-token", "x-genita-user": "acct-minor" };
+  const sockets: WebSocket[] = [];
+  const open = (device: string) => new Promise<{ ws: WebSocket; replies: () => number; ready: () => boolean }>((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${addr.port}/v1/session?device=${device}`, { headers });
+    sockets.push(ws);
+    let n = 0; let ok = false;
+    ws.on("message", (d, bin) => { if (bin) return; const m = JSON.parse(String(d)); if (m.type === "reply") n++; if (m.type === "ready") ok = true; });
+    ws.once("open", () => resolve({ ws, replies: () => n, ready: () => ok })); ws.once("error", reject);
+  });
+  const start = (c: { ws: WebSocket }) => c.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  const say = async (c: { ws: WebSocket; replies: () => number }, text: string) => { const n = c.replies(); c.ws.send(JSON.stringify({ type: "text", text })); await waitFor(() => c.replies() > n); };
+  try {
+    const phone = await open("iphone"); start(phone); await waitFor(() => phone.replies() >= 1);
+    await say(phone, "i'm 15 btw");
+    for (let i = 0; i < 9; i++) await say(phone, "ok");
+    const mac = await open("mac"); start(mac); await waitFor(mac.ready);
+    requests.length = 0;
+    await say(mac, "do you have a crush on me lol");
+    assert.match(requests.map((r) => r.instructions ?? "").join("\n"), /under 18: no flirting or romance at all/);
+  } finally { for (const w of sockets) w.terminate(); }
+});
+
+test("lead 11/4 + Codex r8: a crisis carried into this call never gets the no-hotlines line, low mood or not", { timeout: 30_000 }, async (t) => {
+  const never: Summarizer = () => new Promise(() => {});
+  const { deps, requests } = setup(never);
+  const logs: string[] = [];
+  const server = await startServer({ ...config, sessionToken: "test-token" }, (e) => { logs.push(e); }, { ...deps, log: (e) => { logs.push(e); } }, {}, null);
+  t.after(() => new Promise<void>((r) => server.close(() => r())));
+  const addr = server.address(); assert.ok(addr && typeof addr === "object");
+  const headers = { authorization: "Bearer test-token", "x-genita-user": "acct-pc" };
+  const sockets: WebSocket[] = [];
+  const open = () => new Promise<{ ws: WebSocket; replies: () => number }>((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${addr.port}/v1/session?device=iphone`, { headers });
+    sockets.push(ws); let n = 0;
+    ws.on("message", (d, bin) => { if (bin) return; const m = JSON.parse(String(d)); if (m.type === "reply") n++; });
+    ws.once("open", () => resolve({ ws, replies: () => n })); ws.once("error", reject);
+  });
+  const start = (c: { ws: WebSocket }) => c.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  const say = async (c: { ws: WebSocket; replies: () => number }, text: string) => { const n = c.replies(); c.ws.send(JSON.stringify({ type: "text", text })); await waitFor(() => c.replies() > n); return requests.at(-1)!.instructions ?? ""; };
+  const c1 = await open(); start(c1); await waitFor(() => c1.replies() >= 1);
+  await say(c1, "I want to kill myself.");
+  c1.ws.send(JSON.stringify({ type: "stop" })); await waitFor(() => logs.includes("session.close"));
+  const back = await open(); start(back); await waitFor(() => back.replies() >= 1);
+  try {
+    // a call-back seconds later carries the crisis lines as this call's own (crisisInCall): Codex r8 — never the
+    // "no hotlines" line in a call that had a crisis; the model sees the lines and decides
+    const first = await say(back, "I'm kinda tired today");
+    assert.match(first, /ended moments ago/);
+    assert.doesNotMatch(first, /really hard moment in that call/);
+    assert.doesNotMatch(await say(back, "I don't want to be here anymore"), /really hard moment in that call/);
+    assert.doesNotMatch(await say(back, "I'm going to hang myself tonight"), /really hard moment in that call/, "Codex P1: a method line never gets the no-hotlines line");
+  } finally { for (const w of sockets) w.terminate(); }
 });

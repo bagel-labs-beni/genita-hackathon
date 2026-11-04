@@ -64,6 +64,10 @@ struct CompanionFaceView: View {
             LipLayer(source: lip).allowsHitTesting(false)
         }
         .animation(reduceMotion || CallMotion.reviewStill ? nil : CompanionFace.revealCurve, value: face.map(ObjectIdentifier.init))
+        // one accessibility element for the whole face (still + poster + live are layers of one picture): with the
+        // layers as separate elements the identifier matched several of them, and UI tests read the still's value
+        // even after the face had landed ("still" on b9-3…b9-6; probe run 41745964955: "multiple matching elements")
+        .accessibilityElement(children: .ignore)
         .accessibilityValue(Self.layer(face: face != nil, poster: poster != nil, still: still != nil))
     }
     /// What's on top, for UI tests: live (the talking face) > poster (its rest frame) > still (scene / fixture) > ground.
