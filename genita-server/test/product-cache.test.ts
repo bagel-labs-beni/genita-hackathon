@@ -288,3 +288,27 @@ test("handover b9-6: one color rule — the cache takes what the search ranks as
   assert.deepEqual(colorAsks("shoes in dark brown"), ["brown"]);
   assert.deepEqual(colorAsks("shoes that go with my brown trench"), []);
 });
+
+test("P1-9 (b9 S5): a refresh that comes back with one link never replaces the two-pick card; a one-link card is never cached", async () => {
+  const { cachePut, cacheGet, clearProductCache } = await import("../src/finds/productCache.ts");
+  clearProductCache();
+  const card = (n: number) => ({ id: "c", kind: "product", createdAt: "", eyebrow: "", title: "", subtitle: "", items: [], steps: [], options: [], why: [], ask: [], sources: [], how: [], products: Array.from({ length: n }, (_, i) => ({ id: `p${i}`, name: `Dark Brown Boot ${i}`, url: `https://x.example.com/p/${i}`, domain: "x.example.com", store: "X", taste: "", situation: "" })) }) as FindCard;
+  cachePut("k|account:a|", { at: Date.now(), card: card(1) });
+  assert.equal(cacheGet("k|account:a|", Date.now()), null, "one link is not an answer to cache");
+  cachePut("k|account:a|", { at: Date.now(), card: card(2) });
+  assert.equal(cacheGet("k|account:a|", Date.now())?.card.products?.length, 2);
+  cachePut("k|account:a|", { at: Date.now(), card: card(1) });
+  assert.equal(cacheGet("k|account:a|", Date.now())?.card.products?.length, 2, "the smaller refresh never wins");
+  clearProductCache();
+});
+
+test("P1-9 (Codex P2): a one-link warm-up that the cache turns down does not block the next call's warm-up", async () => {
+  const { cachePut, claimWarm, clearProductCache } = await import("../src/finds/productCache.ts");
+  clearProductCache();
+  const card = (n: number) => ({ id: "c", kind: "product", createdAt: "", eyebrow: "", title: "", subtitle: "", items: [], steps: [], options: [], why: [], ask: [], sources: [], how: [], products: Array.from({ length: n }, (_, i) => ({ id: `p${i}`, name: `Dark Brown Boot ${i}`, url: `https://x.example.com/p/${i}`, domain: "x.example.com", store: "X", taste: "", situation: "" })) }) as FindCard;
+  const now = Date.now();
+  assert.equal(claimWarm("w|account:a|", now), true);
+  cachePut("w|account:a|", { at: now, card: card(1) });
+  assert.equal(claimWarm("w|account:a|", now + 1000), true, "the next warm-up may run");
+  clearProductCache();
+});

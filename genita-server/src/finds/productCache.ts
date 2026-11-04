@@ -135,8 +135,20 @@ export function forgetProductCache(owner: string, opts: { block?: boolean } = {}
   for (const k of [...warming.keys()]) if (ownerOf(k) === o) warming.delete(k);
 }
 
+/** a card the cache can answer with: both picks (a one-link card is a search that came up short, not an answer) */
+export const CACHE_MIN_PRODUCTS = 2;
+
+/**
+ * P1-9 (b9 check S5): a refresh came back with one Amazon link and replaced the two-pick card, so the next ask
+ * showed "One shoes pick". Only full cards are stored, and a fresh one never makes way for a smaller one.
+ */
 export function cachePut(key: string, entry: CachedProducts): void {
-  if (!entry.card.products?.length) return;
+  const n = entry.card.products?.length ?? 0;
+  const have = cacheGet(key, Date.now());
+  // a rejected one-link warm-up leaves the key free for the next call's warm-up (else it stays blocked for the TTL
+  // with an empty cache; Codex P2)
+  if (n < CACHE_MIN_PRODUCTS) { if (!have) warming.delete(key); return; }
+  if (have && (have.card.products?.length ?? 0) > n) return;
   const o = ownerOf(key);
   if (o !== null && forgotten.has(o)) return;
   // expired cards go on every write, not only when their own key is read again
