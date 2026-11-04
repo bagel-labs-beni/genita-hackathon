@@ -19,6 +19,7 @@ import { LineSplitter, domainOf, isYes, lastJsonObject, parseSeenLine, str, strL
 import { userMessage, webActions, type FindsVendors } from "./vendors.ts";
 import { ingredientLookups, sendFoundImages, stepQuery } from "./imageFinder.ts";
 import { rowPictures } from "./general.ts";
+import { endSlot, genPrompt, imageGateOn } from "./imageGen.ts";
 
 export type PipelineCtx = {
   findId: string;
@@ -516,10 +517,24 @@ export async function runRecipe(ctx: PipelineCtx): Promise<PipelineResult> {
             if (c) c.image = img;
           },
         );
-        await illustrate(ctx, [
-          { slot: "hero", prompt: `A plated serving of ${dish}.` },
-          ...steps.map((s, i) => ({ slot: `step-${i + 1}`, prompt: `A cooking step for ${dish}: ${s}` })),
-        ].filter((j) => !found.has(j.slot)));
+        if (!imageGateOn()) {
+          await illustrate(ctx, [
+            { slot: "hero", prompt: `A plated serving of ${dish}.` },
+            ...steps.map((s, i) => ({ slot: `step-${i + 1}`, prompt: `A cooking step for ${dish}: ${s}` })),
+          ].filter((j) => !found.has(j.slot)));
+          return;
+        }
+        // no empty pictures: whatever the web had nothing for gets a generated picture, else is omitted
+        await Promise.all([
+          { slot: "hero", gen: genPrompt("dish", dish) },
+          ...steps.map((s, i) => ({ slot: `step-${i + 1}`, gen: genPrompt("step", s, dish) })),
+          ...items.map((it) => ({ slot: `ingredient-${it.id}`, gen: genPrompt("ingredient", it.name) })),
+        ].filter((j) => !found.has(j.slot)).map(async (j) => {
+          const img = await endSlot(ctx, j);
+          if (img?.status !== "ready" || !j.slot.startsWith("ingredient-")) return;
+          const c = cands.get(j.slot.slice("ingredient-".length));
+          if (c) c.image = img;
+        }));
       })()
     : Promise.resolve();
 
@@ -878,8 +893,9 @@ export async function runLink(ctx: PipelineCtx): Promise<PipelineResult> {
   // visual everything: the page's own picture (else a web photo of its title) as its row and the hero; an
   // illustration only when none was found
   let gotHero = false;
-  await rowPictures({ ...ctx, emit: (e) => { if (e.type === "find.image" && e.slot === "hero") gotHero = true; ctx.emit(e); } }, [{ title: card.title, url }]);
-  if (!gotHero && !ctx.signal.aborted) await illustrate(ctx, [{ slot: "hero", prompt: str(j.picture, 120) || card.title }]);
+  // no empty pictures (gate on): rowPictures itself ends an empty hero / row (generated, else omitted)
+  await rowPictures({ ...ctx, emit: (e) => { if (e.type === "find.image" && e.slot === "hero") gotHero = true; ctx.emit(e); } }, [{ title: card.title, url }], { layout: "general", topic: card.title, heroPrompt: str(j.picture, 120) || card.title });
+  if (!gotHero && !ctx.signal.aborted && (!imageGateOn() || !ctx.vendors.pageFacts || !ctx.vendors.productImage)) await illustrate(ctx, [{ slot: "hero", prompt: str(j.picture, 120) || card.title }]);
   timings.picturesMs = Math.round(ctx.now() - t0);
   return { card, timings };
 }

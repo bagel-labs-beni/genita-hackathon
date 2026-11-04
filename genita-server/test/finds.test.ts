@@ -316,7 +316,10 @@ test("recipe pipeline: IC-1 list first, card, 3 tiers, onion merged, staples ski
   // D23: the line names only "have" items (kimchi is "맞아?", onion has no box), never the model's own "say"
   assert.equal(card.say, "I can see eggs and cooked rice. You could make kimchi fried rice, if you have kimchi. First, fry the kimchi.");
   assert.ok(card.how.some((h) => /illustrations I made/.test(h)));
-  assert.equal(events.filter((e) => e.type === "find.image").length, 4);
+  // no web photo here (no page reader): hero, 3 steps and every ingredient get a generated picture (no empty box)
+  const imgs = events.filter((e) => e.type === "find.image") as Extract<ServerEvent, { type: "find.image" }>[];
+  assert.equal(imgs.length, 4 + card.items.length);
+  assert.ok(imgs.every((e) => e.status === "ready" && e.source === "generated"));
   assert.ok(events.some((e) => e.type === "observe.boxes"));
 });
 
@@ -343,10 +346,11 @@ test("recipe pipeline: nothing seen → find.failed unclear (IC-4), no card, no 
 
 // Chelsea 11/4 ("Air fryer peaches" grey square): no pending slot on the card and no "failed" event — a picture
 // that never comes leaves no empty square; the card text stays
-test("recipe pipeline: a failed illustration sends no picture slot at all, the card text stays", async () => {
+test("recipe pipeline (GENITA_FIND_IMAGE_GATE=0): a failed illustration sends no picture slot at all, the card text stays", async () => {
   const v = fakeVendors({ seen: "eggs | 6 | carton\n", recipe: RECIPE_JSON, imageFail: true });
   const { ctx, events } = ctxFor("recipe", v);
-  const r = await runRecipe(ctx);
+  process.env.GENITA_FIND_IMAGE_GATE = "0";
+  const r = await runRecipe(ctx).finally(() => delete process.env.GENITA_FIND_IMAGE_GATE);
   assert.ok(r.card);
   assert.equal(r.card!.hero, undefined);
   assert.ok(r.card!.steps.every((st) => !st.image));

@@ -66,9 +66,10 @@ test("card payload: recipe kind, every ingredient 'buy' with its amount, steps, 
   assert.equal(namedRecipeCard("f1", { dish: "" }, [], new Date(0), true), null);
 });
 
-test("runNamedRecipe: started → created → hero from the page's og:image; no image generation", async () => {
+test("runNamedRecipe (GENITA_FIND_IMAGE_GATE=0): started → created → hero from the page's og:image; no image generation", async () => {
   // the recipe page's own og:image path alone (web photos per row: finds-visual.test.ts)
   process.env.GENITA_FIND_WEB_IMAGES = "0";
+  process.env.GENITA_FIND_IMAGE_GATE = "0";
   try {
   const events: ServerEvent[] = [];
   let generated = 0;
@@ -93,12 +94,14 @@ test("runNamedRecipe: started → created → hero from the page's og:image; no 
   assert.equal(generated, 0);
   } finally {
     delete process.env.GENITA_FIND_WEB_IMAGES;
+    delete process.env.GENITA_FIND_IMAGE_GATE;
   }
 });
 
-test("no og:image anywhere → no hero event at all (never a failed / grey slot)", async () => {
+test("GENITA_FIND_IMAGE_GATE=0: no og:image anywhere → no hero event at all (never a failed / grey slot)", async () => {
   // the recipe page's own og:image path alone (web photos per row: finds-visual.test.ts)
   process.env.GENITA_FIND_WEB_IMAGES = "0";
+  process.env.GENITA_FIND_IMAGE_GATE = "0";
   try {
   const events: ServerEvent[] = [];
   const ctx = {
@@ -116,5 +119,6 @@ test("no og:image anywhere → no hero event at all (never a failed / grey slot)
   assert.deepEqual(events.map((e) => e.type), ["find.started", "find.created"]);
   } finally {
     delete process.env.GENITA_FIND_WEB_IMAGES;
+    delete process.env.GENITA_FIND_IMAGE_GATE;
   }
 });

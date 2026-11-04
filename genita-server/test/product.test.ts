@@ -222,7 +222,9 @@ test("product pipeline: 2 opened product pages → card with price from the page
   assert.equal(card.say, TWO_SAY, "the model's 42-char line is too long for the one-line pill (#211)");
   assert.equal(card.pill, TWO_SAY, "the pill line is sent with the card");
   assert.equal(card.how[1], "Searched the web · northline.example.com +1", "one line on the card (#214)");
-  assert.deepEqual(events.map((e) => e.type), ["find.started", "find.progress", "find.created", "find.image"]);
+  // product-2 has no picture anywhere and there is no spare: its slot is omitted (never a hanger, never generated)
+  assert.deepEqual(events.map((e) => e.type), ["find.started", "find.progress", "find.created", "find.image", "find.image"]);
+  assert.deepEqual(events.slice(3).map((e) => [(e as { slot: string }).slot, (e as { status: string }).status, (e as { omit?: true }).omit ?? null]).sort(), [["product-1", "ready", null], ["product-2", "failed", true]]);
   assert.equal((events[0] as { title: string }).title, "Finding 2 for your style…");
   assert.deepEqual(stored, ["product-1"], "only the product with a page picture gets one");
   // every card URL is in the tool trace
@@ -266,7 +268,8 @@ test("product pipeline: no import → no blue chip (never a made-up taste); unre
   assert.equal(card.evidence!.style, "");
   assert.equal(card.products![0].price, "$70", "page not readable: the model's price is kept");
   assert.match(card.how[0], /I don’t know your style yet/);
-  assert.ok(!events.some((e) => e.type === "find.image"), "no page picture → none promised");
+  assert.ok(!events.some((e) => e.type === "find.image" && e.status === "ready"), "no page picture → none shown");
+  assert.ok(events.filter((e) => e.type === "find.image").every((e) => e.type === "find.image" && e.omit === true), "no picture anywhere → omit, never a plain failed");
 });
 
 test("product pipeline: refining (\"match my style\") sends the earlier ask along", async () => {

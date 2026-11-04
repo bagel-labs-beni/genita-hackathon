@@ -3,11 +3,13 @@
  * camera but nothing pointed at) opens the same visual recipe card the fridge uses — dish photo, the ingredients,
  * the steps — instead of a spoken recipe or a list of links. Server only: the shipped app (361/13) already draws a
  * recipe card without a camera frame; every ingredient is "buy" (nothing was checked), pictures come from the recipe
- * pages' own og:images (never generated), and the spoken side is one short line.
+ * pages' own og:images and the web (a generated picture only when none was found, imageGen.ts), and the spoken side
+ * is one short line.
  */
 import type { FindCard, FindItem } from "../protocol.ts";
 import { GENERAL_IMAGE_MS, tracedUrls, samePageKey } from "./general.ts";
 import { ingredientLookups, pagePicture, sendFoundImages, stepQuery } from "./imageFinder.ts";
+import { endSlot, genPrompt, imageGateOn } from "./imageGen.ts";
 import { domainOf, lastJsonObject, str, strList } from "./parse.ts";
 import { HEALTH_ADVICE, withoutHealthAdvice, sentenceCase, type PipelineCtx, type PipelineResult } from "./pipeline.ts";
 import { recipeSummary } from "./tiers.ts";
@@ -117,7 +119,7 @@ export async function runNamedRecipe(ctx: PipelineCtx & { recent?: string[] }): 
   }
   ctx.emit({ type: "find.created", findId: ctx.findId, card });
   timings.cardMs = Math.round(ctx.now() - t0);
-  if (pictures) await recipePhotos(ctx, card, str(j?.dish, 60));
+  if (pictures || imageGateOn()) await recipePhotos(ctx, card, str(j?.dish, 60));
   timings.picturesMs = Math.round(ctx.now() - t0);
   return { card, timings };
 }
@@ -127,6 +129,19 @@ export async function runNamedRecipe(ctx: PipelineCtx & { recent?: string[] }): 
  * photo per ingredient and per step — each sent only once it is ready; a row with none found gets no slot.
  */
 async function recipePhotos(ctx: PipelineCtx, card: FindCard, dish: string): Promise<void> {
+  const sent = new Set<string>();
+  const ctxSeen: PipelineCtx = { ...ctx, emit: (e) => { if (e.type === "find.image" && e.status === "ready") sent.add(e.slot); ctx.emit(e); } };
+  await webPhotos(ctxSeen, card, dish);
+  if (!imageGateOn() || ctx.signal.aborted) return;
+  // no empty pictures: whatever the web had nothing for gets a generated picture, else is omitted
+  await Promise.all([
+    { slot: "hero", gen: genPrompt("dish", dish || card.title) },
+    ...card.items.map((it) => ({ slot: `ingredient-${it.id}`, gen: genPrompt("ingredient", it.name) })),
+    ...card.steps.map((s, i) => ({ slot: `step-${i + 1}`, gen: genPrompt("step", s.text, dish || card.title) })),
+  ].filter((j) => !sent.has(j.slot)).map((j) => endSlot(ctx, j)));
+}
+
+async function webPhotos(ctx: PipelineCtx, card: FindCard, dish: string): Promise<void> {
   const heroP = (async () => {
     let fromPage = false;
     await Promise.all(

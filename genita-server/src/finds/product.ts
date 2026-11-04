@@ -25,12 +25,17 @@ import { domainOf, lastJsonObject, str } from "./parse.ts";
 import { userMessage, type FindsVendors, type OutputItem } from "./vendors.ts";
 import type { PageFacts } from "./fetchPage.ts";
 import { findWebImage } from "./imageFinder.ts";
+import { imageGateOn } from "./imageGen.ts";
 import type { PipelineCtx, PipelineResult, ProductPick } from "./pipeline.ts";
 import { askedColors, colorFamilies, offColor } from "./productCache.ts";
 // one color rule for search, cache and warm-up (handover b9-6): it lives in productCache.ts
 export { askedColors, offColor };
 
 export const PRODUCT_COUNT = 2;
+/** verified products kept past the card's two, for a slot whose picture can't be found */
+const MAX_SPARES = 3;
+/** spares one slot tries before it is omitted */
+const MAX_SWAP_TRIES = 2;
 /** PF-1 searching line: one line at 390 pt next to Stop (≈ 32 characters of Pretendard 16 medium) */
 export const SEARCH_TITLE = "Finding 2 for your style…";
 /** The answer pill (card.say) is one line on both devices: ≤ 28 characters (#211). */
@@ -778,6 +783,10 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
   if (ctx.signal.aborted) return { card: null, timings };
 
   const products: (FindProduct & { _image?: string })[] = [];
+  // no empty pictures: verified products past the first two, in the same order — a slot whose picture can't be
+  // found takes the next one that has a picture
+  const spares: (FindProduct & { _image?: string })[] = [];
+  const gate = imageGateOn();
   let serverOpened = 0;
   // proven product pages first, then pages nothing could confirm (a category page can't take a slot a product page had)
   // the asked color first (AU-78), then proven product pages before unconfirmed ones (Codex #602 r2)
@@ -786,14 +795,15 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
   let cardDept: Department | undefined = dept;
   order.forEach((i) => {
     const p = cands[i];
-    if (products.length >= PRODUCT_COUNT) return;
+    if (products.length >= PRODUCT_COUNT && (!gate || spares.length >= MAX_SPARES)) return;
+    const full = products.length >= PRODUCT_COUNT;
     const f = facts[i];
     // not in the trace: only a page we fetched ourselves and that says "one product" counts as opened
     if (!p.inTrace && f?.kind !== "product") {
       dropped.notOpened++;
       return;
     }
-    if (!p.inTrace) serverOpened++;
+    if (!p.inTrace && !full) serverOpened++;
     // the page's own title can name a department too (Codex r1/r2): the card keeps the first one it shows
     const pd = productDepartment(`${str(p.item?.name, 200)} ${p.url}`) ?? (f?.title ? productDepartment(f.title) : undefined);
     if (pd && cardDept && pd !== cardDept) {
@@ -810,7 +820,13 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
     const price = f?.price ?? (f ? undefined : cleanPrice(str(p.item.price, 30)));
     const name = shortName(str(p.item.name, 200) || f?.title || domain);
     const picture = f?.image ?? (allowedImage(str(p.item.image, 600)) ?? undefined);
-    if (pd && !cardDept) cardDept = pd;
+    if (pd && !cardDept && !full) cardDept = pd;
+    if (full) {
+      if (!products.some((x) => x.url === p.url) && !spares.some((x) => x.url === p.url)) {
+        spares.push({ id: "", name, url: p.url, domain, store: str(p.item.store, 40) || domain, ...(price ? { price } : {}), ...(picture ? { _image: picture } : {}), taste: styleLine ? str(p.item.taste, 30) : "", situation: str(p.item.situation, 34) });
+      }
+      return;
+    }
     products.push({
       id: `p${products.length + 1}`,
       name,
@@ -852,7 +868,7 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
       });
     }
   }
-  ctx.log("product.kept", { findId: ctx.findId, kept: products.length, ...dropped, serverOpened, pageRead: facts.filter(Boolean).length });
+  ctx.log("product.kept", { findId: ctx.findId, kept: products.length, ...dropped, serverOpened, pageRead: facts.filter(Boolean).length, ...(spares.length ? { spares: spares.length } : {}) });
 
   if (!products.length) {
     ctx.emit({ type: "find.failed", findId: ctx.findId, reason: "search_failed", message: "Couldn’t find a good match. Try a color or a price." });
@@ -893,28 +909,87 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
   ctx.emit({ type: "find.created", findId: ctx.findId, card });
 
   // pictures: the page's own og:image, stored like an illustration (the app loads it from us, not the shop)
+  // visual everything: no picture on the page → a web photo of the product
+  const picture = async (p: { _image?: string; name: string; store: string }): Promise<Buffer | null> => {
+    const own = p._image && vendors.productImage ? await withTimeout(vendors.productImage(p._image, ctx.signal), productPageMs(), ctx.signal) : null;
+    if (own || ctx.signal.aborted) return own;
+    return findWebImage(vendors, `${p.name} ${p.store}`.trim(), ctx.signal);
+  };
+  if (!gate) {
+    // GENITA_FIND_IMAGE_GATE=0: as on 11/4 (a page picture that fails → "failed"; none at all → no event)
+    await Promise.all(
+      products.map(async (p, i) => {
+        const slot = `product-${i + 1}`;
+        try {
+          const bytes = await picture(p);
+          if (ctx.signal.aborted) return;
+          if (!bytes) {
+            if (!p._image) return;
+            throw new Error("no image");
+          }
+          const url = await ctx.putImage(slot, bytes);
+          ctx.emit({ type: "find.image", findId: ctx.findId, slot, status: "ready", url });
+        } catch (err) {
+          if (ctx.signal.aborted) return;
+          ctx.emit({ type: "find.image", findId: ctx.findId, slot, status: "failed" });
+          ctx.log("product.image_failed", { findId: ctx.findId, slot, message: String(err).slice(0, 120) });
+        }
+      }),
+    );
+    timings.picturesMs = ms();
+    return { card, timings, label };
+  }
+  // no empty pictures: page picture → web photo → the next verified product that has a picture (sent as `replace`
+  // on the slot's find.image) → omit. Never a generated picture for a product.
+  const store = async (slot: string, bytes: Buffer): Promise<string | null> => {
+    try {
+      const url = await ctx.putImage(slot, bytes);
+      return ctx.signal.aborted ? null : url;
+    } catch (err) {
+      ctx.log("product.image_store_failed", { findId: ctx.findId, slot, message: String(err).slice(0, 120) });
+      return null;
+    }
+  };
+  const final: FindProduct[] = card.products!.map((p) => ({ ...p }));
+  const sources = card.sources.map((s) => ({ ...s }));
   await Promise.all(
     products.map(async (p, i) => {
       const slot = `product-${i + 1}`;
-      try {
-        const own = p._image && vendors.productImage ? await withTimeout(vendors.productImage(p._image, ctx.signal), productPageMs(), ctx.signal) : null;
-        if (ctx.signal.aborted) return;
-        // visual everything: no picture on the page → a web photo of the product (no slot at all when none is found)
-        const bytes = own ?? (await findWebImage(vendors, `${p.name} ${p.store}`.trim(), ctx.signal));
-        if (ctx.signal.aborted) return;
-        if (!bytes) {
-          if (!p._image) return;
-          throw new Error("no image");
-        }
-        const url = await ctx.putImage(slot, bytes);
+      const bytes = await picture(p).catch(() => null);
+      if (ctx.signal.aborted) return;
+      const url = bytes ? await store(slot, bytes) : null;
+      if (ctx.signal.aborted) return;
+      if (url) {
+        final[i].image = { slot, status: "ready", url };
         ctx.emit({ type: "find.image", findId: ctx.findId, slot, status: "ready", url });
-      } catch (err) {
-        if (ctx.signal.aborted) return;
-        ctx.emit({ type: "find.image", findId: ctx.findId, slot, status: "failed" });
-        ctx.log("product.image_failed", { findId: ctx.findId, slot, message: String(err).slice(0, 120) });
+        return;
       }
+      // the next spare (each is tried by one slot only), up to MAX_SWAP_TRIES
+      for (let tries = 0; tries < MAX_SWAP_TRIES && spares.length && !ctx.signal.aborted; tries++) {
+        const { _image, ...s } = spares.shift()!;
+        const b = await picture({ _image, name: s.name, store: s.store }).catch(() => null);
+        if (ctx.signal.aborted) return;
+        const u = b ? await store(slot, b) : null;
+        if (ctx.signal.aborted) return;
+        if (!u) {
+          ctx.log("product.swap_no_image", { findId: ctx.findId, slot, url: s.url.slice(0, 200) });
+          continue;
+        }
+        const replace: FindProduct = { ...s, id: p.id, image: { slot, status: "ready", url: u } };
+        final[i] = replace;
+        sources[i] = { title: replace.name, url: replace.url, domain: replace.domain };
+        ctx.emit({ type: "find.image", findId: ctx.findId, slot, status: "failed", omit: true, replace });
+        ctx.log("product.swapped", { findId: ctx.findId, slot, from: p.url.slice(0, 200), to: replace.url.slice(0, 200) });
+        return;
+      }
+      if (ctx.signal.aborted) return;
+      final[i].image = { slot, status: "failed", omit: true };
+      ctx.emit({ type: "find.image", findId: ctx.findId, slot, status: "failed", omit: true });
+      ctx.log("product.image_omit", { findId: ctx.findId, slot });
     }),
   );
   timings.picturesMs = ms();
-  return { card, timings, label };
+  const domainsNow = [...new Set(final.map((p) => p.domain))];
+  const done: FindCard = { ...card, products: final, sources, status: one ? `1 link · ${domainsNow[0]}` : `${final.length} links · ${domainsNow.join(", ")}`, how: card.how.map((h) => (h === searchedLine(domains) ? searchedLine(domainsNow) : h)) };
+  return { card: done, timings, label };
 }

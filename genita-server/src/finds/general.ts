@@ -23,6 +23,7 @@ import type { PipelineCtx, PipelineResult } from "./pipeline.ts";
 import { userMessage, type OutputItem } from "./vendors.ts";
 import { answerTitle, isBlockedSite } from "./webAnswer.ts";
 import { findWebImage, pagePicture, sendFoundImages, stepQuery } from "./imageFinder.ts";
+import { endSlot, genPrompt, imageGateOn, type Picture } from "./imageGen.ts";
 
 /** said when the card lands (after the one-sentence answer) */
 export const GENERAL_SAY = "I put a few links up for you.";
@@ -390,18 +391,23 @@ export function cutOff<T>(run: (signal: AbortSignal) => Promise<T>, ms: number, 
   });
 }
 
-export type PictureCtx = Parameters<typeof sendFoundImages>[0];
+export type PictureCtx = Parameters<typeof sendFoundImages>[0] & { images?: boolean };
 export type PictureRow = { title: string; url: string; address?: string };
 
 /**
  * Every row's picture (visual everything, r02 on all searches): its own og:image (else the page's first content
  * picture), else a web photo of the row (the place / page name). `hero` is row 0's picture, or — when row 0 has
- * none — the first other row's that lands (old builds draw hero). Only ready pictures are sent; a row with none gets
- * no slot. How-to steps get a step-N photo each when one is found.
+ * none — the first other row's that lands (old builds draw hero). How-to steps get a step-N photo each when found.
+ *
+ * No empty pictures (GENITA_FIND_IMAGE_GATE, on): a general / how-to card with no picture at all gets a generated
+ * hero; a row with none takes the hero, else a generated one; a step with none gets a generated one; whatever is
+ * still empty is omitted. A place card never gets a made-up picture (no stand-in hero, no generation): omit.
  */
-export async function rowPictures(ctx: PictureCtx, rows: PictureRow[], opts: { layout?: FindLayout; topic?: string; steps?: string[]; heroFromRows?: boolean } = {}): Promise<void> {
+export async function rowPictures(ctx: PictureCtx, rows: PictureRow[], opts: { layout?: FindLayout; topic?: string; steps?: string[]; heroFromRows?: boolean; heroPrompt?: string } = {}): Promise<void> {
   const { pageFacts, productImage } = ctx.vendors;
   if (!pageFacts || !productImage) return;
+  const gate = imageGateOn();
+  const place = opts.layout === "place";
   const store = async (slot: string, bytes: Buffer) => {
     try {
       ctx.emit({ type: "find.image", findId: ctx.findId, slot, status: "ready", url: await ctx.putImage(slot, bytes) });
@@ -413,16 +419,17 @@ export async function rowPictures(ctx: PictureCtx, rows: PictureRow[], opts: { l
   };
   let heroSent = opts.heroFromRows === false;
   let heroWait: Promise<void> = Promise.resolve();
+  let heroPic: Picture | null = null;
   const found = rows.map(async (r, i) => {
     const own = await pagePicture(ctx.vendors, r.url, ctx.signal, GENERAL_IMAGE_MS);
     if (ctx.signal.aborted) return null;
-    const bytes = own ?? (await findWebImage(ctx.vendors, opts.layout === "place" ? `${r.title} ${r.address ?? ""}`.trim() : r.title, ctx.signal));
+    const bytes = own ?? (await findWebImage(ctx.vendors, place ? `${r.title} ${r.address ?? ""}`.trim() : r.title, ctx.signal));
     if (!bytes || ctx.signal.aborted) {
       if (!ctx.signal.aborted) ctx.log("find.web_image_none", { findId: ctx.findId, slot: `source-${i}` });
       return null;
     }
-    await store(`source-${i}`, bytes);
-    return bytes;
+    // gate: a row whose picture could not be stored is ended below like one with none
+    return (await store(`source-${i}`, bytes)) || !gate ? bytes : null;
   });
   if (!heroSent && found.length) {
     heroWait = (async () => {
@@ -435,11 +442,29 @@ export async function rowPictures(ctx: PictureCtx, rows: PictureRow[], opts: { l
         });
       }
       if (bytes && !ctx.signal.aborted && !heroSent) heroSent = await store("hero", bytes);
+      if (heroSent && bytes) heroPic = { bytes };
+      if (!heroSent && gate && !ctx.signal.aborted) {
+        // nothing on any row: a general / how-to card gets a generated hero; a place card none (omit)
+        const prompt = place ? undefined : genPrompt("general", opts.heroPrompt || opts.topic || rows[0].title);
+        await endSlot(ctx, { slot: "hero", ...(prompt ? { gen: prompt } : {}), keep: (pic) => (heroPic = pic) });
+      }
     })();
   }
   const steps = opts.steps ?? [];
   const stepPics = sendFoundImages(ctx, steps.map((t, i) => ({ slot: `step-${i + 1}`, query: stepQuery(opts.topic ?? "", t) })));
-  await Promise.all([...found, heroWait, stepPics]);
+  const ends: Promise<unknown>[] = [];
+  if (gate) {
+    // rows with nothing: the hero (general / how-to only), else a generated picture of the row, else omit
+    ends.push(...found.map(async (f, i) => {
+      if (await f) return;
+      await heroWait;
+      if (ctx.signal.aborted) return;
+      await endSlot(ctx, place ? { slot: `source-${i}` } : { slot: `source-${i}`, hero: async () => heroPic, gen: genPrompt("general", rows[i].title) });
+    }));
+    // steps with nothing: a generated picture of the step (the same hero on every step would read as broken), else omit
+    ends.push(stepPics.then((sent) => Promise.all(steps.map((t, i) => (sent.has(`step-${i + 1}`) ? null : endSlot(ctx, { slot: `step-${i + 1}`, gen: genPrompt("howto-step", t, opts.topic ?? "") }))))));
+  }
+  await Promise.all([...found, heroWait, stepPics, ...ends]);
 }
 
 function prompt(question: string, timeZone?: string, layout: FindLayout = "general"): string {

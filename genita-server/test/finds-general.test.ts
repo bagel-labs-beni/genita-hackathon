@@ -423,8 +423,10 @@ test("r01: og:image per result (read in parallel, ≤ 1.5 s each) → find.image
   const bySlot = Object.fromEntries(imgs.map((e) => [e.slot, e]));
   assert.deepEqual(bySlot.hero, { type: "find.image", findId: "f1", slot: "hero", status: "ready", url: "https://img/hero" });
   assert.deepEqual(bySlot["source-0"], { type: "find.image", findId: "f1", slot: "source-0", status: "ready", url: "https://img/source-0" });
-  assert.equal(bySlot["source-1"], undefined, "no og:image (and no web photo) → no event at all, never failed");
-  assert.equal(bySlot["source-2"], undefined, "past 1.5 s → no event");
+  // no empty pictures: a place row with no picture of its own is omitted (never a stand-in or made-up picture of a place)
+  assert.equal(card.layout, "place");
+  assert.deepEqual(bySlot["source-1"], { type: "find.image", findId: "f1", slot: "source-1", status: "failed", omit: true }, "no og:image (and no web photo) → omit");
+  assert.deepEqual(bySlot["source-2"], { type: "find.image", findId: "f1", slot: "source-2", status: "failed", omit: true }, "past 1.5 s → omit");
   assert.deepEqual(stored.sort(), ["hero=img:https://media.timeout.com/a.jpg", "source-0=img:https://media.timeout.com/a.jpg"]);
   for (const e of events) assert.deepEqual(checkServerEvent(e), [], JSON.stringify(e));
 });
