@@ -52,7 +52,7 @@ struct FaceScanOverlay: View, Animatable {
     }
 
     private var live: some View {
-        TimelineView(.animation(minimumInterval: nil, paused: reduceMotion || (mesh == nil && doneAt == nil))) { timeline in
+        TimelineView(.animation(minimumInterval: nil, paused: reduceMotion || (mesh == nil && doneAt == nil && clock.mesh == nil))) { timeline in
             Canvas { ctx, size in draw(in: &ctx, size: size, now: timeline.date, clock: clock) }
         }
         .allowsHitTesting(false)
@@ -67,9 +67,15 @@ struct FaceScanOverlay: View, Animatable {
         ctx.opacity = outA
         let lineY = size.height * CGFloat(min(1, max(0, progress)))
 
-        if let mesh {
+        // b14: a dropped answer (mesh nil for a frame or a re-check) keeps the last net on screen for `dropHold`, then fades it
+        // over the glide time, instead of blinking it off and re-laying it from nothing
+        let dropA = mesh == nil ? clock.dropAlpha(at: now) : 1
+        if mesh != nil { clock.noteDrop(nil) }
+        if let mesh = mesh ?? (dropA > 0.001 ? clock.mesh : nil) {
+            let outA = outA * dropA
+            ctx.opacity = outA
             let still = reduceMotion || !smooth
-            clock.update(to: mesh, at: now, glide: still ? 0 : Self.glide)
+            if self.mesh != nil { clock.update(to: mesh, at: now, glide: still ? 0 : Self.glide) }
             // the sweep only goes down: a reset bar (Try again) starts it over, anything else never uncovers less
             let netY = clock.netY(size.height * CGFloat(min(1, max(0, min(progress, reveal)))), monotonic: smooth && progress > 0.01)
             let pts = clock.points(at: now).map { FaceMesh.place($0, image: imageSize, in: size, origin: origin) }
@@ -84,6 +90,7 @@ struct FaceScanOverlay: View, Animatable {
                         shown: { i in old.times[i].map { now.timeIntervalSince($0) } }, netY: netY, faceA: faceA, size: size, in: &fading)
             }
             drawNet(mesh, at: pts, shown: { i in clock.time(i).map { now.timeIntervalSince($0) } }, netY: netY, faceA: faceA, size: size, in: &ctx)
+            ctx.opacity = 1
         }
 
         // the scan line and its band cross the whole card; they fade out over 0.15 s at 100 %
@@ -204,6 +211,17 @@ final class RevealClock {
     func netY(_ y: CGFloat, monotonic: Bool) -> CGFloat {
         lowest = monotonic ? max(lowest, y) : y
         return lowest
+    }
+    /// when the answer's mesh went missing (nil until it is back)
+    private var droppedAt: Date?
+    static let dropHold = 0.6
+    func noteDrop(_ at: Date?) { droppedAt = at }
+    /// 1 while the last net is held through a dropped answer, then easing to 0 over the glide time
+    func dropAlpha(at now: Date) -> Double {
+        guard mesh != nil else { return 0 }
+        if droppedAt == nil { droppedAt = now }
+        let t = now.timeIntervalSince(droppedAt ?? now) - Self.dropHold
+        return 1 - FaceScanOverlay.easeOut(min(1, max(0, t / FaceScanOverlay.glide)))
     }
     func mark(_ i: Int, at date: Date) { if times[i] == nil { times[i] = date } }
     func time(_ i: Int) -> Date? { times[i] }
