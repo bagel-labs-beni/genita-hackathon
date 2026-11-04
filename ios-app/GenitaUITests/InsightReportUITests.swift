@@ -66,7 +66,9 @@ final class InsightHeaderUITests: XCTestCase {
         a.name = "onb-insight-header-" + name; a.lifetime = .keepAlways; add(a)
     }
     func testShortAndLongTypeNames() throws {
-        for (variant, name) in [("insight", "short"), ("insight-long", "long")] {
+        // short / long (one line, shrunk) / long2 (past the 26 pt floor: two balanced lines) / scene and polished (the
+        // header face: scene → V02 polished → orb; "short" has neither, so it shows the orb)
+        for (variant, name) in [("insight", "short"), ("insight-long", "long"), ("insight-long2", "long2"), ("insight-scene", "scene"), ("insight-polished", "polished")] {
             let app = XCUIApplication()
             app.launchArguments = ["--uitesting"]
             app.launchEnvironment = ["GENITA_REVIEW_STAGE": "summary", "GENITA_REVIEW_VARIANT": variant, "GENITA_REVIEW_NAME": "Lou"]
