@@ -650,28 +650,38 @@ enum CallStop: Equatable {
     /// show). Hand shake keeps them; a real move fades them until the picture lines up again. Ends with the batch,
     /// a new look, a flip or the camera going off. #676's hold decides when they go for good.
     @ObservationIgnored private var boxMotionTask: Task<Void, Never>?
+    /// the batch the running watch belongs to: more items on the same frame keep it (and its hide) going
+    @ObservationIgnored private var boxMotionKey: (findId: String, frame: Int, epoch: Int)?
     @ObservationIgnored private let motionContext = CIContext(options: [.cacheIntermediates: false])
     private func watchBoxMotion(_ b: ServerEvent.ObserveBoxes) {
         guard CameraMotion.enabled else { return }
         // only a batch the preview actually took (a late one from before a flip is ignored and keeps the watch)
         guard cameraOn, finds.boxes.findId == b.findId, let entry = finds.entries.first(where: { $0.id == b.findId }),
-              entry.frames.indices.contains(b.frame),
-              let analysed = CameraMotion.thumb(jpeg: entry.frames[b.frame], context: motionContext) else { return }
-        boxMotionTask?.cancel()
+              entry.frames.indices.contains(b.frame) else { return }
         let boxes = finds.boxes
-        let findId = b.findId
-        let epoch = boxes.epoch
+        let findId = b.findId, frame = b.frame, epoch = boxes.epoch
+        if let k = boxMotionKey, k.findId == findId, k.frame == frame, k.epoch == epoch, boxMotionTask != nil { return }
+        boxMotionTask?.cancel()
+        boxMotionKey = (findId, frame, epoch)
+        let jpeg = entry.frames[frame]
+        let context = motionContext
         boxMotionTask = Task { [weak self] in
+            // image work off the main actor (Codex r1): the blur, the render and the shift search
+            let analysed = await Task.detached(priority: .utility, operation: { CameraMotion.thumb(jpeg: jpeg, context: context) }).value
             var detector = CameraMotion.Detector()
-            while !Task.isCancelled {
+            while !Task.isCancelled, let analysed {
                 guard let self, self.cameraOn, boxes.findId == findId, boxes.epoch == epoch else { break }
-                if boxes.visible, let image = self.camera.latestImage(), let now = CameraMotion.thumb(image, context: self.motionContext) {
-                    boxes.setMisaligned(detector.feed(CameraMotion.match(analysed, now)))
+                if boxes.visible, let image = self.camera.latestImage() {
+                    let m = await Task.detached(priority: .utility) { CameraMotion.thumb(image, context: context).map { CameraMotion.match(analysed, $0) } }.value
+                    // the batch may have changed while it was measured
+                    guard !Task.isCancelled, boxes.findId == findId, boxes.epoch == epoch else { break }
+                    if let m { boxes.setMisaligned(detector.feed(m)) }
                 }
                 try? await Task.sleep(for: .milliseconds(250))
             }
             // the watch ended (new look, flip, camera off): never leave a batch hidden by a stale reading
-            if boxes.findId == findId { boxes.setMisaligned(false) }
+            if !Task.isCancelled, boxes.findId == findId { boxes.setMisaligned(false) }
+            if let self, let k = self.boxMotionKey, k.findId == findId, k.frame == frame, k.epoch == epoch { self.boxMotionTask = nil; self.boxMotionKey = nil }
         }
     }
 

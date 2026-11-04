@@ -34,6 +34,8 @@ struct LiveBox: Identifiable, Equatable {
     /// come back when the picture lines up again. The hold (#676) keeps running underneath: moving doesn't end it.
     private(set) var misaligned = false
     func setMisaligned(_ on: Bool) { if misaligned != on { misaligned = on } }
+    /// The analysed frame index of the current batch (a batch on another frame is a new look).
+    @ObservationIgnored private(set) var boxFrame: Int?
     /// Label of the lit box (chip tapped), lowercased.
     private(set) var highlighted: String?
     /// Bumped on every reveal so a new batch re-runs the pop animation.
@@ -146,8 +148,10 @@ struct LiveBox: Identifiable, Equatable {
     func apply(_ e: ServerEvent.ObserveBoxes) {
         guard e.w > 0, e.h > 0, !e.items.isEmpty else { return }
         if findId != e.findId { boxes = []; highlighted = nil }
-        // a new look is on the frame just taken: it lines up again (D63)
-        misaligned = false
+        // a new look is on the frame just taken: it lines up again (D63). More items found on the same frame (the
+        // server pushes a batch per confirmed ingredient) keep the hide: the picture still hasn't lined up (Codex r1)
+        if findId != e.findId || boxFrame != e.frame { misaligned = false }
+        boxFrame = e.frame
         findId = e.findId
         frameSize = CGSize(width: e.w, height: e.h)
         let known = Set(boxes.map(\.id))
@@ -180,7 +184,7 @@ struct LiveBox: Identifiable, Equatable {
         endHold()
         fadeTask?.cancel()
         if stale { epoch += 1 }
-        boxes = []; highlighted = nil; visible = false; findId = nil; maskCache = [:]; misaligned = false
+        boxes = []; highlighted = nil; visible = false; findId = nil; maskCache = [:]; misaligned = false; boxFrame = nil
     }
 
     private func reveal() {

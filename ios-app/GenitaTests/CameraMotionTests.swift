@@ -81,6 +81,8 @@ import XCTest
         XCTAssertTrue(boxes.misaligned)
         XCTAssertTrue(boxes.visible, "moving hides the masks by opacity only; the hold keeps them")
         boxes.apply(batch)
+        XCTAssertTrue(boxes.misaligned, "more items on the same frame: the picture still hasn't lined up (Codex r1)")
+        boxes.apply(ServerEvent.ObserveBoxes(findId: "f1", frame: 1, w: 480, h: 854, items: batch.items))
         XCTAssertFalse(boxes.misaligned, "a new look is on the frame just taken")
         boxes.setMisaligned(true)
         boxes.clear()
