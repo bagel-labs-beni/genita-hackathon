@@ -52,7 +52,7 @@ final class CallHUDGridTests: XCTestCase {
 
     /// Build 10 (Chelsea): the flip button sits one 44 + 12 step above the camera, clear of the companion window
     /// (y 184 + top, 128 tall) and of the top row; captions and the label obstacle rail move up with it.
-    func testFlipSitsAboveCameraAndClearsTheWindow() {
+    @MainActor func testFlipSitsAboveCameraAndClearsTheWindow() {
         let sizes: [(CGSize, CGFloat, CGFloat)] = [(CGSize(width: 375, height: 667), 20, 0), (CGSize(width: 390, height: 844), 47, 34), (CGSize(width: 440, height: 956), 62, 34)]
         for (size, top, bottom) in sizes {
             let g = CallHUDGrid(size: size, safeTop: top, safeBottom: bottom)
