@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct MacConversationView: View {
@@ -78,6 +79,8 @@ struct MacConversationView: View {
                         selfView.frame(width: selfSize.width, height: selfSize.height)
                             .position(x: 16 + selfSize.width / 2, y: 806 - selfSize.height / 2 - railShift).opacity(sheetCovers ? 0 : 1)
                             .animation(reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.85), value: call.cameraOn)
+                            // camera boxes: the tile grows 2.2× (bottom-left anchored) while the server's boxes show, back when they fade
+                            .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.86), value: boxesShown)
                     } else {
                         selfView.position(x: 87.5, y: 700.5 - railShift).opacity(sheetCovers ? 0 : 1)
                     }
@@ -265,11 +268,20 @@ struct MacConversationView: View {
     /// E01/E02 from the call's own permission checks (Dyno's sheet, the call's state).
     private var callDenied: LocalCallMedia.Kind? { call.micDenied ? .microphone : call.cameraDenied ? .camera : nil }
     /// Self view size on Mac v2 (iPhone HUD A): camera off 72×96, on 108×144.
-    private var selfSize: CGSize { call.cameraOn ? CGSize(width: 108, height: 144) : CGSize(width: 72, height: 96) }
+    /// Camera boxes (iPhone CAM-H on the Mac's self view): grown 2.2× (238×317) while they show, so the boxes read.
+    private var selfSize: CGSize {
+        guard call.cameraOn else { return CGSize(width: 72, height: 96) }
+        return boxesShown ? CGSize(width: 238, height: 317) : CGSize(width: 108, height: 144)
+    }
+    /// The server found items in the camera picture and they are on screen (fade 4 s after, CameraBoxes).
+    private var boxesShown: Bool { call.cameraOn && call.finds.boxes.visible && !call.finds.boxes.boxes.isEmpty }
     @ViewBuilder private var selfView: some View {
         if call.cameraOn {
             if MacDesignV2.enabled {
-                SelfCameraPreview(session: call.cameraSession).clipShape(RoundedRectangle(cornerRadius: 16))
+                SelfCameraPreview(session: call.cameraSession)
+                    // the Mac preview is mirrored (LocalCallMedia: isVideoMirrored = true), so the boxes are too
+                    .overlay { MacCameraBoxOverlay(boxes: call.finds.boxes, mirrored: true) }
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
                     .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.white.opacity(0.35), lineWidth: 0.7))
             } else {
                 SelfCameraPreview(session: call.cameraSession).frame(width: 113, height: 211).clipShape(RoundedRectangle(cornerRadius: 16))
@@ -407,5 +419,84 @@ private final class IslandDragView:NSView {
 struct MacFacePlaceholder: View {
     var body: some View {
         MacSheetInk.ink.accessibilityHidden(true)
+    }
+}
+
+/// iPhone CameraBoxOverlay (CAM-H, full-flow board r01 §6) on the Mac self view: same drawing, same CameraBoxes data.
+/// Edge #00A2FF 2.5 pt + glow (blur 6, 60 %), inside white 20 % (lit 35 %); label = pill 28 pt, 12/16 medium; items
+/// light up 150 ms apart (200 ms ease-out, label 100 ms later); all fade after 4 s (CameraBoxes.fadeAfter).
+struct MacCameraBoxOverlay: View {
+    let boxes: CameraBoxes
+    let mirrored: Bool
+
+    var body: some View {
+        GeometryReader { g in
+            ZStack(alignment: .topLeading) {
+                Color.black.opacity(boxes.highlighted != nil ? 0.4 : 0).allowsHitTesting(false)
+                let drawn = boxes.boxes.map { (item: $0, rect: CameraBoxes.rect($0.box, frame: boxes.frameSize, in: g.size, mirrored: mirrored)) }
+                    .filter { $0.rect.width > 0 && $0.rect.height > 0 }
+                let labeled = CameraBoxes.labelOwners(drawn)
+                let origins = CameraBoxes.labelOrigins(drawn.filter { labeled.contains($0.item.id) }.map { (id: $0.item.id, rect: $0.rect, label: Self.labelSize($0.item.label)) },
+                                                       view: g.size, topInset: 0, obstacles: [])
+                ForEach(drawn, id: \.item.id) { d in
+                    MacPopBox(item: d.item, rect: d.rect, lit: boxes.highlighted == d.item.key,
+                              dimmed: boxes.highlighted != nil && boxes.highlighted != d.item.key,
+                              showsLabel: labeled.contains(d.item.id), labelAt: origins[d.item.id])
+                }
+            }
+            .opacity(boxes.visible && !boxes.misaligned ? 1 : 0)
+            .animation(.easeOut(duration: 0.2), value: boxes.visible)
+            .animation(.easeOut(duration: 0.15), value: boxes.misaligned)
+            .animation(.easeOut(duration: 0.2), value: boxes.highlighted)
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+        .accessibilityIdentifier("macCameraBoxes")
+    }
+
+    /// The pill's size: 12 pt medium text + 8 pt sides, 28 pt tall.
+    static func labelSize(_ text: String) -> CGSize {
+        let font = NSFont(name: "PretendardVariable-Medium", size: 12) ?? .systemFont(ofSize: 12, weight: .medium)
+        return CGSize(width: ceil((text as NSString).size(withAttributes: [.font: font]).width) + 16, height: 28)
+    }
+}
+
+private struct MacPopBox: View {
+    let item: LiveBox
+    let rect: CGRect
+    let lit: Bool
+    let dimmed: Bool
+    var showsLabel = true
+    var labelAt: CGPoint? = nil
+    @State private var shown = false
+    @State private var labelShown = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    static let edgeBlue = Color(red: 0, green: 162 / 255, blue: 1)
+    static let stagger = 0.15, fadeIn = 0.2, labelDelay = 0.1
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(lit ? 0.35 : 0.20))
+            RoundedRectangle(cornerRadius: 12).strokeBorder(Self.edgeBlue, lineWidth: 2.5)
+                .shadow(color: Self.edgeBlue.opacity(0.6), radius: 6)
+            if showsLabel && labelShown {
+                Text(item.label).font(.custom("PretendardVariable-Medium", size: 12)).lineSpacing(4)
+                    .foregroundStyle(Color(red: 253 / 255, green: 253 / 255, blue: 253 / 255)).lineLimit(1).fixedSize()
+                    .padding(.horizontal, 8).frame(height: 28)
+                    .background(Color(red: 17 / 255, green: 17 / 255, blue: 17 / 255).opacity(0.84), in: RoundedRectangle(cornerRadius: 12))
+                    .offset(x: labelAt.map { $0.x - rect.minX } ?? max(-2, -rect.minX), y: labelAt.map { $0.y - rect.minY } ?? CameraBoxes.labelOffsetY(rect, topInset: 0))
+                    .accessibilityIdentifier("macBoxLabel-\(item.label)")
+            }
+        }
+        .frame(width: max(8, rect.width), height: max(8, rect.height), alignment: .topLeading)
+        .opacity((shown ? 1 : 0) * (dimmed ? 0 : 1))
+        .offset(x: rect.minX, y: rect.minY)
+        .task {
+            if reduceMotion { withAnimation(.easeOut(duration: Self.fadeIn)) { shown = true; labelShown = true }; return }
+            try? await Task.sleep(for: .milliseconds(Int(Self.stagger * 1000) * item.order))
+            withAnimation(.easeOut(duration: Self.fadeIn)) { shown = true }
+            try? await Task.sleep(for: .milliseconds(Int(Self.labelDelay * 1000)))
+            withAnimation(.easeOut(duration: Self.fadeIn)) { labelShown = true }
+        }
     }
 }
