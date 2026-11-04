@@ -117,6 +117,8 @@ struct CallCueView: View {
     let name: String
     /// PF-1: a Finds status line ("On it…", "Found two for you.") shown in the same pill instead of the call cue
     var findsText: String? = nil
+    /// S09 wait stage: "Getting {name} ready" with a spinner until the generated face is here (춘식이 11/4)
+    var waitingText: String? = nil
     var retry: () -> Void = {}
     var openSettings: () -> Void = {}
     /// HUD r01 A: the room on the menu row (between the menu button and its mirror). A "{name} is …" line that would
@@ -167,6 +169,7 @@ struct CallCueView: View {
 
     /// Card 1's live icon for the three conversation states; reconnecting, alerts and the Finds line keep theirs.
     private var motionIcon: MotionPillIconKind? {
+        if Self.showsWaiting(cue: cue, findsText: findsText, waitingText: waitingText) { return nil }
         if findsText != nil, cue != .reconnecting, cue != .answerFailed { return nil }
         return switch cue {
         case .listening, .interrupted: .listening
@@ -182,6 +185,12 @@ struct CallCueView: View {
         guard let rowWidth else { return full }
         return pillWidth(text: full) <= rowWidth ? full : short
     }
+    /// S09 wait stage: "Getting {name} ready" when it fits on the row, else "Getting ready" (a long name never runs
+    /// off the screen; Codex P3)
+    static func waitingLine(name: String, rowWidth: CGFloat) -> String {
+        let full = "Getting \(name) ready"
+        return pillWidth(text: full) <= rowWidth ? full : "Getting ready"
+    }
     private static func textWidth(_ text: String) -> CGFloat {
         let font = UIFont(name: "PretendardVariable-Medium", size: 14) ?? .systemFont(ofSize: 14, weight: .medium)
         return ceil((text as NSString).size(withAttributes: [.font: font]).width)
@@ -193,7 +202,13 @@ struct CallCueView: View {
         return base + CallPillMetrics.iconSpacing + 16 + textWidth(action)
     }
     /// What the pill says: the Finds line (PF-1) unless the call is reconnecting or the answer failed, else the cue.
-    static func line(cue: CallCue, name: String, findsText: String?, rowWidth: CGFloat?) -> (text: String, action: String?)? {
+    /// S09 wait stage: "Getting {name} ready" holds the pill until the face is here, under Finds and the
+    /// reconnect / failure / mic lines (those need the person).
+    static func showsWaiting(cue: CallCue, findsText: String?, waitingText: String?) -> Bool {
+        waitingText != nil && findsText == nil && cue != .reconnecting && cue != .answerFailed && cue != .micBlocked
+    }
+    static func line(cue: CallCue, name: String, findsText: String?, rowWidth: CGFloat?, waitingText: String? = nil) -> (text: String, action: String?)? {
+        if showsWaiting(cue: cue, findsText: findsText, waitingText: waitingText), let waitingText { return (waitingText, nil) }
         if let findsText, cue != .reconnecting, cue != .answerFailed { return (findsText, nil) }
         return switch cue {
         case .none: nil
@@ -207,10 +222,13 @@ struct CallCueView: View {
         }
     }
     /// The measured pill width of what it shows now; nil = nothing to show.
-    static func width(cue: CallCue, name: String, findsText: String?, rowWidth: CGFloat?) -> CGFloat? {
-        line(cue: cue, name: name, findsText: findsText, rowWidth: rowWidth).map { pillWidth(text: $0.text, action: $0.action) }
+    static func width(cue: CallCue, name: String, findsText: String?, rowWidth: CGFloat?, waitingText: String? = nil) -> CGFloat? {
+        line(cue: cue, name: name, findsText: findsText, rowWidth: rowWidth, waitingText: waitingText).map { pillWidth(text: $0.text, action: $0.action) }
     }
     private var content: Content? {
+        if Self.showsWaiting(cue: cue, findsText: findsText, waitingText: waitingText), let waitingText {
+            return Content(icon: AnyView(CueSpinner()), text: waitingText, action: nil)
+        }
         guard let line = Self.line(cue: cue, name: name, findsText: findsText, rowWidth: rowWidth) else { return nil }
         let showingFinds = findsText != nil && cue != .reconnecting && cue != .answerFailed
         let icon: AnyView

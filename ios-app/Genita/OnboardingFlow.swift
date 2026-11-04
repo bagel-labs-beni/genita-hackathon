@@ -779,14 +779,16 @@ extension AppState {
 
     /// PREP-1 (every 2 s) and the call (S09-PREP, every 5 s): poll `GET /v1/companion/prep` while the screen is up
     /// (scene → expressions → mouth). Stops at ready or failed (PREP-1e Try again starts it again).
-    func followPrep(every seconds: Double = 2) async {
+    /// `sceneFirst: false` (the call, face plan item 3): a ready answer goes in at once — the face set load waits on it —
+    /// and the call's own `loadScene` task fetches the scene; PREP-1 keeps the scene-first order (no ready over nothing).
+    func followPrep(every seconds: Double = 2, sceneFirst: Bool = true) async {
         guard serverWired else { return }
         if prep?.isReady == true { return }
         while !Task.isCancelled {
             do {
                 let p = try await onboarding.prep()
                 // ready is shown with the made face already in place, never over the uploaded photo
-                if p.isReady { await loadScene(for: p, within: Self.sceneWaitSeconds) }
+                if p.isReady && sceneFirst { await loadScene(for: p, within: Self.sceneWaitSeconds) }
                 prep = p
                 if p.isReady || p.isFailed { return }
             } catch GenitaAuthError.unauthorized {
