@@ -17,14 +17,16 @@ export function userIsLeaving(userText: string): boolean {
 // "look who finally showed up", "you finally made it", "there you are", "you're back", "welcome back", "finally decided to show up"
 // each phrase must end its clause (Codex r1: "You made it through a tough interview" is praise, not a hello)
 const END = String.raw`(?=\s*(?:[,.!?…—]|$))`;
-const GREET_AGAIN = new RegExp(String.raw`\b(?:look (?:who(?:'s| is)?|at you)\b[^,.!?]*\b(?:show(?:ed|s)? up|here|back|made it|decided to [a-z]+|finally|crawl(?:ed|ing)? back|alive)${END}|(?:you\s+|she\s+)?(?:finally|actually)\s+(?:decided\s+to\s+)?(?:show(?:ed)?\s+up|made\s+it|call(?:ed)?|here|back|join(?:ed)?|pick(?:ed)?\s+up)${END}|(?:decided|bothered)\s+to\s+(?:show\s+up|call|join)${END}|there\s+you\s+are${END}|you(?:'re|\s+are)\s+back${END}|welcome\s+back${END}|you\s+made\s+it${END}|(?:oh\s+)?hey\s+stranger|long\s+time\s+no\s+(?:see|talk)|(?:i was )?starting to think you (?:ditched|forgot|ghosted))`, "i");
+const GREET_AGAIN = new RegExp(String.raw`\b(?:look (?:who(?:'s| is)?|at you)\b[^,.!?]*\b(?:show(?:ed|s)? up|here|back|made it|decided to [a-z]+|finally|crawl(?:ed|ing)? back|alive)${END}|(?:you\s+|she\s+)?(?:finally|actually)\s+(?:decided\s+to\s+)?(?:show(?:ed)?\s+up|made\s+it|call(?:ed)?|here|back|join(?:ed)?|pick(?:ed)?\s+up)${END}|(?:decided|bothered)\s+to\s+(?:show\s+up|call|join)${END}|you(?:'re|\s+are)\s+back${END}|welcome\s+back${END}|(?:good|nice|glad|great|so good)\s+to\s+(?:finally\s+)?(?:hear|see|meet|talk\s+to|catch)\s+you(?:\s+(?:live|again|for\s+real))?${END}|(?:finally\s+)?(?:putting|put|get\s+to\s+put)\s+a\s+(?:face|voice)\s+to\s+the\s+(?:name|voice|face|banter|mischief)${END}|finally\s+(?:live|talking\s+for\s+real|hear(?:ing)?\s+you|(?:getting\s+to\s+)?(?:actually\s+)?talk(?:ing)?(?:\s+for\s+real)?)(?:\s+and\s+not\s+just\s+texting)?${END}|took\s+you\s+long\s+enough${END}|(?:'?bout|about)\s+time(?:\s+you\s+(?:showed\s+up|called|picked\s+up))?${END}|nice\s+of\s+you\s+to\s+(?:show\s+up|call|join)${END}|(?:oh\s+)?hey\s+stranger|long\s+time\s+no\s+(?:see|talk)|(?:i was )?starting to think you (?:ditched|forgot|ghosted))`, "i");
 /** "Look who actually stayed up late with me" (bake-off-100 run3): a piece that opens with "look who" is a hello tease */
 const LOOK_WHO = /^\s*(?:(?:oh|well|hey)\s+)?(?:look who\b(?!'?s talking| is talking)|look at you\s*$)/i;
+/** only back to their own hello: "You made it just in time." to "I caught the last train" is a reaction (Codex r5) */
+const GREET_IF_HELLO = new RegExp(String.raw`\b(?:you\s+made\s+it(?:\s+just\s+in\s+time)?|there\s+you\s+are)${END}`, "i");
 const HELLO_ONLY = /^\s*(?:oh\s+|well\s+)?(?:hey|hi|hello|heya|hiya|yo|sup)(?:\s+(?:you|there|girl|dude|babe|friend))?\s*$/i;
 const USER_HELLO = /^\s*(?:hey|hi|hello|heya|hiya|yo|sup|what'?s up|wassup)\b[\s\w'!.?,]{0,20}$/i;
 
 /** a sentence carrying real help ("call 911", "988") is never cut by these guards (Codex r1/r2 P1) */
-const HELP = /\b(?:911|988|999|112|000|police|emergency|ambulance|crisis|hotline|lifeline|call (?:someone|a friend|for help|them now))\b/i;
+export const HELP = /\b(?:911|988|999|112|000|police|doctor|hospital|urgent care|poison control|ambulance|crisis (?:line|text)|hotline|lifeline|emergency (?:services|room|number|line)|call (?:someone|a friend|for help|them now))\b/i;
 const TAGS = /^(\s*(?:(?:<[^>]*>|\[[^\]]*\])\s*)*)/;
 
 /**
@@ -37,17 +39,26 @@ export function noRepeatGreeting(sentence: string, userText: string): string {
   // real help is never cut (Codex r2 P1: "Call 911 now that you're back.")
   const end = /[.!?…]+["')\]]*\s*$/.exec(body)?.[0]?.trim() ?? ".";
   const pieces = body.replace(/[.!?…]+["')\]]*\s*$/, "").split(/\s*(?:,|—| - )\s*/);
-  if (!(GREET_AGAIN.test(body) || pieces.some((p) => LOOK_WHO.test(p))) || HELP.test(body)) return sentence;
+  const hello = !userText.trim() || USER_HELLO.test(userText);
+  const greetRe = (p: string) => GREET_AGAIN.test(p) || (hello && GREET_IF_HELLO.test(p));
+  if (!(pieces.some(greetRe) || pieces.some((p) => LOOK_WHO.test(p))) || HELP.test(body)) return sentence;
   // a piece goes only when the hello is what it says: at most two words left once the phrase is out
-  const isGreet = (p: string) => LOOK_WHO.test(p) || (GREET_AGAIN.test(p) && p.replace(GREET_AGAIN, " ").trim().split(/\s+/).filter(Boolean).length <= 2);
+  const strip = (p: string) => p.replace(GREET_AGAIN, " ").replace(hello ? GREET_IF_HELLO : /$^/, " ");
+  const isGreet = (p: string) => LOOK_WHO.test(p) || (greetRe(p) && strip(p).trim().split(/\s+/).filter(Boolean).length <= 2);
   const kept = pieces.filter((p) => p.trim() && !isGreet(p));
   // a hello left alone is said only back to a hello ("hey" → "Hey you."); to anything else it's a second greeting
   // a lone word left (the name: "…, Summer.") is not a reply either
   const real = kept.filter((p) => !HELLO_ONLY.test(p) && p.trim().split(/\s+/).length > 1);
-  const hello = kept.filter((p) => HELLO_ONLY.test(p));
-  if (!real.length) return USER_HELLO.test(userText) ? `${lead}${cap(hello.join(", ") || "hey")}${end.replace(/\?/, ".")}` : "";
+  const hellos = kept.filter((p) => HELLO_ONLY.test(p));
+  if (!real.length) return USER_HELLO.test(userText) ? `${lead}${cap(hellos.join(", ") || "hey")}${end.replace(/\?/, ".")}` : "";
   // the hello itself goes too: the opener already said it
   return `${lead}${cap(real.join(", "))}${end}`;
+}
+
+/** the "at last you showed up" tone, even on the call's first reply (11/4 r6: "Hey Summer, look who finally showed up.") */
+const FINALLY_TONE = /\b(?:look who\b|(?:finally|actually)\s+(?:decided\s+to\s+)?show(?:ed)?\s+up|decided to show up|bout time|about time you|took you long enough|nice of you to show up)/i;
+export function noFinallyTone(sentence: string, userText: string): string {
+  return FINALLY_TONE.test(sentence) ? noRepeatGreeting(sentence, userText) : sentence;
 }
 
 const SEND_OFF = /\b(?:bye|goodbye|good ?night|night night|ttyl|talk (?:to you )?(?:later|soon|tomorrow)|catch you (?:later|soon)|see (?:you|ya) (?:later|soon|tomorrow)|(?:i want|give me|tell me) the full story after|go,? have fun)\b/i;
@@ -72,4 +83,29 @@ export function noUnpromptedGoodbye(sentence: string, userText: string): string 
 
 function cap(s: string): string {
   return s.replace(/^(\p{Ll})/u, (c) => c.toUpperCase());
+}
+
+/**
+ * prompt-100 r2 (11/4 22:00): a call's first line that claims what they're doing today ("Hey Summer, hope that spicy
+ * ramen with egg is happening tonight", "Tell me you're doing extra spicy", "figured you'd be due for ramen by now") is
+ * an invented plan, even after the opener prompt said not to (bake-off-100, 2 of 4 big-import first calls). The first
+ * such sentence becomes a plain warm hello; a later one goes. "finally" leaves a first line ("good to finally catch you").
+ */
+// a claimed activity or plan, never a wish or a safety check ("Hope you're having a good day", "Tell me you're safe": Codex r3)
+const INVENTED = /\b(?:tell me (?:you'?re|there'?s|you are) (?:making|cooking|doing|eating|having|on|about to|[a-z]+ing (?:that|the|some))|hope (?:that|the|your)\b[^.!?]{0,60}\b(?:is happening|are happening|survived|is on the stove|is cooking)|hope you'?re (?:making|cooking|eating|having (?:that|the|some))|(?:figured|bet|guessing|betting) you'?(?:re|d|ll) (?:be )?(?:making|cooking|eating|having|due|craving|on|in)\b|(?:is|are) happening (?:tonight|today)|you(?:'re| are) (?:probably|totally|definitely) (?:making|cooking|eating|doing|having)|(?:wondered|was wondering) when (?:you'?d|you would|my [a-z ]{0,30}would) (?:show|call|pick|get|finally)|due for (?:some|a|an) [a-z ]{0,30}(?:ramen|noodles|food|snack|dinner|by now))/i;
+
+/** opts.greeted: the session's "Hey, Summer!" opener already went out → the replacement is the question alone (Codex r3 P2) */
+export function noInventedOpener(sentence: string, opts: { first: boolean; name?: string; greeted?: boolean }): string {
+  const lead = TAGS.exec(sentence)?.[1] ?? "";
+  let body = sentence.slice(lead.length);
+  if (HELP.test(body)) return sentence;
+  // only the "at last you're here" finally ("good to finally catch you", "finally caught you"), never "did you finally try it?"
+  body = body.replace(/\b((?:good|nice|glad) to )finally (?=(?:catch|see|talk|hear|meet)\b)/i, "$1").replace(/\bfinally (?=(?:caught|catch) you\b)/i, "");
+  // prod 22:04 "Hi, summer! Or did one win?": a first line that leans on a thread it never names
+  const fragment = opts.first && /^(?:or|and|but)\b|^(?:did|has|have|was|is) (?:one|it|that|they) (?:win|won|work|happen|go|end|pan)\b/i.test(body.trim());
+  if (!INVENTED.test(body) && !fragment) return `${lead}${cap(body.trim())}`;
+  if (!opts.first) return "";
+  if (opts.greeted) return `${lead}What are you up to?`;
+  const first = opts.name?.trim().split(/\s+/)[0];
+  return `${lead}Hey${first ? ` ${first}` : ""}! What are you up to?`;
 }

@@ -1428,7 +1428,8 @@ test("CV-01 (eval v2 11/4): with no past in the call, 'again' about them is cut 
   await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", user: { name: "Summer" } }));
   await session.onClientText(JSON.stringify({ type: "text", text: "hi" }));
   const a = await client.waitFor((m) => m.type === "reply" && m.final === true);
-  assert.equal(a.text, "Look who crawled back. Bet you're craving late-night ramen talk.");
+  // prompt-100 r6: "Look who crawled back" is the "at last you showed up" tone and becomes a plain hey
+  assert.equal(a.text, "Hey. Bet you're craving late-night ramen talk.");
   await session.onClientText(JSON.stringify({ type: "text", text: "do you remember what I told you about my ex?" }));
   const b = await client.waitFor((m) => m.type === "reply" && m.final === true && m.text !== a.text);
   assert.equal(b.text, "Spill it, I'm listening.");
@@ -1484,6 +1485,49 @@ test("팔월이 P3 (first greeting): a sentence after '!' or '?' starts upper ca
     assert.equal(greet.text, "Hey hey, Summer! Did you finally try the kimchi pasta? Or are we still waiting.", `serverVoice=${serverVoice}`);
     session.close();
   }
+});
+
+test("prompt-100 r2 (session): a greeting that claims their plan for tonight is said as a plain hello", { skip: !v1 }, async () => {
+  const { client, session } = setup(["<warm> Hey Summer, hope that spicy ramen with egg is happening tonight."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 0, user: { name: "Summer", profile: "Likes: late-night ramen." } }));
+  const greet = await client.waitFor((m) => m.type === "reply");
+  assert.equal(greet.text, "Hey Summer! What are you up to?");
+  session.close();
+});
+
+test("prompt-100 r3 (Codex P2): with the name opener out, an invented first line becomes the question alone", { skip: !v1 }, async () => {
+  const client = new Client();
+  const session = new Session("p100-greeted", client, {
+    config, openAsr: () => { throw new Error("no asr"); }, greetOpener: true,
+    async *spark(): AsyncGenerator<SparkStreamEvent> { yield { type: "text", delta: "<happy> Hope that spicy ramen is happening tonight." }; yield { type: "done", responseId: "r", text: "", status: "completed" }; },
+    async *tts() {},
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", user: { name: "Summer" }, greetAfterMs: 0 }));
+  const reply = await client.waitFor((m) => m.type === "reply" && m.final === true, 5000);
+  assert.match(String(reply.text), /^(?:Hey|Hi|Oh hey|Hey hey), Summer! What are you up to\?$/);
+  session.close();
+});
+
+test("prompt-100 r4 (session, prod 22:04): a face question answered only with a policy line + sleepwear is retried as a friend", { skip: !v1 }, async () => {
+  const { FACE_RETRY_LINE } = await import("../src/convo/faceTalk.ts");
+  const calls: SparkRequest[] = [];
+  const client = new Client();
+  const session = new Session("p100-face", client, {
+    config, openAsr: () => { throw new Error("no asr"); },
+    async *spark(req): AsyncGenerator<SparkStreamEvent> {
+      calls.push(req);
+      const retry = (req.instructions ?? "").includes(FACE_RETRY_LINE);
+      yield { type: "text", delta: retry ? "<happy> Sisters, I love that, you two clearly get along." : "<neutral> Can't call likeness from faces here, summer. That lacy pajama set is doing all the talking though." };
+      yield { type: "done", responseId: "r", text: "", status: "completed" };
+    },
+    async *tts() {},
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", user: { name: "summer" } }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "she's my sister. Do we look alike?" }));
+  const reply = await client.waitFor((m) => m.type === "reply" && m.final === true, 5000);
+  assert.equal(reply.text, "Sisters, I love that, you two clearly get along.");
+  assert.ok(calls.at(-1)?.instructions?.includes(FACE_RETRY_LINE));
+  session.close();
 });
 
 // ───────────── #345 what landed, read from their face ─────────────

@@ -72,7 +72,8 @@ import type { TasteLine } from "../personalize/reasons.ts";
 import { backchannelOn, convoV1, englishOnly, eotHoldOn, initiativeOn } from "../convo/flags.ts";
 import { Backchannel } from "../convo/backchannel.ts";
 import { EOT, eotTuning, joinSegments, judgeEndOfTurn, type EotKind, type EotVerdict } from "../convo/endOfTurn.ts";
-import { noRepeatGreeting, noUnpromptedGoodbye } from "../convo/greetOnce.ts";
+import { noFinallyTone, noInventedOpener, noRepeatGreeting, noUnpromptedGoodbye } from "../convo/greetOnce.ts";
+import { FACE_RETRY_LINE, isFaceTurn, noPolicyTalk } from "../convo/faceTalk.ts";
 import { addressUser, thirdPersonCouldBeUser, fallbackLine, guardSentence, neverSpoken, NO_FRAME_RETRY_LINE, NO_ANSWER_LINE, LOST_LINE, UPSTREAM_RETRY_MS, realCrisisSignal, mayBeSelfHarm, nameAsYou, type GuardClass } from "../convo/guard.ts";
 import { isInterjectionOnly } from "../text/toolNarration.ts";
 import { daySeed, openerBlock, openerKind, profileHooks } from "../convo/opener.ts";
@@ -80,7 +81,7 @@ import { mentionsProfile, moodFrom, moodLine, turnHints, type Mood } from "../co
 import { carriedMood, moodScaledIntensity, saveCallMood } from "../convo/callMood.ts";
 import { holdsSteady, personaBaseline, restingFace } from "../convo/moodState.ts";
 import { forgetOpenerTopics, pickOpenerTopic, storedTopics } from "../convo/openerTopics.ts";
-import { InitiativeGovernor, initiativeBlock, initiativeInput, type InitiativeSource } from "../convo/initiative.ts";
+import { InitiativeGovernor, freshThreads, initiativeBlock, initiativeInput, type InitiativeSource } from "../convo/initiative.ts";
 import { cueRhythm } from "../convo/rhythm.ts";
 import type { PerceptionSource } from "../convo/types.ts";
 import { clipTranscript, transcriptLogOn } from "./transcriptLog.ts";
@@ -488,7 +489,8 @@ export function greetOpenerWaitMs(env: NodeJS.ProcessEnv = process.env): number 
 export const GREET_OPENERS = ["Hey, {name}!", "Hi, {name}!", "Oh hey, {name}!", "Hey hey, {name}!"];
 export const GREET_OPENERS_NO_NAME = ["Hey!", "Hi!", "Oh hey!", "Hey there!"];
 export function pickGreetOpener(name: string | undefined, rand: () => number = Math.random): string {
-  const first = (name ?? "").trim().split(/\s+/)[0]?.slice(0, 40) ?? "";
+  // prod 22:04 "Hi, summer!": a lower-case profile name is said capitalised
+  const first = ((name ?? "").trim().split(/\s+/)[0]?.slice(0, 40) ?? "").replace(/^\p{Ll}/u, (c) => c.toUpperCase());
   const pool = first ? GREET_OPENERS : GREET_OPENERS_NO_NAME;
   return pool[Math.floor(rand() * pool.length) % pool.length].replace("{name}", first);
 }
@@ -2180,7 +2182,18 @@ export class Session {
       if (!again.fire) return;
       gov.markFired(this.now());
       const input = initiativeInput(again.source);
-      this.cueTurn = { source: again.source, block: cueRhythm(initiativeBlock(again.source, threads), again.source, this.recentReplies), input };
+      // prompt-100 r4: never the same topic or opening word twice in a call; the camera now beats an old thread
+      // what was asked to be forgotten in this call is not sent back as "already said" (Codex r5 P1)
+      const kept = forgetInCall(this.history, this.removedLines);
+      const said = kept.filter((h) => h.role === "assistant").map((h) => h.text).slice(-6);
+      // a stored thread about what was just forgotten in this call is never offered either (Codex r6 P1)
+      // the forget request and its "got it" are not content; the forgotten lines and the stored removed lines are, by their
+      // own key words too ("My ex is Jake." → never "Her ex is Jake.": Codex r7 P1)
+      const gone = this.history.filter((h) => !kept.includes(h) && !/\b(?:forget|forgot|drop(?:ped)?|let it go|never mind)\b/i.test(h.text)).map((h) => h.text);
+      const keys = avoidKeys([...this.removedLines, ...gone.map((text) => ({ text, forget: true }))]);
+      const offer = freshThreads(threads, gone, true).filter((t) => !mentionsAvoided(t, keys));
+      const camera = !!(this.frames && this.now() - this.frames.at <= FRAMES_TTL_MS);
+      this.cueTurn = { source: again.source, block: cueRhythm(initiativeBlock(again.source, offer, { said, camera }), again.source, this.recentReplies), input };
       this.log("convo.initiative", { source: again.source, threads: threads.length, n: gov.count });
       this.dispatch({ type: "text", text: input });
     } finally {
@@ -2724,7 +2737,7 @@ export class Session {
     const hasAnswer = () => narration.hasAnswer(said().map(({ display }) => display));
     let onlyOpener: string | null = null;
     // v1 sentence guard (src/convo/guard.ts): the first dropped sentence, spoken only if nothing else is
-    const guarded: { first: { raw: string; cls: GuardClass } | null; narration: boolean; tool: boolean; unseen?: boolean } = { first: null, narration: false, tool: false };
+    const guarded: { first: { raw: string; cls: GuardClass } | null; narration: boolean; tool: boolean; unseen?: boolean; face?: boolean } = { first: null, narration: false, tool: false };
     // #344: this reply's mood (the user's line already in history for a user turn)
     const replyMood: Mood | null = this.v1 && !interpret && !self ? this.callMood() : null;
     let laughs = 0;
@@ -2774,11 +2787,29 @@ export class Session {
         // isn't them leaving never gets a send-off ("Go, have fun!" to "can I throw in the leftover rice?"), convo/greetOnce.ts
         if (this.v1 && tts && !interpret && !self && !synthetic) {
           const greeted = this.history.some((h) => h.role === "assistant") || sentences.some((x) => x.opener);
-          const once = noUnpromptedGoodbye(greeted ? noRepeatGreeting(tts, guardCtx.userText) : tts, guardCtx.userText);
+          const once = noUnpromptedGoodbye(greeted ? noRepeatGreeting(tts, guardCtx.userText) : noFinallyTone(tts, guardCtx.userText), guardCtx.userText);
           if (once !== tts) {
             this.log("convo.greet_once", { utteranceId, dropped: !once });
             if (!once) { cutBefore = true; continue; }
             tts = once;
+          }
+        }
+        // prompt-100 r4: no "can't do faces" policy line, no pivot to someone's sleepwear or body (convo/faceTalk.ts)
+        if (this.v1 && tts && !keepOpener && !interpret && !self && !synthetic) {
+          const friend = noPolicyTalk(tts, guardCtx.userText);
+          if (friend !== tts) {
+            this.log("convo.face_talk", { utteranceId, dropped: !friend });
+            if (!friend) { if (isFaceTurn(guardCtx.userText)) guarded.face = true; cutBefore = true; continue; }
+            tts = friend;
+          }
+        }
+        // prompt-100 r2: the greeting's own first line never claims a plan for today ("hope that ramen is happening tonight")
+        if (this.v1 && tts && greeting && !keepOpener && !interpret && !self) {
+          const plain = noInventedOpener(tts, { first: !sentences.some((x) => !x.beat && !x.opener && !x.drop), name: this.user?.name, greeted: sentences.some((x) => x.opener && !x.drop) });
+          if (plain !== tts) {
+            this.log("convo.invented_opener", { utteranceId, dropped: !plain });
+            if (!plain) { cutBefore = true; continue; }
+            tts = plain;
           }
         }
         // b10 gate 11/4: nothing seen this turn → "That looks good" is said as "That sounds good" (convo/unseenSight.ts)
@@ -3024,7 +3055,8 @@ export class Session {
           try {
             // prompt-100 11/4 (Mac stage, frame not there yet): the first try only described what it "saw" → the retry is
             // told no frame came and answers from their words, never an empty reply or "lost you"
-            const retryReq = attempt === 1 && guarded.unseen ? { ...req, instructions: `${req.instructions ?? ""}\n${NO_FRAME_RETRY_LINE}\n` } : req;
+            const retryLine = attempt === 1 ? [guarded.unseen ? NO_FRAME_RETRY_LINE : "", guarded.face ? FACE_RETRY_LINE : ""].filter(Boolean).join("\n") : "";
+            const retryReq = retryLine ? { ...req, instructions: `${req.instructions ?? ""}\n${retryLine}\n` } : req;
             const raw0 = attempt === 0 ? (pre ?? this.sparkSource(req, signal, greeting?.item, !interpret && !cue, undefined, undefined, memoryRetry)) : this.sparkSource(retryReq, signal, greeting?.item, !interpret && !cue, undefined, 1, memoryRetry);
             const raw = oneSentence ? firstSentenceOnly(raw0) : raw0;
             // Demo S4 (QA P2): the suggest turn must name the Mac; a reply that doesn't is swapped for the fixed line
