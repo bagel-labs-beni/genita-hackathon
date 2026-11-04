@@ -37,6 +37,11 @@ export const OPENS_SHEET = [
   "Where is Seoul?",
   "Look up how much it costs to visit the Louvre.",
   "How long does it take to fly from Seoul to Tokyo?",
+  // Codex r2
+  "Google ramen restaurants in Seoul",
+  "Search Nintendo CEO",
+  "How come the sky is blue?",
+  "오늘 서울 날씨 알려줄 수 있어",
   "What's the population of the US?",
   "서울에서 제일 맛있는 라멘집 어디야?",
   "오늘 뉴스 좀 찾아봐",
@@ -72,6 +77,7 @@ export const STAYS_SPOKEN = [
   "What is next?",
   "How long does it take?",
   "Can you look it up?",
+  "How long does it take to get there?",
   // demo runbook (QA 11/4): other paths own these
   "I have no idea what to wear today. It's for the Halloween party tonight. Jin, can you help me pick an outfit?",
   "Find me some.",
@@ -113,6 +119,16 @@ test("general: the real Spark call asks for every page each search returned (web
   assert.deepEqual(body.include, ["web_search_call.action.sources"]);
   await metaVendors("fake").spark({ input: "q" });
   assert.equal(body.include, undefined, "no tools, no include");
+});
+
+test("general pipeline: a result keeps its own page (?v=alpha is not ?v=beta); tracking parameters don't matter", async () => {
+  const { pickResults } = await import("../src/finds/general.ts");
+  const traced = ["https://www.youtube.com/watch?v=beta", "https://www.youtube.com/watch?v=alpha", "https://news.example.org/a"];
+  const r = pickResults({ results: [
+    { title: "Alpha", why: "a", url: "https://youtube.com/watch?v=alpha&utm_source=x" },
+    { title: "News", why: "n", url: "https://news.example.org/a/?utm_campaign=y#top" },
+  ] }, traced);
+  assert.deepEqual(r.map((x) => x.url), ["https://www.youtube.com/watch?v=alpha", "https://news.example.org/a"]);
 });
 
 test("general: GENITA_WEB_SEARCH=0 (the companion's web search switch) turns it off", () => {

@@ -32,7 +32,7 @@ const PREAMBLE =
   /^(?:(?:can|could|would|will) you (?:please )?(?:tell me|let me know|check|find out|look up|search(?: for)?|google)?|do you (?:happen to )?know|(?:please )?tell me|i (?:wonder|want to know|wanna know|'d like to know)|any idea|please|quick question[,:]?)\s*/;
 /** an explicit ask to search */
 const SEARCH_VERB =
-  /\b(?:look (?:up|it up|that up)|search (?:for|the web|online|up)|google (?:it|that|for|what|who|where|when|how|which)|find out|check online|check the web)\b|^(?:search|google)\s+(?:for|up|the|what|who|where|when|how|which|it|that)\b|^look up\b|\b(?:can|could|would|will) you (?:please )?(?:search|google)\b|\bplease (?:search|google)\b/;
+  /\b(?:look (?:up|it up|that up)|search (?:for|the web|online|up)|google (?:it|that|for|what|who|where|when|how|which)|find out|check online|check the web)\b|^(?:search|google)\s+(?!(?:is|was|are|has|had|makes|made|knows|'s|results?|engines?|bar|history|it|that)\b)\S|^look up\b|\b(?:can|could|would|will) you (?:please )?(?:search|google)\b|\bplease (?:search|google)\b/;
 /** "don't search", "no need to look it up": a no, not an ask (Codex r1) */
 const NO_SEARCH = /\b(?:don'?t|do not|no need to|never|stop|without)\s+(?:\w+\s+)?(?:search\w*|googl\w*|look\w* (?:\w+ )?up)\b|검색\s*(?:하지\s*마|말고)/;
 const SEARCH_KO = /검색|찾아\s*봐|찾아\s*줄래|찾아\s*줘|알아\s*봐|알아\s*줘/;
@@ -58,7 +58,7 @@ const BENIGN_ME = /\b(?:for|recommend|suggest|show|tell|give|get|find|send|near)
 const HOWTO = /^(?:how (?:do|can|should|would) (?:i|we)\b|how to\b|where (?:can|do|should) (?:i|we)\b)|\bhow to\b/;
 const SELF_STATE = /\bhow (?:do|did) (?:i|we) (?:look|seem|sound|do)\b|\bhow am i\b/;
 const FEELING = /\b(?:feel|feeling|felt|sad|lonely|bored|tired|stressed|anxious|upset|angry|happy|love|miss|hate|worried|scared)\b/;
-const SMALL_TALK = /^(?:how about|what about|what if|how come|thanks|thank you|ok|okay|cool|nice|great|wow|lol|haha|yes|no|yeah|nope|sure|bye|good (?:morning|night)|what'?s up|what'?s new|what'?s going on|how'?s it going|what are you (?:up to|doing))\b/;
+const SMALL_TALK = /^(?:how about|what about|what if|thanks|thank you|ok|okay|cool|nice|great|wow|lol|haha|yes|no|yeah|nope|sure|bye|good (?:morning|night)|what'?s up|what'?s new|what'?s going on|how'?s it going|what are you (?:up to|doing))\b/;
 const PERSONAL_KO = /(?:^|\s)(?:너|넌|너는|니가|네가|너도|당신|나|난|나는|내가|내|제가|저는|저도|우리)(?:\s|$)|기분|사랑|보고\s*싶|심심|외로|우울|힘들|피곤|지내|안녕|고마워|괜찮아/;
 
 /** about something already in the conversation or on screen ("how long does it take?", "how old is he?"): the companion answers */
@@ -77,7 +77,7 @@ const DEICTIC = [
   /^(?:what|who)(?:'s| is| are| was)\s+(?:it|they|he|she)\b/,
 ];
 /** Korean asks: a question ending, "추천", "알려줘" ("서울 날씨 좋다" is a remark, Codex r1) */
-const KO_ASK = /[?？]\s*$|(?:야|니|나|까|지|요|래|줘|봐|어때)\s*[?？.!]*$|추천|알려\s*줘/;
+const KO_ASK = /[?？]\s*$|(?:야|니|나|까|지|요|래|줘|봐|어때)\s*[?？.!]*$|추천|알려|수\s*있(?:어|니|나|을까)|해\s*줄래/;
 const DEICTIC_KO = /이거|이게|이건|저거|저게|저건|그거|그게|그건|이것|저것|이\s*중/;
 
 function words(t: string): number {
@@ -109,7 +109,8 @@ export function isGeneralAsk(text: string, env: NodeJS.ProcessEnv = process.env)
   if (SMALL_TALK.test(t) && !searchVerb) return false;
   if (DEICTIC.some((re) => re.test(t)) || DEICTIC_KO.test(t)) return false;
   // a pronoun points back into the conversation, unless it's a dummy "it" or a spelled-out search ("look up how much it costs…")
-  const pronounFree = DUMMY_IT.test(t) ? t.replace(/\bit\b/, "") : t;
+  // ("how long does it take to get there?" still points back: "there" is in the conversation, Codex r2)
+  const pronounFree = DUMMY_IT.test(t) && !/\b(?:there|here)\s*[?.!]*$/.test(t) ? t.replace(/\bit\b/, "") : t;
   if (PRONOUN.test(pronounFree) && !(searchVerb && !LOOK_IT_UP.test(full) && words(t) >= 5)) return false;
   if (FEELING.test(t) && !searchVerb) return false;
   if (YOU.test(t) && !searchVerb) return false;
@@ -150,12 +151,23 @@ export function tracedUrls(output: OutputItem[]): string[] {
   return out.filter((u) => /^https?:\/\//i.test(u));
 }
 
-/** the same page: scheme, www., query, hash and a trailing slash don't matter */
-const norm = (u: string) => u.replace(/#.*$/, "").replace(/\?.*$/, "").replace(/\/+$/, "").replace(/^https?:\/\/(?:www\.)?/i, "").toLowerCase();
+const TRACKING = /^(?:utm_\w+|ref|ref_src|fbclid|gclid|mc_cid|mc_eid|si|igshid|source)$/i;
+/** the same page: scheme, www., hash, a trailing slash and tracking parameters don't matter; ?v=alpha vs ?v=beta does (Codex r2) */
+export function samePageKey(u: string): string {
+  try {
+    const url = new URL(u);
+    const params = [...url.searchParams.entries()].filter(([k]) => !TRACKING.test(k)).sort(([a], [b]) => a.localeCompare(b));
+    const query = params.length ? `?${new URLSearchParams(params).toString()}` : "";
+    return `${url.hostname.replace(/^www\./i, "").toLowerCase()}${url.pathname.replace(/\/+$/, "")}${query}`;
+  } catch {
+    return u.toLowerCase();
+  }
+}
 
 /** The model's results that are pages of the trace (a summary never goes on another page of the same site); one per site. */
 export function pickResults(j: GeneralJson | null, traced: string[]): Result[] {
-  const byUrl = new Map(traced.map((u) => [norm(u), u]));
+  const byUrl = new Map<string, string>();
+  for (const u of traced) if (!byUrl.has(samePageKey(u))) byUrl.set(samePageKey(u), u);
   const seen = new Set<string>();
   const out: Result[] = [];
   const add = (title: string, why: string, url: string) => {
@@ -167,7 +179,7 @@ export function pickResults(j: GeneralJson | null, traced: string[]): Result[] {
   for (const r of Array.isArray(j?.results) ? j.results : []) {
     const url = str(r?.url, 600);
     if (!url) continue;
-    const page = byUrl.get(norm(url));
+    const page = byUrl.get(samePageKey(url));
     if (page) add(str(r?.title, 100), str(r?.why, 160), page);
   }
   // nothing usable from the model: the search's own pages
