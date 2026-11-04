@@ -48,6 +48,8 @@ async function call(userId: string | undefined, users: string | undefined) {
         yield { type: "text", delta: "<warm> Purple tulips sound lovely." };
         yield { type: "done", responseId: "r", text: "", status: "completed" };
       },
+      // device voice (serverTts false): the server voice is never asked
+      async *tts(): AsyncGenerator<never> { throw new Error("no server voice in device mode"); },
     });
     await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
     await session.onClientText(JSON.stringify({ type: "text", text: "my secret garden has purple tulips" }));
