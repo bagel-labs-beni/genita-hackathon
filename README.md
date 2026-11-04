@@ -31,7 +31,7 @@
 | Criterion | Where to look |
 | --- | --- |
 | **Eligibility** | Meta Global AI Developer Hackathon · Track: **Startups** · Topic: **Build for Your World**<br>Built from scratch since **October 31, 2026** by Summer and Dyno · public repo, Apache-2.0 · [Built during the hackathon ↓](#built-during-the-hackathon) |
-| **Impact** | People already treat an AI assistant as a daily friend, but it lives in a text box, forgets them in every new app and can't see their world. Genita gives that relationship a face, a voice, eyes and continuity across iPhone and Mac, for anyone who can talk and point a camera, no prompt skills needed. [The pitch ↓](#the-pitch) |
+| **Impact** | People already treat an AI assistant as a daily friend, but it lives in a text box, forgets them in every new app and can't see their world. Genita gives that relationship a face, a voice, eyes and continuity across iPhone and Mac, for anyone who can talk and point a camera, no prompt skills needed. Grounded in running Beni, our separate companion app (33,000 users, 1.3 million messages). [The pitch ↓](#the-pitch) |
 | **Use of Meta AI** | **Five Meta models in one call:** Muse Spark 1.3 (reply, vision, web search, JSON cards, taste, memory, translation), Muse Voice Transcribe (streaming, end of speech, barge-in, a second session for shared-video audio), Muse Image 1.0 (a talking face from one photo, card illustrations), SAM 3.1 (outlines from the companion's own words, face-edit quality gate), SeamlessM4T v2 (self-hosted voice and lip timing). [How Genita uses Meta AI ↓](#how-genita-uses-meta-ai) |
 | **Technical depth** | Speculative replies from partial transcripts, sentence-by-sentence voice, barge-in that ignores "yeah" and echo, a server-owned conversation that moves between devices without two devices ever talking at once, verified-link cards with a three-step picture fallback. Median **2.7 s** from your last word to the companion's first sound on production logs. Server suite **2,631 tests, 0 failing** at the deployed commit. [What we built on top ↓](#what-we-built-on-top-of-the-models) |
 | **Demo** | [3-minute demo video](https://youtu.be/O2b4_xFajqE) · [iPhone via TestFlight](https://testflight.apple.com/join/Ybqh482p) · [Mac DMG](https://bagel-labs-beni.github.io/genita-legal/mac/Genita-latest.dmg) · Judge access code `GENITA-3ANZMN` · [Try it ↓](#try-it-step-by-step) |
@@ -42,6 +42,8 @@
 ## The pitch
 
 For a lot of people, ChatGPT is already a friend. They talk to it every day about what to cook, what to wear and what they're watching. But it lives in a text box, forgets who you are the moment you open a new app, and can't see anything you see.
+
+**Why we built Genita.** Our team also runs Beni, a separate AI companion app with 33,000 users and 1.3 million messages. Watching people talk to an AI every day taught us what a text chat can't give them. They wanted a companion that already knew them instead of asking the same questions again, one that could see what they were looking at instead of making them describe it, and one that stayed with them when they moved from their phone to their laptop. Genita is the product we started from scratch to answer exactly that: a face and a voice you chose, eyes through your camera and your screen, and one conversation that follows you from iPhone to Mac.
 
 **We are building the most emotive, adaptive companion for daily life.** A face and a voice you chose. A friend who reacts to you, adapts to who you are, and is there on whatever screen you're using.
 
