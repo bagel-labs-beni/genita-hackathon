@@ -24,6 +24,9 @@ export const OPENS_SHEET = [
   // P0 11/4 (device test): external, look-up-able only
   "Recommend a good dinner place near Gangnam",
   "Best KBBQ in Suwon?",
+  "who is the ceo of nintendo?",
+  "닌텐도 CEO 누구야?",
+  "Can you recommend a good dinner place near Gangnam for me?",
   // Codex r3
   "Jin, search Nintendo CEO",
   "What's the population of the US?",
@@ -76,6 +79,7 @@ export const STAYS_SPOKEN = [
   "What's the best thing to do when you're bored?",
   "How come the sky is blue?",
   "What makes a good friend?",
+  "Does black or white look good in daylight?",
   // demo runbook (QA 11/4): other paths own these
   "I have no idea what to wear today. It's for the Halloween party tonight. Jin, can you help me pick an outfit?",
   "Find me some.",
