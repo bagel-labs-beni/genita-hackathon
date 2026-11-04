@@ -157,6 +157,8 @@ struct CallCueView: View {
             .padding(.vertical, CallPillMetrics.vertical)
             .frame(minHeight: CallPillMetrics.height)
             .background(CallInk.pill, in: RoundedRectangle(cornerRadius: CallPillMetrics.radius))
+            // 춘식이 11/4: a hairline so the pill keeps its shape on the dark wait stage (barely there over a face)
+            .overlay(RoundedRectangle(cornerRadius: CallPillMetrics.radius).strokeBorder(.white.opacity(0.12), lineWidth: 0.5).allowsHitTesting(false))
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.updatesFrequently)
             .accessibilityIdentifier("callCue")
