@@ -41,6 +41,10 @@ struct CallHUDGrid: Equatable {
         (sheetUp ? sheetBaseline : baseline) - Self.button / 2 - CGFloat(b.rawValue) * (Self.button + Self.gap)
     }
 
+    /// Live captions r01: the caption block's bottom edge, 16 pt above the camera button's top (626 on 390 × 844).
+    /// The caller adds the Finds sheet's rail shift, like the rail.
+    func captionBottom(sheetUp: Bool = false) -> CGFloat { railY(.camera, sheetUp: sheetUp) - Self.button / 2 - 16 }
+
     // MARK: status pill
 
     /// Where the status pill is right now.

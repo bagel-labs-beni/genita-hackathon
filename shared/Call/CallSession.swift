@@ -149,6 +149,21 @@ enum CallStop: Equatable {
     /// F10-U-SHEET: result cards of this call and the sheet's state.
     let finds = FindsModel()
 
+    /// Live captions r01: the user's words and the reply's, from server events; drawn by CallCaptionLayer every tick.
+    @ObservationIgnored private var captions = LiveCaptions()
+    static func captionClock() -> Double { ProcessInfo.processInfo.systemUptime * 1000 }
+    /// One display tick of the captions: the local mic level (nil while the mic is off) and the reply's playhead.
+    func captionFrame(now: Double = CallController.captionClock()) -> LiveCaptions.Frame {
+        if tts == .device { captions.markDevice() }
+        var playhead: Double?
+        if let id = captions.reply?.utteranceId, !routed.contains(id), !cancelled.contains(id) { playhead = audio.playbackPositionMs(utteranceId: id) }
+        return captions.frame(now: now, level: micOn ? inputLevel : nil, playheadMs: playhead)
+    }
+    #if DEBUG
+    /// Review renders only (Mac CI capture): a finished turn on screen.
+    func reviewCaptions(_ c: LiveCaptions) { captions = c }
+    #endif
+
     @ObservationIgnored let camera = CallCamera()
     /// PERC-2: face crops for the server's perception, only while `ready.perception` is true.
     @ObservationIgnored private let perception = PerceptionSampler()
@@ -783,6 +798,7 @@ enum CallStop: Equatable {
     }
 
     func handle(_ event: ServerEvent) {
+        captions.apply(event, now: Self.captionClock())   // live captions r01 (LiveCaptions.swift): reads events, changes nothing here
         switch event {
         case let .ready(r):
             // The new server session numbers utterances and audio sequences from the start again.
