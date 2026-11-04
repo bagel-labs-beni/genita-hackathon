@@ -811,6 +811,18 @@ def main():
             sb = cv2.dilate(sbin, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (g, g))).astype(np.float32)
             sb = cv2.GaussianBlur(sb, (0, 0), max(0.8, 1.0 * px))
             mx1, my1, mx2, my2 = int(mouth[0] * W), int(mouth[1] * H), int(mouth[2] * W) + 1, int(mouth[3] * H) + 1
+            # 11/4 CA-06 (dog: "the jaw barely moves, the chin fur stays like a patch"): an animal's SAM face outline often
+            # ends right under the mouth, which cut the lower jaw and chin fur out of the blend (the app's chin warp had
+            # nothing to move). Animals keep a soft band from the mouth down to 2.5 mouth heights under it.
+            chin_band = kind in ('animal', 'cat')
+            if chin_band:
+                mh_, mw_ = max(1.0, (mouth[3] - mouth[1]) * H), max(1.0, (mouth[2] - mouth[0]) * W)
+                by1, by2 = mouth[1] * H, mouth[3] * H + 2.5 * mh_
+                band = np.zeros((H, W), np.float32)
+                cv2.ellipse(band, (int((mouth[0] + mouth[2]) / 2 * W), int((by1 + by2) / 2)), (int(0.65 * mw_), int((by2 - by1) / 2 + 2)), 0, 0, 360, 1.0, -1)
+                band = cv2.GaussianBlur(band, (0, 0), max(1.0, 0.08 * mw_))
+                band[band >= 0.5] = 1.0
+                sb = np.maximum(sb, band)
             cover = float(sb[my1:my2, mx1:mx2].mean()) if my2 > my1 and mx2 > mx1 else 0.0
             if cover >= 0.9:   # codex P2: the mouth itself must be inside, or the old mask stays (a SAM miss never freezes the mouth)
                 Mfull = Mfull * sb
@@ -912,7 +924,8 @@ def main():
             **({'rules': [r[0] for r in rules]} if rules else {}),
             # 11/4: mask version 2 = a face silhouette was offered (scripts/reflow-masks.ts re-runs faces below 2);
             # `silhouette` says whether it was applied (a silhouette that misses the mouth is ignored)
-            **({'maskVersion': 2, 'silhouette': 'silhouette' in diag and 'kept' in diag['silhouette']} if a.silhouette else {})}
+            # 11/4: version 3 = animals with the chin band under the mouth (CA-06 dog jaw)
+            **({'maskVersion': 3 if kind in ('animal', 'cat') else 2, 'silhouette': 'silhouette' in diag and 'kept' in diag['silhouette']} if a.silhouette else {})}
     if a.blink and a.eyes and kind == 'character2d':
         eyes = [box(e) for e in a.eyes.split(';') if e]
         BKr = cv2.imread(a.blink, cv2.IMREAD_COLOR)

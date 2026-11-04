@@ -11,7 +11,7 @@ import type { PrepDeps } from "../src/prep/pipeline.ts";
 import type { FaceFlow, FaceState } from "../src/prep/face.ts";
 import { encodeOneBit } from "../src/meta/samMask.ts";
 import type { SamBox } from "../src/meta/sam.ts";
-import { needsReflow, reflowFace } from "../src/prep/reflow.ts";
+import { needsReflow, reflowTarget, reflowFace } from "../src/prep/reflow.ts";
 
 const require = createRequire(import.meta.url);
 const W = 256, H = 456;
@@ -50,6 +50,18 @@ test("needsReflow: only ready faces whose flow predates the silhouette mask", ()
   assert.equal(needsReflow(companion({ ...oldFlow, maskVersion: 2 })), false);
   assert.equal(needsReflow(companion(null)), false);
   assert.equal(needsReflow(companion(oldFlow, "running")), false);
+});
+
+test("needsReflow (11/4 CA-06 dog): animals below mask version 3 re-flow only when GENITA_FACE_REFLOW_ANIMAL_CHIN=1", () => {
+  const dog = (v: number | undefined) => ({ ...companion({ ...oldFlow, ...(v ? { maskVersion: v } : {}) }), type: "animal" }) as CompanionRecord;
+  const on = { GENITA_FACE_REFLOW_ANIMAL_CHIN: "1" };
+  assert.equal(needsReflow(dog(2), {}), false, "off by default (Chelsea / integration turn it on)");
+  assert.equal(needsReflow(dog(2), on), true);
+  assert.equal(needsReflow(dog(3), on), false);
+  assert.equal(needsReflow(dog(undefined), {}), true, "the silhouette re-flow still applies");
+  assert.equal(needsReflow(companion({ ...oldFlow, maskVersion: 2 }), on), false, "people stay at version 2");
+  assert.equal(reflowTarget(dog(2), on), 3);
+  assert.equal(reflowTarget(companion(oldFlow), on), 2);
 });
 
 test("reflowFace: rebuilds the flow with the SAM face silhouette and swaps it in; without a silhouette the old flow stays", { skip: pythonWithCv2() ? false : "no python with OpenCV here" }, async () => {
