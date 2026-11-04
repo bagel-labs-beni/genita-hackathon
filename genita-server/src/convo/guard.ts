@@ -246,7 +246,7 @@ function weaponHit(t: string, clauses: Clause[]): boolean {
  * a sentence the model wrote that points to a help line or emergency help is always spoken. Only a therapy push
  * ("see a therapist") on a plainly harmless line is dropped, and "harmless" means none of these words at all.
  */
-const HELP_LINE = /\b(?:988|911|112|999|nine[- ]eight[- ]eight|nine[- ]one[- ]one|hotline|helpline|lifeline|crisis (?:text )?line|emergency|samaritans)\b/i;
+const HELP_LINE = /\b(?:988|911|112|999|nine[- ]eight[- ]eight|nine[- ]one[- ]one|hotline|helpline|(?:988|suicide|crisis)[\w\s&]{0,25}lifeline|crisis (?:text )?line|emergency|samaritans)\b/i;
 const NEAR_SELF_HARM = /\b(?:myself|suicid\w*|die|dying|dead|death|kill\w*|hurt\w*|harm\w*|cut(?:ting)?|slash\w*|slit\w*|bleed\w*|blood|blade|razor|knife|gun|pills?|overdos\w*|o\.?d\.?|jump\w*|bridge|roof|ledge|railing|hang\w*|rope|noose|wrists?|throat|end(?:ing)?|not wake up|alive|exist|be here|better off without me|goodbye|farewell|kill me)\b/i;
 /** the user's words come anywhere near harm (wide on purpose): help stays, no "no hotlines" line rides it */
 export function mayBeSelfHarm(text: string): boolean { return NEAR_SELF_HARM.test(text.replace(/[‘’ʼ]/g, "'")) || realCrisisSignal(text); }
@@ -327,7 +327,9 @@ export function guardSentence(sentence: string, ctx: GuardContext): GuardClass |
   // #545 Codex r11: a help-line sentence (988, crisis line, hotline…) is protected like emergency help, before every
   // other filter (unseen, appearance, sensitive…): "You look scared so please call 988." is spoken
   // Codex r12: not even an AI-denial rewrite replaces it ("No, I can't call 988 for you, but you can call or text it")
-  if (HELP_LINE.test(sentence)) return null;
+  // Codex r14: "you're my lifeline" is no help line (only "988 / suicide & crisis lifeline"), and a clingy line next
+  // to a help word stays guarded outside a real crisis ("Don't leave me, you're my hotline")
+  if (HELP_LINE.test(sentence)) return !realCrisisSignal(ctx.userText) && !EMERGENCY_HELP.test(sentence) && CLASSES.find(([c]) => c === "guilt")![1].test(sentence) ? "guilt" : null;
   if (EMERGENCY_HELP.test(sentence)) return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;
   // saving out loud is never said, even after real content (Codex gate P2: "Pistachio is elite. I'll save that detail quietly.")
   if (!realCrisisSignal(ctx.userText) && SAVE_TALK.some((re) => re.test(sentence.replace(/’/g, "'")))) return "save_talk";
