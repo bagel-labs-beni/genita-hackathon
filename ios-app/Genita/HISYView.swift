@@ -159,7 +159,9 @@ struct HISYView: View {
         .frame(width: w - 62, alignment: .leading)
         .padding(.leading, 31).padding(.top, 106 + top)
         .frame(width: w, height: h, alignment: .topLeading)
-        HISYGlobe().position(x: w / 2, y: 312 + top + 321 / 2 + (h - 844) / 2)
+        // TF 331 (scorecard PU-01 "V01 orb barely visible"): on this white page the live orb read as almost nothing,
+        // so it sits on a soft blue backing here (the shader is untouched)
+        HISYGlobe(backing: true).position(x: w / 2, y: 312 + top + 321 / 2 + (h - 844) / 2)
         HISYPrimary(title: "Choose a photo", id: "hisyChoosePhoto") { model.go(.image) }.position(x: w / 2, y: h - 140 + 25)
         HISYTextButton(title: "Back to the cards", id: "hisyBackToCards") { go(cards.isEmpty ? 0 : cards.count) }
             .frame(width: w - 62).position(x: w / 2, y: h - 88 + 22)
@@ -300,10 +302,20 @@ final class SerifLabel: UIView {
 /// I03's globe in HISY's 346 × 321 slot: the orb itself is ~130 pt wide there (Figma 251:21 / 251:436), smaller
 /// than on I03, so the I03 node is drawn at 0.59.
 struct HISYGlobe: View {
+    /// HISY-7 "Now give me a face." only: a soft #00A2FF radial behind the ~130 pt orb so its pale points read on #FDFDFD
+    var backing = false
+    static let backingTint = RadialGradient(stops: [
+        .init(color: Color(red: 0, green: 0xA2 / 255, blue: 1).opacity(0.16), location: 0),
+        .init(color: Color(red: 0, green: 0xA2 / 255, blue: 1).opacity(0.07), location: 0.55),
+        .init(color: Color(red: 0, green: 0xA2 / 255, blue: 1).opacity(0), location: 1),
+    ], center: .center, startRadius: 0, endRadius: 110)
     var body: some View {
         if let orb = DesignLibrary.nodes("preparing").first(where: { $0.name.hasPrefix("soul-orb") }) {
-            SoulOrbSlot(node: orb, resource: orb.name.contains("(2)") ? "reference-orb-wide" : "reference-orb-round")
-                .frame(width: orb.w, height: orb.h).scaleEffect(0.59).frame(width: 346, height: 321).accessibilityHidden(true)
+            ZStack {
+                if backing { Circle().fill(Self.backingTint).frame(width: 220, height: 220) }
+                SoulOrbSlot(node: orb, resource: orb.name.contains("(2)") ? "reference-orb-wide" : "reference-orb-round")
+                    .frame(width: orb.w, height: orb.h).scaleEffect(0.59)
+            }.frame(width: 346, height: 321).accessibilityHidden(true)
         }
     }
 }
