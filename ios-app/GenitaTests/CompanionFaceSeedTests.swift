@@ -3,7 +3,7 @@ import XCTest
 
 /// Face plan item 1: one motion seed per face key (prepared poster, disk poster and live face match), and the scene's
 /// output size is the face set's.
-final class CompanionFaceSeedTests: XCTestCase {
+@MainActor final class CompanionFaceSeedTests: XCTestCase {
     func testSeedComesFromTheFaceKey() {
         let face = "face set one", a = CompanionFace.seed(forKey: face), b = CompanionFace.seed(forKey: face)
         XCTAssertEqual(a, b)
