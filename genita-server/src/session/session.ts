@@ -58,6 +58,7 @@ import { taskHint } from "../convo/taskHints.ts";
 import { ageSays, foldAge, isMinor, MINOR_LINE, NO_AGE, type AgeSay } from "../convo/minorBoundary.ts";
 import { cameraOffHint } from "../convo/cameraAsk.ts";
 import { unbackedPast } from "../convo/pastGuard.ts";
+import { unseenToHeard } from "../convo/unseenSight.ts";
 import { forgetInCall, forgetKeyText, isAnaphoricForget, isCorrection, isRememberRequest, pointedLine } from "../convo/forgetInCall.ts";
 import { avoidKeys, forgetTarget, isForgetRequest, mentionsAvoided, scrubHistory, type Removed } from "../personalize/forgotten.ts";
 import { isForgetRequest as isMemoryForgetRequest } from "../memory/extract.ts";
@@ -235,7 +236,7 @@ type Reply = {
 /** server clock (ms) for the latency breakdown; logged with turn.answered as `stages` */
 type TurnMetrics = { speechEndAt?: number; completeAt?: number; lastPartialAt?: number; specStartAt?: number };
 /** lang = the language the reply is written in (interpretation: the target) */
-type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null; images: string[]; lang: string; suggestMac?: boolean };
+type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null; images: string[]; lang: string; suggestMac?: boolean; /** any camera or shared-screen frame went with this request */ seen?: boolean };
 /** firstTextAt: when the speculative stream's first text arrived (it is buffered until the final transcript) */
 type Speculation = { norm: string; abort: AbortController; built: Built; stream: Eager<SparkStreamEvent>; memoryRetry: MemoryRetryState; confirm: () => void; at: number; firstTextAt?: number };
 
@@ -1986,12 +1987,13 @@ export class Session {
     // Codex #541 r2: only this turn's camera frames say the camera is on (a cached face line can outlive it); a shared
     // screen counts for "look at this", never for "do I look ok?"
     // Codex #541 r3: never on a crisis line or in a call that had one (no "playful" nudge there)
-    if (!turn.greeting && !turn.cue && userText && !realCrisisSignal(userText) && !this.crisisInCall) { const off = cameraOffHint(userText, cameraFrames > 0, screenFrames > 0); if (off) perceptionHint = off; }
+    if (!turn.greeting && !turn.cue && userText && !realCrisisSignal(userText) && !this.crisisInCall) { const users = this.history.filter((h) => h.role === "user").map((h) => h.text); if (users.at(-1) === userText) users.pop(); const off = cameraOffHint(userText, cameraFrames > 0, screenFrames > 0, users.at(-1)); if (off) perceptionHint = off; }
     // P1: closeness, question rhythm, mood, what landed, recall — one "This turn:" line on a user turn (never a greeting / cue)
     let turnLine: string | undefined;
     this.subscribePerception();
     if (!turn.greeting && !turn.cue && userText) {
       turnLine = turnHints({
+        prevUser: (() => { const u = this.history.filter((h) => h.role === "user").map((h) => h.text); if (u.at(-1) === userText) u.pop(); return u.at(-1); })(),
         callNumber: this.callNumber,
         lastReply: this.recentReplies.at(-1),
         userText,
@@ -2201,6 +2203,7 @@ export class Session {
       detected: null,
       // Finds get the camera frames only, never the shared screen
       images: camera,
+      seen: images.length > 0,
       lang: this.language,
       suggestMac,
       req: {
@@ -2580,6 +2583,12 @@ export class Session {
         if (this.v1 && tts && !interpret && !self) {
           const you = nameAsYou(tts, this.user?.name);
           if (you !== tts) { tts = you; this.log("convo.name_to_you", { utteranceId }); }
+        }
+        // b10 gate 11/4: nothing seen this turn → "That looks good" is said as "That sounds good" (convo/unseenSight.ts)
+        if (this.v1 && tts && !interpret && !self) {
+          // Codex #660 r1: a shared screen counts as seen ("That looks bright red." about the car on screen)
+          const heard = unseenToHeard(tts, guardCtx.camera || !!built?.seen);
+          if (heard !== tts) { tts = heard; this.log("convo.unseen_to_heard", { utteranceId }); }
         }
         // CV-01 (eval v2 11/4): no past in this call → no habit "again" / "like usual", no claimed earlier talk (convo/pastGuard.ts)
         if (this.v1 && tts && !interpret && !self) {
