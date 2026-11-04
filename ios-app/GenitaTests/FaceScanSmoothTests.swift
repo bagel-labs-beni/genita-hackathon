@@ -83,6 +83,7 @@ import SwiftUI
     /// 3× filmstrips over the second answer: 6 frames from the switch to 0.3 s after it, before vs after.
     func testFilmstrips() throws {
         let (a, b) = try meshes()
+        let t0 = self.t0, switchAt = self.switchAt   // used inside the view builders
         let url = try XCTUnwrap(Bundle.main.url(forResource: "qa-sample-human", withExtension: "jpg"))
         let photo = try XCTUnwrap(UIImage(contentsOfFile: url.path))
         let size = CGSize(width: photo.size.width * photo.scale, height: photo.size.height * photo.scale)
