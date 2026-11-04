@@ -391,7 +391,8 @@ enum CallStop: Equatable {
         history = s.history ?? []
         mode = s.mode ?? .chat
         uplink.callFraming = mode == .interpret && s.interpret?.source == .call
-        audio.start()
+        // b16: with the mic coming back on (B12) the first engine already has the mic + voice processing
+        audio.start(preparingMic: Self.micWasOn && mode == .chat && ownsConversation)
         connect()
         #if DEBUG
         installFixtures()

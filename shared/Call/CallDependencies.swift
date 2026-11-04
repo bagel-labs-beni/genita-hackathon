@@ -8,6 +8,8 @@ import Foundation
     var onInterrupted: (() -> Void)? { get set }
     var isPlaying: Bool { get }
     func start()
+    /// b16: the call turns the mic on at once (B12): build the first engine with the mic (default: plain start)
+    func start(preparingMic: Bool)
     func stop()
     func openMic() -> Bool
     func closeMic()
@@ -24,6 +26,7 @@ import Foundation
 }
 
 extension CallAudioPlaying {
+    func start(preparingMic: Bool) { start() }
     func playCue(pcm: Data) {}
     var inputLevel: Float { 0 }
     var outputLevel: Float { 0 }

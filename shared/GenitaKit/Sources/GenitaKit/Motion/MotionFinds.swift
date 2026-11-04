@@ -96,7 +96,7 @@ public struct FindsShimmer: View {
             base
             if !still {
                 GeometryReader { g in
-                    TimelineView(.animation(minimumInterval: 1 / 60, paused: false)) { ctx in
+                    TimelineView(.animation(minimumInterval: 1 / 30, paused: false)) { ctx in
                         let t = ctx.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: MotionFinds.shimmerPeriod) / MotionFinds.shimmerPeriod
                         LinearGradient(stops: [
                             .init(color: .white.opacity(0), location: 0.3),

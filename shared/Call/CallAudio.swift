@@ -23,7 +23,7 @@ import UIKit
 
     private(set) var micOpen = false
     private(set) var voiceProcessing = false
-    var isPlaying: Bool { queuedBuffers > 0 }
+    var isPlaying: Bool { queuedBuffers > 0 || !held.isEmpty }
 
     // MARK: voice levels (motion details cards 1, 2: the pill's bars follow the reply, the mic ring follows the user)
 
@@ -136,6 +136,39 @@ import UIKit
     /// the app went to the background or the session was interrupted: the next foreground re-configures and rebuilds
     private var needsResume = false
 
+    // b16 (TF 381 robot sound at every call start, Genita[41213] 21:52:39): the engine was built without the mic, then
+    // rebuilt with VPIO 0.8 s later; that build's own reason=3/8 and configuration change stopped the engine and it was
+    // restarted in place while the opener was about to play.
+    /// the call will turn the mic on at once (B12, permission granted): the first engine is the mic + VPIO one, and it
+    /// is not torn down to playback-only before the mic opens (cleared by closeMic / stop / 3 s without openMic)
+    private var keepMicEngine = false
+    /// when we last set the session or turned voice processing on: reason=3/8 within `selfInflictedS` are our own
+    private var lastConfigureAt: TimeInterval = -.infinity
+    static let selfInflictedS: TimeInterval = 1.5
+    /// when the engine last came up running (.infinity = down); a reply waits for `stableS` of this
+    private var runningSince: TimeInterval = .infinity
+    static let stableS: TimeInterval = 0.3
+    static let maxHoldS: TimeInterval = 1.5
+    /// reply chunks held until the engine is stable (only when nothing is playing, so order is kept)
+    private var held: [(buffer: AVAudioPCMBuffer, floats: [Float], utteranceId: Int)] = []
+    private var heldSince: TimeInterval = 0
+    private var drainPending = false
+    /// AirPods (b16): A2DP output stays allowed (HFP sounds like a phone call); with no input the built-in mic is the
+    /// preferred input. Only if input is still 0 ch ~1 s after that is the call switched to HFP only (sticky per call).
+    private var hfpOnly = false
+
+    private func engineStable(_ now: TimeInterval) -> Bool {
+        engine.isRunning && !configCheckPending && now - runningSince >= Self.stableS
+    }
+
+    static func micPermissionGranted() -> Bool {
+        #if os(iOS)
+        return AVAudioApplication.shared.recordPermission == .granted
+        #else
+        return AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+        #endif
+    }
+
     /// Re-configures the session exactly as at call start (configureSession) and rebuilds the engine for the current
     /// route, carrying what is still to be heard. Not under the self-induced rebuild cap. Never in the background.
     private func recover(_ why: String, watchdog: String = "playback watchdog") {
@@ -185,14 +218,33 @@ import UIKit
     init() {}
 
     /// Playback-only engine; the mic is not touched.
-    func start() {
+    func start() { start(preparingMic: false) }
+
+    /// `preparingMic`: the call turns the mic on right away (B12). With permission already granted the first engine is
+    /// built with the mic and voice processing, so no VPIO rebuild (and its configuration change) lands on the opener.
+    func start(preparingMic: Bool) {
+        hfpOnly = false
+        held.removeAll()
         configureSession()
-        buildEngine(withMic: false)
+        keepMicEngine = preparingMic && Self.micPermissionGranted()
+        buildEngine(withMic: keepMicEngine)
         observe()
+        if keepMicEngine {
+            log.info("audio start: engine built once with the mic + voice processing before any playback")
+            let token = audioToken
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, token == self.audioToken, self.keepMicEngine, !self.micOpen else { return }
+                    self.keepMicEngine = false   // the mic never opened (not the owner, a tap off): playback-only again
+                    self.releaseMicIfIdle()
+                }
+            }
+        }
     }
 
     func stop() {
         audioToken += 1
+        keepMicEngine = false
         playWatch?.invalidate()
         playWatch = nil
         needsResume = false
@@ -220,7 +272,9 @@ import UIKit
         // DEMO P0 11/4: an input that stopped delivering (an engine kept alive through playback) is rebuilt, so turning
         // the mic off and on always gives a working one
         let now = ProcessInfo.processInfo.systemUptime
-        if !engineHasMic || MicStall.stalled(now: now, lastBuffer: pipeline?.lastBufferUptime, since: -.infinity) {
+        // b16: the mic + VPIO engine built at call start (keepMicEngine) gets the usual grace from its build instead of
+        // being rebuilt at once for having delivered nothing yet; the mic watchdog still heals it if it stays silent
+        if !engineHasMic || MicStall.stalled(now: now, lastBuffer: pipeline?.lastBufferUptime, since: keepMicEngine ? lastBuildAt : -.infinity) {
             buildEngine(withMic: true)
         }
         guard engineHasMic else { return false }
@@ -310,6 +364,7 @@ import UIKit
     private func engineConfigurationChanged() {
         let now = ProcessInfo.processInfo.systemUptime
         configRebuilds.removeAll { now - $0 > 5 }
+        if !engine.isRunning { runningSince = .infinity }   // b16: a reply waits for the restart to settle
         // the change stopped the engine: its players' completions must not count as played (Codex #740 P1); what is
         // still queued is carried by a rebuild below
         if !engine.isRunning, !scheduled.isEmpty, !needsCarry { generation += 1; needsCarry = true }
@@ -369,7 +424,7 @@ import UIKit
         guard Self.mayStartAudio() else { return true }
         if !engine.isRunning {
             engine.prepare()
-            do { try engine.start() } catch {
+            do { try engine.start(); runningSince = ProcessInfo.processInfo.systemUptime } catch {
                 log.error("config change: restart failed: \(error.localizedDescription, privacy: .public)")
                 return false
             }
@@ -379,6 +434,7 @@ import UIKit
     }
 
     func closeMic() {
+        keepMicEngine = false
         guard micOpen else { return }
         micWatch?.invalidate()
         micWatch = nil
@@ -398,6 +454,45 @@ import UIKit
         guard !floats.isEmpty, let buffer = AVAudioPCMBuffer(pcmFormat: playFormat, frameCapacity: AVAudioFrameCount(floats.count)) else { return }
         buffer.frameLength = AVAudioFrameCount(floats.count)
         floats.withUnsafeBufferPointer { buffer.floatChannelData![0].update(from: $0.baseAddress!, count: floats.count) }
+        // b16: a reply that starts while the engine is (re)starting waits until it has run for `stableS` (at most
+        // `maxHoldS`), so the opener never plays into a graph being restarted; later chunks queue behind it in order
+        let now = ProcessInfo.processInfo.systemUptime
+        if !held.isEmpty || (queuedBuffers == 0 && Self.mayStartAudio() && !engineStable(now)) {
+            if held.isEmpty {
+                heldSince = now
+                log.info("playback held: engine not stable yet (running=\(self.engine.isRunning, privacy: .public) configPending=\(self.configCheckPending, privacy: .public) up=\(now - self.runningSince, privacy: .public)s)")
+            }
+            held.append((buffer, floats, utteranceId))
+            scheduleDrain()
+            return
+        }
+        playChunk(buffer, floats: floats, utteranceId: utteranceId)
+    }
+
+    private func scheduleDrain() {
+        guard !drainPending else { return }
+        drainPending = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.drainPending = false
+                self.drainHeld()
+            }
+        }
+    }
+
+    private func drainHeld() {
+        guard !held.isEmpty else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        if !engineStable(now), now - heldSince < Self.maxHoldS, Self.mayStartAudio() { scheduleDrain(); return }
+        let items = held
+        held.removeAll()
+        log.info("playback released after \(Int((now - self.heldSince) * 1000), privacy: .public)ms (stable=\(self.engineStable(now), privacy: .public), \(items.count, privacy: .public) chunk(s))")
+        for item in items { playChunk(item.buffer, floats: item.floats, utteranceId: item.utteranceId) }
+        for id in completeUtterances { checkDone(id) }
+    }
+
+    private func playChunk(_ buffer: AVAudioPCMBuffer, floats: [Float], utteranceId: Int) {
         if !(ensureRunning() && Self.ready(player, in: engine)), Self.mayStartAudio(),
            ProcessInfo.processInfo.systemUptime - lastRecover >= MicStall.playbackStallS {
             recover("engine down at a reply chunk")   // b14: a chunk never goes to a dead engine without one full re-configure
@@ -476,6 +571,7 @@ import UIKit
     private func flush(restart: Bool) {
         stopCue()
         generation += 1
+        held.removeAll()
         if player.engine != nil { player.stop() }   // before start() the node has no engine
         queuedBuffers = 0
         needsCarry = false   // nothing left to carry (Codex #740 r3)
@@ -500,7 +596,8 @@ import UIKit
     }
 
     private func checkDone(_ utteranceId: Int) {
-        guard completeUtterances.contains(utteranceId), (queuedByUtterance[utteranceId] ?? 0) <= 0 else { return }
+        guard completeUtterances.contains(utteranceId), (queuedByUtterance[utteranceId] ?? 0) <= 0,
+              !held.contains(where: { $0.utteranceId == utteranceId }) else { return }
         completeUtterances.remove(utteranceId)
         queuedByUtterance[utteranceId] = nil
         utteranceStart[utteranceId] = nil
@@ -517,17 +614,62 @@ import UIKit
             // with call-style output processing. Now: .videoChat (echo cancellation stays on, wide-band speaker
             // route/EQ) at a preferred 48 kHz, set before activation; the 24 kHz reply player is converted up by the
             // main mixer. The voice processing on the input node (setVoiceProcessingEnabled) is unchanged.
+            // b16 (TF 381, Chelsea 21:38 AirPods): with `.allowBluetoothA2DP` iOS may route AirPods as A2DP — output
+            // only ("route in= out=BluetoothA2DPOutput", in=0ch) — and the engine came up without a mic. A2DP stays
+            // allowed (HFP sounds like a phone call); the built-in mic becomes the preferred input when the route has
+            // none, and only if input is still 0 ch ~1 s later does the call fall back to HFP only (`hfpOnly`).
             try session.setCategory(.playAndRecord, mode: Self.useVoiceProcessing ? .videoChat : .default,
-                                    options: [.defaultToSpeaker, .allowBluetoothHFP, .allowBluetoothA2DP])
+                                    options: hfpOnly ? Self.hfpOnlyOptions : Self.categoryOptions)
             try? session.setPreferredSampleRate(48_000)
             try session.setPreferredIOBufferDuration(0.02)
             try session.setActive(true)
+            lastConfigureAt = ProcessInfo.processInfo.systemUptime
+            if hfpOnly {
+                log.info("audio path: HFP only (fallback: A2DP + built-in mic gave no input) \(Self.routeLog(), privacy: .public)")
+            } else if session.currentRoute.inputs.isEmpty {
+                if let builtIn = session.availableInputs?.first(where: { $0.portType == .builtInMic }) {
+                    try? session.setPreferredInput(builtIn)
+                    log.info("audio path: output-only route; A2DP output + built-in mic (preferred input) \(Self.routeLog(), privacy: .public)")
+                } else {
+                    log.error("audio path: output-only route and no built-in mic input listed \(Self.routeLog(), privacy: .public)")
+                }
+                checkInputAfterPreferring()
+            }
             log.info("audio session: playAndRecord mode=\(Self.useVoiceProcessing ? "videoChat (VPIO)" : "default (no voice processing)", privacy: .public) rate=\(session.sampleRate, privacy: .public) \(Self.routeLog(), privacy: .public)")
         } catch {
             log.error("audio session: \(error.localizedDescription, privacy: .public)")
         }
         #endif
     }
+
+    #if os(iOS)
+    /// the call's session options: speaker by default, Bluetooth as HFP or A2DP (A2DP output + built-in mic, b16)
+    nonisolated static let categoryOptions: AVAudioSession.CategoryOptions = [.defaultToSpeaker, .allowBluetoothHFP, .allowBluetoothA2DP]
+    /// b16 fallback when A2DP + built-in mic still has no input: HFP is the one Bluetooth route with mic AND sound
+    nonisolated static let hfpOnlyOptions: AVAudioSession.CategoryOptions = [.defaultToSpeaker, .allowBluetoothHFP]
+
+    /// b16: ~1 s after preferring the built-in mic on an output-only route: still 0 ch → HFP only and rebuild; input
+    /// there but the engine built without it while the mic is wanted → rebuild with the input.
+    private func checkInputAfterPreferring() {
+        let token = audioToken
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, token == self.audioToken, !self.hfpOnly, Self.mayStartAudio() else { return }
+                let s = AVAudioSession.sharedInstance()
+                if s.currentRoute.inputs.isEmpty || s.inputNumberOfChannels == 0 {
+                    self.hfpOnly = true
+                    self.log.error("audio path: input still 0ch 1 s after preferring the built-in mic; falling back to HFP only \(Self.routeLog(), privacy: .public)")
+                    self.recover("A2DP + built-in mic gave no input", watchdog: "audio path")
+                } else if MicStall.rebuildWithMic(micOpen: self.micOpen, engineHasMic: self.engineHasMic) || self.keepMicEngine, !self.engineHasMic {
+                    self.log.info("audio path: A2DP output + built-in mic has input (\(s.inputNumberOfChannels, privacy: .public)ch); rebuilding with it")
+                    self.recover("built-in mic input came up", watchdog: "audio path")
+                } else {
+                    self.log.info("audio path: A2DP output + built-in mic OK (in=\(s.inputNumberOfChannels, privacy: .public)ch hasMic=\(self.engineHasMic, privacy: .public))")
+                }
+            }
+        }
+    }
+    #endif
 
     /// Rebuilds the graph. With the mic, voice processing (AEC) is turned on first; if the platform refuses
     /// (some simulators), the mic still works without it and `voiceProcessing` says so.
@@ -566,6 +708,7 @@ import UIKit
                 if Self.useVoiceProcessing {
                     try input.setVoiceProcessingEnabled(true)
                     voiceProcessing = true
+                    lastConfigureAt = ProcessInfo.processInfo.systemUptime   // its reason=3/8 are our own (b16)
                 }
             } catch {
                 log.error("voice processing unavailable: \(error.localizedDescription, privacy: .public)")
@@ -600,11 +743,12 @@ import UIKit
         engine.prepare()
         var started = false
         if Self.mayStartAudio() {
-            do { try engine.start(); play(player); started = true } catch {
+            do { try engine.start(); play(player); started = true; runningSince = ProcessInfo.processInfo.systemUptime } catch {
                 log.error("engine start failed mic=\(withMic, privacy: .public) aec=\(self.voiceProcessing, privacy: .public) micRate=\(self.micRate, privacy: .public): \(error.localizedDescription, privacy: .public)")
             }
         }
         lastBuildAt = ProcessInfo.processInfo.systemUptime
+        if !started { runningSince = .infinity }
         let hwOut = engine.outputNode.outputFormat(forBus: 0)
         builtOutRate = hwOut.sampleRate
         builtOutChannels = Int(hwOut.channelCount)
@@ -676,7 +820,7 @@ import UIKit
     }
 
     private func releaseMicIfIdle() {
-        guard engineHasMic, !micOpen, queuedBuffers == 0 else { return }
+        guard engineHasMic, !micOpen, !keepMicEngine, queuedBuffers == 0, held.isEmpty else { return }
         buildEngine(withMic: false)
     }
 
@@ -706,7 +850,7 @@ import UIKit
         if player.engine !== engine || engine.outputConnectionPoints(for: player, outputBus: 0).isEmpty {
             buildEngine(withMic: engineHasMic)
         } else if !engine.isRunning {
-            do { try engine.start() } catch { log.error("engine restart: \(error.localizedDescription, privacy: .public)") }
+            do { try engine.start(); runningSince = ProcessInfo.processInfo.systemUptime } catch { log.error("engine restart: \(error.localizedDescription, privacy: .public)") }
         }
         return engine.isRunning
     }
@@ -767,6 +911,21 @@ import UIKit
                 guard let self else { return }
                 let route = Self.routeDescription()
                 self.log.info("audio route change: reason=\(raw ?? 0, privacy: .public) built for \(self.builtRoute, privacy: .public) now \(Self.routeLog(), privacy: .public)")
+                // b16 (TF 381 21:38:14): a category change / override left the route with no input (A2DP out only)
+                // during a call (mic on or not): set the call's session again and rebuild (not in the background; at most one
+                // every 2 s so our own setCategory, which posts reason=3 too, cannot loop)
+                let now = ProcessInfo.processInfo.systemUptime
+                // b16: reason=3 (category) / 8 (route configuration) right after our own setCategory or VPIO build are
+                // self-inflicted: nothing to do (an output-only route is handled by checkInputAfterPreferring)
+                if reason == .categoryChange || reason == .routeConfigurationChange, now - self.lastConfigureAt < Self.selfInflictedS {
+                    self.log.info("audio route change: reason=\(raw ?? 0, privacy: .public) \(Int((now - self.lastConfigureAt) * 1000), privacy: .public)ms after our own configure; ignored")
+                    return
+                }
+                if Self.mayStartAudio(), now - self.lastRecover >= 2,
+                   AVAudioSession.sharedInstance().currentRoute.inputs.isEmpty {
+                    self.recover("route change \(raw ?? 0): no input", watchdog: "route watchdog")
+                    return
+                }
                 guard reason == .newDeviceAvailable || reason == .oldDeviceUnavailable, route != self.builtRoute else { return }
                 self.engineConfigurationChanged()
             }
@@ -776,7 +935,20 @@ import UIKit
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.log.info("audio interruption \(began ? "began" : "ended", privacy: .public) \(Self.routeLog(), privacy: .public)")
-                if began { self.needsResume = true; self.onInterrupted?() } else { self.recover("interruption ended") }
+                if began {
+                    self.needsResume = true
+                    self.onInterrupted?()
+                    // b16: iOS does not always post "ended" (TF 381: began + A2DP route, then silence). Still in the
+                    // foreground 1.5 s later with the engine down: re-configure and rebuild instead of waiting forever.
+                    let token = self.audioToken
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                        MainActor.assumeIsolated {
+                            guard let self, token == self.audioToken, self.needsResume, Self.mayStartAudio(),
+                                  !self.engine.isRunning || AVAudioSession.sharedInstance().currentRoute.inputs.isEmpty else { return }
+                            self.recover("interruption began, no end after 1.5 s", watchdog: "interruption watchdog")
+                        }
+                    }
+                } else { self.recover("interruption ended") }
             }
         })
         // b14 (Chelsea 21:12: robot voice / no sound after leaving the app and coming back): back from the background

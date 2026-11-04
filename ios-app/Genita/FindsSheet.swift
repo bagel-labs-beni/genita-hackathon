@@ -137,7 +137,7 @@ struct Shimmer: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         if MotionDetails.enabled { FindsShimmer(base: FindsInk.skip) } else if reduceMotion || paused { FindsInk.skip } else {
-            TimelineView(.animation) { context in
+            TimelineView(.animation(minimumInterval: 1 / 30)) { context in
                 let t = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.4) / 1.4
                 LinearGradient(stops: [.init(color: FindsInk.skip, location: 0.3), .init(color: CallInk.sheet, location: 0.5), .init(color: FindsInk.skip, location: 0.7)],
                                startPoint: UnitPoint(x: 1 - 3 * t, y: 0.5), endPoint: UnitPoint(x: 4 - 3 * t, y: 0.5))
@@ -154,7 +154,7 @@ struct ScanLine: View {
             ZStack(alignment: .leading) {
                 FindsInk.line
                 if !reduceMotion {
-                    TimelineView(.animation) { context in
+                    TimelineView(.animation(minimumInterval: 1 / 30)) { context in
                         let t = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.4) / 1.4
                         FindsInk.blue.frame(width: g.size.width * 0.4).offset(x: g.size.width * 0.4 * (-1 + 3.5 * t))
                     }
@@ -169,7 +169,7 @@ struct FindsTalkWave: View {
     var color: Color = CallInk.ink
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
-        TimelineView(.animation(paused: reduceMotion)) { context in
+        TimelineView(.animation(minimumInterval: 1 / 30, paused: reduceMotion)) { context in
             let t = context.date.timeIntervalSinceReferenceDate
             HStack(spacing: 2) {
                 ForEach(0..<4, id: \.self) { i in
@@ -198,7 +198,7 @@ struct SearchOrb: View {
             Circle().fill(FindsInk.blueSoft).frame(width: 32, height: 32)
             Image(systemName: "magnifyingglass").font(.system(size: 14, weight: .semibold)).foregroundStyle(FindsInk.blueText)
             if !reduceMotion {
-                TimelineView(.animation(minimumInterval: nil, paused: paused)) { context in
+                TimelineView(.animation(minimumInterval: 1 / 30, paused: paused)) { context in
                     let t = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.1) / 1.1
                     // CSS: top + left border coloured = a half ring, starting at the top-right corner
                     Circle().trim(from: 0, to: 0.5).stroke(FindsInk.blue, style: StrokeStyle(lineWidth: 2, lineCap: .round))
