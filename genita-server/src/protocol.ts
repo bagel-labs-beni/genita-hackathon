@@ -135,7 +135,12 @@ export type FindItem = {
 export type FindLayout = "recipe" | "product" | "place" | "how-to" | "general";
 /** layout "place": what the search said about a place (any field may be missing); mapUrl is server-built */
 export type FindPlace = { address?: string; rating?: number; reviews?: number; hours?: string; mapUrl?: string };
-export type FindImage = { slot: string; status: "pending" | "ready" | "failed"; url?: string };
+/**
+ * `source: "generated"`: a picture Muse Image made (no photo was found) — the app may label it "Illustration".
+ * `omit: true` (always with status "failed"): there will be no picture for this slot — draw no box. Old apps read the
+ * plain "failed" they already know.
+ */
+export type FindImage = { slot: string; status: "pending" | "ready" | "failed"; url?: string; source?: "generated"; omit?: true };
 export type FindCard = {
   id: string;
   kind: FindKind;
@@ -274,7 +279,9 @@ export type ServerEvent =
   | { type: "find.items"; findId: string; items: FindItem[]; checking: boolean; subtitle?: string; status?: string; pill?: string }
   | { type: "observe.boxes"; findId: string; frame: number; w: number; h: number; items: { label: string; box: NormBox; mask?: NormMask }[] }
   | { type: "find.created"; findId: string; card: FindCard }
-  | { type: "find.image"; findId: string; slot: string; status: "ready" | "failed"; url?: string }
+  /** no empty pictures: `source` / `omit` as on FindImage; `replace` (only with omit, slot product-N): the product
+   * that takes this slot's place — it has a picture (its image is ready, same slot). Old apps ignore it. */
+  | { type: "find.image"; findId: string; slot: string; status: "ready" | "failed"; url?: string; source?: "generated"; omit?: true; replace?: FindProduct }
   | { type: "find.failed"; findId: string; reason: "unclear" | "search_failed" | "error" | "stopped"; message: string }
   /** F2-L26: the user renamed the companion by voice ("Call yourself Max"); already saved — update every {name} label */
   | { type: "companion.named"; name: string }
@@ -346,7 +353,7 @@ export const SERVER_EVENT_FIELDS: Record<ServerEventType, { required: string[]; 
   "find.items": { required: ["findId", "items", "checking"], optional: ["subtitle", "status", "pill"] },
   "observe.boxes": { required: ["findId", "frame", "w", "h", "items"], optional: [] },
   "find.created": { required: ["findId", "card"], optional: [] },
-  "find.image": { required: ["findId", "slot", "status"], optional: ["url"] },
+  "find.image": { required: ["findId", "slot", "status"], optional: ["url", "source", "omit", "replace"] },
   "find.failed": { required: ["findId", "reason", "message"], optional: [] },
   "companion.named": { required: ["name"], optional: [] },
   "profile.updated": { required: ["text", "fields"], optional: [] },
