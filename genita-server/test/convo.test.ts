@@ -1892,3 +1892,15 @@ test("Codex #545 r18: 'No, I'm really worried… call 911' on a breathing line i
   const { guardSentence } = await import("../src/convo/guard.ts");
   assert.equal(guardSentence("No, I'm really worried about you so please call 911 right now.", { camera: false, userText: "Should I just sleep it off? I can barely breathe." } as any), null);
 });
+
+test("intel eval 11/4 forget in call: after 'forget I said that' the pointed-at line never reaches Spark again", { skip: !v1 }, async () => {
+  const { client, session, calls } = setup(["<warm> Okay."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
+  const say = async (text: string) => { const n = calls.length; await session.onClientText(JSON.stringify({ type: "text", text })); await client.waitFor((m) => m.type === "reply" && m.final === true && calls.length > n); return JSON.stringify(calls.at(-1)!.input); };
+  await say("my ex texted me happy birthday out of nowhere");
+  assert.match(await say("actually forget I said that, i don't wanna get into it"), /happy birthday/, "the forget turn itself still sees what it points at");
+  const next = await say("ok what should i do tonight");
+  assert.doesNotMatch(next, /happy birthday|forget I said/);
+  assert.equal(session.forgetAsked, true);
+  session.close();
+});

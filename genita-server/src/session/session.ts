@@ -57,6 +57,7 @@ import { mightBeCorrection } from "../personalize/corrections.ts";
 import { ageSays, foldAge, isMinor, MINOR_LINE, NO_AGE, type AgeSay } from "../convo/minorBoundary.ts";
 import { cameraOffHint } from "../convo/cameraAsk.ts";
 import { unbackedPast } from "../convo/pastGuard.ts";
+import { forgetInCall, forgetKeyText, isAnaphoricForget, isCorrection, isRememberRequest, pointedLine } from "../convo/forgetInCall.ts";
 import { avoidKeys, forgetTarget, isForgetRequest, mentionsAvoided, scrubHistory, type Removed } from "../personalize/forgotten.ts";
 import { isForgetRequest as isMemoryForgetRequest } from "../memory/extract.ts";
 import { localTimeLine } from "../personalize/knows.ts";
@@ -994,7 +995,10 @@ export class Session {
           // Codex #640 r4: fold the flags (never a bare "minor" from a partial history; an adult age can still win)
           this.ageSaid = foldAge(this.ageSaid, server?.length ? seed.filter((h) => h.role === "user").reduce((a, h) => foldAge(a, ageSays(h.text)), NO_AGE) : claimedAge(msg.history));
           // a handoff is the same conversation: one thread, one summary (iPhone and Mac write the same row)
-          this.memoryCall?.continueThread(server?.length ? this.deps.priorThread?.(revision) ?? null : null, this.history);
+          const prior = server?.length ? this.deps.priorThread?.(revision) ?? null : null;
+          // Codex #547 P1: the other device's forgotten lines keep this call's input, memory and notes clear of them too
+          if (prior?.removed?.length) this.removedLines = [...this.removedLines, ...prior.removed].slice(-40);
+          this.memoryCall?.continueThread(prior, this.history);
           this.recentReplies = [...this.recentReplies, ...this.history.filter((h) => h.role === "assistant").map((h) => h.text)].slice(-3);
           this.greeting = null;
           this.continued = true;
@@ -1053,8 +1057,9 @@ export class Session {
         if (p?.nod) this.nod = p.nod;
         // what they removed from their profile stays out of memory, notes and the handed-off turns
         if (p?.removed?.length) {
-          this.removedLines = p.removed;
-          this.memoryCall?.setAvoid(p.removed);
+          // keep what a handed-off call already forgot (Codex #547 P1) alongside the profile's removed lines
+          this.removedLines = [...p.removed, ...this.removedLines.filter((r) => !p.removed!.includes(r))].slice(-40);
+          this.memoryCall?.setAvoid(this.removedLines);
           this.history = scrubHistory(this.history, avoidKeys(p.removed));
         }
         if (p?.calls) this.callNumber = p.calls;
@@ -1799,9 +1804,14 @@ export class Session {
     const p = this.deps.personalize;
     const userId = this.deps.userId;
     // "forget that …": from this line on, memory, notes and the turns handed on leave its target out (no Spark wait)
-    if (isForgetRequest(text) && this.mode === "chat") {
-      const target = forgetTarget(text);
-      if (target) { this.removedLines = [...this.removedLines, { text: target, forget: true }].slice(-40); this.memoryCall?.setAvoid(this.removedLines); }
+    // "forget I said that" points back: the line to forget is their previous one (strict match, not loose words of
+    // "i don't wanna get into it" — intel eval 11/4)
+    const pointsBack = isAnaphoricForget(text);
+    if ((isForgetRequest(text) || pointsBack) && !isCorrection(text) && !isRememberRequest(text) && this.mode === "chat") {
+      const prev = pointsBack ? pointedLine(this.history) : null;
+      // anaphoric: the pointed-at line's distinctive words, loosely (Codex #547 P1: "Likes jasmine tea." must go too)
+      const removed: Removed | null = pointsBack ? (prev && forgetKeyText(prev) ? { text: forgetKeyText(prev), forget: true } : null) : forgetTarget(text) ? { text: forgetTarget(text), forget: true } : null;
+      if (removed) { this.removedLines = [...this.removedLines, removed].slice(-40); this.memoryCall?.setAvoid(this.removedLines); }
     }
     const asked = this.awaitingAnswer;
     this.awaitingAnswer = null;
@@ -2008,7 +2018,7 @@ export class Session {
   /** This call's turns (copy) — for the account's next device after a handoff. */
   historySnapshot(): HistoryItem[] {
     // the next device never gets a "forget that…" turn or what it removed (QA post-deploy 11/3)
-    return scrubHistory(this.history, avoidKeys(this.removedLines)).map((h) => ({ ...h }));
+    return forgetInCall(this.history, this.removedLines).map((h) => ({ ...h }));
   }
 
   /** Revision of these turns, not the latest revision at socket close (which may arrive after Forget). */
@@ -2034,7 +2044,7 @@ export class Session {
   private remember(role: "user" | "assistant", text: string): void {
     // whole call, not just the kept history: a forget request anywhere keeps this call's raw lines out of a return visit
     // either detector: #442's (personalize, drives the do-not-mention scrub) or memory's broader one (#443)
-    if (role === "user" && (isForgetRequest(text) || isMemoryForgetRequest(text))) this.forgetAsked = true;
+    if (role === "user" && (isForgetRequest(text) || isMemoryForgetRequest(text) || isAnaphoricForget(text))) this.forgetAsked = true;
     if (role === "user" && realCrisisSignal(text)) this.crisisInCall = true;
     // Codex #640: kept for the whole call (the 16-line history trim would drop the "I'm 15" line)
     if (role === "user") this.ageSaid = foldAge(this.ageSaid, ageSays(text));
@@ -2070,7 +2080,8 @@ export class Session {
       ? [{ type: "input_text", text }, ...images.map((u) => ({ type: "input_image" as const, image_url: u }))]
       : text;
     const input: InputMessage[] = [
-      ...this.history.map((h): InputMessage => (h.role === "user" ? { role: "user", content: h.text } : { role: "assistant", content: h.text })),
+      // intel eval 11/4: what they asked to forget in this call is not sent back to Spark either (convo/forgetInCall.ts)
+      ...forgetInCall(this.history, this.removedLines).map((h): InputMessage => (h.role === "user" ? { role: "user", content: h.text } : { role: "assistant", content: h.text })),
       { role: "user", content },
     ];
     const v1 = this.v1 ? this.v1Extras(turn, text, camera.length, images.length - camera.length) : {};

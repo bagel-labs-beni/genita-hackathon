@@ -11,6 +11,7 @@ import { minorLine } from "./minorBoundary.ts";
 import { cameraOffHint } from "./cameraAsk.ts";
 import { unbackedPast } from "./pastGuard.ts";
 import { crisisFollowUpFor } from "../session/session.ts";
+import { forgetInCall } from "./forgetInCall.ts";
 import type { Memory } from "../memory/repository.ts";
 import type { InputMessage, SparkRequest } from "../meta/spark.ts";
 import { SentenceSplitter } from "../text/sentences.ts";
@@ -56,7 +57,8 @@ const recentBySeries = new Map<string, string[]>();
 const GREET_PROMPT = "The call just connected. Greet the user.";
 const H = 3_600_000;
 const mem = (text: string, i: number): Memory => ({ id: `m${i}`, text, kind: "fact", created_at: 0, updated_at: 0, last_used_at: null, follow_up: false, source_session_id: "eval" });
-const msgs = (h: Ctx["history"]): InputMessage[] => h.map((x): InputMessage => (x.role === "user" ? { role: "user", content: x.text } : { role: "assistant", content: x.text }));
+// the session sends Spark the call's turns minus what was asked to be forgotten in it (forgetInCall.ts)
+const msgs = (h: Ctx["history"]): InputMessage[] => forgetInCall(h).map((x): InputMessage => (x.role === "user" ? { role: "user", content: x.text } : { role: "assistant", content: x.text }));
 
 function threads(s: Scenario): string[] {
   const notes = (s.summaries ?? []).flatMap((n) => [...n.open_threads, ...n.promises]);

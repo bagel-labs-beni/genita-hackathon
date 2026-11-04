@@ -8,6 +8,7 @@ import { pinnedPrompt } from "./rerank.ts";
 import { avoidKeys, mentionsAvoided, scrubPairs, type AvoidKey, type Removed } from "../personalize/forgotten.ts";
 import { isForgetRequest } from "./extract.ts";
 import { mayBeSelfHarm, realCrisisSignal } from "../convo/guard.ts";
+import { isAnaphoricForget, safetyTurn } from "../convo/forgetInCall.ts";
 import { SUMMARY_EVERY, SUMMARY_INJECT, SUMMARY_LOAD_MS, SUMMARY_MAX_PAIRS, summaryPrompt, type CallSummary } from "./summaries.ts";
 
 export const MEMORY_TOOLS: Tool[] = [
@@ -36,7 +37,8 @@ export const TOOL_BUDGET_MS = 1500;
 /** the whole memory part of a call start (open + handoff seeding) */
 export const MEMORY_START_BUDGET_MS = 1500;
 export { within } from "../util/within.ts";
-export type ThreadState = { threadId: string; covered: number; pairs: Turn[] };
+/** removed: what was forgotten in the call so far (Codex #547 P1: the next device keeps it out too) */
+export type ThreadState = { threadId: string; covered: number; pairs: Turn[]; removed?: Removed[] };
 export type SparkSource = (req: SparkRequest, signal: AbortSignal) => AsyncIterable<SparkStreamEvent>;
 /** Per-turn continuation, shared with a speculative hit and its empty-answer retry. */
 export type MemoryRetryState = { request?: SparkRequest };
@@ -101,8 +103,10 @@ export class MemoryCall {
   private avoid: AvoidKey[] = [];
   /** personalize (session.ts): the removed lines so far; called again after a "forget that…" in this call */
   setAvoid(removed: Removed[]): void {
+    this.removed = [...removed];
     this.avoid = avoidKeys(removed);
   }
+  private removed: Removed[] = [];
   private clearOf<T extends { text: string }>(items: T[]): T[] {
     return this.avoid.length ? items.filter((m) => !mentionsAvoided(m.text, this.avoid)) : items;
   }
@@ -139,8 +143,16 @@ export class MemoryCall {
     });
   }
   /** For the next device (server.ts handoff): this thread, how many pairs it covers, and its kept pairs. */
+  /** this thread minus forget turns, the line an anaphoric forget pointed at, and anything about a removed line */
+  private keptPairs(): Turn[] {
+    // Codex #547 r6: a real crisis line (and its reply) is never forgotten; it goes with the call (safety first)
+    const pairs = this.thread.filter((t, i, all) => safetyTurn(t.user, t.assistant) || (!isAnaphoricForget(t.user) && !(i + 1 < all.length && isAnaphoricForget(all[i + 1].user))));
+    const kept = new Set(scrubPairs(pairs.filter((t) => !safetyTurn(t.user, t.assistant)), this.avoid));
+    return pairs.filter((t) => safetyTurn(t.user, t.assistant) || kept.has(t));
+  }
   threadState(): ThreadState {
-    return { threadId: this.threadId, covered: this.covered, pairs: this.thread.map((t) => ({ ...t })) };
+    // Codex #547 P1: the next device never gets what was forgotten in this call (forget turns, their targets)
+    return { threadId: this.threadId, covered: this.covered, pairs: this.keptPairs().map((t) => ({ ...t })), ...(this.removed.length ? { removed: [...this.removed] } : {}) };
   }
   /**
    * Handoff: this call continues another device's conversation — the same thread, not a second call.
@@ -151,6 +163,8 @@ export class MemoryCall {
     if (thread) this.threadId = thread.threadId;
     // the call goes on from the other device: its turns are this call's past (no "nothing from before" line)
     this.pastShown = true;
+    // Codex #547 P1: what the other device was asked to forget stays out here too
+    if (thread?.removed?.length) this.setAvoid([...this.removed, ...thread.removed]);
     this.service.claimThread(this.userId, this.threadId, this.sessionId);
     let pairs: Turn[] = thread?.pairs ?? [];
     if (!thread) {
@@ -247,7 +261,7 @@ export class MemoryCall {
     // describe a conversation that already went on (live eval 11/3: "did you pick white or black?" after she picked)
     if (!this.service.ownsThread(this.userId, this.threadId, this.sessionId)) return;
     // no forget request, nothing about what was removed (QA post-deploy 11/3)
-    const turns = scrubPairs([...this.thread], this.avoid);
+    const turns = this.keptPairs();
     if (!turns.length) return;
     const forgets = this.forgetsSeen;
     const threadId = this.threadId;
