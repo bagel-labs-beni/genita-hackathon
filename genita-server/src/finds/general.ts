@@ -6,20 +6,25 @@
  * results land in the Finds sheet as an "answer" card: the results as takeaways, each page as a tappable source.
  * Kind "answer" is already on the wire (webAnswer.ts); apps that predate it decode it as `.unknown` and show the
  * link layout (takeaways + Sources), so no app build is needed. Chit-chat, feelings, things in view ("is this one
- * better?") and crisis lines never search. Spoken: a short reaction now, "Here's what I found." when the card
- * lands; the results are never read aloud. GENITA_WEB_SEARCH=0 (the companion's web search switch) turns it off.
+ * better?") and crisis lines never search. GENITA_WEB_SEARCH=0 (the companion's web search switch) turns it off.
+ *
+ * Spoken (Chelsea 11/4 "섞어"): the turn answers at once in ONE sentence from what the companion already knows (a
+ * natural hedge when it doesn't), with no search of its own, while the sheet fills; "I put a few links up for you."
+ * when the card lands (after that sentence). The results are never read aloud.
  */
 import type { FindCard } from "../protocol.ts";
+import type { SparkStreamEvent } from "../meta/spark.ts";
 import { realCrisisSignal } from "../convo/guard.ts";
 import { domainOf, lastJsonObject, str, strList } from "./parse.ts";
 import type { PipelineCtx, PipelineResult } from "./pipeline.ts";
 import { userMessage, type OutputItem } from "./vendors.ts";
 import { answerTitle, isBlockedSite } from "./webAnswer.ts";
 
-/** said instead of a full answer while the search runs (no "let me look that up": tool narration is never said) */
-export const GENERAL_ACK = "Ooh, good question.";
-/** said when the card lands */
-export const GENERAL_SAY = "Here's what I found.";
+/** said when the card lands (after the one-sentence answer) */
+export const GENERAL_SAY = "I put a few links up for you.";
+/** rides the turn's reply instructions (session.ts) when the sheet is searching */
+export const GENERAL_REPLY_LINE =
+  "Web results for this question are about to appear on their screen. Answer right now in ONE short sentence (under 20 words) from what you already know. No links, no site names, no lists, and don't say you're searching or looking it up. If you don't know, or it changes often (news, scores, prices, hours), make that one sentence a natural hedge, like \"Not sure off the top of my head, pulling up a few sources.\"";
 export const GENERAL_MAX_RESULTS = 5;
 export const GENERAL_TIMEOUT_MS = 25_000;
 
@@ -248,4 +253,60 @@ export async function runGeneral(ctx: PipelineCtx): Promise<PipelineResult> {
   timings.cardMs = Math.round(ctx.now() - t0);
   ctx.log("find.general", { findId: ctx.findId, results: n, traced: traced.length });
   return { card, timings };
+}
+
+// ───────── the spoken side: one sentence ─────────
+
+/** a sentence ends at . ! ? … (plus a closing quote) before a space; "U.S." / "Dr." / "e.g." don't end one */
+const SENTENCE_END = /[.!?…]["'”’)\]]*\s/g;
+const ABBREV = /(?:\b(?:mr|mrs|ms|dr|st|vs|jr|sr|inc|ltd|no|approx|e\.g|i\.e|etc)|\b[A-Z](?:\.[A-Z])*)\.$/i;
+/** a word that is a link: never said */
+const LINKISH = /^(?:\(?https?:\/\/|\(?www\.)|^\S+\.(?:com|org|net|io|ai|co|gov|edu|kr|jp|uk)(?:\/\S*)?[),.]?$/i;
+const scrub = (t: string) => t.split(/(\s+)/).filter((w) => !LINKISH.test(w)).join("").replace(/ {2,}/g, " ");
+
+/**
+ * The reply as at most one sentence: whole words go out as they arrive (first audio is not held back), link-looking
+ * words are dropped, and the stream ends with `done` after the first sentence.
+ */
+export async function* firstSentenceOnly(src: AsyncIterable<SparkStreamEvent>): AsyncIterable<SparkStreamEvent> {
+  let buf = "";
+  let said = "";
+  const out = (t: string) => {
+    let clean = scrub(t);
+    if (/\s$/.test(said) || !said) clean = clean.replace(/^\s+/, "");
+    said += clean;
+    return clean;
+  };
+  for await (const ev of src) {
+    if (ev.type === "done") {
+      if (buf) { const t = out(buf); if (t) yield { type: "text", delta: t }; }
+      yield { ...ev, text: said };
+      return;
+    }
+    if (ev.type !== "text") { yield ev; continue; }
+    buf += ev.delta;
+    SENTENCE_END.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    let end = -1;
+    while ((m = SENTENCE_END.exec(buf))) {
+      const upto = buf.slice(0, m.index + 1);
+      if (ABBREV.test(upto.trimEnd()) && !/[!?…]/.test(m[0])) continue;
+      end = m.index + m[0].trimEnd().length;
+      break;
+    }
+    if (end >= 0) {
+      const t = out(buf.slice(0, end));
+      if (t) yield { type: "text", delta: t };
+      yield { type: "done", responseId: null, text: said, status: "completed" };
+      return;
+    }
+    // whole words only, so a link is seen whole before anything of it is said
+    const cut = buf.search(/\s\S*$/);
+    if (cut > 0) {
+      const t = out(buf.slice(0, cut + 1));
+      buf = buf.slice(cut + 1);
+      if (t) yield { type: "text", delta: t };
+    }
+  }
+  if (buf) { const t = out(buf); if (t) yield { type: "text", delta: t }; }
 }

@@ -46,6 +46,7 @@ import type { Memory } from "../memory/repository.ts";
 import type { CompanionFaceResolver } from "../memory/photos.ts";
 import { FindsRunner, type FindsDeps } from "../finds/runner.ts";
 import { isOutfitAsk, isProductAsk } from "../finds/intent.ts";
+import { GENERAL_REPLY_LINE, firstSentenceOnly } from "../finds/general.ts";
 import { inhalePcmBase64 } from "../watch/breath.ts";
 import { WatchController, type WatchSink } from "../watch/watch.ts";
 import { PerceptionController } from "../perception/controller.ts";
@@ -2433,6 +2434,8 @@ export class Session {
     let resolveSaid: (t: string | null) => void = () => {};
     // Chelsea 11/3: a web-searched answer also lands in the sheet with its sources (not when a card runs for this turn)
     let cardTurn = false;
+    /** a general search turn: the spoken answer is one sentence (general.ts) */
+    let oneSentence = false;
     let searches: WebSearch[] = [];
     // Demo S4: the suggest turn makes no outfit card from the phone's (maybe still kitchen) frames
     if (!interpret && !self && !synthetic && this.finds && !built.suggestMac) {
@@ -2442,6 +2445,15 @@ export class Session {
       const started = this.finds.onTurn({ text, frames: built.images, utteranceId, replyText: said, recent, unclear: built.images.length > 0 && this.framesUnclear });
       cardTurn = !!started;
       signal.addEventListener("abort", () => resolveSaid(null), { once: true });
+      if (started?.kind === "answer" && !started.ack) {
+        // Chelsea 11/4 "섞어": the sheet searches; the reply answers now in one sentence from what it knows, with no
+        // search of its own (a speculative reply was asked without this line: ask again)
+        oneSentence = true;
+        if (spec && speculative === "hit") { spec.abort.abort(); pre = null; }
+        req.instructions = `${req.instructions ?? ""}\n${GENERAL_REPLY_LINE}\n`;
+        req.tools = undefined;
+        this.log("finds.general_reply", { utteranceId });
+      }
       if (started?.ack) {
         ackTurn = true;
         // PF-1: a short line now instead of a full answer (a full answer would guess products and links);
@@ -2783,7 +2795,8 @@ export class Session {
           let status = "";
           let attemptError: unknown = null;
           try {
-            const raw = attempt === 0 ? (pre ?? this.sparkSource(req, signal, greeting?.item, !interpret && !cue, undefined, undefined, memoryRetry)) : this.sparkSource(req, signal, greeting?.item, !interpret && !cue, undefined, 1, memoryRetry);
+            const raw0 = attempt === 0 ? (pre ?? this.sparkSource(req, signal, greeting?.item, !interpret && !cue, undefined, undefined, memoryRetry)) : this.sparkSource(req, signal, greeting?.item, !interpret && !cue, undefined, 1, memoryRetry);
+            const raw = oneSentence ? firstSentenceOnly(raw0) : raw0;
             // Demo S4 (QA P2): the suggest turn must name the Mac; a reply that doesn't is swapped for the fixed line
             const stream = built.suggestMac && !interpret && !self ? mustNameMac(raw, SUGGEST_MAC_REPLIES[utteranceId % SUGGEST_MAC_REPLIES.length], this.now) : raw;
             for await (const ev of stream) {
