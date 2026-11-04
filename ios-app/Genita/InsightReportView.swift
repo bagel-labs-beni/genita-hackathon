@@ -539,17 +539,21 @@ struct InsightShareCard: View {
     var card: some View {
         ZStack(alignment: .topLeading) {
             InsightInk.cardBg
-            Image(resource: "reference-orb-round").resizable().scaledToFit().frame(width: 130, height: 130).offset(x: 14, y: -14)
+            // orb.png's orb is 250 of its 674 pt (wide grain halo around it): scale so the orb itself is 56 pt and
+            // crop to it, like CallWaitStage / OnboardingWireViews, instead of shrinking the whole canvas.
+            Image(resource: "orb").resizable().scaledToFit().frame(width: 56 * 674 / 250, height: 56 * 674 / 250)
+                .frame(width: 56, height: 56).clipShape(Circle()).padding(.top, 18).padding(.trailing, 18)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing).accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 6) {
                 Text(isPrefix).insightText(13, .medium, line: 18, color: InsightInk.sub)
                 Text(type.name).font(TypeStyle.title(32)).foregroundStyle(InsightInk.ink).frame(maxWidth: 240, alignment: .leading).fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 6) {
+                // Chips wrap; the bottom inset keeps them ≥ 12 pt above the "genita" mark (18 pt line + 18 pt inset).
+                HISYFlow(spacing: 6) {
                     ForEach(signature, id: \.self) { s in Text(s).insightText(13, .medium, line: 18).padding(.horizontal, 10).frame(height: 26).background(.white, in: Capsule()) }
                 }
                 .padding(.top, 8)
             }
-            .padding(.horizontal, 22).padding(.top, 22).padding(.bottom, 20)
+            .padding(.horizontal, 22).padding(.top, 22).padding(.bottom, 48)
             Text("genita").insightText(13, .semibold, line: 18).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing).padding(.trailing, 20).padding(.bottom, 18)
         }
         .frame(minHeight: 170)
