@@ -160,17 +160,26 @@ extension AppState {
         return serverWired ? nil : setup.imageData
     }
 
-    /// NM01 and the screens before PREP-1: the scene isn't polled there, so ask for it until it exists (≤ 90 s).
+    /// NM01: the scene isn't polled before PREP-1, so ask for it until it exists (≤ 90 s). Reads `GET /v1/companion`
+    /// (its `prep` carries `sceneUrl`), not `/prep`, so PREP-1's own polling and the server's face top-up are untouched.
+    /// Each answer must still belong to this sign-in and this onboarding (Codex P2).
     func followSceneUntilShown() async {
         guard serverWired else { return }
         await companionTask?.value
+        let launchRequest = launchAuthSnapshot, request = onboardingSnapshot()
         let until = Date().addingTimeInterval(90)
         while sceneImageData == nil, setup.companionCreated == true, Date() < until, !Task.isCancelled {
-            if let p = try? await onboarding.prep() {
-                prep = p
-                await loadScene()
+            do {
+                let c = try await onboarding.companion()
+                guard launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled, ownsOnboardingResponse(request) else { return }
+                if c.prep?.sceneURL != nil { await loadScene(for: c.prep) }
                 if sceneImageData != nil { return }
-            }
+            } catch GenitaAuthError.server(404, _, _) {
+                return   // no companion (yet / any more): nothing to show
+            } catch let error as GenitaAuthError where error == .unauthorized || error == .consentRequired {
+                if launchRequest.generation == authGeneration, !Task.isCancelled { route(error) }
+                return
+            } catch {}
             try? await Task.sleep(for: .seconds(2))
         }
     }
