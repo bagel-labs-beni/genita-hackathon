@@ -649,6 +649,8 @@ export class FindsRunner {
     for (const r of this.running.values()) r.abort.abort();
     // and the background ones (cache warm-up / refresh) asked with it too, running or waiting for a slot (Codex #583 r15)
     for (const stop of [...this.backgroundStops]) stop();
+    // the last product search's question / label (a "find a couple more" refine) was made from it too (Codex #583 r16)
+    this.lastProduct = null;
   }
 
   /** One line for the system prompt about the card on screen, or undefined. Data only. */
