@@ -88,6 +88,15 @@ struct FindEntry: Identifiable, Equatable {
     @ObservationIgnored private var risingTask: Task<Void, Never>?
     @ObservationIgnored private var toastTask: Task<Void, Never>?
 
+    /// P1-12: a search the user starts while a card is open takes the sheet (searching → its card) instead of a banner.
+    /// The Mac sheet never folds to peek while she talks (reading or not), so its refine searches showed only the
+    /// banner; the iPhone keeps r03 #11 (its sheet folds to peek when she starts talking).
+    #if os(macOS)
+    var followsNewSearch = true
+    #else
+    var followsNewSearch = false
+    #endif
+
     /// Interpretation is on: "Ask about this" would be translated to the other person, so asking is off.
     var interpreting = false
     var canAsk: Bool { !interpreting }
@@ -116,8 +125,11 @@ struct FindEntry: Identifiable, Equatable {
             entries.append(FindEntry(id: s.findId, kind: s.kind, utteranceId: s.utteranceId, searchTitle: s.title, searchDetail: s.detail, frames: frames, question: latestQuestion))
             // these frames belong to this find now: a later find (camera off by then) must not pick them up (AU-75)
             latestFrames = []
-            // folded to peek (the user started talking) is not reading: the new search shows (FD-02 refine, AU-69)
-            if state == .idle || state == .dismissed || state == .searching || state == .peek {
+            // folded to peek (the user started talking) is not reading: the new search shows (FD-02 refine, AU-69).
+            // Mac (P1-12): the sheet stays open while she talks, so a new search she just asked for takes the sheet
+            // instead of waiting behind a "New · View" banner.
+            if state == .idle || state == .dismissed || state == .searching || state == .peek
+                || (followsNewSearch && [.rising, .half, .full].contains(state)) {
                 page = entries.count - 1
                 state = .searching
                 undoState = nil
