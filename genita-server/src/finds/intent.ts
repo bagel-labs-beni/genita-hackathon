@@ -63,8 +63,8 @@ export type Intent = { kind: FindKind | "identify"; url?: string } | null;
 
 /** "What's this?" / "이게 뭐야" about a thing held up to the camera (not a song, a smell or what a word means). */
 const IDENTIFY =
-  /\b(?:what(?:'s|’s| is) (?:this|that|it)\b|what (?:am i|i'm|i am) holding|what do you call (?:this|that)|(?:do you |can you tell me )?know what (?:this|that) is|tell me what (?:this|that) is)|(?:이게|이거|이건|저게|저거|저건)\s*(?:뭐|무엇|뭔)/i;
-const NOT_VISUAL = /\b(?:about|mean|means|meaning|song|sound|noise|smell|music|movie|show|video|episode|word|called|for|supposed)\b/i;
+  /\b(?:what(?:'s|’s| is) (?:this|that)\b|what (?:am i|i'm|i am) holding|what do you call (?:this|that)|(?:do you |can you tell me )?know what (?:this|that) is|tell me what (?:this|that) is)|(?:이게|이거|이건|저게|저거|저건)\s*(?:뭐|무엇|뭔)/i;
+const NOT_VISUAL = /\b(?:like|going on|happening|about|mean|means|meaning|song|sound|noise|smell|music|movie|show|video|episode|word|called|for|supposed)\b/i;
 export function isIdentifyAsk(text: string): boolean {
   return IDENTIFY.test(text) && !NOT_VISUAL.test(text) && text.trim().split(/\s+/).length <= 10;
 }
@@ -80,7 +80,7 @@ export function refersToScreen(text: string): boolean {
  * ("find me some", "what shoes would go with it"). The runner only takes it right after an outfit verdict.
  */
 const ACCEPT = /^(?:(?:oh |ok(?:ay)? |um+ |hmm+ )?(?:yes|yeah|yep|yup|sure|please|ok(?:ay)?|definitely|absolutely|of course|go ahead|go for it|do it|let'?s do it|let'?s see|sounds good|why not)\b[\s,.!]*(?:please|go for it|do it|go ahead|let'?s do it|let'?s see|sure|thanks|thank you)?[\s,.!]*(?:find (?:me )?(?:some|a pair|one|them)|show me(?: some)?)?[\s,.!?]*)$/i;
-const GOES_WITH_ASK = /\b(?:find (?:me )?(?:some|a pair|one|a couple)|show me (?:some|a few|a pair)|what (?:shoes|accessories|bag|bags|boots|jewelry|else)?\s*(?:would|could|will|might)? ?go(?:es)? with (?:it|this|that|them)|something (?:that )?(?:goes|would go) with (?:it|this|that))\b/i;
+const GOES_WITH_ASK = /\b(?:(?:find|show) (?:me )?(?:some|a pair|one|a couple|a few)(?: of (?:those|them|these))?(?: (?:for|to go with) (?:it|this|that|me))?[\s,.!?]*$|what (?:shoes|accessories|bag|bags|boots|jewelry|else)?\s*(?:would|could|will|might)? ?go(?:es)? with (?:it|this|that|them)|something (?:that )?(?:goes|would go) with (?:it|this|that))\b/i;
 /** a bare "yes / sure / go for it": only counts right after the companion offered to find something */
 export function isBareAccept(text: string): boolean {
   const t = text.trim();

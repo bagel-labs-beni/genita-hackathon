@@ -22,7 +22,7 @@ test("A intent: 'what's this?' with the camera on is an identify ask; without th
     assert.equal(classifyTurn(l, false), null, l);
   }
   // not about a thing in view
-  for (const l of ["What's this song?", "What is this about?", "What's that smell?", "What does that mean?", "what's this show called"]) assert.equal(isIdentifyAsk(l), false, l);
+  for (const l of ["What's this song?", "What is this about?", "What's that smell?", "What does that mean?", "what's this show called", "What is it like living in Seoul?", "What's it like outside today?", "What's this like?"]) assert.equal(isIdentifyAsk(l), false, l);
   // the existing cards keep winning
   assert.deepEqual(classifyTurn("What can I make with what's in here?", true), { kind: "recipe" });
   assert.deepEqual(classifyTurn("Which one should I wear tonight?", true), { kind: "outfit" });
@@ -82,7 +82,7 @@ test("A pipeline: Spark NO or no SAM box → no outline and never named (honest 
 });
 
 test("A pipeline: a person or a face is never outlined", async () => {
-  for (const name of ["face", "person", "woman", "your face", "selfie"]) {
+  for (const name of ["face", "person", "woman", "your face", "selfie", "nose", "mouth", "eyes"]) {
     const v = idVendors({ name, say: "That's you!", yes: true, boxes: [samBox(180, 330, 300, 520)] });
     const { ctx, events, said } = idCtx(v);
     await runIdentify(ctx);
@@ -249,5 +249,65 @@ test("C2: a bare 'yes' with no outfit verdict (or no offer) is just a reply", ()
   const cap = cap0();
   const r = newRunner(cap);
   assert.equal(r.onTurn({ text: "yes", frames: [FRAME], utteranceId: 1, replyText: Promise.resolve(null), recent: ["You: Did you sleep well?"] }), null);
+  r.close();
+});
+
+// ───────────── Codex r1 ─────────────
+
+const VERDICT = "Go with the camel trench, it's so you. Want me to find dark brown boots for it?";
+async function afterVerdict(cap: Captured): Promise<FindsRunner> {
+  const r = newRunner(cap);
+  r.onTurn({ text: "Which one should I wear tonight?", frames: [FRAME, FRAME], utteranceId: 1, replyText: Promise.resolve(VERDICT) });
+  await settle();
+  return r;
+}
+
+test("Codex r1: a new ask of its own after the verdict keeps its own card", async () => {
+  const cap = cap0();
+  const r = await afterVerdict(cap);
+  assert.equal(r.onTurn({ text: "Find me some chicken recipes", frames: [FRAME], utteranceId: 2, replyText: Promise.resolve(null), recent: [`You: ${VERDICT}`] })?.kind, "recipe");
+  r.close();
+  const cap2 = cap0();
+  const r2 = await afterVerdict(cap2);
+  const before = cap2.prompts.length;
+  r2.onTurn({ text: "Find me a pair of headphones", frames: [], utteranceId: 2, replyText: Promise.resolve(null), recent: [`You: ${VERDICT}`] });
+  await settle();
+  const search = cap2.prompts.slice(before).find((p) => p.text.includes("Shop for them"))!;
+  assert.ok(search.text.includes('The user asked out loud: "Find me a pair of headphones"'), "not rewritten to the verdict's boots");
+  r2.close();
+});
+
+test("Codex r1: a 'yes' after another exchange is not the verdict's yes", async () => {
+  const cap = cap0();
+  const r = await afterVerdict(cap);
+  assert.equal(r.onTurn({ text: "Anyway, I'm hungry", frames: [], utteranceId: 2, replyText: Promise.resolve(null), recent: [`You: ${VERDICT}`] }), null);
+  assert.equal(r.onTurn({ text: "Yes", frames: [], utteranceId: 3, replyText: Promise.resolve(null), recent: ["You: Want me to find a restaurant nearby?"] }), null);
+  r.close();
+});
+
+test("Codex r1: after 'Forget all of this', the verdict's line is not searched", async () => {
+  const cap = cap0();
+  const r = await afterVerdict(cap);
+  r.forgetTaste();
+  assert.equal(r.onTurn({ text: "find me some", frames: [], utteranceId: 2, replyText: Promise.resolve(null), recent: [`You: ${VERDICT}`] }), null);
+  r.close();
+});
+
+test("Codex r1: camera and share both on — 'what am I holding?' looks at the camera", async () => {
+  const cap = cap0();
+  const r = newRunner(cap);
+  r.onTurn({ text: "What am I holding?", frames: [FRAME], screen: "data:image/jpeg;base64,SCREEN", utteranceId: 1, replyText: Promise.resolve(null) });
+  await settle();
+  assert.ok(cap.events.some((e) => e.type === "observe.boxes"));
+  assert.ok(!JSON.stringify(cap.prompts).includes("SCREEN"));
+  r.close();
+});
+
+test("Codex r1: a recipe from the shared screen sends no camera boxes", async () => {
+  const cap = cap0();
+  const r = newRunner(cap);
+  r.onTurn({ text: "What can I cook from this on my screen?", frames: [], screen: "data:image/jpeg;base64,SCREEN", utteranceId: 1, replyText: Promise.resolve(null) });
+  await new Promise((res) => setTimeout(res, 200));
+  assert.ok(!cap.events.some((e) => e.type === "observe.boxes"));
   r.close();
 });

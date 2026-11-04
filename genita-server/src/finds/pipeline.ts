@@ -662,7 +662,7 @@ export async function runOutfit(ctx: PipelineCtx): Promise<PipelineResult> {
 /** CEO demo 11/4: said when the name can't be checked (Spark NO, no SAM box, a person): never a guess. */
 export const IDENTIFY_UNSURE = "Hmm, I can't make it out clearly. Hold it a little closer?";
 /** never outlined or named as "the thing": the user (or anyone) on camera */
-const PERSON = /\b(?:face|faces|person|people|man|woman|men|women|boy|girl|child|kid|baby|selfie|human|head|hair|you|yourself|me|user|someone|body)\b/i;
+const PERSON = /\b(?:faces?|person|people|man|woman|men|women|boy|girl|child|kid|baby|selfie|human|head|hair|you|yourself|me|user|someone|body|nose|noses|mouth|lips?|eyes?|eyebrows?|eyelash(?:es)?|ears?|cheeks?|chin|forehead|neck|skin|teeth|tooth|tongue|beard|mustache|moustache|hands?|fingers?|arms?|legs?|feet|foot|shoulders?|portrait)\b/i;
 const IDENTIFY_PROMPT = [
   "The user holds something up to their camera (or points it at something) and asks what it is.",
   "Name the one object they mean: the thing in their hand, or else the most central object in view.",

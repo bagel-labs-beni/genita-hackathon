@@ -148,6 +148,15 @@ export const IDENTIFY_ACK = "Ooh, let me look.";
 const SCREEN_WORDS = /\b(?:on (?:my|the) screen|(?:this|the|in the) (?:video|clip|show|movie|scene)|on the share|screen share)\b/i;
 /** the line says it's about them / the camera, not the share */
 const CAMERA_WORDS = /\b(?:camera|on me|i'?m wearing|i am wearing|i have on|my outfit|i'?m holding|in my hand|my hand)\b|입고|들고/i;
+/** Codex r1 P2: recipe / outfit made from a shared-screen frame — its boxes are not for the camera preview (null = dropped). */
+export function screenEvent(e: ServerEvent): ServerEvent | null {
+  if (e.type === "observe.boxes") return null;
+  if (e.type === "find.created" && e.card.camera) {
+    const { camera: _camera, ...card } = e.card;
+    return { ...e, card: { ...card, eyebrow: "From your screen", how: card.how.map((h) => h.replace(/\byour camera\b/gi, "your shared screen")) } };
+  }
+  return e;
+}
 /** the companion's last line offered to find something ("Want me to find a pair?") */
 const OFFER = /\b(?:want me to|should i|shall i|i can|i could|let me|how about i)\b[^.?!]{0,60}\b(?:find|look|pull|search|grab|show|hunt)\b/i;
 
@@ -281,21 +290,25 @@ export class FindsRunner {
     const prefetchLive = !!this.prefetched && this.hooks.now() - this.prefetched.at < PREFETCH_WINDOW_MS;
     // demo scene 5: right after the outfit verdict, "yes" to its offer / "find me some" / "what shoes go with it" is the
     // search for what it suggested (with the camera and her taste), not another outfit pick
+    // only the very next turn: anything said in between ends it ("Want me to find a restaurant?" → "yes", Codex r1 P2)
     const outfit = this.lastOutfit && this.hooks.now() - this.lastOutfit.at < PREFETCH_WINDOW_MS ? this.lastOutfit : null;
+    this.lastOutfit = null;
     const lastLine = [...(t.recent ?? [])].reverse().find((l) => l.startsWith("You: ")) ?? "";
-    const followUp = !!outfit && isGoesWithFollowUp(t.text) && (!isBareAccept(t.text) || OFFER.test(lastLine));
+    const base = classifyTurn(t.text, t.frames.length > 0 || !!t.screen, afterProduct);
+    // a new ask of its own ("find me some chicken recipes", "a pair of headphones") keeps its own card (Codex r1 P2)
+    const followUp = !!outfit && (!base || base.kind === "outfit") && isGoesWithFollowUp(t.text) && (!isBareAccept(t.text) || OFFER.test(lastLine));
     if (followUp) {
       this.lastOutfit = null;
       t = { ...t, text: `Find what you offered to find for the look they just picked (shoes or accessories that go with it). What you told them: "${outfit!.said.slice(0, 300)}". They answered: "${t.text.slice(0, 100)}".` };
     }
     // Chelsea 11/4 D: while the Mac shares its screen, a question takes the shared frame (fresher than the camera,
     // ≤1 s old), unless it's about them or what they hold; "on my screen" / "this video" always mean the share
-    const intent0 = followUp ? { kind: "product" as const } : classifyTurn(t.text, t.frames.length > 0 || !!t.screen, afterProduct) ?? (prefetchLive && isLinksAsk(t.text) ? { kind: "product" as const } : null);
+    const intent0 = followUp ? { kind: "product" as const } : base ?? (prefetchLive && isLinksAsk(t.text) ? { kind: "product" as const } : null);
     if (!intent0) return null;
     const intent = intent0;
+    // the share when there is no camera picture, or when the line points at it; otherwise the camera (Codex r1 P2)
     const useScreen = !!t.screen && !followUp && (
       !t.frames.length || SCREEN_WORDS.test(t.text) || (intent.kind === "product" && refersToScreen(t.text) && !CAMERA_WORDS.test(t.text))
-      || (intent.kind !== "outfit" && !CAMERA_WORDS.test(t.text))
     );
     if (useScreen) t = { ...t, frames: [t.screen!], unclear: false };
     const findId = randomUUID();
@@ -323,7 +336,8 @@ export class FindsRunner {
       replyText: t.replyText,
       timeZone: this.timeZone,
       vendors: this.deps.vendors,
-      emit: (e) => this.onEvent(e),
+      // a shared-screen frame: no boxes for the camera preview, and the card never claims (or shows) a camera picture
+      emit: (e) => this.onEvent(useScreen ? screenEvent(e) : e),
       signal: abort.signal,
       now: this.hooks.now,
       log: this.hooks.log,
@@ -373,7 +387,7 @@ export class FindsRunner {
       const forgotSince = () => this.tasteForgottenAt !== null && turnAt <= this.tasteForgottenAt;
       const turn = t;
       void t.replyText.then((said) => {
-        if (said) this.lastOutfit = { said, at: this.hooks.now() };
+        if (said && !forgotSince()) this.lastOutfit = { said, at: this.hooks.now() };
         if (said && !abort.signal.aborted && !forgotSince()) { prefetching = true; this.startPrefetch(null, said, turn); }
       }).catch(() => {});
       run = async (c) => {
@@ -667,7 +681,8 @@ export class FindsRunner {
     return { card: null, timings: r.timings };
   }
 
-  private onEvent(e: ServerEvent): void {
+  private onEvent(e: ServerEvent | null): void {
+    if (!e) return;
     if (this.purged || (this.owner && this.deps.store.work.isDeleted(this.owner))) return;
     // after the call ends, finished cards still get their pictures saved
     if (e.type === "find.created" || e.type === "find.failed") this.landed.add(e.findId);
@@ -778,6 +793,7 @@ export class FindsRunner {
   private tasteForgottenIds = new Set<string>();
   forgetTaste(): void {
     this.tasteForgottenAt = new Date().toISOString();
+    this.lastOutfit = null; // its verdict may quote the forgotten taste (Codex r1 P1)
     for (const id of this.running.keys()) this.tasteForgottenIds.add(id);
     // a prefetch searched with the old taste: stopped and never reused (Codex #583 r9)
     this.prefetched?.abort.abort();
