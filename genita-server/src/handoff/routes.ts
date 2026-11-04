@@ -36,10 +36,23 @@ export function deviceFor(principalDevice: string, url: URL): HandoffDevice | nu
 }
 
 /**
+ * Kill switch (11/4, mic dead on TestFlight 331 after GATE-A): `GENITA_AUDIO_GATE=0` turns the call gate off.
+ * Every call then runs like an older build's: the mic always reaches the session and audio/say always go out.
+ * Presence, ownership events and handoff claims keep working. Unset or any other value = gated (default).
+ * Read per call, so an SSM change takes effect on the next restart without code changes.
+ */
+export function audioGateOn(env: NodeJS.ProcessEnv = process.env): boolean {
+  const v = (env.GENITA_AUDIO_GATE ?? "1").trim().toLowerCase();
+  return !(v === "0" || v === "false" || v === "off");
+}
+
+/**
  * A call is gated only when it opts in with `?device=` (a build that also runs the presence client).
  * The JWT's device alone does not gate it: an older build with a signed-in token keeps its sound.
+ * With the kill switch off (`GENITA_AUDIO_GATE=0`) no call is gated.
  */
-export function gatedCallDevice(principalDevice: string, url: URL): HandoffDevice | null {
+export function gatedCallDevice(principalDevice: string, url: URL, env: NodeJS.ProcessEnv = process.env): HandoffDevice | null {
+  if (!audioGateOn(env)) return null;
   const asked = asDevice(url.searchParams.get("device"));
   return asked ? (asDevice(principalDevice) ?? asked) : null;
 }
