@@ -237,7 +237,7 @@ import UIKit
         let action = MicStall.onConfigChange(now: now, lastBuild: lastBuildAt, wantMic: wantMic, hasMic: engineHasMic,
                                              builtIn: micRate, nowIn: inRate, builtOut: builtOutRate, nowOut: outRate,
                                              running: engine.isRunning, recentRebuilds: configRebuilds.count,
-                                             voiceProcessing: Self.useVoiceProcessing, stoppedWithQueue: needsCarry)
+                                             voiceProcessing: Self.useVoiceProcessing, stoppedWithQueue: needsCarry && !scheduled.isEmpty)
         log.info("config change: \(String(describing: action), privacy: .public) wantMic=\(wantMic, privacy: .public) hasMic=\(self.engineHasMic, privacy: .public) in=\(self.micRate, privacy: .public)→\(inRate, privacy: .public) out=\(self.builtOutRate, privacy: .public)→\(outRate, privacy: .public) running=\(self.engine.isRunning, privacy: .public)")
         switch action {
         case .keep:
@@ -263,7 +263,7 @@ import UIKit
 
     private func rebuildForConfig(wantMic: Bool, now: TimeInterval) {
         // a queued reply is carried even past the cap (it would be lost otherwise); anything else waits for the gate
-        if needsCarry { configRebuilds.append(now) } else { guard mayRebuild("config change") else { return } }
+        if needsCarry, !scheduled.isEmpty { configRebuilds.append(now) } else { guard mayRebuild("config change") else { return } }
         buildEngine(withMic: wantMic)
         log.info("config change: rebuilt mic=\(wantMic, privacy: .public) hasMic=\(self.engineHasMic, privacy: .public) micOpen=\(self.micOpen, privacy: .public) inputRate=\(self.micRate, privacy: .public) running=\(self.engine.isRunning, privacy: .public)")
         if micOpen, !engineHasMic { watchMic() }
@@ -379,6 +379,7 @@ import UIKit
         generation += 1
         if player.engine != nil { player.stop() }   // before start() the node has no engine
         queuedBuffers = 0
+        needsCarry = false   // nothing left to carry (Codex #740 r3)
         queuedByUtterance.removeAll()
         completeUtterances.removeAll()
         utteranceStart.removeAll()
