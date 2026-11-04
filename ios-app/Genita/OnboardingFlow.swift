@@ -61,7 +61,13 @@ extension AppState {
         let route = StartRouter.route(state, device: .iphone)
         // a companion on the server but not on this phone (reinstall, new phone, a judge's ready-made one):
         // bring its name, card and face back first
-        if route == .connecting || route == .textWhilePreparing, setup.companionName == nil || me?.companionDemo == true { await restoreCompanion(for: request) }
+        // Every launch into a call asks which companion the account has: another phone may have replaced it, and its
+        // cached scene / photo must not open this call (handover b9-6). Not on this phone yet, or another one now →
+        // bring it back in full; the same one → only confirm it (inputs on this phone stay, Codex P2).
+        if route == .connecting || route == .textWhilePreparing {
+            if setup.companionName == nil || me?.companionDemo == true { await restoreCompanion(for: request) }
+            else { await confirmCompanion(for: request) }
+        }
         guard launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled,
               ownsOnboardingResponse(request) else {
             // The session expired while the companion came back: that request's 401 cleared this lifetime's token.
@@ -90,11 +96,37 @@ extension AppState {
         if stage == .consent { consentAccepted() }
     }
 
+    /// The server's companion vs the one this phone remembers: a different one (replaced or deleted on another
+    /// device) drops this phone's scene and picture before anything draws them; the same one confirms the cache.
+    func adoptServerCompanion(imageId: String?) {
+        if let mine = setup.imageId, mine != imageId {
+            // a scene downloaded in this launch is already the server's current one; a cached one isn't
+            if !sceneFresh { sceneImage = nil }
+            setup.imageData = nil
+        }
+        sceneCompanionConfirmed = true
+    }
+
+    /// The companion on this phone is the server's one → confirmed; another one → restored in full.
+    func confirmCompanion(for request: OnboardingSessionGeneration.Snapshot? = nil) async {
+        let launchRequest = launchAuthSnapshot
+        let request = request ?? onboardingSnapshot()
+        guard let c = try? await onboarding.companion(), launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled,
+              ownsOnboardingResponse(request) else { return }
+        if c.imageId == setup.imageId { adoptServerCompanion(imageId: c.imageId); return }
+        await applyServerCompanion(c, launchRequest: launchRequest, request: request)
+    }
+
     func restoreCompanion(for request: OnboardingSessionGeneration.Snapshot? = nil) async {
         let launchRequest = launchAuthSnapshot
         let request = request ?? onboardingSnapshot()
         guard let c = try? await onboarding.companion(), launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled,
               ownsOnboardingResponse(request) else { return }
+        await applyServerCompanion(c, launchRequest: launchRequest, request: request)
+    }
+
+    private func applyServerCompanion(_ c: CompanionInfo, launchRequest: LaunchAuthSnapshot, request: OnboardingSessionGeneration.Snapshot) async {
+        adoptServerCompanion(imageId: c.imageId)
         setup.companionName = c.name
         setup.imageId = c.imageId
         setup.imageType = c.type
@@ -128,14 +160,16 @@ extension AppState {
     func loadScene(for upcoming: PrepProgress? = nil) async {
         let p = upcoming ?? prep
         guard serverWired, let url = p?.sceneURL else { return }
-        let account = setup.accountId ?? "-", key = "\(account)|\(url.absoluteString)"
-        guard sceneImage?.key != key, let data = try? await onboarding.sceneImage(url), UIImage(data: data) != nil,
+        // same key format as `sceneKey` (Codex P1); a cached copy under the same key is reused only once trusted
+        let owner = sceneOwner, key = "\(owner)\(url.absoluteString)"
+        guard !(sceneImage?.key == key && sceneTrusted), let data = try? await onboarding.sceneImage(url), UIImage(data: data) != nil,
               !Task.isCancelled else { return }
         // the account or companion may have changed while the image was on its way: keep it only for the same
         // account, and never over a newer scene already loaded for the prep on screen (an `upcoming` answer is
         // applied by the caller right after this, so its scene always wins)
-        guard (setup.accountId ?? "-") == account, upcoming != nil || prep?.sceneURL == url || sceneImageData == nil else { return }
+        guard sceneOwner == owner, upcoming != nil || prep?.sceneURL == url || sceneImageData == nil else { return }
         sceneImage = (key, data)
+        sceneFresh = true
     }
 
     /// `loadScene`, given up after `seconds` (a slow or hanging image download never holds a screen).
