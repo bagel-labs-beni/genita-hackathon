@@ -181,6 +181,8 @@ export type SessionPersonalize = {
   /** bumped by "Forget all of this": a profile read from before it is never applied */
   generation?(userId: string): number;
   voiceCorrection(userId: string, line: string, lastAssistant?: string, signal?: AbortSignal, asked?: UnknownItem | null, since?: number): Promise<VoiceUpdate | null>;
+  /** Clears volatile import material even when this line does not enter voiceCorrection. */
+  notifyForget?(userId: string): void;
   endCall(userId: string, turns: CallTurn[], asked: string | null, startedAt?: string): Promise<number>;
   /** Knows-Me S1: the user cut two long replies short → observed "short replies" line; null = not saved */
   noteShorter?(userId: string): Promise<{ text: string; fields: string[]; profile: string } | null>;
@@ -439,6 +441,16 @@ export const RECONNECT_LINE = "Sorry, we got cut off — where were we?";
  */
 export function greetOpenerOn(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.GENITA_GREET_OPENER !== "0";
+}
+/**
+ * DEMO 11/4 (Chelsea, build 10: "Hey Summer" … ~3 s … the rest): with the server voice the opener clip is instant but
+ * Spark's first greeting sentence takes ~2.2 s (prod p50), so the opener used to stand alone in silence. The opener now
+ * waits for Spark's first sentence, at most this long, and that sentence's voice is asked for at once: the two play
+ * back to back. GENITA_GREET_OPENER_WAIT_MS=0 = the opener at once again (no redeploy, a restart).
+ */
+export function greetOpenerWaitMs(env: NodeJS.ProcessEnv = process.env): number {
+  const v = Number(env.GENITA_GREET_OPENER_WAIT_MS ?? 2500);
+  return Number.isFinite(v) ? Math.max(0, Math.min(5000, v)) : 2500;
 }
 /** Chelsea 11/4: 3–4 variants, never the same every time; "Hey!" family without a name */
 export const GREET_OPENERS = ["Hey, {name}!", "Hi, {name}!", "Oh hey, {name}!", "Hey hey, {name}!"];
@@ -1903,6 +1915,9 @@ export class Session {
   private checkCorrection(text: string, since?: number): void {
     const p = this.deps.personalize;
     const userId = this.deps.userId;
+    // This is before every Session-side correction/budget gate. `voiceCorrection`
+    // repeats it for direct callers; invalidating the same generation twice is safe.
+    if (p && userId && isForgetRequest(text)) p.notifyForget?.(userId);
     // the profile it was said under: a line queued behind another runs with it, so a forget in between drops it (Codex #583 r14)
     const gen = since ?? (userId ? p?.generation?.(userId) : undefined);
     // "forget that …": from this line on, memory, notes and the turns handed on leave its target out (no Spark wait)
@@ -2974,6 +2989,7 @@ export class Session {
     // out, then once the cached recovery line
     let retries = 0;
     let recovered = false;
+    let openerHeld = false; // DEMO 11/4: the greeting opener's wait for Spark's first sentence happened
     let held = false; // the hold line was tried for this reply
     let holdVoiced = false;
     let heard = false; // a clause of the reply itself was voiced (the hold line does not count)
@@ -3042,6 +3058,24 @@ export class Session {
       // (read the sentence after the check: the only sentence may have been replaced by the short reaction)
       if (askedAt(i)) continue;
       const s = sentences[i];
+      if (s.opener && !device && !reply.fellBack && reply.firstAudioAt === null && !openerHeld) {
+        // DEMO 11/4: the greeting's opener waits for Spark's first sentence (greetOpenerWaitMs), so no gap after it
+        openerHeld = true;
+        const capMs = greetOpenerWaitMs();
+        const answerAt = () => sentences.findIndex((x, k) => k > i && !x.opener && !x.drop);
+        if (capMs > 0 && answerAt() < 0) {
+          const t0 = this.now();
+          let timedOut = false;
+          const timer = setTimeout(() => { timedOut = true; waiter.wake?.(); }, capMs);
+          while (answerAt() < 0 && !sparkDone && !signal.aborted && !timedOut) await new Promise<void>((r) => (waiter.wake = r));
+          clearTimeout(timer);
+          waiter.wake = null;
+          if (signal.aborted) break;
+          this.log("call.greet_opener_held", { utteranceId, ms: Math.round(this.now() - t0), timedOut });
+        }
+        const next = answerAt();
+        if (next > 0 && !askedAt(next)) startJob(next); // its voice renders while the opener plays
+      }
       if (device || reply.fellBack) {
         if (reply.firstAudioAt === null) await this.untilUserQuiet(signal);
         if (signal.aborted) break;
@@ -3179,6 +3213,9 @@ export class Session {
           // watch together may have taken the question back (or swapped it for the short reaction) meanwhile:
           // the loop head judges it again (Codex review P2)
           jobs[i] = sentences[i] === s && !sentences[i]?.drop ? ttsJob(s, true, last && !heard ? COLD_WAIT_MS : undefined) : (undefined as never);
+          // a later clause asked for ahead (the greeting opener's answer) may hold the same outage's failure: ask again
+          // once this one is through (Codex #708 P1)
+          for (let k = i + 1; k < jobs.length; k++) if (jobs[k]) jobs[k] = undefined as never;
           i--;
           continue;
         }

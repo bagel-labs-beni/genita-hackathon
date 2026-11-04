@@ -11,6 +11,7 @@ import { PrepRunner, newPrepState } from "../src/prep/runner.ts";
 import { savePrefs } from "../src/prep/pipeline.ts";
 import { DEFAULT_VOICES } from "../src/prep/voices.ts";
 import { interpretCheck } from "../src/prep/classify.ts";
+import { toStyleCard } from "../src/prep/importProfile.ts";
 import type { PrepDeps } from "../src/prep/pipeline.ts";
 
 /** Routes with a real file store; upstream failures exercise the local fallback. */
@@ -97,6 +98,16 @@ test("prep routes: prompt, validation, one companion per user, prefs → persona
   assert.equal(prefs.json.summary.never, "Nothing off-limits yet.");
   assert.deepEqual(Object.keys(prefs.json.summary), ["why", "energy", "initiative", "never"]);
   assert.equal(prefs.json.session.voiceId, DEFAULT_VOICES[1].id);
+  // Chelsea 11/4 (TF 331): once the P flow is saved, all six preference rows have a line, even without an import
+  assert.deepEqual(prefs.json.rows.map((r: any) => r.title), ["Communication style", "Response preferences", "How Genita can help", "Interests", "Likes & dislikes", "Boundaries"]);
+  assert.ok(prefs.json.rows.every((r: any) => r.items.length > 0 && r.items.every((i: any) => !/not enough information/i.test(i.text))));
+  // an import that filled 2 of 6 rows: GET /v1/import shows its own lines first and the P answers in the rest
+  await store.putStyle("u1", toStyleCard({ sections: { tendencies: [], communication: [{ text: "Direct and plain, no padding.", label: "explicit", scope: "any" }], response: [], help: [], support: [], interests: [], likes: [{ text: "Food: quick weeknight meals.", label: "explicit", scope: "any" }], boundaries: [], approach: [] }, rules: [], to_confirm: [] }));
+  const imported = await call("GET", "/v1/import");
+  assert.equal(imported.json.style.partial, false);
+  assert.ok(imported.json.style.display.every((r: any) => r.items.length > 0));
+  assert.equal(imported.json.style.display[0].items[0].text, "Direct and plain, no padding.");
+  assert.equal((await store.getStyle("u1"))!.display[1].items.length, 0, "the stored card itself is unchanged");
   // V04 save: PUT /v1/companion/voice changes the companion and the persona card, rejects ids outside the list
   assert.equal((await call("PUT", "/v1/companion/voice", { voiceId: "nope" })).json.error, "unknown_voice");
   assert.equal((await call("PUT", "/v1/companion/voice", { voiceId: DEFAULT_VOICES[2].id }, "nobody")).json.error, "no_companion");
