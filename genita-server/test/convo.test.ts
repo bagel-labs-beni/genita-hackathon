@@ -1577,3 +1577,13 @@ test("Codex #502 P1 r6: after a crisis line, later turns of the call get no gidd
   assert.doesNotMatch(last, /giddy|Your mood right now is (?:upbeat|playful)|stay in that lane|own take/);
   session.close();
 });
+
+test("safety gate 11/4: after 'I'm 15' every later turn carries the no-romance line", { skip: !v1 }, async () => {
+  const { client, session, calls } = setup(["<happy> Ha, okay."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
+  const say = async (text: string) => { const n = calls.length; await session.onClientText(JSON.stringify({ type: "text", text })); await client.waitFor((m) => m.type === "reply" && m.final === true && calls.length > n); return calls.at(-1)!.instructions ?? ""; };
+  assert.doesNotMatch(await say("hey"), /under 18/);
+  await say("i'm 15 btw");
+  assert.match(await say("do you have a crush on me lol"), /under 18: no flirting or romance at all/);
+  session.close();
+});

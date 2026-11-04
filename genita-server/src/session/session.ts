@@ -53,6 +53,7 @@ import type { CallStart, VoiceUpdate } from "../personalize/service.ts";
 import type { CallTurn } from "../personalize/extract.ts";
 import { ASK_TURNS, replyAsks } from "../personalize/unknowns.ts";
 import { mightBeCorrection } from "../personalize/corrections.ts";
+import { minorLine } from "../convo/minorBoundary.ts";
 import { avoidKeys, forgetTarget, isForgetRequest, scrubHistory, type Removed } from "../personalize/forgotten.ts";
 import { isForgetRequest as isMemoryForgetRequest } from "../memory/extract.ts";
 import { localTimeLine } from "../personalize/knows.ts";
@@ -1561,6 +1562,12 @@ export class Session {
         recentReplies: this.recentReplies,
         crisisInCall: this.crisisInCall,
       }) ?? undefined;
+    }
+    // safety gate 11/4: once they said they're a minor in this call, no romance at all (rides the This-turn line)
+    if (!turn.greeting && userText) {
+      const minor = minorLine([...this.history.filter((h) => h.role === "user").map((h) => h.text), userText]);
+      // first in the line: the This-turn block is cut at 400 chars, the safety part must never be the cut part
+      if (minor) turnLine = turnLine ? turnLine.replace(/^This turn: /, `This turn: ${minor} `) : `This turn: ${minor}`;
     }
     return { style: "v1", opener, initiative: turn.cue?.block, perception, perceptionHint, turn: turnLine };
   }

@@ -7,6 +7,7 @@
  */
 import { avoidRepeatedOpener, buildInstructions, dropRepeatedName, type PersonaCard } from "../prompt/persona.ts";
 import { memoryPrompt } from "../memory/call.ts";
+import { minorLine } from "./minorBoundary.ts";
 import type { Memory } from "../memory/repository.ts";
 import type { InputMessage, SparkRequest } from "../meta/spark.ts";
 import { SentenceSplitter } from "../text/sentences.ts";
@@ -81,7 +82,9 @@ export const adapter = {
       recentReplies: ctx.history.filter((h) => h.role === "assistant").slice(-3).map((h) => h.text),
       crisisInCall: userLines.some(realCrisisSignal),
     }) ?? undefined;
-    const instructions = buildInstructions({ ...base, turn }) + memoryPrompt((s.memories ?? []).map(mem), false);
+    const minor = minorLine(userLines);
+    const turnWithMinor = minor ? (turn ? turn.replace(/^This turn: /, `This turn: ${minor} `) : `This turn: ${minor}`) : turn;
+    const instructions = buildInstructions({ ...base, turn: turnWithMinor }) + memoryPrompt((s.memories ?? []).map(mem), false);
     return { instructions, input: [...msgs(ctx.history), { role: "user", content: t.text }], maxOutputTokens: 800, effort: "minimal" };
   },
 
