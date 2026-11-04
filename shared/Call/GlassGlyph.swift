@@ -27,6 +27,16 @@ enum GlassGlyph {
 
     /// The ⋮ asset, drawn by `dots` rather than from its bitmap.
     static let moreIcon = "glass-more-icon"
+
+    /// The rail's off state (design lane 11/4: mic or camera off showed the same glyph as on): the SF Symbols slash
+    /// variant, drawn in a square of `fraction × diameter` (same 55 % as every glass glyph), centred.
+    static func offSymbol(for icon: String) -> String? {
+        switch icon {
+        case "glass-mic-icon": "mic.slash"
+        case "glass-camera-icon": "video.slash"
+        default: nil
+        }
+    }
 }
 
 private extension CGFloat {
@@ -36,6 +46,18 @@ private extension CGFloat {
     }
 }
 
+
+/// An off-state rail glyph (mic.slash / video.slash): long side 55 % of the circle, centred, regular weight like the PNGs.
+struct GlassOffSymbol: View {
+    var name: String
+    var diameter: CGFloat
+    var color: Color = .white
+    var body: some View {
+        let side = GlassGlyph.fraction * diameter
+        Image(systemName: name).resizable().fontWeight(.regular).scaledToFit().foregroundStyle(color).frame(width: side, height: side)
+            .accessibilityHidden(true)
+    }
+}
 
 /// The ⋮ of the glass More button: three dots sized by `GlassGlyph.dots`.
 struct GlassDots: View {

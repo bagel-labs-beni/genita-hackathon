@@ -602,7 +602,9 @@ public enum ClientMessage: Equatable, Sendable {
     public struct Frames: Codable, Equatable, Sendable {
         /// ≤2 base64 JPEGs (or data URLs), each < 1.5 MB; used by the next turn within 15 s.
         public var images: [String]
-        public init(images: [String]) { self.images = images }
+        /// D59: every frame looked too dark or too blurry to see anything (judged on the phone).
+        public var unclear: Bool?
+        public init(images: [String], unclear: Bool? = nil) { self.images = images; self.unclear = unclear }
     }
 }
 

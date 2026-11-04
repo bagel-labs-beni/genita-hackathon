@@ -25,4 +25,13 @@ final class GlassGlyphTests: XCTestCase {
             }
         }
     }
+
+    /// Mic / camera off show the slash variant (design lane 11/4: the off rail looked the same as on); ⋮ and the gear have none.
+    func testOffStateUsesTheSlashSymbols() {
+        XCTAssertEqual(GlassGlyph.offSymbol(for: "glass-mic-icon"), "mic.slash")
+        XCTAssertEqual(GlassGlyph.offSymbol(for: "glass-camera-icon"), "video.slash")
+        XCTAssertNil(GlassGlyph.offSymbol(for: "glass-menu-icon"))
+        XCTAssertNil(GlassGlyph.offSymbol(for: GlassGlyph.moreIcon))
+        for name in ["mic.slash", "video.slash"] { XCTAssertNotNil(UIImage(systemName: name), name) }
+    }
 }

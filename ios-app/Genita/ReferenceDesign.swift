@@ -6,7 +6,8 @@ import CoreText
 /// Device chrome is excluded. Fonts never scale with screen width; compact screens scroll.
 struct DesignColor: Decodable {
     var r: CGFloat; var g: CGFloat; var b: CGFloat; var a: CGFloat?
-    var ui: UIColor { UIColor(red: r, green: g, blue: b, alpha: a ?? 1) }
+    /// D1: every Figma #B7B7B7 text (card subtitles, SUM labels, D01 time, V04 voice lines) reads as #737373.
+    var ui: UIColor { Palette.isFigmaSecondary(r: r, g: g, b: b) ? Palette.secondaryUI : UIColor(red: r, green: g, blue: b, alpha: a ?? 1) }
     var color: Color { Color(uiColor: ui) }
 }
 struct DesignRun: Decodable { var start: Int; var end: Int; var color: DesignColor? }

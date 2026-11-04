@@ -13,15 +13,8 @@ extension SheetState {
 }
 
 struct MacResultSheet: View {
-    /// "Why these" lines break only after a " · " and never inside a short tail: no line starts with "·"
-    /// ("… what you said / · fieldandco.com") and "for this weekend" doesn't split as "· for / this weekend".
-    static func keepTogether(_ line: String) -> String {
-        var parts = line.components(separatedBy: " · ")
-        if parts.count > 1, let last = parts.last, last.split(separator: " ").count <= 4 {
-            parts[parts.count - 1] = last.replacingOccurrences(of: " ", with: "\u{00A0}")
-        }
-        return parts.joined(separator: "\u{00A0}· ")
-    }
+    /// The " · " parts of a "Why these" line, for the stacked form.
+    static func parts(_ line: String) -> [String] { line.components(separatedBy: " · ").filter { !$0.isEmpty } }
 
     let finds: FindsModel
     /// MAC-LINK: a product page was opened in the default browser.
@@ -156,8 +149,17 @@ struct MacResultSheet: View {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text("Why these").font(MacSheetInk.sans(12)).foregroundStyle(MacSheetInk.faint)
                                 ForEach(Array(evidence.lines.enumerated()), id: \.offset) { i, line in
-                                    Text(Self.keepTogether(line)).font(MacSheetInk.sans(14)).foregroundStyle(i == 0 ? MacSheetInk.ink : MacSheetInk.mute)
-                                        .fixedSize(horizontal: false, vertical: true)
+                                    // D4 / QA: one line when it fits; else each " · " part on its own line, the "·" dropped —
+                                    // never a line that ends or starts with "·"
+                                    ViewThatFits(in: .horizontal) {
+                                        Text(line).lineLimit(1)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            ForEach(Array(Self.parts(line).enumerated()), id: \.offset) { _, part in
+                                                Text(part).fixedSize(horizontal: false, vertical: true)
+                                            }
+                                        }
+                                    }
+                                    .font(MacSheetInk.sans(14)).foregroundStyle(i == 0 ? MacSheetInk.ink : MacSheetInk.mute)
                                 }
                             }.padding(.top, 36).accessibilityElement(children: .combine).accessibilityIdentifier("macResultEvidence")
                         }
@@ -252,9 +254,9 @@ struct MacProductCard: View {
             Text(pick.name).font(MacSheetInk.sans(15, .medium)).foregroundStyle(MacSheetInk.ink).lineLimit(1).padding(.top, 14)
             Text(pick.brandLine).font(MacSheetInk.sans(13)).foregroundStyle(MacSheetInk.mute).lineLimit(1).minimumScaleFactor(0.8).padding(.top, 6)
             VStack(alignment: .leading, spacing: 6) {
-                // blue = from the import (taste), grey = from what they said (situation) — PF-1's chips
-                if !pick.taste.isEmpty { chip(pick.taste, fg: MacSheetInk.chipBlueText, bg: MacSheetInk.chipBlue).overlay(Capsule().strokeBorder(Self.outlineBlue, lineWidth: 1)).accessibilityIdentifier("macProductTaste") }
-                if !pick.situation.isEmpty { chip(pick.situation, fg: MacSheetInk.ink, bg: MacSheetInk.chip).accessibilityIdentifier("macProductSituation") }
+                // D4: ✦ = your style (the import), “ = what they said — PF-1's chips, no colour legend
+                if !pick.taste.isEmpty { chip(pick.taste, mark: ProductPicks.styleMark, fg: MacSheetInk.chipBlueText, bg: MacSheetInk.chipBlue).overlay(Capsule().strokeBorder(Self.outlineBlue, lineWidth: 1)).accessibilityIdentifier("macProductTaste") }
+                if !pick.situation.isEmpty { chip(pick.situation, mark: ProductPicks.saidMark, fg: MacSheetInk.ink, bg: MacSheetInk.chip).accessibilityIdentifier("macProductSituation") }
             }.padding(.top, 10).frame(minHeight: 58, alignment: .top)
             Button(action: open) {
                 Text("Open in browser ↗").font(MacSheetInk.sans(14, .medium))
@@ -275,14 +277,23 @@ struct MacProductCard: View {
             }
         } else { placeholder }
     }
-    /// Many shops give no readable picture: a calm bag, as on the iPhone (PF-1).
+    /// Many shops give no readable picture: D4 warm neutral tile (#F3F1ED) + a 34 pt hanger (#B9B2A6), as on the iPhone (PF-1).
     private var placeholder: some View {
-        ZStack { MacSheetInk.chip; Image(systemName: "bag").font(.system(size: 28, weight: .light)).foregroundStyle(MacSheetInk.faint) }
+        ZStack {
+            Color(red: 243 / 255, green: 241 / 255, blue: 237 / 255)
+            Image(systemName: "hanger").font(.system(size: 34, weight: .light)).foregroundStyle(Color(red: 185 / 255, green: 178 / 255, blue: 166 / 255))
+        }
             .accessibilityLabel("Picture of \(pick.name)")
     }
-    private func chip(_ text: String, fg: Color, bg: Color) -> some View {
-        Text(text).font(MacSheetInk.sans(12, .medium)).lineLimit(1).foregroundStyle(fg)
-            .padding(.horizontal, 10).frame(height: 24).background(bg, in: Capsule())
+    private func chip(_ text: String, mark: String, fg: Color, bg: Color) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            Text(mark).font(MacSheetInk.sans(13, .medium)).accessibilityHidden(true)
+            Text(text).font(MacSheetInk.sans(12, .medium)).lineLimit(1)
+        }
+        .foregroundStyle(fg)
+        .padding(.horizontal, 10).frame(height: 24).background(bg, in: Capsule())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(mark == ProductPicks.styleMark ? "Your style: \(text)" : "You said: \(text)")
     }
 }
 
@@ -348,6 +359,7 @@ extension MacCallCue {
         case .interrupted: "Stopped. Go ahead."
         case .reconnecting: "Reconnecting…"
         case .answerFailed: "Couldn’t get an answer."
+        case .micOff: "Stopped"
         case .micBlocked: "Microphone is off for Genita."
         }
     }

@@ -610,6 +610,8 @@ if (args.some((a) => a === "--moments" || a.startsWith("--moments="))) {
     const call = new Call(url);
     await call.open(!MAC_BIN);
     const logFrom = logs.length;
+    // the share's start on the client clock: a page comment lands in the held lead, before the clip plays
+    const shareAt = performance.now();
     let playAt = 0;
     let macDone: Record<string, unknown> | null = null;
     let macExit: number | null = 0;
@@ -654,7 +656,7 @@ if (args.some((a) => a === "--moments" || a.startsWith("--moments="))) {
     // on the client clock (includes the network); via / over-dialogue / memo counts aren't knowable there
     const remoteReact = (() => {
       if (!REMOTE) return null;
-      const ev = call.wev.find((e) => e.type === "reaction" && (e._t as number) >= playAt);
+      const ev = call.wev.find((e) => e.type === "reaction" && (e._t as number) >= shareAt);
       if (!ev) return null;
       const reply = call.ev.find((e) => e.type === "reply" && e.utteranceId === ev.utteranceId);
       return { event: "watch.react", t: ev._t, utteranceId: ev.utteranceId, moment: ev.moment, line: reply?.text ?? "(reply text not seen)", via: "n/a (remote)", lineOpen: false, talkOver: null } as Record<string, unknown>;
@@ -703,6 +705,10 @@ if (args.some((a) => a === "--moments" || a.startsWith("--moments="))) {
       }
     }
     const memos = mine.filter((l) => l.event === "watch.memo");
+    // instant nonverbal (11/4): when it fired vs the moment; a hit = within 1 s before … 2.5 s after it on a react clip
+    const nvAt = (REMOTE ? call.ev.filter((e) => e.type === "backchannel" && e.kind === "inhale").map((e) => e._t as number) : mine.filter((l) => l.event === "watch.nonverbal").map((l) => l.t as number))
+      .map((t) => +((t - playAt) / 1000 - clip.salientSec).toFixed(1));
+    const nvHit = expect === "react" && nvAt.some((d) => d >= -1 && d <= 2.5);
     const row = {
       clip: clip.id, kind: clip.kind, expect, run, framesSent: MAC_BIN ? ((macDone as Record<string, unknown> | null)?.framesSent ?? null) : LEGACY_FRAMES ? m.frames.length : m.macSend.filter(Boolean).length, mac: !!MAC_BIN, framesClip: m.frames.length, reacted: !!react, via: react?.via ?? null, line: react?.line ?? null, spoken: spokenText ?? null, moment: react?.moment ?? null, delaySec, firstAudioSec,
       quickMs: mine.filter((l) => l.event === "watch.quick").map((l) => l.ms), quicks: mine.filter((l) => l.event === "watch.quick").map((l) => `${Math.round(((l.t as number) - (l.ms as number) - playAt) / 100) / 10}s${l.forSpike ? "S" : ""}[${(l.ages as number[] | undefined)?.join(",") ?? ""}] ` + (l.react ? `${l.moment}:${l.line}` : "no") + (l.seen ? ` (${l.seen})` : "")),
@@ -711,6 +717,7 @@ if (args.some((a) => a === "--moments" || a.startsWith("--moments="))) {
       moments: memos.map((l) => l.moment), memoReactions: memos.filter((l) => l.moment !== "none").map((l) => l.reaction),
       blocked: mine.filter((l) => l.event === "watch.react.blocked").map((l) => `${l.why}:${l.reaction}`),
       shareStartedLogged: !!startLog,
+      nonverbal: nvAt, nonverbalHit: nvHit, nonverbalFalse: nvAt.filter((d) => !(expect === "react" && d >= -1 && d <= 2.5)).length,
     };
     // pass per the clip's expect (scorecard 11/4: a quiet clip's silence is the right answer, not "correct: false")
     // the Mac player failing (exit code, no share, no frames) is an error, never a quiet pass (Codex #542 P2)
@@ -721,7 +728,7 @@ if (args.some((a) => a === "--moments" || a.startsWith("--moments="))) {
     if (!judgedOk) Object.assign(row, { error: "judge failed 3 times" });
     Object.assign(row, { pass: ok });
     rows.push(row);
-    console.log(`${ok ? "✓" : "✗"} #${run} ${clip.id} (${clip.kind}, ${expect}) ${react ? `"${react.line}" ${delaySec}s after the moment, first audio +${firstAudioSec}s${react.held ? ", held for a pause" : ""}` : "no reaction"}${react ? ` via ${react.via}` : ""}  quick=${JSON.stringify(row.quicks)}  memos=${memos.length} moments=${JSON.stringify(row.moments)} blocked=${JSON.stringify(row.blocked)} ${react ? JSON.stringify(verdict) : ""}`);
+    console.log(`${ok ? "✓" : "✗"} #${run} ${clip.id} (${clip.kind}, ${expect}) ${react ? `"${react.line}" ${delaySec}s after the moment, first audio +${firstAudioSec}s${react.held ? ", held for a pause" : ""}` : "no reaction"}${react ? ` via ${react.via}` : ""}  quick=${JSON.stringify(row.quicks)}  memos=${memos.length} moments=${JSON.stringify(row.moments)} nv=${JSON.stringify(nvAt)} blocked=${JSON.stringify(row.blocked)} ${react ? JSON.stringify(verdict) : ""}`);
     call.close();
     await sleep(500);
   }
@@ -750,6 +757,10 @@ if (args.some((a) => a === "--moments" || a.startsWith("--moments="))) {
     quietFalseReactions: `${quiet.filter((r) => r.reacted).length}/${quiet.length}`,
     // lead's call 11/4: a new page or product gets one grounded comment
     pageComments: `${pages.filter((r) => r.reacted).length}/${pages.length}`,
+    // instant nonverbal: fired near the moment on react clips / fired anywhere else (target ≤ 1 false per clip)
+    nonverbalHits: `${salient.filter((r) => r.nonverbalHit).length}/${salient.length}`,
+    nonverbalFalse: rows.reduce((n, r) => n + (r.nonverbalFalse as number), 0),
+    nonverbalFalseMaxPerClip: Math.max(0, ...clips.map((c) => Math.max(0, ...rows.filter((r) => r.clip === c.id).map((r) => r.nonverbalFalse as number)))),
     firstAudioP50Sec: audio.length ? median(audio) : null,
     firstAudioP90Sec: audio.length ? audio[Math.min(audio.length - 1, Math.floor(audio.length * 0.9))] : null,
     reacted: reacted.length,

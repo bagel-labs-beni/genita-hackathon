@@ -1,6 +1,7 @@
 import Foundation
 import MultipeerConnectivity
 import Combine
+import CryptoKit
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -124,7 +125,7 @@ final class HandoffLink: NSObject, ObservableObject, MCSessionDelegate, MCNearby
         DispatchQueue.main.async {
             guard browser === self.browser, !self.invited else { return }
             let context: String
-            if !self.code.isEmpty, info?["code"] == self.code { context = "code:" + self.code }
+            if !self.code.isEmpty, info?["code"] == self.code, let account = self.accountScope.accountID { context = Self.codeContext(self.code, account: account) }
             else if let remembered = self.remembered, self.code.isEmpty, info?["mac"] == remembered.mac { context = "token:" + remembered.token }
             else { return }
             self.invited = true
@@ -142,12 +143,19 @@ final class HandoffLink: NSObject, ObservableObject, MCSessionDelegate, MCNearby
                   self.accountScope.accepts(generation) else { invitationHandler(false, nil); return }
             let session = self.session
             let text = context.flatMap { String(data: $0, encoding: .utf8) } ?? ""
-            let byCode = text == "code:" + self.code && session.connectedPeers.isEmpty
+            // MV-02 (AU-85): the six digits pair only a phone signed in to this Mac's account
+            let byCode = !self.code.isEmpty && self.accountScope.accountID.map { text == Self.codeContext(self.code, account: $0) } == true && session.connectedPeers.isEmpty
             // A remembered phone may return before the session notices its old connection is gone.
             let byToken = text.hasPrefix("token:") && self.pairedTokens.contains(String(text.dropFirst(6)))
             if byCode { self.incomingUsedCode = true }
             invitationHandler(byCode || byToken, byCode || byToken ? session : nil)
         }
+    }
+    /// The code invitation carries a one-way tag of the account (never the id itself), so another account's
+    /// iPhone that types the shown digits is turned away.
+    static func codeContext(_ code: String, account: String) -> String {
+        let digest = SHA256.hash(data: Data(("genita.pair:" + account).utf8))
+        return "code:" + code + "|acct:" + digest.prefix(12).map { String(format: "%02x", $0) }.joined()
     }
     private var pairedTokens: [String] { tokensKey.flatMap { store.stringArray(forKey: $0) } ?? [] }
     /// Give the phone a token after a code pairing so it never needs the code again.

@@ -5,6 +5,30 @@ import UIKit
 @MainActor final class AppStateTests: XCTestCase {
     var store: UserDefaults!
     override func setUp() { super.setUp(); store = UserDefaults(suiteName: UUID().uuidString)! }
+    /// AU-92 "Forget all of this": once the server forgot, the phone drops its copy of what Genita knows; the
+    /// companion and the account stay.
+    func testProfileForgottenDropsWhatGenitaKnowsButKeepsTheCompanion() {
+        let url = URL.temporaryDirectory.appending(path: UUID().uuidString + ".jpg")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let model = AppState(storage: store, imageURL: url)
+        model.setup.name = "Chelsea"; model.setup.accountId = "u1"
+        model.setup.styleProfile = "How the user wants to be treated"; model.setup.styleRows = []; model.setup.stylePartial = true
+        model.setup.response = "1. Thinking style - compares options"
+        model.setup.skipInterests = ["Design"]; model.setup.skipLikes = ["Minimal"]
+        model.setup.companionName = "Jin"; model.setup.companionCreated = true
+        model.story = []; model.storySource = "skip"; model.hisyPage = 2
+        model.profileForgotten()
+        XCTAssertNil(model.setup.styleProfile); XCTAssertNil(model.setup.styleRows); XCTAssertNil(model.setup.stylePartial)
+        XCTAssertEqual(model.setup.response, "", "the pasted reply goes too: the call never falls back to it")
+        XCTAssertEqual(model.profileForgets, 1)
+        XCTAssertNil(model.setup.forgetPending, "profileForgotten alone doesn't queue a retry (forgetProfile() does)")
+        XCTAssertNil(model.setup.skipInterests); XCTAssertNil(model.setup.skipLikes)
+        XCTAssertNil(model.story); XCTAssertNil(model.storySource); XCTAssertEqual(model.hisyPage, 0)
+        XCTAssertEqual(model.setup.companionName, "Jin", "the companion stays")
+        XCTAssertEqual(model.setup.companionCreated, true)
+        XCTAssertEqual(model.setup.name, "Chelsea", "their name stays")
+    }
+
     func testBundledDesignTokensAndFontsAreVisible() {
         var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
         XCTAssertTrue(UIColor(named: "Ink")!.getRed(&red, green: &green, blue: &blue, alpha: &alpha))

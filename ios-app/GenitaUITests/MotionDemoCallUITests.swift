@@ -22,7 +22,11 @@ final class MotionDemoCallUITests: XCTestCase {
         ]
         app.launch()
         XCTAssertTrue(app.buttons["micToggle"].waitForExistence(timeout: 15))
-        Thread.sleep(forTimeInterval: 25)
+        // the recorded session (scale 3) reaches its first reply after a while: stay until the talking bars have played
+        let cue = app.descendants(matching: .any).matching(identifier: "callCue").firstMatch
+        let end = Date().addingTimeInterval(90)
+        while Date() < end, !(cue.exists && cue.label.contains("talking")) { Thread.sleep(forTimeInterval: 0.25) }
+        Thread.sleep(forTimeInterval: 8)
     }
 
     /// Card 2: press the mic off and on; the ring follows a stand-in voice (GENITA_MOTION_DEMO_LEVEL, DEBUG only).

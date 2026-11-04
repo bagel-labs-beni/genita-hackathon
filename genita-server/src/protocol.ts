@@ -88,7 +88,8 @@ export type ClientMessage =
   | { type: "audio_start" }
   | { type: "audio_stop" }
   | { type: "text"; text: string; frames?: string[]; findId?: string }
-  | { type: "frames"; images: string[] }
+  /** `unclear` (D59): the app judged every frame too dark or too blurry; a fridge question then gets the IC-4 line at once */
+  | { type: "frames"; images: string[]; unclear?: boolean }
   /** PERC-1: the selfie face region (fixed upper-centre crop, base64 JPEG 256–384 px); send only when `ready.perception` is true */
   | { type: "perception.frame"; image: string }
   | { type: "barge_in" }
@@ -229,7 +230,7 @@ export type ServerEvent =
    * (aligner timing when on, else the clause's audio span). Sent after the clause's audio. */
   | { type: "expression"; utteranceId: number; sentence: number; tag: ExpressionTag; intensity: number; startMs: number; endMs: number }
   /** P1 #345 (GENITA_BACKCHANNEL=1, off by default): play a soft listening sound now, mid user turn; never a reply */
-  | { type: "backchannel"; kind: "mm" | "yeah"; audio?: string }
+  | { type: "backchannel"; kind: "mm" | "yeah" | "inhale"; audio?: string }
   /** device mode: one sentence for the app to speak, in order. Plain text (no tags); lang is BCP-47. */
   | { type: "say"; utteranceId: number; sentence: number; text: string; emotion: string; lang: string }
   | { type: "reply"; utteranceId: number; text: string; emotion: string; interpret: boolean; final: true }

@@ -51,6 +51,8 @@ export type InstructionInput = {
   initiative?: string;
   /** v1 P1: this user turn's "This turn:" line (src/convo/rhythm.ts: closeness, question rhythm, mood, landed, recall) */
   turn?: string;
+  /** intel eval 11/4: this turn's "work it out / ask who / say something new" line (src/convo/taskHints.ts) */
+  task?: string;
   /** v1: perception lane's live camera line and its one-shot hint (data) */
   perception?: string;
   perceptionHint?: string;
@@ -209,7 +211,8 @@ function buildInstructionsV1(input: InstructionInput & { ask?: string; localTime
     "If they sincerely ask whether you're an AI, say yes plainly in your own way and keep talking; never claim to be human.",
     "Be glad when they have plans, friends or dates and nudge them to go; never guilt them for leaving or make yourself the reason to stay.",
     "Keep flirting light and never sexual: laugh off anything explicit in one line and move on, no lecture.",
-    "Only if they hint at suicide, self-harm or danger: no jokes, tell them you care and gently point them to real help right now. A bad day just needs a friend.",
+    // Codex r6 (#545): the number comes from the model itself (no wider detector): "988 in the US" said in the reply
+    "Only if they hint at suicide, self-harm or danger: no jokes, tell them you care and give them real help now: 988 in the US. A bad day just needs a friend.",
     // r3 sweep 11/4 (income said back 5/5): money, address and health numbers are reacted to, never repeated
     // 11/4 trimmed (same rule, 26 chars shorter: main was 2461 > the 2,450 lean budget after #509)
     "Never repeat their salary, money amounts, address or health numbers; react in general words.",
@@ -239,7 +242,10 @@ function buildInstructionsV1(input: InstructionInput & { ask?: string; localTime
   if (input.perceptionHint) sections.push(input.perceptionHint.slice(0, 200));
   // P1 "This turn:" line goes BEFORE the voice block: placed last it cost ~+300 ms first token (Spark reasons on the
   // last instruction; n=14–24 ×4 runs 11/3), placed here it measured no slower than none (p50 2459 vs 3278 ms, n=14)
-  if (input.turn) sections.push(input.turn.slice(0, 400));
+  // the task line rides the same block, BEFORE "This turn:" (the block right before the voice block must end with the
+  // This-turn line, latency 11/3)
+  const turnBlock = [input.task?.slice(0, 400), input.turn?.slice(0, 400)].filter(Boolean).join(" ");
+  if (turnBlock) sections.push(turnBlock);
   // 11/3 tone pass (Chelsea: "English the way kids talk now, and kind; the voice is stiff"). The voice model has no
   // prosody controls, so breath and turns come from the text: commas, a dash. Kept a near-minimal diff on purpose:
   // longer "kind / soft / Gen Z" rules (r1–r4) lowered the blind judge's fun 3.64 → 3.27–3.46 and doubled "?" endings.

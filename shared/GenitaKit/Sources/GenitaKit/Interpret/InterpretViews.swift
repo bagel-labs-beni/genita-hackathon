@@ -13,6 +13,8 @@ enum InterpretInk {
     static let onInkSoft = onInk.opacity(0.76)
     static let onInkFaint = onInk.opacity(0.28)
     static let pill = ink.opacity(0.84)
+    /// D3: the partner's bubble on the ink canvas
+    static let themFill = Color.white.opacity(0.10)
     static let dim = ink.opacity(0.46)
     static let glass = Color.black.opacity(0.42)
     static let glassLine = Color.white.opacity(0.34)
@@ -160,8 +162,9 @@ struct InterpretBubbleView: View {
         .fixedSize(horizontal: false, vertical: true)
         .padding(.horizontal, 16).padding(.vertical, 12)
         .frame(maxWidth: 320, alignment: .leading)
-        .background(me ? InterpretInk.onInk : InterpretInk.pill, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay { if !me { RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(InterpretInk.onInkFaint, lineWidth: 1) } }
+        // D3 (Chelsea 04:53): the partner's bubble is a white 10 % fill, no border (pill ink was invisible on the ink canvas — QA)
+        .background(me ? InterpretInk.onInk : InterpretInk.themFill, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        // D3 (Chelsea 04:53): the partner's bubble is fill only — with a border it read as a text field to type into
         .opacity(faint ? 0.6 : 1)
         .frame(maxWidth: .infinity, alignment: me ? .trailing : .leading)
         .accessibilityElement(children: .combine)
@@ -230,8 +233,6 @@ public struct InterpretHoldButton: View {
     var level: (() -> Float)?
     @State private var down = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// INT-4: space between the panel's bottom (h − 168) and the button's top (h − 64 − 80) on the call overlay
-    static let barsGap: CGFloat = 24
     public init(board: InterpretBoard, level: (() -> Float)? = nil, onHold: @escaping (Bool) -> Void) {
         self.board = board
         self.level = level
@@ -256,28 +257,19 @@ public struct InterpretHoldButton: View {
                     Capsule().fill(.ultraThinMaterial.opacity(0.6))
                     Capsule().fill(InterpretInk.glass)
                     GeometryReader { g in
-                        Rectangle().fill(InterpretInk.onInk)
+                        Rectangle().fill(InterpretInk.blueOnInk)
                             .frame(width: held || !live ? g.size.width : 0)
                             .opacity(held ? 1 : 0)
                     }
                     .clipShape(Capsule())
                 } else {
-                    Capsule().fill(held ? AnyShapeStyle(InterpretInk.onInk) : AnyShapeStyle(.ultraThinMaterial.opacity(0.6)))
+                    Capsule().fill(held ? AnyShapeStyle(InterpretInk.blueOnInk) : AnyShapeStyle(.ultraThinMaterial.opacity(0.6)))
                     Capsule().fill(held ? Color.clear : InterpretInk.glass)
                 }
             }
             .overlay { Capsule().strokeBorder(held ? Color.clear : InterpretInk.glassLine, lineWidth: 1) }
-            .overlay(alignment: .top) {
-                if details {
-                    // your voice, floating over the button while it is held
-                    // centred in the 24 pt gap between the panel's last line (h − 168) and the button's top (h − 144):
-                    // the box's middle sits 12 pt above the button (Chelsea 11/4: exactly halfway, symmetric)
-                    MotionLevelBars(active: held, level: level, color: InterpretInk.onInk)
-                        .opacity(held ? 1 : 0)
-                        .offset(y: -(InterpretHoldButton.barsGap / 2) - MotionLevelBars.boxHeight / 2)
-                        .allowsHitTesting(false)
-                }
-            }
+            // card 9: the overlay draws the level bars halfway between the panel's last line and this capsule (measured)
+            .anchorPreference(key: InterpretBarsAnchors.self, value: .bounds) { InterpretBarsAnchors.Value(hold: $0, held: details && held) }
             .scaleEffect(live && down ? MotionOnboarding.holdScale : 1)
             .animation(details && !GenitaMotion.reviewStill ? (held ? MotionOnboarding.holdFill : MotionOnboarding.holdDrain) : nil, value: held)
             .animation(details && !GenitaMotion.reviewStill ? MotionOnboarding.holdFill : nil, value: down)
@@ -338,6 +330,7 @@ public struct InterpretOverlay: View {
                 LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: InterpretInk.dim, location: 120 / max(1, h - panelTop)), .init(color: InterpretInk.ink, location: min(1, 260 / max(1, h - panelTop)))], startPoint: .top, endPoint: .bottom)
                     .frame(height: max(0, h - panelTop)).offset(y: panelTop).allowsHitTesting(false)
                 InterpretPanelView(board: board)
+                    .anchorPreference(key: InterpretBarsAnchors.self, value: .bounds) { InterpretBarsAnchors.Value(panel: $0) }
                     .frame(height: max(0, h - panelTop - 120 - 168), alignment: .bottom).offset(y: panelTop + 120)
                 InterpretBarView(board: board, onClose: onClose)
                     .padding(.horizontal, 24).offset(y: 124 + top)
@@ -345,7 +338,45 @@ public struct InterpretOverlay: View {
                     .padding(.horizontal, 24).frame(maxHeight: .infinity, alignment: .bottom).padding(.bottom, 64)
             }
             .frame(width: geo.size.width, height: h, alignment: .top)
+            .overlayPreferenceValue(InterpretBarsAnchors.self) { InterpretLevelBarsLayer(anchors: $0, level: level) }
         }
+    }
+}
+
+/// Card 9 (Chelsea 11/4): the level bars sit exactly halfway between the panel's last line and the Hold to talk capsule,
+/// growing up and down from their middle. Both edges are measured (anchors), so a longer note or panel keeps them centred.
+struct InterpretBarsAnchors: PreferenceKey {
+    struct Value {
+        var panel: Anchor<CGRect>?
+        var hold: Anchor<CGRect>?
+        var held = false
+    }
+    static var defaultValue: Value { Value() }
+    static func reduce(value: inout Value, nextValue: () -> Value) {
+        let next = nextValue()
+        value.panel = next.panel ?? value.panel
+        value.hold = next.hold ?? value.hold
+        value.held = value.held || next.held
+    }
+}
+
+private struct InterpretLevelBarsLayer: View {
+    var anchors: InterpretBarsAnchors.Value
+    var level: (() -> Float)?
+    var body: some View {
+        GeometryReader { g in
+            if let hold = anchors.hold {
+                let h = g[hold]
+                // no panel line yet: halfway between the panel area's bottom edge and the capsule is still its top + 12
+                let top = anchors.panel.map { g[$0].maxY } ?? (h.minY - 24)
+                MotionLevelBars(active: anchors.held, level: level, color: InterpretInk.onInk)
+                    .opacity(anchors.held ? 1 : 0)
+                    .position(x: h.midX, y: (top + h.minY) / 2)
+                    .animation(GenitaMotion.reviewStill ? nil : MotionOnboarding.holdFill, value: anchors.held)
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }
 

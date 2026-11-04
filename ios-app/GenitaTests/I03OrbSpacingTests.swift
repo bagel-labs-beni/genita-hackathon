@@ -63,4 +63,17 @@ import SwiftUI
         }
         ReferenceOnboardingView.orbSpacing = true
     }
+
+    /// SE (375): "Picking up your preferences and communication style." wraps to two whole lines instead of being cut,
+    /// "communication style." together; 390 keeps the Figma one-liner.
+    func testPickingUpLineWrapsOnSEAndStaysOneLineAt390() {
+        let line = nodes.first { $0.characters == "Picking up your preferences and communication style." }!
+        let at390 = ReferenceOnboardingView.processingLine(line, width: 390, percent: "62%")
+        XCTAssertNil(at390.text, "390: Figma's single line")
+        XCTAssertEqual(at390.node.h, line.h)
+        let se = ReferenceOnboardingView.processingLine(line, width: 375, percent: "62%")
+        XCTAssertEqual(se.text, "Picking up your preferences and communication\u{00A0}style.")
+        XCTAssertGreaterThanOrEqual(se.node.h, 2 * (line.lineHeight ?? line.font.lineHeight) - 0.5, "two lines tall, nothing clipped")
+        XCTAssertLessThanOrEqual(line.y + se.node.h, 569, "still above the progress track (y 569)")
+    }
 }

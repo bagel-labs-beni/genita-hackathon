@@ -17,7 +17,7 @@ import type { SparkRequest, SparkStreamEvent } from "../meta/spark.ts";
 import type { AsrEvent } from "../meta/transcribe.ts";
 import type { WatchServerEvent } from "../protocol.ts";
 import { buildMemoRequest, buildQuestionContext, buildQuickRequest, cleanTitle, earlyVerdict, parseMemoVerdict, parseQuick, type DialogueLine, type MemoEntry, type MemoVerdict, type QuestionContext } from "./memo.ts";
-import { echoNow, isVideoEcho, pickFrames, REACT_MAX_STALE_MS, REACT_MIN_GAP_MS, reactionAllowed, reactionScript, speakerChipEnabled, SPEAKER_SILENCE_MS } from "./rules.ts";
+import { echoNow, isVideoEcho, pickFrames, REACT_AFTER_START_MS, REACT_MAX_STALE_MS, REACT_MIN_GAP_MS, reactionAllowed, reactionScript, speakerChipEnabled, SPEAKER_SILENCE_MS } from "./rules.ts";
 
 export interface WatchAsr {
   on(ev: "event", fn: (e: AsrEvent) => void): unknown;
@@ -34,6 +34,8 @@ export interface WatchHost {
   conversationQuiet(): boolean;
   /** speak a scripted line now; returns its utteranceId, or null if the turn machine said no */
   react(script: string): number | null;
+  /** the instant nonverbal reaction (brows up + a small inhale, no words); false if it couldn't play now */
+  nonverbal?(): boolean;
 }
 
 export interface WatchSink {
@@ -87,6 +89,20 @@ const AFTER_STOP_KEEP_MS = 90_000;
 /** a frame this different from the last (most of the screen changed: another product or page in a shop that keeps
  *  its title) opens a new page for the one-comment rule (Codex #542 P2) */
 const PAGE_NEW_MOTION = 0.3;
+/**
+ * Instant nonverbal reaction (lead's call 11/4): a big move that out-moves the last ~2 s for two frames in a row gets
+ * brows up + a small inhale at once, the spoken line follows from the looks as before. Not on a cut (one frame that
+ * changes the whole picture), not on a page (scrolling), never inside the 30 s reaction gap (shared both ways).
+ * GENITA_WATCH_NONVERBAL=0 turns it off.
+ */
+const NV_ON = process.env.GENITA_WATCH_NONVERBAL !== "0";
+const NV_MIN = 0.08;
+const NV_CUT = 0.35;
+const NV_RATIO = 1.5;
+const NV_PAIR_MS = 500;
+const NV_BASE_MS = 2_500;
+/** a spoken reaction this close to the nonverbal one is the same moment's line (allowed); farther, the gap holds */
+const NV_SAME_MS = 3_000;
 /** one moment seen by both the quick look and a memo (or two quick looks) within this window counts once */
 const SEEN_SAME_MS = 4_000;
 const SEEN_TWIN_MS = 1_000;
@@ -235,6 +251,12 @@ export class WatchController {
   /** this page (share / window / title) already got its one comment (lead's call 11/4) */
   private pageSpoken = false;
   private stoppedAt: number | null = null;
+  private lastNonverbalAt: number | null = null;
+  /** this page is a page (a memo said so): scrolling it is not a moment, until another page or a video moment
+   *  (Codex #613 P2: the next memo of the same page says page: false) */
+  private lastMemoPage = false;
+  /** the share's first frame: the nonverbal needs ~2.5 s of history to know what "out-moves" means (Codex #613 P2) */
+  private firstFrameAt: number | null = null;
   private protectedPending = false;
   private protectedSince = 0;
   /** a funny moment waiting for the video's line (or the conversation) to pause */
@@ -338,6 +360,7 @@ export class WatchController {
     // results of looks started on the old video must not land in the new one (Codex #445 P2)
     this.clipGen++;
     this.pageSpoken = false;
+    this.lastMemoPage = false;
     this.pageGen++;
     for (const m of this.memosInFlight) m.abort();
     this.memosInFlight.clear();
@@ -377,6 +400,7 @@ export class WatchController {
       return this.emitState();
     }
     this.sharing = true;
+    this.firstFrameAt = null;
     this.source = source;
     this.sharingSince = this.deps.now();
     this.lastMemoAt = this.sharingSince;
@@ -460,7 +484,7 @@ export class WatchController {
     this.stats.frames++;
     if (!blank) {
       if (motion !== null) this.motionAware = true;
-      if (motion !== null && motion >= PAGE_NEW_MOTION) { this.pageSpoken = false; this.pageGen++; if (this.held?.v.page) this.held = null; }
+      if (motion !== null && motion >= PAGE_NEW_MOTION) { this.pageSpoken = false; this.pageGen++; this.lastMemoPage = false; if (this.held?.v.page) this.held = null; }
       if (motion !== null && motion >= MOTION_SPIKE) {
         this.salientAt = now;
         this.quickSpikeAt ??= now; // the first pending spike; the quick look takes the newest frames anyway
@@ -468,6 +492,8 @@ export class WatchController {
       this.frames.push({ at: now, url, ...(motion !== null ? { motion } : {}) });
       // the newest frame stays even when old: a paused screen sends no new frames
       this.frames = this.frames.filter((f, i, all) => i === all.length - 1 || now - f.at <= FRAME_KEEP_MS).slice(-MAX_FRAMES_KEPT);
+      this.firstFrameAt ??= now;
+      this.maybeNonverbal(now);
       this.maybeQuick();
     }
     if (blank !== this.blank) {
@@ -670,6 +696,8 @@ export class WatchController {
       this.memo = this.memo.filter((e) => now - e.at <= MEMO_KEEP_MS).slice(-MAX_MEMO);
     }
     for (const s of v.speakers) if (s.label && !this.names.has(s.label)) this.names.set(s.label, s.name);
+    if (v.page) this.lastMemoPage = true;
+    else if (v.moment !== "none") this.lastMemoPage = false;
     this.log("watch.memo", { ms, memo: v.memo.slice(0, 160), moment: v.moment, reaction: v.reaction, frames: frames.length, lines: lines.length, salient, protectedVideo: v.protectedVideo === true, page: v.page === true });
     if (v.protectedVideo) {
       this.speakProtected();
@@ -712,12 +740,37 @@ export class WatchController {
     }
   }
 
+  /** Two frames in a row that out-move the last ~2 s (not a cut, not a page): brows up + a small inhale, no words. */
+  private maybeNonverbal(now: number): void {
+    if (!NV_ON || this.deps.reactions === false || !this.host.nonverbal || this.blank || this.lastMemoPage) return;
+    const n = this.frames.length;
+    if (n < 2) return;
+    const cur = this.frames[n - 1];
+    const prev = this.frames[n - 2];
+    const m1 = prev.motion ?? 0;
+    const m2 = cur.motion ?? 0;
+    if (cur.at - prev.at > NV_PAIR_MS || m1 < NV_MIN || m2 < NV_MIN || m1 > NV_CUT || m2 > NV_CUT) return;
+    // no history yet (the share just started moving): no baseline to compare with. A still screen sends no frames, so
+    // an empty window after ≥ 2.5 s of sharing is a real still (baseline 0)
+    if (this.firstFrameAt === null || prev.at - this.firstFrameAt < NV_BASE_MS) return;
+    // the motion before the pair: a pan or a dance that moves this much all along is not a moment
+    const before = this.frames.slice(0, -2).filter((f) => prev.at - f.at <= NV_BASE_MS).map((f) => f.motion ?? 0).sort((a, b) => a - b);
+    const base = before.length ? before[Math.floor(before.length / 2)] : 0;
+    if (Math.min(m1, m2) < NV_RATIO * base) return;
+    if (now - this.sharingSince < REACT_AFTER_START_MS || !this.host.conversationQuiet() || (this.dialogueActive && words(this.openLine) >= 1)) return;
+    if (this.lastReactionAt !== null && now - this.lastReactionAt < REACT_MIN_GAP_MS) return;
+    if (this.lastNonverbalAt !== null && now - this.lastNonverbalAt < REACT_MIN_GAP_MS) return;
+    if (!this.host.nonverbal()) return;
+    this.lastNonverbalAt = now;
+    this.log("watch.nonverbal", { motion: [m1, m2], base: Math.round(base * 1000) / 1000 });
+  }
+
   /** A spike with one frame after it (or 0.4 s of stillness) gets a quick look right away — no memo wait. */
   private maybeQuick(): void {
     if (!QUICK_ON || this.deps.quick === false || !this.sharing || this.closed) return;
     const now = this.deps.now();
     // 11/3 21:3x (lead's call): when a reaction couldn't go out (reactions off, the user or companion talking, inside
-    // the 25 s gap) the quick look still runs at half the rate and only remembers the moment, so "did you see that
+    // the 30 s gap) the quick look still runs at half the rate and only remembers the moment, so "did you see that
     // dunk?" right after a reaction or mid-conversation is answerable (#400). Never spoken from here.
     const remember = this.deps.reactions === false || !this.host.conversationQuiet() || (this.lastReactionAt !== null && now - this.lastReactionAt < REACT_MIN_GAP_MS);
     const slow = remember ? 2 : 1;
@@ -764,7 +817,7 @@ export class WatchController {
         this.log("watch.quick.error", { message: String(err).slice(0, 200) });
         // 11/4: a look that timed out saw nothing: the next look picks from its frames again
         // (min: two looks failing in a row both get their frames back, Codex #542 P2; a frame seen twice costs a look,
-        // a moment said twice can't happen: the 25 s gap and the seen list)
+        // a moment said twice can't happen: the 30 s gap and the seen list)
         if (gen === this.clipGen) {
           this.lastLookedAt = Math.min(this.lastLookedAt, lookedBefore);
           // only the first retry: a look that fails twice is let go
@@ -829,7 +882,9 @@ export class WatchController {
       sharing: this.sharing,
       blank: this.blank,
       sharingSince: this.sharingSince,
-      lastReactionAt: this.lastReactionAt,
+      // the nonverbal shares the gap (Codex #613 P2): its own moment's line may follow, another scene's may not
+      lastReactionAt: this.lastNonverbalAt !== null && Math.abs(verdictAt - this.lastNonverbalAt) > NV_SAME_MS
+        ? Math.max(this.lastReactionAt ?? -Infinity, this.lastNonverbalAt) : this.lastReactionAt,
       conversationQuiet: this.host.conversationQuiet(),
       dialogueActive: this.dialogueActive && words(this.openLine) >= 1,
       lastDialogueEndAt: this.lastDialogueEndAt,

@@ -51,7 +51,8 @@ enum InsightCopy {
         return t.prefix(1).uppercased() + t.dropFirst()
     }
     static func quote(_ e: InsightEvidence, ai: String?) -> String {
-        e.source == "answer" ? "You picked “\(e.quote)”" : "“\(e.quote)”" + (e.source == "import" ? " · \(ai ?? "your reply")" : " · our call")
+        // the server's label for answers: "You picked" / "You said no to" (AU-22)
+        e.source == "answer" ? "\(e.sourceLabel.isEmpty ? "You picked" : e.sourceLabel) “\(e.quote)”" : "“\(e.quote)”" + (e.source == "import" ? " · \(ai ?? "your reply")" : " · our call")
     }
 }
 
@@ -99,6 +100,13 @@ struct InsightReportView: View {
                     .ignoresSafeArea(edges: .top).transition(.opacity)
                 }
                 if showsCTA {
+                    // back to the questions (춘식이 11/4): the nav row's chevron, x 24, 44 pt touch — over the title bar too
+                    Button { model.back() } label: {
+                        Image(resource: "reference-back").resizable().frame(width: 8.8, height: 15.8).frame(width: 44, height: 44).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).accessibilityLabel("Back to questions").accessibilityIdentifier("insightBack")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .padding(.leading, 6).padding(.top, 10)
                     // 150 pt fade to the screen's bottom edge (through the home-indicator inset), opaque from 45 %
                     LinearGradient(stops: [.init(color: InsightInk.canvas.opacity(0), location: 0), .init(color: InsightInk.canvas, location: 0.45)], startPoint: .top, endPoint: .bottom)
                         .frame(height: 150).offset(y: safe.safeAreaInsets.bottom).allowsHitTesting(false)
@@ -289,7 +297,15 @@ struct InsightReportView: View {
                         .accessibilityElement(children: .combine)
                     }
                 }
-                .padding(.bottom, 16)
+                .padding(.bottom, 4)
+                if showsCTA {
+                    // PRD "SUM Cancel": back to the first question, answers kept (춘식이 11/4)
+                    Button { model.returnTo(model.setup.depth.path.dropFirst().first ?? .help) } label: {
+                        Text("Change my answers").insightText(15, .medium, line: 20, color: InsightInk.blueText).frame(minHeight: 44).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).accessibilityIdentifier("insightChangeAnswers")
+                    .padding(.bottom, 8)
+                }
             }
         }
         .overlay(alignment: .top) { Rectangle().fill(InsightInk.line).frame(height: 1) }

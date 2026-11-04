@@ -222,6 +222,21 @@ struct FaceDriverTests {
         #expect(meanDiff(bytes(d.renderFrame(at: 1, playbackMs: 300)), rest) == 0)
     }
 
+    /// watch "inhale" (#613): ignored while a reply plays (watch lane: the app must not stack it on the talking face)
+    @Test func anInhaleIsIgnoredWhileAReplyPlays() throws {
+        let d = FaceDriver(faceSet: animalSet, outputSize: CGSize(width: 90, height: 160), seed: 5)
+        var playing: Double? = nil
+        d.playbackClock = { playing }
+        #expect(d.flashBrows())                     // idle: brows go up
+        guard case let .replyDelta(delta) = try event(#"{"type":"reply.delta","utteranceId":4,"text":"hi"}"#) else { Issue.record("decode"); return }
+        d.handle(replyDelta: delta)
+        #expect(d.flashBrows())                     // a reply was announced but nothing plays yet
+        playing = 300
+        #expect(!d.flashBrows())                    // the reply is playing
+        d.cancel(utteranceId: 4)
+        #expect(d.flashBrows())                     // barge-in / done: back to idle
+    }
+
     @Test func alignerTimingsReachTheMouth() throws {
         let driver = FaceDriver(faceSet: animalSet, outputSize: CGSize(width: 90, height: 160), seed: 1)
         func audio(_ id: Int) throws -> ServerEvent.Audio {
@@ -426,6 +441,117 @@ struct MouthQualityTests {
         #expect(offMax < 0.05)
     }
 
+    /// 11/4 CA-09: measured 1.5–3.7 px whole-frame moves (roll and the 2D / animal framing zoom on top of the clamped
+    /// translation). Every face-box corner now moves ≤ 1.35 output px, after the zoom.
+    @Test func theSwayStaysWithinOnePointFivePixelsOnScreen() {
+        let face = faceCI(animalSet), extent = CGRect(origin: .zero, size: CGSize(width: animalSet.pixelSize.width, height: animalSet.pixelSize.height))
+        // still px → output px on screen: aspect fill (the overscan) and the framing zoom
+        let out: CGFloat = 540, zoom: CGFloat = 1.35, toOut = out / animalSet.pixelSize.width * AliveMotion.overscan * zoom
+        let pts = [CGPoint(x: face.minX, y: face.minY), CGPoint(x: face.maxX, y: face.minY), CGPoint(x: face.minX, y: face.maxY),
+                   CGPoint(x: face.maxX, y: face.maxY), CGPoint(x: face.midX, y: face.midY)]
+        for (gain, smoothing) in [(1.0, 0.0), (2.0, 0.0), (FaceRenderer.nonHumanSway, FaceRenderer.nonHumanSwaySmoothing)] {   // a person, the map's max sway, a non-person
+            var m = AliveMotion(seed: 4); m.headGain = 0; m.rollGain = 0; m.nodGain = 0; m.swayGain = gain; m.swaySmoothing = smoothing
+            var worst: CGFloat = 0, moved = false
+            for i in 0..<500 {
+                let t = Double(i) / 25, open = (i % 12) < 4 ? 0.9 : 0.1
+                let tr = m.transforms(at: t, open: open, face: face, extent: extent, outputWidth: out, screenScale: toOut)
+                let a = tr.head.concatenating(tr.camera)
+                for q in pts { let p = q.applying(a); worst = max(worst, hypot(p.x - q.x, p.y - q.y) * toOut) }
+                if hypot(face.midX - CGPoint(x: face.midX, y: face.midY).applying(a).x, 0) * toOut > 0.3 { moved = true }
+            }
+            print(String(format: "screen sway (gain %.1f, smoothing %.2f s): worst corner %.3f px", gain, smoothing, worst))
+            #expect(moved)
+            #expect(worst <= AliveMotion.swayScreenMaxPx + 0.01)
+        }
+    }
+
+    /// codex P2: the cap holds in on-screen pixels for any output shape (a tall output fills by height) — through the
+    /// renderer's own scale.
+    @Test func theSwayCapHoldsOnATallOutput() {
+        let face = faceCI(animalSet)
+        for size in [CGSize(width: 540, height: 1280), CGSize(width: 540, height: 960), CGSize(width: 960, height: 540)] {
+            let r = FaceRenderer(faceSet: animalSet, outputSize: size, seed: 4)
+            let s = r.screenScale
+            #expect(abs(s - max(size.width / animalSet.pixelSize.width, size.height / animalSet.pixelSize.height) * AliveMotion.overscan) < 1e-6)
+            let pts = [CGPoint(x: face.minX, y: face.minY), CGPoint(x: face.maxX, y: face.minY), CGPoint(x: face.minX, y: face.maxY),
+                       CGPoint(x: face.maxX, y: face.maxY), CGPoint(x: face.midX, y: face.midY)]
+            var worst: CGFloat = 0
+            for i in 0..<500 {
+                let open = (i % 12) < 4 ? 0.9 : 0.1
+                let cam = r.motionTransforms(at: Double(i) / 25, open: open).camera   // the sway (the frame moves as one)
+                for q in pts { let p = q.applying(cam); worst = max(worst, hypot(p.x - q.x, p.y - q.y) * s) }
+            }
+            print(String(format: "sway on %.0fx%.0f: worst corner %.3f px", size.width, size.height, worst))
+            #expect(worst <= AliveMotion.swayScreenMaxPx + 0.01)
+            #expect(worst > 0.3)
+        }
+    }
+
+    /// codex P3: a tiny or non-finite smoothing constant leaves the sway unfiltered (no runaway sub-step count).
+    @Test func aDegenerateSmoothingConstantIsOff() {
+        let face = faceCI(animalSet), extent = CGRect(origin: .zero, size: CGSize(width: animalSet.pixelSize.width, height: animalSet.pixelSize.height))
+        for bad in [1e-20, 0, -1, .nan, .infinity] {
+            var raw = AliveMotion(seed: 5), m = AliveMotion(seed: 5); m.swaySmoothing = bad
+            for i in 0..<50 {
+                let t = Double(i) / 25
+                let a = raw.transforms(at: t, open: 0.6, face: face, extent: extent, outputWidth: 540).camera
+                let b = m.transforms(at: t, open: 0.6, face: face, extent: extent, outputWidth: 540).camera
+                #expect(abs(a.tx - b.tx) < 1e-9 && abs(a.ty - b.ty) < 1e-9)
+            }
+        }
+    }
+
+    /// 11/4 CA-09 (dog eye band 0.52 / 1.19 vs 0.3 / 0.8): the non-person sway is low-passed. Its frame-to-frame steps
+    /// shrink (fur and line art shimmer with every sub-pixel step) while its reach stays (the sway still reads).
+    @Test func aSmoothedSwayTakesSmallerStepsButKeepsItsReach() {
+        let face = faceCI(animalSet), extent = CGRect(origin: .zero, size: CGSize(width: animalSet.pixelSize.width, height: animalSet.pixelSize.height))
+        let out: CGFloat = 540, k = out / animalSet.pixelSize.width
+        func run(_ smoothing: Double) -> (step: CGFloat, p95: CGFloat, reach: CGFloat) {
+            var m = AliveMotion(seed: 4); m.headGain = 0; m.rollGain = 0; m.nodGain = 0; m.swayGain = FaceRenderer.nonHumanSway; m.swaySmoothing = smoothing
+            let p0 = CGPoint(x: face.midX, y: face.maxY - face.height * 0.3)   // the eye line
+            var steps: [CGFloat] = [], reach: CGFloat = 0, prev: CGPoint?
+            for i in 0..<750 {   // 30 s: talk with syllable-rate loudness, then quiet, alternating every 4 s
+                let t = Double(i) / 25
+                let open = (i / 100) % 2 == 0 ? ((i % 12) < 4 ? 0.9 : 0.1) : 0.0
+                let tr = m.transforms(at: t, open: open, face: face, extent: extent, outputWidth: out)
+                let p = p0.applying(tr.head.concatenating(tr.camera))
+                reach = max(reach, hypot(p.x - p0.x, p.y - p0.y) * k)
+                if let q = prev { steps.append(hypot(p.x - q.x, p.y - q.y) * k) }
+                prev = p
+            }
+            let s = steps.sorted()
+            return (s.last ?? 0, s[Int(Double(s.count - 1) * 0.95)], reach)
+        }
+        let raw = run(0), smooth = run(FaceRenderer.nonHumanSwaySmoothing)
+        print(String(format: "sway steps: raw max %.3f p95 %.3f reach %.2f px; smoothed max %.3f p95 %.3f reach %.2f px",
+                      raw.step, raw.p95, raw.reach, smooth.step, smooth.p95, smooth.reach))
+        #expect(smooth.step <= 0.5 * raw.step)
+        #expect(smooth.p95 <= 0.6 * raw.p95)
+        #expect(smooth.reach >= 0.35 * raw.reach)   // the syllable-rate nod is what goes; the slow sway stays
+        #expect(smooth.reach >= 0.25)
+    }
+
+    /// A jump in time (a new reply's clock, a seek) restarts the filter: the first frame after it is the unfiltered sway,
+    /// not a slide from where the old clock left off.
+    @Test func aSmoothedSwayRestartsOnATimeJump() {
+        let face = faceCI(animalSet), extent = CGRect(origin: .zero, size: CGSize(width: animalSet.pixelSize.width, height: animalSet.pixelSize.height))
+        var raw = AliveMotion(seed: 6), smooth = AliveMotion(seed: 6)
+        smooth.swaySmoothing = FaceRenderer.nonHumanSwaySmoothing
+        var differed = false
+        for i in 0..<200 {
+            let t = Double(i) / 25, open = (i % 12) < 4 ? 0.9 : 0.1
+            let a = raw.transforms(at: t, open: open, face: face, extent: extent, outputWidth: 540).camera
+            let b = smooth.transforms(at: t, open: open, face: face, extent: extent, outputWidth: 540).camera
+            if abs(a.tx - b.tx) + abs(a.ty - b.ty) > 1e-3 { differed = true }
+        }
+        #expect(differed)
+        for t in [1.0, 20.0] {   // back in time, then forward by more than 0.5 s
+            let a = raw.transforms(at: t, open: 0.5, face: face, extent: extent, outputWidth: 540).camera
+            let b = smooth.transforms(at: t, open: 0.5, face: face, extent: extent, outputWidth: 540).camera
+            #expect(abs(a.a - b.a) < 1e-9 && abs(a.b - b.b) < 1e-9 && abs(a.tx - b.tx) < 1e-6 && abs(a.ty - b.ty) < 1e-6)
+        }
+    }
+
     @Test func speechOnsetsNodTheHeadWhenTheVerticalLockIsOff() {
         var quiet = AliveMotion(seed: 3), talk = AliveMotion(seed: 3)
         quiet.lockVertical = false; talk.lockVertical = false
@@ -490,6 +616,39 @@ struct BrowFlashTests {
         // same phonemes, new audio, 10 ms later: vowel 0 (onset −0.06 s) is no longer stressed, nothing has started
         #expect(tr.weight(atMs: -90, phonemes: ph, audioRevision: 900, loudness: later) == 0)
         #expect(tr.weight(atMs: 250, phonemes: ph, audioRevision: 900, loudness: later) == 1)   // vowel 2's flash
+    }
+
+    /// 11/4 watch "inhale" (#613): a time-driven flash — up within 0.1 s, held, down by 0.3 s (≤ 0.5 s), once.
+    @Test func anInhaleFlashesTheBrowsOnceOnTheRenderClock() {
+        var b = BrowFlash.Timed()
+        #expect(b.weight(at: 5) == 0)
+        b.trigger(at: 10)
+        #expect(b.weight(at: 9.9) == 0)
+        #expect(b.weight(at: 10.05) > 0 && b.weight(at: 10.05) < 1)
+        #expect(b.weight(at: 10.15) == 1)
+        #expect(b.weight(at: 10.29) > 0)
+        #expect(b.weight(at: 10.31) == 0)
+        #expect(b.onset == nil)                                  // done: it does not come back
+        #expect(b.weight(at: 10.15) == 0)
+        b.trigger(at: 20); _ = b.weight(at: 20.1)
+        #expect(b.weight(at: 3) == 0 && b.onset == nil)          // a clock that goes back drops it
+        #expect(BrowFlash.rise + BrowFlash.hold + BrowFlash.fall <= 0.5)
+    }
+
+    /// The renderer lifts the brow band for an inhale without any reply playing (no lip context).
+    @Test func anInhaleLiftsTheBrowsWithoutAReply() {
+        let size = CGSize(width: 180, height: 320)
+        let a = FaceRenderer(faceSet: animalSet, outputSize: size, seed: 3), b = FaceRenderer(faceSet: animalSet, outputSize: size, seed: 3)
+        #expect(a.hasBrowBand)
+        b.flashBrows(at: 1.0)
+        let still = bytes(a.render(at: 1.15, lip: .rest)), lifted = bytes(b.render(at: 1.15, lip: .rest))
+        #expect(meanDiff(still, lifted) > 0.01)
+        // after the flash both render the same frame again
+        #expect(meanDiff(bytes(a.render(at: 1.6, lip: .rest)), bytes(b.render(at: 1.6, lip: .rest))) < 1e-9)
+        // Reduce Motion: no lift
+        let c = FaceRenderer(faceSet: animalSet, outputSize: size, seed: 3, reduceMotion: true), d = FaceRenderer(faceSet: animalSet, outputSize: size, seed: 3, reduceMotion: true)
+        d.flashBrows(at: 1.0)
+        #expect(meanDiff(bytes(c.render(at: 1.15, lip: .rest)), bytes(d.render(at: 1.15, lip: .rest))) < 1e-9)
     }
 
     @Test func aClockJumpBackForgetsTheOldFlashes() {

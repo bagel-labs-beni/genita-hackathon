@@ -23,6 +23,8 @@ extension AppState {
     /// `afterSignIn`: a returning account goes to its call even if A03's Next was already tapped.
     /// Token, authentication lifetime and cancellation are checked after each request.
     func routeOnLaunch(afterSignIn: Bool = false) async {
+        // LG-03: whatever this decides (or if it can't), the root stops holding the launch ground
+        defer { launchRouting = false }
         let launchRequest = launchAuthSnapshot
         let request = onboardingSnapshot()
         // what this phone knew when /me was asked: a companion made while it was on its way is not "missed" (Codex P2)
@@ -63,6 +65,8 @@ extension AppState {
         let route = StartRouter.route(state, device: .iphone)
         // a companion on the server but not on this phone (reinstall, new phone, a judge's ready-made one):
         // bring its name, card and face back first
+        // a queued "Forget all of this" goes first: nothing restored below can carry what it removes (Codex #583 r19)
+        if setup.forgetPending == true { await retryPendingForget() }
         // Every launch into a call asks which companion the account has: another phone may have replaced it, and its
         // cached scene / photo must not open this call (handover b9-6). Not on this phone yet, or another one now →
         // bring it back in full; the same one → only confirm it (inputs on this phone stay, Codex P2).
@@ -113,10 +117,11 @@ extension AppState {
     func confirmCompanion(for request: OnboardingSessionGeneration.Snapshot? = nil) async {
         let launchRequest = launchAuthSnapshot
         let request = request ?? onboardingSnapshot()
+        let forgets = profileForgets   // before the read: a "Forget all of this" meanwhile makes its profile old (AU-92)
         guard let c = try? await onboarding.companion(), launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled,
               ownsOnboardingResponse(request) else { return }
         if c.imageId == setup.imageId { adoptServerCompanion(imageId: c.imageId); return }
-        await applyServerCompanion(c, launchRequest: launchRequest, request: request)
+        await applyServerCompanion(c, launchRequest: launchRequest, request: request, forgets: forgets)
     }
 
     /// D99: a companion made before this build has no saved date — Settings asks once for it.
@@ -139,12 +144,14 @@ extension AppState {
     func restoreCompanion(for request: OnboardingSessionGeneration.Snapshot? = nil) async {
         let launchRequest = launchAuthSnapshot
         let request = request ?? onboardingSnapshot()
+        let forgets = profileForgets   // a "Forget all of this" while this reads: its profile is old (Codex #583 r20)
         guard let c = try? await onboarding.companion(), launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled,
               ownsOnboardingResponse(request) else { return }
-        await applyServerCompanion(c, launchRequest: launchRequest, request: request)
+        await applyServerCompanion(c, launchRequest: launchRequest, request: request, forgets: forgets)
     }
 
-    private func applyServerCompanion(_ c: CompanionInfo, launchRequest: LaunchAuthSnapshot, request: OnboardingSessionGeneration.Snapshot) async {
+    /// `forgets` = `profileForgets` read by the caller before its await: a forget since then means the profile is old.
+    private func applyServerCompanion(_ c: CompanionInfo, launchRequest: LaunchAuthSnapshot, request: OnboardingSessionGeneration.Snapshot, forgets: Int) async {
         adoptServerCompanion(imageId: c.imageId)
         setup.companionName = c.name
         setup.imageId = c.imageId
@@ -155,7 +162,8 @@ extension AppState {
         // the saved voice (Settings → Voice); the name comes from this phone's pick or the curated list
         if let v = c.voiceId, v != setup.voiceId { setup.voiceId = v; setup.voiceName = VoicePlayer.name(forVoiceId: v) }
         if let p = c.session?.persona { setup.serverPersona = p }
-        if let profile = c.session?.user?.profile, !profile.isEmpty { setup.styleProfile = profile }
+        // a "Forget all of this" not yet confirmed: never bring the profile back onto the phone (Codex #583 r19)
+        if setup.forgetPending != true, profileForgets == forgets, let profile = c.session?.user?.profile, !profile.isEmpty { setup.styleProfile = profile }
         prep = c.prep
         // the face on this phone: the companion's call scene (the original photo isn't downloadable)
         // (Meta-only `sceneUrl` is a token-protected server path, so it goes through the account client)
@@ -274,12 +282,14 @@ extension AppState {
         story = nil; storyChanged = [:]; storyFailed = false; hisyPage = 0; insightReport = nil; insightUnavailable = false; insightAnswersSent = nil
         guard serverWired else { importing = false; return }
         let request = onboardingSnapshot()
+        let forgets = profileForgets
         importing = true
         importTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let style = try await onboarding.importReply(text)
-                guard !Task.isCancelled, ownsOnboardingResponse(request) else { return }
+                // "Forget all of this" meanwhile (AU-92): the old answer is never applied
+                guard !Task.isCancelled, ownsOnboardingResponse(request), profileForgets == forgets else { return }
                 applyStyle(style)
                 importing = false
                 if stage == .preparing {
@@ -316,6 +326,7 @@ extension AppState {
     func finishSkip() {
         guard serverWired else { go(.preferences); return }
         importing = true
+        let forgets = profileForgets
         let ownerBefore = setup.skipOwner
         Task {
             defer { importing = false }
@@ -325,6 +336,7 @@ extension AppState {
                 // another account; a sure "not saved" below takes the mark back (Codex #516 AU-20 r2)
                 setup.skipOwner = setup.accountId ?? "unknown"
                 let style = try await onboarding.importSkip(interests: answers.interests, replies: setup.skipReplies, n3: answers.n3)
+                guard profileForgets == forgets else { return }   // "Forget all of this" meanwhile (AU-92)
                 // only a saved send makes them this account's (AU-20): a 401 / offline / 400 leaves them unsent, so the
                 // next N3 tap keeps N1/N2 and signing in again carries them (the case #516 is for)
                 setup.skipSent = true
@@ -367,9 +379,11 @@ extension AppState {
         guard serverWired, story == nil, !storyLoading, !importing else { return }
         storyLoading = true; storyFailed = false
         defer { storyLoading = false }
+        let asked = profileForgets
         for _ in 0..<3 {
             do {
                 let r = try await onboarding.story(wait: 8)
+                if profileForgets != asked { return }   // "Forget all of this" meanwhile: an old answer (AU-92)
                 if story != nil { return }   // the import landed meanwhile
                 if r.status == .ready, !r.cards.isEmpty { story = r.cards; storySource = r.source ?? storySource; return }
                 if r.status == .none { break }
@@ -384,8 +398,10 @@ extension AppState {
     /// border) or nil when the correction emptied it (it leaves the deck); the six I04 rows and the call's profile
     /// text follow. Returns the error line to show in the sheet (nil = done).
     func correctStory(cardId: String, items: [String], text: String?) async -> String? {
+        let asked = profileForgets
         do {
             let r = try await onboarding.correct(cardId: cardId, items: items, text: text)
+            if profileForgets != asked { return nil }   // "Forget all of this" meanwhile: never written back (AU-92)
             if var cards = story, let i = cards.firstIndex(where: { $0.id == cardId }) {
                 if let card = r.card { cards[i] = card } else { cards.remove(at: i); hisyPage = min(hisyPage, cards.count + 1) }
                 story = cards
@@ -398,6 +414,48 @@ extension AppState {
             route(error)
             return Self.errorLine(error)
         }
+    }
+
+    /// About you → "Forget all of this" (AU-92): the server forgets what Genita knows about the user (import, HISY,
+    /// corrections, insights, call memory); the companion stays. Returns the error line to show (nil = done).
+    func forgetProfile() async -> String? {
+        // fail closed (lead 11/4): the phone's copy goes first and a retry stays queued until the server confirms —
+        // a failure never leaves (or brings back) what they asked to forget
+        profileForgotten()
+        setup.forgetPending = true
+        // the account this was asked for: an answer after a sign-out / another sign-in touches nothing (Codex #583 r21)
+        let asked = launchAuthSnapshot
+        do {
+            try await onboarding.forgetProfile()
+            guard asked.accepts(launchAuthSnapshot), !Task.isCancelled else { return nil }
+            setup.forgetPending = nil
+            return nil
+        } catch {
+            guard asked.accepts(launchAuthSnapshot), !Task.isCancelled else { return nil }
+            route(error)
+            if case GenitaAuthError.server(status: 429, _, _) = error { return "Couldn’t finish forgetting — try again in a minute." }
+            return "Couldn’t finish forgetting — try again."
+        }
+    }
+
+    /// A queued "Forget all of this" the server never confirmed: sent again (on launch, once signed in).
+    func retryPendingForget() async {
+        guard setup.forgetPending == true, serverWired, onboarding.auth.token != nil else { return }
+        let asked = launchAuthSnapshot
+        if (try? await onboarding.forgetProfile()) != nil, asked.accepts(launchAuthSnapshot), !Task.isCancelled {
+            setup.forgetPending = nil
+            profileForgotten()   // anything restored meanwhile goes again (Codex #583 r19)
+        }
+    }
+
+    /// The phone drops its copy too: the I04 rows, the call's profile text, the pasted reply, the story cards, the
+    /// skip picks. A story or correction answer still on its way is ignored (`profileForgets`).
+    func profileForgotten() {
+        profileForgets += 1
+        setup.styleRows = nil; setup.stylePartial = nil; setup.styleProfile = nil; setup.response = ""
+        setup.skipInterests = nil; setup.skipReplies = nil; setup.skipAvoid = nil; setup.skipLikes = nil; setup.skipSent = nil; setup.skipOwner = nil
+        story = nil; storySource = nil; storyChanged = [:]; storyFailed = false; hisyPage = 0
+        insightReport = nil   // the SUM / About you report was made from what's gone
     }
 
     /// I04: the six rows as read-only text (I04-P rows say "Not enough information yet.").
@@ -708,7 +766,8 @@ extension AppState {
             do {
                 let r = try await onboarding.insights(wait: 6)
                 guard ownsOnboardingResponse(request), !Task.isCancelled else { return }
-                if let report = r.report, insightVerdictTask == nil { insightReport = report }
+                // a report that arrives later (Settings) clears an earlier failure (AU-94)
+                if let report = r.report, insightVerdictTask == nil { insightReport = report; insightUnavailable = false }
                 if r.status == .ready { return }
                 if r.status == .none || r.status == .failed { break }
             } catch {
@@ -798,14 +857,16 @@ extension AppState {
 
     /// PREP-1 (every 2 s) and the call (S09-PREP, every 5 s): poll `GET /v1/companion/prep` while the screen is up
     /// (scene → expressions → mouth). Stops at ready or failed (PREP-1e Try again starts it again).
-    func followPrep(every seconds: Double = 2) async {
+    /// `sceneFirst: false` (the call, face plan item 3): a ready answer goes in at once — the face set load waits on it —
+    /// and the call's own `loadScene` task fetches the scene; PREP-1 keeps the scene-first order (no ready over nothing).
+    func followPrep(every seconds: Double = 2, sceneFirst: Bool = true) async {
         guard serverWired else { return }
         if prep?.isReady == true { return }
         while !Task.isCancelled {
             do {
                 let p = try await onboarding.prep()
                 // ready is shown with the made face already in place, never over the uploaded photo
-                if p.isReady { await loadScene(for: p, within: Self.sceneWaitSeconds) }
+                if p.isReady && sceneFirst { await loadScene(for: p, within: Self.sceneWaitSeconds) }
                 prep = p
                 if p.isReady || p.isFailed { return }
             } catch GenitaAuthError.unauthorized {

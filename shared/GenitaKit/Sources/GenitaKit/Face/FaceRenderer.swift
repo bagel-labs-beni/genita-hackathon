@@ -47,10 +47,20 @@ public final class FaceRenderer: @unchecked Sendable {
     private let browLift: CGFloat
     /// on/off (rollback); map-free on purpose: a tiny, speech-locked accent
     nonisolated(unsafe) public static var browFlash = true
+    /// Share of the speech sway non-people get (CA-09).
+    nonisolated(unsafe) public static var nonHumanSway = 0.5
+    /// Sway drive low-pass (s) for non-people (CA-09: fur / line-art shimmer); people keep the unfiltered sway.
+    nonisolated(unsafe) public static var nonHumanSwaySmoothing = 0.25
     /// 11/4 mouth inside (lips together while listening, teeth lit like the face): nil = the map's `rig.interior`
     /// (default on); tools force it (FaceRender FACE_MOUTH_INTERIOR=0 renders build 6).
     nonisolated(unsafe) public static var mouthInterior: Bool? = nil
     private var browTracker = BrowFlash.Tracker()
+    private var timedBrows = BrowFlash.Timed()
+    /// Watch "inhale" backchannel (#613): the brows lift once (0.3 s) starting at render time `t` (the clock `render(at:)`
+    /// gets), with or without a reply playing. No-op on faces without a brow band (animals) and with Reduce Motion.
+    public func flashBrows(at t: Double) { lock.lock(); timedBrows.trigger(at: t); lock.unlock() }
+    /// This face has a brow band to lift (tests).
+    var hasBrowBand: Bool { browMask != nil }
     /// Brow band and the eye cut-out (image coordinates, y up) from the eye line and the mouth centre: the brows sit
     /// 0.3 of the eye→mouth distance above the eyes, capped at 0.12 face widths (11/4: the face box takes in hair, so
     /// a band hung from its top lifted the hairline, not the brows). The brow ellipse ends above the eye cut-out.
@@ -180,6 +190,13 @@ public final class FaceRenderer: @unchecked Sendable {
             motion.rollGain = a.rollGain ?? a.headGain; motion.nodWidth = a.nodWidth; motion.cameraGain = a.camera
             motion.lockVertical = a.lockY
             motion.swayGain = a.sway
+        }
+        // 11/4 CA-09: fur and line art (animals, 2D / 3D characters) turn the sway into local shimmer after
+        // stabilization (dog 0.69 / 2D 0.72 vs the 0.56 gate; 0.44 at half sway): half the sway, on a smoothed path,
+        // for non-people — also when their map has no `alive` block
+        if (faceSet.flow?.kind ?? "human") != "human" {   // no kind = a person (as in `framing`)
+            motion.swayGain *= Self.nonHumanSway
+            motion.swaySmoothing = Self.nonHumanSwaySmoothing
         }
         let fr = Self.framing(faceSet)
         framingZoom = fr.zoom
@@ -396,10 +413,12 @@ public final class FaceRenderer: @unchecked Sendable {
 
         // 4b. brow flash (11/4): stressed words lift the brows ~0.2 of their gap for 0.3 s — the band is moved up rigidly
         // through a soft mask (no warp of the eyes; 0–2 per sentence)
-        if Self.browFlash, !reduceMotion, stillsTotal < 0.15, let bm = browMask, let ctx = context {
+        if Self.browFlash, !reduceMotion, stillsTotal < 0.15, let bm = browMask {
             let w: Double = { lock.lock(); defer { lock.unlock() }
-                return browTracker.weight(atMs: ctx.audioMs - lipLookaheadMs, phonemes: ctx.timeline.phonemeTimings,
-                                      audioRevision: ctx.timeline.receivedAudioEndMs, loudness: { ctx.timeline.loudness(atMs: $0) }) }()
+                let timed = timedBrows.weight(at: t)   // the watch inhale (render clock)
+                guard let ctx = context else { return timed }
+                return max(timed, browTracker.weight(atMs: ctx.audioMs - lipLookaheadMs, phonemes: ctx.timeline.phonemeTimings,
+                                      audioRevision: ctx.timeline.receivedAudioEndMs, loudness: { ctx.timeline.loudness(atMs: $0) })) }()
             if w > 0.01 {
                 let lifted = img.clampedToExtent().transformed(by: CGAffineTransform(translationX: 0, y: browLift * CGFloat(w))).cropped(to: extent)
                 let f = CIFilter.blendWithAlphaMask()
@@ -465,9 +484,14 @@ public final class FaceRenderer: @unchecked Sendable {
         return (m.head, m.body, m.camera)
     }
 
+    /// Output px per still px as drawn (the aspect fill in `image(at:)` × overscan × framing zoom): the sway cap's units.
+    var screenScale: CGFloat {
+        max(outputSize.width / extent.width, outputSize.height / extent.height) * AliveMotion.overscan * max(1, framingZoom)
+    }
+
     private func motionState(at t: Double, open: Double, face: CGRect) -> (head: CGAffineTransform, body: CGAffineTransform, camera: CGAffineTransform) {
         lock.lock(); defer { lock.unlock() }
-        return motion.transforms(at: t, open: open, face: face, extent: extent, outputWidth: outputSize.width)
+        return motion.transforms(at: t, open: open, face: face, extent: extent, outputWidth: outputSize.width, screenScale: screenScale)
     }
 
     /// Head layer ellipse (image coordinates, y up): hair and face; fully opaque inside
