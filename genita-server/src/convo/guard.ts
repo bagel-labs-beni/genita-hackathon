@@ -321,7 +321,7 @@ const LOOKS_RATING = /\b(?:cute|hot|pretty|gorgeous|beautiful|handsome|sexy|stun
 // Codex #675 r4 P2: "color" alone is not clothes ("which color works better for my website")
 const CLOTHES_CTX = /\b(?:wear\w*|outfit|fit|top|dress|shirt|coat|jacket|trench|shoes|boots|pants|jeans|skirt|sweater|blazer|suit|suits? me|on me|colou?r season)\b/i;
 const COLOR_ADVICE = /\b(?:wear\w*|shoes|boots|accessor\w*|top|dress|coat|trench|jacket|outfit|pair\w*|goes? with|works? with|black|white|brown|camel|cream|navy|beige|olive|rust|burgundy|gold|silver|earthy|colou?rs?|shades?|tones? (?:like|such))\b/i;
-const COLOR_VERDICT = new RegExp(`(?:${STYLE_COLOR.source})\\s+(?:is|are|looks?|seems?|appears?|got|has|needs?|could use|should|isn'?t|doesn'?t)\\b|\\b(?:even(?:ing|ed)? (?:it )?out|blotchy|uneven|dull|wrinkl\\w*|sallow|ashy|washed[- ]out|pasty|blemish\\w*|acne|spots?|fat|thin|skinny|old|tired)\\b`, "i");
+const COLOR_VERDICT = new RegExp(`(?:${STYLE_COLOR.source})(?:['’]s|['’]re|\\s+(?:is|are|looks?|seems?|appears?|got|has|needs?|could use|should|isn'?t|doesn'?t))\\b|\\b(?:even(?:ing|ed)? (?:it )?out|awful|terrible|horrible|bad|blotchy|uneven|dull|wrinkl\\w*|sallow|ashy|washed[- ]out|pasty|blemish\\w*|acne|spots?|fat|thin|skinny|old|tired)\\b`, "i");
 export function colorStyling(sentence: string, userText: string): boolean {
   if (!STYLE_ASK.test(userText) || !CLOTHES_CTX.test(userText) || !STYLE_COLOR.test(sentence) || LOOKS_RATING.test(sentence)) return false;
   if (!COLOR_ADVICE.test(sentence.replace(new RegExp(STYLE_COLOR.source, "gi"), " ")) || COLOR_VERDICT.test(sentence)) return false;
