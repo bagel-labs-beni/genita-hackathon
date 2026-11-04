@@ -174,6 +174,9 @@ export type SessionDeps = {
 const PICK_WAIT_MS = 4000;
 export const RECIPE_REACTION_LINE =
   "An ingredient check of what they are showing is already running and you will say what you see right after it. Reply now with ONE short, warm sentence (under 10 words) reacting to what they asked, as you. Don't list ingredients, don't name a dish, and never say you are looking, checking or can't see.";
+/** P0 11/4: a dish by name — the recipe card (photo, ingredients, steps) appears on its own; never read the recipe out */
+export const RECIPE_NAMED_REACTION_LINE =
+  "A recipe card with the ingredients and steps for this dish is about to appear on their screen. Reply now with ONE short, warm sentence (under 12 words) reacting to the dish, as you. Don't list ingredients or steps, no amounts, no links, and never say you are searching or looking it up.";
 export const PRODUCT_REACTION_LINE =
   "A shopping search for this is already running in the background and its card will appear on its own. Reply with ONE short sentence (under 10 words): a natural, in-character reaction to what they asked or what you see (taste, color, how it goes with the outfit); talk to them as you. Never say you are searching, looking, checking or pulling anything up, no 'let me…'; don't name products, stores, prices or links.";
 /** The slice of the personalize service a call uses (structural, so tests can fake it). */
@@ -2568,7 +2571,7 @@ export class Session {
             : req.input;
           // P0 11/4: the recipe turn too gets its own generated line (not a fixed "Ooh, let me see."); what is in view is
           // said after the ingredient check (D23), so this line never lists ingredients
-          const reactLine = started.kind === "recipe" ? RECIPE_REACTION_LINE : PRODUCT_REACTION_LINE;
+          const reactLine = started.kind === "recipe" ? (started.named ? RECIPE_NAMED_REACTION_LINE : RECIPE_REACTION_LINE) : PRODUCT_REACTION_LINE;
           const react = this.sparkSource({ ...req, input: textOnly as typeof req.input, instructions: `${req.instructions ?? ""}\n${reactLine}\n`, tools: undefined }, signal, undefined, false);
           // P0 11/4 (Codex #738): an empty recipe reaction falls back to the normal generated answer, never the fixed ack
           const recipeTurn = started.kind === "recipe";
