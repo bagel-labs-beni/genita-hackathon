@@ -1388,6 +1388,36 @@ test("greeting (a) Codex #461: a tagged or split hello is not said again; an emp
   session.close();
 });
 
+test("greeting (a) CV-09 (build 6, 3/8): the continuation after 'Hey, Summer!' starts with a capital, tags or not", { skip: !v1 }, async () => {
+  for (const delta of ["<happy> so did you actually pick the ramen place?", "<teasing> [smile] did you ever grab those noodles?"]) {
+    const client = new Client();
+    const session = new Session("cv09", client, {
+      config, openAsr: () => { throw new Error("no asr"); }, greetOpener: true,
+      async *spark(): AsyncGenerator<SparkStreamEvent> {
+        yield { type: "text", delta };
+        yield { type: "done", responseId: "r", text: "", status: "completed" };
+      },
+      async *tts() {},
+    });
+    await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", user: { name: "Summer" }, greetAfterMs: 0 }));
+    const reply = await client.waitFor((m) => m.type === "reply" && m.final === true, 5000);
+    assert.match(String(reply.text), /^(?:Hey|Hi|Oh hey|Hey hey), Summer! (?:So did you actually pick the ramen place|Did you ever grab those noodles)\?$/, delta);
+    session.close();
+  }
+});
+
+test("CV-01 (eval v2 11/4): with no past in the call, 'again' about them is cut and a claimed earlier talk is not said", { skip: !v1 }, async () => {
+  const { client, session } = setup(["<teasing> Look who crawled back. Bet you're craving late-night ramen talk again.", "<teasing> Ugh, I remember the vibe was messy. Spill it, I'm listening."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", user: { name: "Summer" } }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "hi" }));
+  const a = await client.waitFor((m) => m.type === "reply" && m.final === true);
+  assert.equal(a.text, "Look who crawled back. Bet you're craving late-night ramen talk.");
+  await session.onClientText(JSON.stringify({ type: "text", text: "do you remember what I told you about my ex?" }));
+  const b = await client.waitFor((m) => m.type === "reply" && m.final === true && m.text !== a.text);
+  assert.equal(b.text, "Spill it, I'm listening.");
+  session.close();
+});
+
 test("QA build 5 P3 recount (real Spark): 'when am I finally getting…' greeting is a question; 'you always look' with the camera off is unseen", { skip: !v1 }, async () => {
   assert.equal(guardSentence("Black, no contest, you always look lethal in black.", none), "unseen");
   const { client, session } = setup(["<teasing> Okay Summer, when am I finally getting a taste of that kimchi grilled cheese."]);

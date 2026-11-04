@@ -56,6 +56,7 @@ import { ASK_TURNS, replyAsks } from "../personalize/unknowns.ts";
 import { mightBeCorrection } from "../personalize/corrections.ts";
 import { ageSays, foldAge, isMinor, MINOR_LINE, NO_AGE, type AgeSay } from "../convo/minorBoundary.ts";
 import { cameraOffHint } from "../convo/cameraAsk.ts";
+import { unbackedPast } from "../convo/pastGuard.ts";
 import { avoidKeys, forgetTarget, isForgetRequest, mentionsAvoided, scrubHistory, type Removed } from "../personalize/forgotten.ts";
 import { isForgetRequest as isMemoryForgetRequest } from "../memory/extract.ts";
 import { localTimeLine } from "../personalize/knows.ts";
@@ -920,6 +921,7 @@ export class Session {
         if (this.segmentOpen) { this.dropLateFinal = true; this.segmentOpen = false; }
         this.dropSpeculation(); this.dispatch({ type: "client_barge_in" });
         this.history = []; this.recentReplies = []; this.memories = []; this.greeting = null;
+        this.handedPast = false; // Codex #536 r2: after a Forget the other device's turns are gone as a past too
         this.historyRevision = revision;
         // #341: what greetings opened on goes too (Codex #352)
         this.openerRecent = [];
@@ -975,6 +977,7 @@ export class Session {
           this.recentReplies = [...this.recentReplies, ...this.history.filter((h) => h.role === "assistant").map((h) => h.text)].slice(-3);
           this.greeting = null;
           this.continued = true;
+          this.handedPast = true;
           this.log("history.seeded", { turns: this.history.length, from: server?.length ? "server" : "start" });
         });
       };
@@ -1968,6 +1971,14 @@ export class Session {
     return picked.map((m) => m.text);
   }
 
+  /** CV-01: anything from before this call reached the model (memories, notes, last call, recall, the other device's turns) */
+  /** the other device's turns came with this call (cleared by a Forget) */
+  private handedPast = false;
+  private hasPast(): boolean {
+    // a handoff's turns count only while they're still here (Codex #536 P2: a Forget clears them, the flag stayed)
+    return this.handedPast || this.memories.length > 0 || !!this.memoryCall?.pastShown;
+  }
+
   /** Session memory: this call's conversation thread, for the account's next device after a handoff. */
   threadInfo(): ThreadState | null {
     return this.memoryCall?.threadState() ?? null;
@@ -2452,6 +2463,11 @@ export class Session {
         if (this.v1 && tts && !interpret && !self) {
           const you = nameAsYou(tts, this.user?.name);
           if (you !== tts) { tts = you; this.log("convo.name_to_you", { utteranceId }); }
+        }
+        // CV-01 (eval v2 11/4): no past in this call → no habit "again" / "like usual", no claimed earlier talk (convo/pastGuard.ts)
+        if (this.v1 && tts && !interpret && !self) {
+          const kept = unbackedPast(tts, { past: this.hasPast(), userText: guardCtx.userText, callText: this.history.map((h) => h.text).join(" ") }); // Codex #536 r6: what Genita itself said this call counts too ("We talked about kimchi fried rice")
+          if (kept !== tts) { tts = kept; this.log("convo.unbacked_past", { utteranceId, dropped: !kept }); }
         }
         // AI sweep C1: "I'm really glad you told me — …" then "…, and I'm really glad you told me." — said once per reply
         if (this.v1 && tts && !interpret && !self && sentences.some((x) => /\bglad you told me\b/i.test(x.display))) {
