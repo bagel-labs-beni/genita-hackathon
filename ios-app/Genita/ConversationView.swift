@@ -242,6 +242,9 @@ struct ConversationView: View {
                 }.frame(width: full.size.width, height: full.size.height).clipped()
             }.ignoresSafeArea()
         }.opacity(handoffEnabled && handoff.motionVisible ? 0 : 1)
+        // CRASH-1: while the pairing sheet is up, the call under it (⋮, Interpret, the rail) takes no touches
+        .allowsHitTesting(!(handoffEnabled && handoff.settings))
+        .accessibilityHidden(handoffEnabled && handoff.settings)
         .overlay { if handoffEnabled && !connecting { PhoneHandoffOverlay(model:model) } }
         #if DEBUG
         // face pipeline probe for UI tests (why S09 shows the still): shows / attempts / loading / face / poster / error
@@ -408,6 +411,10 @@ struct ConversationView: View {
             RoundedRectangle(cornerRadius: 16).fill(.ultraThinMaterial).overlay(RoundedRectangle(cornerRadius: 16).fill(.black.opacity(0.05))).environment(\.colorScheme, .dark)
         }
     }
+    /// Drawer rows sit on a 47 pt pitch (y 118 / 165 / 212 / 259) and are 44 pt tall: each row's hit area takes half
+    /// the 3 pt gap on both sides, so the rows tile the column with no dead strip and no overlap (MOVE-2).
+    static let menuRowPitch: CGFloat = 47
+    static let menuRowHitShape = Rectangle().inset(by: -(menuRowPitch - 44) / 2)
     func menuRow(_ title: String, text: String? = nil, icon: String = "", symbol: String? = nil, badge: String? = nil, y: CGFloat, width: CGFloat, top: CGFloat, action: @escaping () -> Void) -> some View {
         let label = DesignLibrary.nodes("menu").first { $0.characters == title }!
         return Button(action: action) {
@@ -419,7 +426,7 @@ struct ConversationView: View {
                 let w = max(label.w, 140)
                 DesignText(node: label, text: text ?? label.characters).frame(width: w, height: label.h).position(x: label.x - 24 + w / 2, y: 22)
                 if let badge { Text(badge).font(TypeStyle.body(14)).foregroundStyle(CallInk.mute).position(x: width - 48 - 12, y: 22) }
-            }.frame(width: width - 48, height: 44).contentShape(Rectangle())
+            }.frame(width: width - 48, height: 44).contentShape(Self.menuRowHitShape)
         }.buttonStyle(.plain).position(x: width / 2, y: y + 22 + top).accessibilityLabel(text ?? title)
     }
 
@@ -465,7 +472,7 @@ struct ConversationView: View {
                 Color.clear
                 Image(systemName: "laptopcomputer").symbolRenderingMode(.monochrome).font(.system(size: 16)).foregroundStyle(Color(white: 17.0 / 255)).frame(width: 24, height: 21).position(x: 20, y: 22)
                 DesignText(node: label, text: "Move to Mac").frame(width: 140, height: label.h).position(x: label.x - 24 + 70, y: 22)
-            }.frame(width: width - 48, height: 44).contentShape(Rectangle())
+            }.frame(width: width - 48, height: 44).contentShape(Self.menuRowHitShape)
         }.buttonStyle(.plain).position(x: width / 2, y: y + 22 + top).accessibilityLabel("Move to Mac")
     }
     /// Self view: the call's front camera when on (one owner: CallController), Dyno's flip button, the placeholder when off.

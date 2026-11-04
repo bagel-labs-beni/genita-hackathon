@@ -12,18 +12,39 @@ private let errorRed = Color(red: 214.0 / 255, green: 40.0 / 255, blue: 29.0 / 2
 struct PhonePairingView: View {
     @ObservedObject private var handoff = PhoneHandoff.shared
     @FocusState private var focused: Bool
+    /// how far the sheet is pulled down (swipe-down dismiss, CRASH-1 / MOVE-2)
+    @State private var pull: CGFloat = 0
     private var paired: Bool { handoff.link.connected || handoff.debugPaired }
     var body: some View {
         ZStack(alignment: .bottom) {
-            handoffScrim.ignoresSafeArea().onTapGesture { handoff.closePairing() }.accessibilityHidden(true)
+            // a modal: the scrim takes every touch outside the sheet and closes it; nothing reaches the call under it
+            handoffScrim.ignoresSafeArea().contentShape(Rectangle()).onTapGesture { close() }
+                .accessibilityLabel("Close pairing").accessibilityAddTraits(.isButton).accessibilityIdentifier("pairingScrim")
             Group { paired ? AnyView(pairedSheet) : AnyView(codeSheet) }
                 .padding(.top, 28).padding(.horizontal, 38).padding(.bottom, 24)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(UnevenRoundedRectangle(topLeadingRadius: 30, topTrailingRadius: 30).fill(sheetSurface).shadow(color: .black.opacity(0.04), radius: 13).ignoresSafeArea(edges: .bottom))
                 .overlay(alignment: .top) { Capsule().fill(Color(white: 219.0 / 255)).frame(width: 47, height: 5).padding(.top, 12) }
+                .contentShape(Rectangle())
+                .offset(y: pull)
+                // the handle's promise: a pull down closes it (the system sheets do the same); a short one springs back
+                .simultaneousGesture(DragGesture(minimumDistance: 12, coordinateSpace: .global)
+                    .onChanged { g in pull = PairingSheetPull.vertical(g.translation) ? max(0, g.translation.height) : 0 }
+                    .onEnded { g in
+                        if PairingSheetPull.vertical(g.translation), PairingSheetPull.closes(translation: g.translation.height, predicted: g.predictedEndTranslation.height) { close() }
+                        else { withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { pull = 0 } }
+                    })
         }
+        .accessibilityAddTraits(.isModal)
         .onAppear { if !paired { focused = true } }
         .onChange(of: paired) { _, now in if now { focused = false } }
+        .onDisappear { focused = false }
+    }
+    /// Every way out (scrim, Cancel, Not now / Done, pull down): the number pad goes first, then the sheet, so the
+    /// text field never leaves while it is still first responder. The call keeps running; a half-entered code is dropped.
+    private func close() {
+        focused = false
+        DispatchQueue.main.async { handoff.closePairing() }
     }
 
     // MARK: P01 / P01-E
@@ -34,6 +55,11 @@ struct PhonePairingView: View {
                 .fixedSize(horizontal: false, vertical: true).padding(.top, 16)
             codeBoxes.padding(.top, 24)
             statusLine.padding(.top, 16)
+            // MOVE-2: a visible way out, the same text button as P02's Not now (the handoff sheets' dismiss)
+            Button(action: close) {
+                Text("Cancel").font(.custom("PretendardVariable-Medium", fixedSize: 15)).foregroundStyle(ink)
+                    .frame(maxWidth: .infinity).frame(height: 44).contentShape(Rectangle())
+            }.buttonStyle(.plain).padding(.top, 8).accessibilityIdentifier("pairingCancel")
         }
     }
     private var codeBoxes: some View {
@@ -95,7 +121,7 @@ struct PhonePairingView: View {
                         .frame(maxWidth: .infinity).frame(height: 50).background(ink, in: RoundedRectangle(cornerRadius: 6)).contentShape(Rectangle())
                 }.buttonStyle(.plain).padding(.top, 32).accessibilityIdentifier("setUpTouchToMove")
             }
-            Button(action: handoff.closePairing) {
+            Button(action: close) {
                 Text(handoff.proximitySupported ? "Not now" : "Done").font(.custom("PretendardVariable-Medium", fixedSize: 15)).foregroundStyle(ink)
                     .frame(maxWidth: .infinity).frame(height: 44).contentShape(Rectangle())
             }.buttonStyle(.plain).padding(.top, handoff.proximitySupported ? 6 : 32).accessibilityIdentifier("pairingNotNow")
@@ -116,6 +142,13 @@ struct PhonePairingView: View {
     private func title(_ text: String) -> some View {
         Text(text).font(.custom("KMUTTF-SungkokSemiSerif", fixedSize: 28)).tracking(-0.28).foregroundStyle(ink).frame(minHeight: 34, alignment: .leading)
     }
+}
+
+/// The pairing sheet's pull-down: far enough, or flicked down, closes it.
+enum PairingSheetPull {
+    static func closes(translation: CGFloat, predicted: CGFloat) -> Bool { translation > 90 || (translation > 24 && predicted > 220) }
+    /// a pull, not a slider drag (P02's Adjust) or a sideways swipe
+    static func vertical(_ t: CGSize) -> Bool { abs(t.height) > abs(t.width) * 1.5 }
 }
 
 private struct CueSpinnerDark: View {
