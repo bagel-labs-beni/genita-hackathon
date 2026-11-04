@@ -66,12 +66,12 @@ struct MacConversationView: View {
                 if waitingCopy != nil { handoffScrim.frame(width: 390, height: 844).allowsHitTesting(false) }
                 Button { withAnimation { menuOpen.toggle() } } label: { MacGlassControl(icon: "glass-menu-icon") }
                     .buttonStyle(.plain).position(x: 47.5, y: topRowY).opacity(sheetFull || linkOpened != nil || menuOpen ? 0 : 1).allowsHitTesting(!sheetFull && linkOpened == nil && !menuOpen).accessibilityIdentifier("macOpenMenu")
-                if interpreting {
+                if interpreting && !findsUp {
                     // F10 INT-1~6 on the Mac (as the iPhone): the face stays, the bar, bubbles and Hold to talk replace the rail
                     InterpretOverlay(board: call.interpretBoard, level: { call.inputLevel }, onClose: { stopInterpreting() }, onHold: { call.setHold($0) })
                         .frame(width: 390, height: 844)
                         .transition(.opacity)
-                } else if waitingCopy == nil {
+                } else if waitingCopy == nil && !interpreting {
                     // live captions r01: same layer as the iPhone, bottom edge 16 above the rail (626), under the self view and rail
                     captionLayer
                     if MacDesignV2.enabled {
@@ -118,7 +118,7 @@ struct MacConversationView: View {
                         MediaPermissionSheet(kind: denied, name: call.companionName, openSettings: { media.openSystemSettings(for: denied) }, dismiss: { call.dismissDenied() })
                     }.frame(width: 390, height: 844)
                 }
-                if waitingCopy == nil && !interpreting {
+                if waitingCopy == nil && (!interpreting || findsUp) {
                     if linkOpened == nil {
                         MacResultSheet(finds: call.finds) { pick in withAnimation(.easeOut(duration: 0.22)) { linkOpened = pick } }
                             .frame(width: 390, height: 844, alignment: .topLeading)
@@ -193,6 +193,9 @@ struct MacConversationView: View {
     private var interpreting: Bool {
         interpret.isLive || (MacInterpretController.enabled && call.mode == .interpret && call.link != .connecting && call.link != .idle)
     }
+    /// F10 sheet during interpretation (iPhone 11/2 decision): Finds can open; while it is up the bubbles and Hold to
+    /// talk are hidden, and they come back when it closes. The call-app path keeps its old rule (no sheet).
+    private var findsUp: Bool { !interpret.isLive && call.finds.state != .idle && call.finds.state != .dismissed }
     /// INT-0 toggle, as the iPhone's More row: on closes the menu and shows INT-1; off returns to the call.
     private func toggleInterpreting() {
         let on = call.mode != .interpret
