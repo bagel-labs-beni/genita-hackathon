@@ -126,7 +126,10 @@ extension AppState {
         let c: CompanionInfo
         do { c = try await onboarding.companion() } catch {
             // an expired token still signs out (the client already dropped it); a late answer for another account does nothing
-            if launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled { route(error) }
+            // the client drops the token before throwing, so the snapshot's token is already nil: same sign-in generation = same account
+            let now = launchAuthSnapshot
+            let same = launchRequest.token != nil && launchRequest.generation == now.generation
+            if same, !Task.isCancelled { route(error) }
             return
         }
         guard launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled, setup.companionSince == nil, let made = c.createdAt else { return }
