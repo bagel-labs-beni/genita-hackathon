@@ -539,3 +539,16 @@ test("QA K-test P3: a shopping price range always lands in likes as one Budget l
   assert.equal(r.card.sections.likes[0].text, "Budget: usually under $100.");
   assert.ok(!r.card.sections.interests.some((x) => /\$100/.test(x.text)));
 });
+
+test("D19 / AU-19: a story line or taste tag with no word in the card is dropped (no fact chip for what the card never kept)", async () => {
+  const { toStory } = await import("../src/personalize/story.ts");
+  const card = toStyleCard({ sections: { tendencies: [f("Compares two options before deciding.")], communication: [f("Warm, direct and informal.")], response: [], help: [], support: [], interests: [], likes: [f("Food: hot pot."), f("Style: Clean, minimal clothes.")], boundaries: [], approach: [] }, rules: [], to_confirm: [] }, "import");
+  const { cards } = toStory({ cards: [
+    sc("talk", { headline: "Warm and to the point.", items: [{ text: "You trade crypto tips at night.", evidence: "explicit" }, { text: "You keep it warm and direct.", evidence: "explicit" }] }),
+    sc("taste", { headline: "Hot pot and clean lines.", tags: [tag("food", "Hot pot"), tag("style", "Clean, minimal"), tag("style", "Neon streetwear")] }),
+  ], topics: [] }, card);
+  const talk = cards.find((c) => c.id === "talk")!;
+  assert.deepEqual(talk.items.map((i) => i.text), ["You keep it warm and direct."]);
+  const taste = cards.find((c) => c.id === "taste")!;
+  assert.deepEqual(taste.tags!.map((t) => t.text), ["Hot pot", "Clean, minimal"]);
+});
