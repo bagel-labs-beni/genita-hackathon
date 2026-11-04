@@ -2770,6 +2770,7 @@ export class Session {
           this.client.sendJson({ type: "audio", utteranceId, seq, sentence, offsetMs: Math.round(reply.audioMs), durationMs: Math.round(durationMs), sampleRate: PCM_SAMPLE_RATE, model: chunk.model, ...chunkTiming(this.lip.active, chunk.alignment, offset) });
           this.client.sendBinary(Buffer.concat([encodeFrameHeader(FRAME_KIND_TTS_PCM, seq), chunk.audio]));
           reply.audioMs += durationMs;
+          reply.playEnd = Math.max(reply.playEnd, this.now()) + durationMs; // AU-49 queue clock, cached clips too
           ttsModelUsed = chunk.model;
           voiced = true;
         }
