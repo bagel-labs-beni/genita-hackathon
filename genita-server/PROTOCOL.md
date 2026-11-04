@@ -60,6 +60,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 | 11/3 | D27 capacity for judging: `GENITA_VOICE_MAX_CALLS` default 3 → 8 (the voice GPU now autoscales early, up to 4 containers). A full GPU queue answers 503 `busy` within 2.5 s; that sentence uses the existing `say` fallback and server voice is retried after 2 s (other failures still 30 s). No wire changes. |
 | 11/4 | Finds audit (additive): new client message `find.focus {findId}` ("Talk about this on a call" names the card, including one from an earlier call; AU-70). Outfit cards: the occasion line ("for this weekend") is the last `why` line and `evidence {style, situation}` is set (CW-02, AU-57). |
 | 11/4 | Device QA test photos: `/me` (and the sign-in body) adds `qaSamplePhotos: true` **only** for accounts listed in server env `GENITA_QA_SAMPLE_PHOTOS` (account ids / verified emails); every other account's `/me` is unchanged (no key). The iPhone app then shows "Use a test photo" on V01 (bundled samples → the same `POST /v1/companion/image`). Additive. |
+| 11/4 | D59 (additive): `frames` takes optional `unclear: true` when the app judged every frame too dark or too blurry. A fridge (recipe) question on such frames gets the IC-4 line as its whole reply plus `find.failed {reason:"unclear"}` at once — no "let me see" first. |
 
 ```
 wss://<host>/v1/session
@@ -101,7 +102,7 @@ queues and plays it, and flushes the queue on `utterance.cancelled`.
 | `audio_stop` | — | mic off; server pads 0.8 s silence so a cut sentence still ends |
 | `text` | `text`, optional `frames` | typed message (S08). Cancels any reply in progress, starts a new one. |
 | `perception.frame` | `image: jpeg` | PERC-1: one fixed upper-centre crop of the front-camera frame (the selfie face region, no face detection on device), base64 JPEG 256–384 px, < 300 k chars, for perception. Only when `ready.perception` is true, camera on, chat mode; on face change (≥ 1 s apart) or every 2.5 s. Ignored otherwise; never stored. See **Perception**. |
-| `frames` | `images: [jpeg]` (≤2) | camera frames for the **next** user turn (voice or text), valid 15 s. Base64 JPEG or `data:image/jpeg;base64,…`, each < 1.5 MB. Two frames measured 2.1 s first token vs 6.5 s for a video upload. |
+| `frames` | `images: [jpeg]` (≤2), optional `unclear: true` (D59: the app judged every frame too dark or blurry) | camera frames for the **next** user turn (voice or text), valid 15 s. Base64 JPEG or `data:image/jpeg;base64,…`, each < 1.5 MB. Two frames measured 2.1 s first token vs 6.5 s for a video upload. |
 | `barge_in` | — | user tapped to interrupt; cancels immediately |
 | `playback_done` | `utteranceId` | app finished playing the reply; ends `speaking` earlier than the server's estimate |
 | `mode` | `mode: "chat" \| "interpret"`, optional `interpret {source?, other?, app?}` | interpret = Genita interprets between the user and someone else (F8, see below). `source`: `face` (default, iPhone between two people) or `call` (Mac FaceTime/Zoom). `other`: fix the other language instead of detecting it. `app`: shown back in `interpret.pair`. |
