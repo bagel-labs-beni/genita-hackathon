@@ -369,6 +369,59 @@ test("D95 r4: forget during an accepted-answers rewrite keeps the rewrite but no
   assert.ok(!JSON.stringify(after.report).includes("which one is cheaper lol"));
 });
 
+test("D95 r5: a retry after Forget it never resends the pasted reply", async (t) => {
+  let reports = 0;
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  let fail!: () => void;
+  const failure = new Promise<void>((resolve) => { fail = resolve; });
+  const h = harness(async (req) => {
+    if (req.schemaName !== "insight_report") return { updates: [], answered: false };
+    reports++;
+    if (reports === 2) { entered(); await failure; throw new Error("503"); }
+    return RAW;
+  });
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  await h.ins.get("u1", 3000);
+  await h.ins.fromAnswers("u1", { help: "Think with me" });
+  await started;
+  await h.p.voiceCorrection("u1", "Forget it.", "");
+  fail();
+  await h.ins.get("u1", 3000);
+  const retry = h.calls.filter((c) => c.schemaName === "insight_report");
+  assert.ok(retry.length >= 3, "the failed answers write retries");
+  for (const call of retry.slice(2)) assert.doesNotMatch(String(call.input), /usually asks for two or three options|which one is cheaper lol/, "the retry drops the paste after Forget it");
+});
+
+test("D95 r5: a targeted forget does not cancel a failed accepted-answers retry", async (t) => {
+  let reports = 0;
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  let fail!: () => void;
+  const failure = new Promise<void>((resolve) => { fail = resolve; });
+  const h = harness(async (req) => {
+    if (req.schemaName !== "insight_report") return { updates: [], answered: false };
+    reports++;
+    if (reports === 2) { entered(); await failure; throw new Error("503"); }
+    return RAW;
+  });
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  await h.ins.get("u1", 3000);
+  await h.ins.fromAnswers("u1", { help: "Think with me" });
+  await started;
+  await h.p.voiceCorrection("u1", "Forget about options.", "");
+  fail();
+  const after = await h.ins.get("u1", 3000);
+  assert.equal(after.report!.settings!.why, "Think with me", "the accepted answers save after a targeted forget");
+  const retry = h.calls.filter((c) => c.schemaName === "insight_report");
+  assert.ok(retry.length >= 3, "the targeted forget does not cancel the retry");
+  for (const call of retry.slice(2)) assert.doesNotMatch(String(call.input), /usually asks for two or three options|which one is cheaper lol/);
+});
+
 test("service: setup answers re-write the report (import text kept in memory only) with settings; verdicts stick", async (t) => {
   const h = harness((req) => (req.schemaName === "insight_report" ? RAW : null));
   t.after(h.cleanup);
@@ -684,7 +737,7 @@ test("codex r7: a minor's age never shows ('You're 15 and …'); a forget stops 
   assert.ok(!sent.includes("which one is cheaper lol"), "the paste is no longer sent after a forget");
 });
 
-test("codex r8: a retry after a forget doesn't send the paste again", async (t) => {
+test("codex r8: a retry after a forget rebuilds without the paste", async (t) => {
   let n = 0;
   let h!: ReturnType<typeof harness>;
   h = harness(async (req) => {
@@ -692,6 +745,7 @@ test("codex r8: a retry after a forget doesn't send the paste again", async (t) 
     n++;
     if (n === 2) {
       // the answers write's first call: the user says "forget …" meanwhile, then this call fails
+      h.p.notifyForget("u1");
       await h.p.patchStyle("u1", (c) => ({ ...c, removed: [...(c.removed ?? []), { text: "cheaper lol", at: new Date().toISOString(), forget: true as const }] }));
       throw new Error("504");
     }
@@ -702,8 +756,10 @@ test("codex r8: a retry after a forget doesn't send the paste again", async (t) 
   job.commit(await h.p.replaceStyle("u1", CARD));
   await h.ins.get("u1", 3000); // call 1
   await h.ins.fromAnswers("u1", { help: "Think with me" });
-  await h.ins.get("u1", 3000); // call 2 fails; no retry with the paste
-  assert.equal(n, 2, "no third call");
+  await h.ins.get("u1", 3000); // call 2 fails; retry continues without the paste
+  assert.ok(n >= 3, "targeted forget does not cancel the accepted-answers retry");
+  const retryInputs = h.calls.filter((c) => c.schemaName === "insight_report").slice(2).map((c) => String(c.input)).join("\n");
+  assert.ok(!retryInputs.includes("which one is cheaper lol"), "the retry has no paste");
 });
 
 // ───────── audit 11/4 (AU-21, AU-22, AU-23) ─────────

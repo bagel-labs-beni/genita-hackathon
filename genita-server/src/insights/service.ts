@@ -219,14 +219,18 @@ export class Insights {
   }
 
   /** One Spark write; a second when fewer than OBS_MIN survive the checks (the better one wins). */
-  private async write(inputs: InsightInputs, from: InsightReport["from"], settings: InsightReport["settings"], stillOk: () => Promise<boolean> = async () => true): Promise<InsightReport> {
+  private async write(inputsForSend: () => Promise<InsightInputs>, from: InsightReport["from"], settings: InsightReport["settings"], stillOk: () => Promise<boolean> = async () => true): Promise<InsightReport> {
     const t0 = performance.now();
-    // every Spark call (and each retry) first checks the user hasn't since asked to forget something (Codex r8)
+    // A full profile reset or newer write stops this job. Targeted forgets do not:
+    // they replace the next send's inputs with a current, paste-free snapshot.
     const once = async () => {
       if (!(await stillOk())) throw new Error("insights_stale: forget or a newer write since this one started");
       return onceRaw();
     };
-    const onceRaw = async () => toReport(await this.json<unknown>(buildInsightRequest(inputs), AbortSignal.timeout(SPARK_TIMEOUT_MS)), inputs, { at: this.now().toISOString(), from, settings });
+    const onceRaw = async () => {
+      const inputs = await inputsForSend();
+      return toReport(await this.json<unknown>(buildInsightRequest(inputs), AbortSignal.timeout(SPARK_TIMEOUT_MS)), inputs, { at: this.now().toISOString(), from, settings });
+    };
     // a malformed JSON reply (seen 1 in 3 on 11/4) or a 5xx: once more
     let r = await once().catch(async (err) => {
       this.log("insights.retry", { from, message: String(err).slice(0, 120) });
@@ -258,7 +262,6 @@ export class Insights {
       const card = opts.gate ? null : await this.store.getStyle(userId);
       const inputs = inputsOf(card);
       if (!inputs) return;
-      const startedAt = Date.now();
       const stillOk = async () => {
         if (this.seq.get(userId) !== mine) return false;
         const latest = await this.store.getStyle(userId);
@@ -266,9 +269,18 @@ export class Insights {
         // gone ("Forget all of this") stops a non-import write too
         if (this.seq.get(userId) !== mine) return false;
         if (!latest && !opts.gate) return false;
-        return !(latest?.removed ?? []).some((r) => r.forget && Date.parse(r.at) >= startedAt - 1000);
+        return true;
       };
-      const report = await this.write(inputs, from, opts.settings ?? card?.insights?.settings ?? null, stillOk);
+      // Every send, including a Spark retry, checks the volatile-memory generation.
+      // After a targeted forget the job may still write its accepted answers, but it
+      // must rebuild from the latest card and can never resend the held paste.
+      const inputsForSend = async (): Promise<InsightInputs> => {
+        if (this.importGeneration(userId) === importGeneration) return inputs;
+        const latest = await this.store.getStyle(userId);
+        const rebuilt = inputsOf(latest);
+        return { ...(rebuilt ?? inputs), text: undefined };
+      };
+      const report = await this.write(inputsForSend, from, opts.settings ?? card?.insights?.settings ?? null, stillOk);
       const basis = opts.gate ? await opts.gate : card?.importedAt ?? null;
       if (opts.gate && !basis) return;
       let saved: InsightReport | undefined;
