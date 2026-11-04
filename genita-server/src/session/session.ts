@@ -2787,7 +2787,8 @@ export class Session {
         this.log("convo.hold_beat", { utteranceId });
     };
     const armBeat = () => {
-      if (beatTimer || !this.v1 || interpret || self) return;
+      // P0-3 (11/4): never on a greeting — nobody is waiting yet, and a "Mm." would be the first thing they hear
+      if (beatTimer || !this.v1 || interpret || self || greeting) return;
       beatTimer = setTimeout(beat, HOLD_BEAT_MS);
       beatTimer.unref?.();
     };
