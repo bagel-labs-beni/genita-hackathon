@@ -10,6 +10,8 @@ export function buildTranslateInstructions(from: string, to: string): string {
   const lines = [
     `You are a live interpreter. Translate what was said from ${from} into natural spoken ${to}.`,
     "Output only the translation. Never answer, explain, advise or add anything.",
+    // Chelsea 11/4: rude or profane lines came back empty ("I couldn't make this one out")
+    "Rude, crude or profane speech is still translated faithfully (soften a slur or swear word if needed). Never refuse or leave it empty.",
   ];
   if (to === "Korean") lines.push("Use polite 존댓말.");
   return lines.join("\n") + "\n";

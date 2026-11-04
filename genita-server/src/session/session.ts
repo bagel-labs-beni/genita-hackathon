@@ -46,6 +46,7 @@ import { MEMORY_START_BUDGET_MS, within, type MemoryRetryState, type ThreadState
 import type { Memory } from "../memory/repository.ts";
 import type { CompanionFaceResolver } from "../memory/photos.ts";
 import { FindsRunner, type FindsDeps } from "../finds/runner.ts";
+import { observeBoxes, observeBoxesEnabled, replyNouns, shouldObserve } from "../observe/boxes.ts";
 import { classifyTurn, isOutfitAsk, isProductAsk } from "../finds/intent.ts";
 import { inhalePcmBase64 } from "../watch/breath.ts";
 import { WatchController, type WatchSink } from "../watch/watch.ts";
@@ -3408,6 +3409,15 @@ export class Session {
     }
     const full = reply.spoken.join(" ").trim();
     resolveSaid(full || null);
+    // Chelsea 11/4: boxes on what the companion talks about seeing, not only in the recipe find (observe/boxes.ts)
+    if (full && !interpret && !synthetic && !self && !cardTurn && !built.screen && built.images.length && !this.framesUnclear && this.deps.finds && observeBoxesEnabled() && shouldObserve(text, full)) {
+      const nouns = replyNouns(full);
+      if (nouns.length >= 1) {
+        void observeBoxes({ utteranceId, frame: built.images[built.images.length - 1], frameIndex: built.images.length - 1, nouns, vendors: this.deps.finds.vendors, signal })
+          .then((e) => { if (e && !this.closed) { this.client.sendJson(e); this.log("observe.boxes", { utteranceId, nouns: nouns.length, items: e.items.length }); } })
+          .catch(() => {});
+      }
+    }
     // self speech (card line, watch reaction) stays in the chat history but is never a memory source:
     // its script would otherwise be extracted as something the user said
     if (full && !interpret) { this.remember("assistant", full); if (!self) this.memoryCall?.assistantMessage(full); }
