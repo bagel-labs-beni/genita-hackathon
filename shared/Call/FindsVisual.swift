@@ -1,0 +1,105 @@
+import Foundation
+
+// Visual Finds cards (r02 mock 6rTNaagEG4qFYQ5FvCqyhU, contract ./_qa-scripts/genita-visual/CONTRACT.md v1).
+// One place decides which layout a card gets and how an ingredient / place reads, so the iPhone sheet and the
+// Mac sheet show the same answer the same way. Every field is optional: an old server's card lays out as before.
+
+/// The per-info layout a card is drawn with.
+enum FindCardLayout: Equatable, Sendable {
+    case recipe, outfit, product, place, howTo, general
+}
+
+extension FindCard {
+    /// `layout` from the server when this build knows it and the card has what it needs; else by `kind` (as before).
+    var cardLayout: FindCardLayout {
+        // an outfit keeps its own layout whatever the hint says (contract §4: the server sets none on outfits)
+        if kind == .outfit { return .outfit }
+        switch layout {
+        case .recipe? where kind == .recipe || !items.isEmpty: return .recipe
+        case .product? where !(products ?? []).isEmpty: return .product
+        case .place? where !sources.isEmpty: return .place
+        case .howTo? where !steps.isEmpty: return .howTo
+        case .general?: return kind == .recipe ? .recipe : kind == .product && !(products ?? []).isEmpty ? .product : .general
+        default: break
+        }
+        switch kind {
+        case .recipe: return .recipe
+        case .product: return (products ?? []).isEmpty ? .general : .product
+        case .outfit: return .outfit
+        case .link, .unknown: return .general
+        }
+    }
+
+    /// The dish photo above the ingredients: only on a recipe with no camera frame (a named dish), and only a
+    /// picture that is there or still coming (never an empty box for one that failed).
+    var dishPhoto: FindImage? {
+        guard cardLayout == .recipe, camera == nil, let hero, hero.status != .failed else { return nil }
+        return hero
+    }
+}
+
+extension FindItem {
+    /// "cooked rice · 2 cups" (#749 keeps the amount in the name for older apps) → "cooked rice".
+    var tileName: String {
+        let parts = Self.split(name)
+        return parts.name.prefix(1).uppercased() + parts.name.dropFirst()
+    }
+
+    /// The amount under the tile: the part after " · " in the name; nil when there is none.
+    var tileAmount: String? { Self.split(name).amount }
+
+    /// The initial on a tile with no photo.
+    var tileInitial: String { String(tileName.prefix(1)).uppercased() }
+
+    /// A picture to draw on the tile: ready (or still loading on an older server); nil → the initial tile.
+    var tilePicture: FindImage? { image.flatMap { $0.status == .failed ? nil : $0 } }
+
+    static func split(_ raw: String) -> (name: String, amount: String?) {
+        let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let r = t.range(of: " · ", options: .backwards) else { return (t, nil) }
+        let name = t[..<r.lowerBound].trimmingCharacters(in: .whitespaces)
+        let amount = t[r.upperBound...].trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return (t, nil) }
+        return (name, amount.isEmpty ? nil : amount)
+    }
+}
+
+extension FindCard.Source.Place {
+    /// "4.6" (one decimal), nil when the rating is missing or out of 0...5.
+    var ratingText: String? {
+        guard let r = rating, r > 0, r <= 5 else { return nil }
+        return String(format: "%.1f", r)
+    }
+
+    /// "(1,203)", nil when there is no count.
+    var reviewsText: String? {
+        guard let n = reviews, n > 0 else { return nil }
+        let f = NumberFormatter(); f.numberStyle = .decimal; f.locale = Locale(identifier: "en_US")
+        return "(" + (f.string(from: NSNumber(value: n)) ?? String(n)) + ")"
+    }
+
+    /// "Open until 10 PM" reads green; anything else plain.
+    var hoursSayOpen: Bool { hours?.lowercased().hasPrefix("open") == true }
+
+    /// A maps link that opens (http/https or the maps: scheme); nil → no Map button.
+    var mapLink: URL? {
+        guard let raw = mapUrl?.trimmingCharacters(in: .whitespaces), let url = URL(string: raw), let scheme = url.scheme?.lowercased(),
+              ["https", "http", "maps"].contains(scheme) else { return nil }
+        return url
+    }
+
+    /// One VoiceOver line: "Rated 4.6, 1,203 reviews. Open until 10 PM. 123 Jungbu-daero".
+    var accessibilityText: String {
+        [ratingText.map { "Rated \($0)" + (reviews.map { ", \($0) reviews" } ?? "") }, hours, address]
+            .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ". ")
+    }
+}
+
+extension FindCard.Source {
+    /// The place name: the title without a " — why" tail.
+    var placeName: String {
+        let t = displayTitle
+        if why == nil, let r = t.range(of: " — ") { return String(t[..<r.lowerBound]) }
+        return t
+    }
+}

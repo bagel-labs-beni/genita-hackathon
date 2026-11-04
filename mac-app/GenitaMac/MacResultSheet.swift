@@ -158,7 +158,15 @@ struct MacResultSheet: View {
                                 .padding(.top, 8)
                                 .accessibilityLabel(occasion.accessibilityLabel).accessibilityIdentifier("macOutfitOccasion")
                         }
-                        if picks.isEmpty, [.link, .unknown].contains(card.kind), !card.sources.isEmpty {
+                        let layout = card.cardLayout
+                        if picks.isEmpty, layout == .recipe {
+                            // r02: dish photo, ingredient tiles, numbered step cards (no camera boxes on the Mac)
+                            MacRecipeCard(card: card).padding(.top, 16)
+                        } else if picks.isEmpty, layout == .place {
+                            MacPlaceList(card: card)
+                        } else if picks.isEmpty, layout == .howTo {
+                            MacHowTo(card: card)
+                        } else if picks.isEmpty, layout != .outfit, !card.sources.isEmpty {
                             // r01: one row per result, picture first, the reason once
                             MacFindRows(rows: card.macFindRows)
                         } else if picks.isEmpty {
@@ -304,7 +312,7 @@ struct MacProductCard: View {
     @ViewBuilder private var picture: some View {
         if let imageURL {
             AsyncImage(url: imageURL) { phase in
-                if let image = phase.image { image.resizable().scaledToFill() } else { placeholder }
+                if let image = phase.image { Color.clear.overlay { image.resizable().scaledToFill() } } else { placeholder }
             }
         } else { placeholder }
     }
@@ -420,6 +428,9 @@ enum MacFindsInk {
     static let tile = Color(red: 243.0 / 255, green: 241.0 / 255, blue: 237.0 / 255)
     static let why = Color(white: 74.0 / 255)
     static let hover = Color(white: 246.0 / 255)
+    /// r02: the serif initial and the line glyph on a tile with no photo
+    static let tileInitial = Color(red: 138.0 / 255, green: 129.0 / 255, blue: 115.0 / 255)
+    static let tileGlyph = Color(red: 185.0 / 255, green: 178.0 / 255, blue: 166.0 / 255)
     @MainActor static var reduceMotion: Bool {
         NSWorkspace.shared.accessibilityDisplayShouldReduceMotion || ProcessInfo.processInfo.environment["GENITA_MAC_REVIEW_OUT"] != nil
     }
@@ -540,7 +551,8 @@ struct MacRowPicture: View {
                 MacShimmer(radius: 0)
             } else if let path = row.picture?.url, let url = CallController.shared.findsURL(path) {
                 AsyncImage(url: url) { phase in
-                    if let image = phase.image { image.resizable().scaledToFill().transition(.opacity) }
+                    // the photo fills the slot and never sizes it (P0 build 13: a fill image grew past its frame)
+                    if let image = phase.image { Color.clear.overlay { image.resizable().scaledToFill() }.transition(.opacity) }
                     else if phase.error != nil { MacInitialTile(row: row, size: initialSize) }
                     else { MacShimmer(radius: 0) }
                 }
@@ -699,5 +711,292 @@ extension FindCard {
             if i == 0, image?.status != .ready, hero?.status == .ready { image = hero }
             return MacFindRow(id: i, title: title, why: why.flatMap { $0.isEmpty ? nil : $0 }, domain: s.domain, url: s.url, image: image, favicon: s.favicon)
         }
+    }
+}
+
+// MARK: r02 visual cards (mock 6rTNaagEG4qFYQ5FvCqyhU): recipe tiles + step cards, place, how-to
+
+/// A server picture that fills the slot it is given and never sizes it (P0 build 13: a scaledToFill photo grew past its
+/// frame and slid under the text). nil / failed → `fallback`.
+struct MacFindPicture<Fallback: View>: View {
+    let image: FindImage?
+    @ViewBuilder var fallback: Fallback
+    var body: some View {
+        ZStack {
+            MacFindsInk.tile
+            if let image, image.status == .pending {
+                MacShimmer(radius: 0)
+            } else if let image, image.status == .ready, let path = image.url, let url = CallController.shared.findsURL(path) {
+                AsyncImage(url: url) { phase in
+                    if let pic = phase.image { Color.clear.overlay { pic.resizable().scaledToFill() }.transition(.opacity) }
+                    else if phase.error != nil { fallback }
+                    else { MacShimmer(radius: 0) }
+                }
+            } else {
+                fallback
+            }
+        }.clipped()
+    }
+}
+
+struct MacSectionLabel: View {
+    let text: String
+    var body: some View { Text(text).font(MacSheetInk.sans(12, .medium)).foregroundStyle(MacSheetInk.mute) }
+}
+
+struct MacRecipeCard: View {
+    let card: FindCard
+    private var ordered: [FindItem] {
+        let rank: [FindTier: Int] = [.buy: 0, .have: 1, .maybe: 2, .checking: 3]
+        return card.items.enumerated().sorted { (rank[$0.element.tier] ?? 9, $0.offset) < (rank[$1.element.tier] ?? 9, $1.offset) }.map(\.element)
+    }
+    private var photo: FindImage? { card.hero.flatMap { $0.status == .failed ? nil : $0 } }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let photo {
+                MacFindPicture(image: photo) { Image(systemName: "fork.knife").font(.system(size: 34, weight: .light)).foregroundStyle(MacFindsInk.tileGlyph) }
+                    .frame(maxWidth: .infinity).frame(height: 164).clipShape(RoundedRectangle(cornerRadius: 12))
+                    .accessibilityLabel("Photo of \(card.title)").accessibilityIdentifier("macDishPhoto")
+                    .padding(.bottom, 18)
+            }
+            if !card.items.isEmpty {
+                MacSectionLabel(text: "Ingredients").padding(.bottom, 12)
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12, alignment: .topLeading), count: 4), alignment: .leading, spacing: 16) {
+                    ForEach(ordered) { MacIngredientTile(item: $0) }
+                }.accessibilityElement(children: .contain).accessibilityLabel("Ingredients").accessibilityIdentifier("macIngredients")
+            }
+            if !card.steps.isEmpty { MacStepCards(steps: card.steps).padding(.top, 22) }
+        }
+    }
+}
+
+/// 64 pt tile (photo, or the warm tile + serif initial), the have / need / maybe chip on its corner, name + amount.
+struct MacIngredientTile: View {
+    let item: FindItem
+    var body: some View {
+        let miss = item.tier == .buy
+        let amount = [item.tileAmount, item.optional == true ? "optional" : nil].compactMap { $0 }.joined(separator: " · ")
+        VStack(alignment: .leading, spacing: 0) {
+            MacFindPicture(image: item.tilePicture) {
+                Text(item.tileInitial).font(MacSheetInk.serif(24)).foregroundStyle(MacFindsInk.tileInitial)
+            }
+            .frame(width: 64, height: 64).clipShape(RoundedRectangle(cornerRadius: 12))
+            .opacity(item.tier == .maybe ? 0.55 : item.tier == .checking ? 0.5 : 1)
+            .overlay(alignment: .topTrailing) { badge.offset(x: 5, y: -5) }
+            Text(item.tileName).font(MacSheetInk.sans(13, .medium)).foregroundStyle(miss ? MacFindsInk.blueText : MacSheetInk.ink)
+                .lineLimit(2).fixedSize(horizontal: false, vertical: true).padding(.top, 7)
+            if !amount.isEmpty { Text(amount).font(MacSheetInk.sans(12)).foregroundStyle(MacSheetInk.mute).lineLimit(1) }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
+        .accessibilityIdentifier("macIngredient-\(item.name)")
+    }
+    private var label: String {
+        let state: String = switch item.tier {
+        case .have: "on your camera"
+        case .maybe: "not sure"
+        case .buy: "to buy"
+        case .checking: "checking"
+        }
+        return [item.tileName, item.tileAmount, state].compactMap { $0 }.joined(separator: ", ")
+    }
+    private var badge: some View {
+        let icon = item.tier == .buy ? "plus" : item.tier == .maybe ? "questionmark" : "checkmark"
+        let light = item.tier == .maybe || item.tier == .checking
+        let fg: Color = item.tier == .buy ? MacFindsInk.blueText : light ? MacSheetInk.mute : MacSheetInk.onInk
+        let bg: Color = item.tier == .buy ? MacFindsInk.blueSoft : light ? .white : MacSheetInk.ink
+        return ZStack {
+            Circle().fill(bg)
+            if light { Circle().strokeBorder(MacFindsInk.line, lineWidth: 1) }
+            if item.tier == .checking { ProgressView().controlSize(.mini) } else { Image(systemName: icon).font(.system(size: 11, weight: .bold)).foregroundStyle(fg) }
+        }
+        .frame(width: 22, height: 22)
+        .background(Circle().fill(MacSheetInk.sheet).padding(-2))
+        .accessibilityHidden(true)
+    }
+}
+
+/// Numbered step cards: the step's photo on top (full width, 150, r12) when one came, never behind the text; the
+/// serif number and the text use the full width; a hairline between steps.
+struct MacStepCards: View {
+    let steps: [FindCard.Step]
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            MacSectionLabel(text: "Steps").padding(.bottom, 2)
+            ForEach(Array(steps.enumerated()), id: \.offset) { i, step in
+                VStack(alignment: .leading, spacing: 0) {
+                    if let img = step.image, img.status != .failed {
+                        MacFindPicture(image: img) { Image(systemName: "photo").font(.system(size: 28, weight: .light)).foregroundStyle(MacFindsInk.tileGlyph) }
+                            .frame(maxWidth: .infinity).frame(height: 150).clipShape(RoundedRectangle(cornerRadius: 12))
+                            .accessibilityLabel("Photo of step \(i + 1)")
+                            .padding(.bottom, 12)
+                    }
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text("\(i + 1)").font(MacSheetInk.serif(20)).frame(width: 24, alignment: .leading)
+                        Text(step.text).font(MacSheetInk.sans(15)).lineSpacing(3).fixedSize(horizontal: false, vertical: true)
+                    }.foregroundStyle(MacSheetInk.ink)
+                    if let source = step.source { Text("From \(source)").font(MacSheetInk.sans(12)).foregroundStyle(MacSheetInk.mute).padding(.leading, 30).padding(.top, 4) }
+                }
+                .padding(.vertical, 14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .overlay(alignment: .top) { if i > 0 { Rectangle().fill(MacFindsInk.line).frame(height: 1) } }
+                .accessibilityElement(children: .combine)
+            }
+        }.accessibilityIdentifier("macSteps")
+    }
+}
+
+/// How-to: the step cards, then each source once as an r01 row.
+struct MacHowTo: View {
+    let card: FindCard
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            MacStepCards(steps: card.steps).padding(.top, 16)
+            let rows = card.macFindRows
+            if !rows.isEmpty {
+                MacSectionLabel(text: "Sources").padding(.top, 10)
+                VStack(spacing: 0) {
+                    ForEach(Array(rows.enumerated()), id: \.element.id) { i, row in MacFindRowView(row: row, divider: i > 0) }
+                }.padding(.top, 4)
+            }
+        }
+    }
+}
+
+/// Place: #1 photo 164 + name + ★ rating (reviews) · hours + address + Map / Website pills; the rest as rows with the
+/// rating line and the address. Map opens the default maps app, Website the default browser.
+struct MacPlaceList: View {
+    let card: FindCard
+    var body: some View {
+        let rows = card.macFindRows
+        let top = rows.first.flatMap { $0.picture != nil ? $0 : nil }
+        VStack(alignment: .leading, spacing: 0) {
+            if let top, let s = card.sources.first { MacPlaceTop(row: top, source: s).padding(.top, 18) }
+            VStack(spacing: 0) {
+                ForEach(Array(card.sources.enumerated()).dropFirst(top == nil ? 0 : 1), id: \.offset) { i, s in
+                    MacPlaceRow(row: rows[i], source: s, divider: i > (top == nil ? 0 : 1))
+                }
+            }.padding(.top, top == nil ? 12 : 14)
+        }.accessibilityElement(children: .contain).accessibilityIdentifier("macPlaceList")
+    }
+}
+
+struct MacPlaceMeta: View {
+    let place: FindCard.Source.Place
+    var body: some View {
+        let hours = place.hours?.trimmingCharacters(in: .whitespaces) ?? ""
+        if place.ratingText != nil || !hours.isEmpty {
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                if let r = place.ratingText {
+                    Text("★ " + r).font(MacSheetInk.sans(14, .semibold)).foregroundStyle(MacSheetInk.ink)
+                    if let n = place.reviewsText { Text(n).font(MacSheetInk.sans(14)).foregroundStyle(MacFindsInk.why) }
+                }
+                if place.ratingText != nil, !hours.isEmpty { Text("·").font(MacSheetInk.sans(14)).foregroundStyle(MacFindsInk.why) }
+                if !hours.isEmpty {
+                    Text(hours).font(MacSheetInk.sans(14, place.hoursSayOpen ? .medium : .regular))
+                        .foregroundStyle(place.hoursSayOpen ? MacSheetInk.ink : MacFindsInk.why).lineLimit(1)
+                }
+            }.lineLimit(1)
+        }
+    }
+}
+
+struct MacPlaceTop: View {
+    let row: MacFindRow
+    let source: FindCard.Source
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button { if let url = ExternalLink.web(row.url) { NSWorkspace.shared.open(url) } } label: {
+                VStack(alignment: .leading, spacing: 0) {
+                    MacRowPicture(row: row, initialSize: 44).frame(maxWidth: .infinity).frame(height: 164)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .overlay(alignment: .topLeading) {
+                            Text("Top pick").font(MacSheetInk.sans(12, .medium)).foregroundStyle(MacSheetInk.ink)
+                                .padding(.horizontal, 9).padding(.vertical, 3)
+                                .background(MacSheetInk.sheet.opacity(0.92), in: Capsule()).padding(10)
+                        }
+                    Text(source.placeName).font(MacSheetInk.sans(17, .semibold)).foregroundStyle(MacSheetInk.ink).lineLimit(2).padding(.top, 12)
+                    if let p = source.place { MacPlaceMeta(place: p).padding(.top, 3) }
+                    if let a = source.place?.address, !a.isEmpty {
+                        Text(a).font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.mute).lineLimit(2).padding(.top, 2)
+                    } else if let why = row.why {
+                        Text(why).font(MacSheetInk.sans(14)).foregroundStyle(MacFindsInk.why).lineLimit(2).padding(.top, 3)
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+            }
+            .buttonStyle(MacRowPress())
+            .accessibilityLabel(["Top pick", source.placeName, source.place?.accessibilityText].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ". "))
+            .accessibilityIdentifier("macPlaceTop")
+            HStack(spacing: 8) {
+                if let map = source.place?.mapLink {
+                    MacPill(text: "Map", icon: "mappin.and.ellipse", filled: true) { NSWorkspace.shared.open(map) }
+                        .accessibilityLabel("Open \(source.placeName) in Maps").accessibilityIdentifier("macPlaceMap")
+                }
+                MacPill(text: "Website", icon: "arrow.up.right", filled: source.place?.mapLink == nil, trailing: true) {
+                    if let url = ExternalLink.web(row.url) { NSWorkspace.shared.open(url) }
+                }.accessibilityIdentifier("macPlaceWebsite")
+            }.padding(.top, 12)
+        }
+    }
+}
+
+/// r01 36 pt pill: ink filled, or outlined with the hairline colour (hover fills it).
+struct MacPill: View {
+    let text: String
+    let icon: String
+    var filled = false
+    var trailing = false
+    let action: () -> Void
+    @State private var hover = false
+    var body: some View {
+        let ink = filled || hover
+        Button(action: action) {
+            HStack(spacing: 5) {
+                if !trailing { Image(systemName: icon).font(.system(size: 12, weight: .medium)) }
+                Text(text).font(MacSheetInk.sans(13, .medium))
+                if trailing { Image(systemName: icon).font(.system(size: 11, weight: .medium)) }
+            }
+            .foregroundStyle(ink ? MacSheetInk.onInk : MacSheetInk.ink).padding(.horizontal, 16).frame(height: 36)
+            .background(ink ? MacSheetInk.ink : MacSheetInk.sheet, in: Capsule())
+            .overlay { if !ink { Capsule().strokeBorder(MacFindsInk.line, lineWidth: 1) } }
+            .contentShape(Capsule())
+        }.buttonStyle(.plain).onHover { hover = $0 }
+    }
+}
+
+struct MacPlaceRow: View {
+    let row: MacFindRow
+    let source: FindCard.Source
+    let divider: Bool
+    @State private var hover = false
+    var body: some View {
+        Button { if let url = ExternalLink.web(row.url) { NSWorkspace.shared.open(url) } } label: {
+            HStack(alignment: .top, spacing: 12) {
+                MacRowPicture(row: row).frame(width: 64, height: 64).clipShape(RoundedRectangle(cornerRadius: 12))
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(source.placeName).font(MacSheetInk.sans(15.5, .semibold)).foregroundStyle(MacSheetInk.ink).lineLimit(1)
+                    if let p = source.place { MacPlaceMeta(place: p).padding(.top, 1) }
+                    if let a = source.place?.address, !a.isEmpty {
+                        Text(a).font(MacSheetInk.sans(13)).foregroundStyle(MacSheetInk.mute).lineLimit(1).padding(.top, 2)
+                    } else if let why = row.why {
+                        Text(why).font(MacSheetInk.sans(14)).foregroundStyle(MacFindsInk.why).lineLimit(2).lineSpacing(3).padding(.top, 1)
+                    }
+                    if source.place == nil { MacSourceLine(row: row).padding(.top, 4) }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 12)
+            .background(hover ? MacFindsInk.hover : Color.clear, in: RoundedRectangle(cornerRadius: 14))
+            .overlay(alignment: .top) {
+                if divider && !hover { Rectangle().fill(MacFindsInk.line).frame(height: 1).padding(.leading, 86).padding(.trailing, 10) }
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 14))
+        }
+        .buttonStyle(MacRowPress())
+        .onHover { hover = $0 }
+        .padding(.horizontal, -10)
+        .accessibilityLabel([source.placeName, source.place?.accessibilityText].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ". "))
+        .accessibilityHint("Opens in your browser")
+        .accessibilityIdentifier("macPlaceRow")
     }
 }
