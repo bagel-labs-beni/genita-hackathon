@@ -47,6 +47,17 @@ export function voicesForKind(voices: VoiceOption[], _kind: CompanionKind | null
 }
 
 /**
+ * 11/4 (Chelsea, build 7: "왜 여자"): the recommended voice (first row, `suggested`, and the voice a companion is created
+ * with at "Use this image") follows the face. Was always Tara (female) for every look. Voices of the face's gender come
+ * first, each group in its curated order; "either" / unknown keeps the curated order.
+ */
+export function orderForFace(voices: VoiceOption[], fit: string | null | undefined): VoiceOption[] {
+  if (fit !== "male" && fit !== "female") return voices;
+  const g = (v: VoiceOption) => v.gender ?? (/\bfemale\b/i.test(v.tags) ? "female" : /\bmale\b/i.test(v.tags) ? "male" : null);
+  return [...voices.filter((v) => g(v) === fit), ...voices.filter((v) => g(v) !== fit)];
+}
+
+/**
  * Meta voice service unset (the default): the device speaks with
  * its own system voices, so V04 lists device descriptors. Same
  * four cards (names, blurbs, order); the app maps each to the best installed

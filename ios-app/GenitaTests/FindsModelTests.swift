@@ -26,6 +26,21 @@ import XCTest
         XCTAssertEqual(m.state, .half)
     }
 
+    /// MO-05: a "+" chip adds the ingredient to this recipe's list (✓), a second tap takes it off; per find, local only.
+    func testAddMissingIngredientToggles() {
+        let m = FindsModel()
+        XCTAssertFalse(m.isAdded("soy", in: "a"))
+        m.toggleAdded("soy", in: "a")
+        XCTAssertTrue(m.isAdded("soy", in: "a"))
+        XCTAssertFalse(m.isAdded("soy", in: "b"), "another find keeps its own list")
+        XCTAssertNil(m.selectedItem, "adding is not selecting: the camera boxes stay as they are")
+        m.toggleAdded("soy", in: "a")
+        XCTAssertFalse(m.isAdded("soy", in: "a"))
+        m.toggleAdded("soy", in: "a")
+        m.reset()
+        XCTAssertFalse(m.isAdded("soy", in: "a"), "a reset (sign-out, fixtures) forgets the list")
+    }
+
     func testFoldAndCloseRules() {
         let m = FindsModel()
         m.apply(started("a")); m.apply(created("a")); m.force(.half)

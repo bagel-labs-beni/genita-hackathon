@@ -47,6 +47,9 @@ public final class FaceRenderer: @unchecked Sendable {
     private let browLift: CGFloat
     /// on/off (rollback); map-free on purpose: a tiny, speech-locked accent
     nonisolated(unsafe) public static var browFlash = true
+    /// 11/4 mouth inside (lips together while listening, teeth lit like the face): nil = the map's `rig.interior`
+    /// (default on); tools force it (FaceRender FACE_MOUTH_INTERIOR=0 renders build 6).
+    nonisolated(unsafe) public static var mouthInterior: Bool? = nil
     private var browTracker = BrowFlash.Tracker()
     /// Brow band and the eye cut-out (image coordinates, y up) from the eye line and the mouth centre: the brows sit
     /// 0.3 of the eye→mouth distance above the eyes, capped at 0.12 face widths (11/4: the face box takes in hair, so

@@ -8,15 +8,17 @@ import { PersonalizeError } from "../personalize/service.ts";
 import { sparkJson, type SparkRequest } from "../meta/spark.ts";
 import { museImageEdit, samDetect } from "../meta/media.ts";
 import { getOps } from "../ops/limits.ts";
+import type { SamBox } from "../meta/sam.ts";
 import { buildClassifyRequest, headPrompt, interpretCheck, pickHeadBox, sniffImage, type ClassifyRaw } from "./classify.ts";
-import { EYES_PROMPT, MOUTH_PROMPT, facePointsFromSam, facePrompt, outlineFromSam } from "./faceGeometry.ts";
+import { EYES_PROMPT, MOUTH_PROMPT, faceRim, facePointsFromSam, facePrompt } from "./faceGeometry.ts";
 import { buildImportRequest, checkPaste, importFormat, redactSensitive, toStyleCard, type ImportRaw, type StyleCard } from "./importProfile.ts";
 import { buildPersonaRequest, toPersona, validatePrefs, type PersonaRaw } from "./personaCard.ts";
 import { SCENE_PROMPT, SCENE_SIZE, type CompanionKind } from "./prompts.ts";
-import { isDeviceVoice, previewLine, renderPreview, voicesForKind, type VoiceOption } from "./voices.ts";
+import { isDeviceVoice, orderForFace, previewLine, renderPreview, voicesForKind, type VoiceOption } from "./voices.ts";
 import type { MediaApi } from "./face.ts";
 import type { CompanionRecord, ImageRecord, PrepStore } from "./store.ts";
 import type { Personalize } from "../personalize/service.ts";
+import type { Insights } from "../insights/service.ts";
 
 export type PrepLog = (event: string, data: Record<string, unknown>) => void;
 
@@ -38,6 +40,8 @@ export type PrepDeps = {
   personalize?: Personalize;
   /** after DELETE /v1/profile (AU-92): the server forgets call memory and summaries too */
   onProfileForgotten?: (userId: string) => Promise<void>;
+  /** SUM insight report (src/insights), written in the background from the import / N1–N3 / setup answers; unset = none */
+  insights?: Insights;
 };
 
 /** how long the import response waits for a story that's still being written after the parse (then it's saved when it lands) */
@@ -94,8 +98,8 @@ export async function checkImage(d: PrepDeps, userId: string, bytes: Buffer, rig
   // come first), and a failure or a slow answer only means no mesh, never a slower check.
   const scan = getOps().metaCallsLeft() >= FACE_SCAN_MIN_CALLS_LEFT;
   const optional = AbortSignal.timeout(FACE_SCAN_TIMEOUT_MS);
-  const samFaceOf = (kind: Parameters<typeof facePrompt>[0]) => !scan ? Promise.resolve(null)
-    : samDetect(d.metaKey, url, facePrompt(kind), optional, { masks: true }).then((b) => outlineFromSam(b), () => null);
+  const samFaceOf = (kind: Parameters<typeof facePrompt>[0]) => !scan ? Promise.resolve([] as SamBox[])
+    : samDetect(d.metaKey, url, facePrompt(kind), optional, { masks: true }).catch(() => [] as SamBox[]);
   const samBoxes = (prompt: string) => !scan ? Promise.resolve([])
     : samDetect(d.metaKey, url, prompt, optional).catch(() => [] as Awaited<ReturnType<typeof samDetect>>);
   const samFeatures = Promise.all([samBoxes(EYES_PROMPT), samBoxes(MOUTH_PROMPT)]);
@@ -115,10 +119,25 @@ export async function checkImage(d: PrepDeps, userId: string, bytes: Buffer, rig
     samFace = samFaceOf(kind);
     head = await samHead;
   }
+  // a failed animal / character check (the polish flow) still gets its net: that kind's face and head, for the rim only
+  // (the stored head box and `heads` stay as they were)
+  let kindHead: Promise<SamBox[]> = Promise.resolve([]);
+  if (scan && !check.passed && check.type && check.type !== "human") {
+    const kind = check.type;
+    samFace = samFaceOf(kind);
+    kindHead = samDetect(d.metaKey, url, headPrompt(kind), optional).catch(() => [] as SamBox[]);
+  }
   // one shared deadline: the answer waits at most FACE_SCAN_GRACE_MS for the scan once the check and head box are in
   const deadline = performance.now() + FACE_SCAN_GRACE_MS;
   const left = () => Math.max(0, deadline - performance.now());
-  const [faceOutline, [eyes, mouth]] = await Promise.all([within(samFace, left(), null), within(samFeatures, left(), [[], []])]);
+  const [faceBoxes, [eyes, mouth], kindHeads] = await Promise.all([
+    within(samFace, left(), [] as SamBox[]), within(samFeatures, left(), [[], []]), within(kindHead, left(), [] as SamBox[]),
+  ]);
+  const rimHead = pickHeadBox(kindHeads) ?? (head ? pickHeadBox(head.boxes) : null);
+  // the net for every photo with a face, passed or not (lead 11/4 05:3x: the polish flow and V02-F show it too);
+  // only "no face" skips it
+  const faceFound = !!check.type && !check.reasons.some((r) => r.code === "no_face");
+  const faceOutline = faceFound ? faceRim(faceBoxes, rimHead, eyes) : null;
   const rec: ImageRecord = {
     id: randomUUID().replace(/-/g, ""),
     userId,
@@ -127,9 +146,8 @@ export async function checkImage(d: PrepDeps, userId: string, bytes: Buffer, rig
     check,
     headBox: check.passed && head ? pickHeadBox(head.boxes) : null,
     heads: head?.boxes ?? [],
-    // only on a passed check: a failed photo goes to V02-F, nothing to draw
-    faceOutline: check.passed ? faceOutline : null,
-    facePoints: check.passed ? facePointsFromSam(eyes, mouth, faceOutline) : null,
+    faceOutline,
+    facePoints: faceOutline ? facePointsFromSam(eyes, mouth, faceOutline) : null,
     rightsAck,
     // This is captured after the upload body is read, before any model check.
     createdAt,
@@ -152,6 +170,9 @@ export async function importStyle(d: PrepDeps, userId: string, pasted: unknown, 
   const redacted = redactSensitive(p.text);
   // D47: the story is written from the same redacted text in parallel, so I03 has no extra wait
   const storyJob = d.personalize?.storyFromText(redacted) ?? null;
+  // SUM insight report: also from the same text, now; saved once this import's card is (commit below)
+  const insightJob = d.insights?.begin(userId, redacted);
+  try {
   const json = d.spark ?? (<T>(req: Parameters<NonNullable<PrepDeps["spark"]>>[0]) => sparkJson<T>(d.metaKey, req));
   const raw = await json<ImportRaw>(buildImportRequest(redacted));
   let card = toStyleCard(raw, "import");
@@ -167,15 +188,23 @@ export async function importStyle(d: PrepDeps, userId: string, pasted: unknown, 
     else if (s === "late") d.personalize.trackLate(userId, storyJob, gen);
   }
   // under the personalize lock: a call starting at the same moment can't write the old card back
+  let importedAt: string | undefined;
   if (d.personalize) {
-    try { await d.personalize.replaceStyle(userId, card, gen); } catch (err) {
+    // "Forget all of this" while this read (AU-92): refused, and its insight report with it (the catch below cancels it)
+    try { importedAt = await d.personalize.replaceStyle(userId, card, gen); } catch (err) {
       if (err instanceof PersonalizeError) throw new PrepError(err.status, err.code, err.message);
       throw err;
     }
   }
   else await d.store.putStyle(userId, card);
   d.log("import.applied", { item_count: card.itemCount, latency_ms: since(t0), chars: p.chars, partial: card.partial, dropped: card.dropped });
+  if (importedAt) insightJob?.commit(importedAt);
+  else insightJob?.cancel();
   return card;
+  } catch (err) {
+    insightJob?.cancel();
+    throw err;
+  }
 }
 
 // ---------- F2-L21: call scene ----------
@@ -198,16 +227,16 @@ export async function makeScene(d: PrepDeps, image: Buffer, mime: string, kind: 
 
 // ---------- F2-L8: voices ----------
 
-export const PREVIEW_VERSION = "meta-v3"; // v3 (11/3): the four V04 voices are new speakers 9, 19, 26 (+72)
+export const PREVIEW_VERSION = "meta-v4"; // v3 (11/3): the four V04 voices are new speakers 9, 19, 26 (+72); v4 (11/4): raw Seamless (post.py off by default)
 
 /**
  * V04's list: the curated voices for this look, recommended default first (no model call).
  * `available` = the voice service answers /healthz (cached 15 s); when false the app greys the
  * list ("Voice preview is waking up") and lets the user continue with the default.
  */
-export async function orderedVoices(d: PrepDeps, _userId: string, kind: CompanionKind | null): Promise<{ voices: VoiceOption[]; suggested: string | null; available: boolean; ms: number }> {
+export async function orderedVoices(d: PrepDeps, _userId: string, kind: CompanionKind | null, fit?: string | null): Promise<{ voices: VoiceOption[]; suggested: string | null; available: boolean; ms: number }> {
   const t0 = performance.now();
-  const voices = voicesForKind(d.voices, kind);
+  const voices = orderForFace(voicesForKind(d.voices, kind), fit);
   return { voices, suggested: voices[0]?.id ?? null, available: await voiceAvailable(d), ms: since(t0) };
 }
 

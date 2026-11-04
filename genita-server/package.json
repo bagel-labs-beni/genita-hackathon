@@ -22,6 +22,7 @@
     "eval:convo": "node --experimental-strip-types --no-warnings=ExperimentalWarning evals/convo/run.ts",
     "eval:convo:offline": "node --experimental-strip-types --no-warnings=ExperimentalWarning evals/convo/run.ts --offline",
     "eval:import": "node --experimental-strip-types --no-warnings=ExperimentalWarning evals/import/run.ts",
+    "eval:insights": "node --experimental-strip-types --no-warnings=ExperimentalWarning evals/insights/run.ts",
     "db:migrate": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/db-migrate.ts",
     "handoff:e2e": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/handoff-e2e.ts",
     "accounts:e2e": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/accounts-e2e.ts",

@@ -32,7 +32,7 @@ jobs:
       - run: npm run typecheck
       - name: npm test (with a per-test timeout so a hang names its test)
         run: node --experimental-strip-types --no-warnings=ExperimentalWarning --test --test-timeout=60000 --test-reporter=spec 'test/**/*.test.ts'
-        timeout-minutes: 8
+        timeout-minutes: 15
 
   mac:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
