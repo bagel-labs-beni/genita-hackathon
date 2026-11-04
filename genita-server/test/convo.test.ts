@@ -20,6 +20,15 @@ const none = { camera: false, userText: "" };
 
 // ───────────── sentence guard ─────────────
 
+import type { TestContext } from "node:test";
+
+/** these pin the pre-11/4 opener wording: the GENITA_COHERENT_PROMPT=0 rollback path */
+const LEGACY = " (GENITA_COHERENT_PROMPT=0)";
+function legacyOpener(t: TestContext): void {
+  process.env.GENITA_COHERENT_PROMPT = "0";
+  t.after(() => { delete process.env.GENITA_COHERENT_PROMPT; });
+}
+
 test("guard: counselor, assistant, intake and clingy lines are dropped; a friend's line is kept", () => {
   assert.equal(guardSentence("That sounds really tough.", none), "counselor");
   assert.equal(guardSentence("I'm here for you, always.", none), "counselor");
@@ -75,7 +84,8 @@ test("opener: first call with a profile opens like someone who already knows the
   assert.doesNotMatch(b, /"[A-Z][^"]{12,}"/, "intent only: no quoted line to copy");
 });
 
-test("opener: returning picks the follow-up / gap kind; unknown history with a profile still opens as known", () => {
+test("opener: returning picks the follow-up / gap kind; unknown history with a profile still opens as known" + LEGACY, (t) => {
+  legacyOpener(t);
   const H = 3_600_000;
   assert.equal(openerKind({ hasProfile: true, sinceLastMs: 30 * H, hasItem: true }), "followup");
   assert.equal(openerKind({ hasProfile: true, sinceLastMs: H, hasItem: false }), "back_soon");
@@ -149,10 +159,11 @@ test("prompt v1: honesty, real-life friends, no sexual content, crisis-only-on-r
   assert.doesNotMatch(buildInstructions({ persona: mina, mode: "chat", style: "v1" }), /You already know them/, "no profile, no claim");
 });
 
-test("prompt v1 stays lean: under 2,450 characters without user data (Spark reasons longer on long prompts, 11/2)", () => {
+test("prompt v1 stays lean: under 2,900 characters without user data (Spark reasons longer on long prompts, 11/2)", () => {
   const s = buildInstructions({ persona: mina, mode: "chat", style: "v1" });
   // 2,300 → 2,450 (#342): the card's own takes + quirk are ~90 chars of data in the backstory, every card has them now
-  assert.ok(s.length < 2450, `${s.length} chars`);
+  // 2,450 → 2,900 (coherence 11/4): the answer-their-last-line rules; bake-off mean 2.7–2.8 s/turn vs 2.8–3.2 s before
+  assert.ok(s.length < 2900, `${s.length} chars`);
 });
 
 test("faces v1: intensity follows the emotion (warm → soft smile, excited → grin); legacy stays 0.7", () => {
@@ -230,7 +241,8 @@ test("session v1: a reply that is only a denial of being an AI says the honest f
   session.close();
 });
 
-test("session v1: the greeting carries the opener block (profile → already knows them)", { skip: !v1 }, async () => {
+test("session v1: the greeting carries the opener block (profile → already knows them)" + LEGACY, { skip: !v1 }, async (t) => {
+  legacyOpener(t);
   const { client, session, calls } = setup(["<teasing> Bet you already ate ramen tonight."]);
   await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 0, user: { name: "Summer", profile: "Likes: ramen." } }));
   await client.waitFor((m) => m.type === "reply");
