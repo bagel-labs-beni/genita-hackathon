@@ -66,6 +66,10 @@ struct AliveMotion {
     static let settleSeconds = 1.0
     static let restartGap = 2.0
     private var runStart: Double?
+    private var restartPending = false
+    /// The next frame starts a new still run (`FaceDriver.start()`: the live face begins where the poster is, even when
+    /// it starts within `restartGap` of the poster's t = 0 frame — Codex P2).
+    mutating func restartRun() { restartPending = true }
 
     init(seed: UInt64) {
         var rng = SplitMix64(seed: seed &+ 0xA11E)
@@ -90,7 +94,7 @@ struct AliveMotion {
 
         // Speech onset energy: openness above its own slow average drives the nod target.
         let dt = lastT.map { t - $0 } ?? 0
-        if lastT == nil || dt < 0 || dt > Self.restartGap { runStart = t }
+        if restartPending || lastT == nil || dt < 0 || dt > Self.restartGap { runStart = t; restartPending = false }
         let ease = smoothstep(0, Self.settleSeconds, t - (runStart ?? t))
         if dt < 0 || dt > 0.5 { nod = 0; nodVelocity = 0; slowOpen = open }   // jump: restart
         else if dt > 0 {

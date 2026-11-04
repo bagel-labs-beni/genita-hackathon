@@ -48,6 +48,11 @@ struct SceneFramingTests {
         #expect(settled > 0.3)   // the motion is back after the ease-in
         // the display link paused (poster while connecting, live face later): the next run starts still again
         #expect(still(m.transforms(at: 2.4 + AliveMotion.restartGap + 0.1, open: 0, face: face, extent: extent, outputWidth: 540)))
+        // the live face started 0.7 s after the poster's frame (FaceDriver.start → restartRun): still again (Codex P2)
+        for i in 1...30 { _ = m.transforms(at: 4.6 + Double(i) / 25, open: 0, face: face, extent: extent, outputWidth: 540) }
+        m.restartRun()
+        #expect(still(m.transforms(at: 6.0, open: 0, face: face, extent: extent, outputWidth: 540)))
+        #expect(move(m.transforms(at: 6.04, open: 0, face: face, extent: extent, outputWidth: 540)) < 0.05)
     }
 
     @Test func sceneFramingIsTheRenderersFraming() {

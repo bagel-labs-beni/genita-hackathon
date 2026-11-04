@@ -5,9 +5,9 @@ import XCTest
 /// output size is the face set's.
 final class CompanionFaceSeedTests: XCTestCase {
     func testSeedComesFromTheFaceKey() {
-        let a = CompanionFace.seed(forKey: "v1-0123456789ab"), b = CompanionFace.seed(forKey: "v1-0123456789ab")
+        let face = "face set one", a = CompanionFace.seed(forKey: face), b = CompanionFace.seed(forKey: face)
         XCTAssertEqual(a, b)
-        XCTAssertNotEqual(a, CompanionFace.seed(forKey: "v1-0123456789ac"))
+        XCTAssertNotEqual(a, CompanionFace.seed(forKey: "face set two"))
         XCTAssertNotEqual(a, 0)
         XCTAssertEqual(CompanionFace.seed(forKey: nil), 1)
     }

@@ -166,6 +166,8 @@ public final class FaceRenderer: @unchecked Sendable {
     nonisolated(unsafe) public static var laughAsSmileOpen = true
     /// Cancel / barge-in: drop the mouth's smoothing and held shapes so it rests on the next frame (an expression
     /// on screen relaxes smoothly; its reply's events are dropped).
+    /// The next frame starts the alive motion still again and eases it in (`AliveMotion.restartRun`).
+    public func restartMotion() { lock.lock(); motion.restartRun(); lock.unlock() }
     public func resetMouth() { lock.lock(); flowMorph?.reset(); stills.cancel(); browTracker = BrowFlash.Tracker(); lock.unlock() }
     /// Parity checks: the next frame uses these flow amounts (in `faceSet.flow.keys` order).
     public func overrideNextFlowAmounts(_ a: [Float]) { lock.lock(); flowMorph?.amountsOverride = a; lock.unlock() }
