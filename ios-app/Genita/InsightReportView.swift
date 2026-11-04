@@ -171,7 +171,16 @@ struct InsightReportView: View {
             .task(id: model.prep?.sceneURL) { if model.sceneImageData == nil { await model.loadScene() } }
             VStack(alignment: .leading, spacing: 0) {
                 Text(name).insightText(15, .semibold, line: 20)
-                Text("Here’s my read on you.").insightText(13, line: 18, color: InsightInk.mute)
+                if model.insightReport?.refreshing == true {
+                    // the answers are in; the traits are being rewritten with them (demo P0 11/4)
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.mini).tint(InsightInk.blue)
+                        Text("Adding your answers…").insightText(13, line: 18, color: InsightInk.mute)
+                    }
+                    .accessibilityElement(children: .combine).accessibilityIdentifier("insightRefreshing")
+                } else {
+                    Text("Here’s my read on you.").insightText(13, line: 18, color: InsightInk.mute)
+                }
             }
         }
         .accessibilityElement(children: .combine)

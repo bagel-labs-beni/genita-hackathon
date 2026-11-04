@@ -33,6 +33,8 @@ export type InsightInputs = {
   denied?: Array<{ claim: string; correction?: string }>;
   /** still to confirm (the card's) */
   unknowns?: string[];
+  /** the setup-answers rewrite (demo P0 11/4: 27–51 s): one Spark call at minimal effort, no second try */
+  quick?: boolean;
 };
 
 export const CATEGORIES: InsightCategory[] = ["talk", "think", "humor", "taste", "help", "boundary", "rhythm", "interest"];
@@ -268,6 +270,9 @@ export function linkSources(card: Pick<StyleCard, "sections">, o: Pick<Observati
   const mapped = new Set(picks.map((q) => SKIP_REPLIES[q] ?? SKIP_AVOID_TEXT[q.toLowerCase()] ?? N3_CHATS_NO[q.toLowerCase()]).filter(Boolean).map((t) => norm(t!)));
   const exact = [...picks, ...(o.chips ?? []).map((c) => c.label), ...o.evidence.filter((e) => e.source !== "answer").map((e) => e.quote)].map((q) => norm(q)).filter(Boolean);
   const basis = new Set((o.basis ?? []).map((t) => norm(t)));
+  // demo P0 #2 (11/4): a paste quote of 3+ words said whole inside a line ("tomato soup on rainy days" in "Loves tomato
+  // soup on rainy days.") is that line — the import's report cites the paste, not the card, so this was its only link
+  const inLine = o.evidence.filter((e) => e.source === "import").map((e) => norm(e.quote)).filter((q) => q.split(" ").length >= 3);
   for (const [section, list] of Object.entries(card.sections ?? {})) {
     if (!Array.isArray(list) || OPERATIONAL.has(section)) continue;
     for (const f of list as Array<{ text: string }>) {
@@ -284,7 +289,7 @@ export function linkSources(card: Pick<StyleCard, "sections">, o: Pick<Observati
       }
       // cited, its pick's line, said whole, or the whole line inside a longer quote ("usually asks for two or three
       // options before deciding" ⊃ "Asks for two or three options before deciding.")
-      if (basis.has(line) || mapped.has(line) || exact.includes(line) || (line.split(" ").length >= 3 && exact.some((q) => wordIn(line, q)))) { add({ section, text: f.text }); continue; }
+      if (basis.has(line) || mapped.has(line) || exact.includes(line) || (line.split(" ").length >= 3 && exact.some((q) => wordIn(line, q))) || inLine.some((q) => wordIn(q, line))) { add({ section, text: f.text }); continue; }
       if (parts.length === 1 && exact.includes(norm(parts[0]))) add({ section, text: f.text });
     }
   }
@@ -856,5 +861,5 @@ export function buildInsightRequest(inputs: InsightInputs): Omit<SparkRequest, "
   if (inputs.picks.length) parts.push(`<picks>\n${strip(inputs.picks.map((p) => `- ${p.question}: "${p.label}"`).join("\n"), "picks")}\n</picks>`);
   if (inputs.denied?.length) parts.push(`<not_true>\n${strip(inputs.denied.map((d) => `- "${d.claim}"${d.correction ? ` — they said: "${d.correction}"` : ""}`).join("\n"), "not_true")}\n</not_true>`);
   if (inputs.unknowns?.length) parts.push(`<still_unknown>${strip(inputs.unknowns.join("; "), "still_unknown")}</still_unknown>`);
-  return { instructions: INSIGHT_INSTRUCTIONS, input: parts.join("\n\n") || "<picks></picks>", effort: "low", maxOutputTokens: 5000, schemaName: "insight_report", schema: INSIGHT_SCHEMA as unknown as Record<string, unknown> };
+  return { instructions: INSIGHT_INSTRUCTIONS, input: parts.join("\n\n") || "<picks></picks>", effort: inputs.quick ? "minimal" : "low", maxOutputTokens: 5000, schemaName: "insight_report", schema: INSIGHT_SCHEMA as unknown as Record<string, unknown> };
 }
