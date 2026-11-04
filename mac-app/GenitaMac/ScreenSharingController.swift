@@ -165,9 +165,10 @@ import os
         stopCapture(old)
     }
     private func cancelPicker() {
+        // an old picker's late cancel is dropped by the request, and must not clear the open picker's state (Codex P3)
+        guard captureRequest.cancelPicker(now: CACurrentMediaTime()) else { return }
         choosing = false
         log.info("share: picker cancelled")
-        captureRequest.cancelPicker(now: CACurrentMediaTime())
     }
     /// End this account's capture, including a picker/start still in flight, before another account can sign in.
     func resetForSignOut() {
