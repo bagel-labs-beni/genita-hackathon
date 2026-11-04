@@ -6,11 +6,11 @@
  * on screen so "Ask about this" follow-ups make sense.
  */
 import { webAnswerCard, type WebSearch } from "./webAnswer.ts";
+import { GENERAL_ACK, runGeneral } from "./general.ts";
 import { reasonChips, tasteLines, type TasteLine } from "../personalize/reasons.ts";
 import { randomUUID } from "node:crypto";
 import type { FindCard, FindKind, ServerEvent } from "../protocol.ts";
 import { classifyTurn, isLinksAsk, isProductAsk } from "./intent.ts";
-import { GENERAL_ACK, runGeneral } from "./general.ts";
 import { PRODUCT_COUNT, SEARCH_TITLE, guessLabel, runProduct, shortLabel } from "./product.ts";
 import { confirmItem, FRIDGE_UNCLEAR, runLink, runOutfit, runRecipe, type PipelineCtx, type PipelineResult } from "./pipeline.ts";
 import { cacheGet, cacheKey, cachePut, cardFitsColors, cardIsKind, categoryOf, claimWarm, colorAsks, colorPhrases, colorsOf, plainAsk, releaseWarm, type CachedProducts } from "./productCache.ts";
