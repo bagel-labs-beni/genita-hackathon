@@ -349,7 +349,7 @@ export class FindsRunner {
         const card = this.cards.get(findId);
         if (card) void this.persist(card);
         // P0 11/4: never a canned "can't see it" line after the reply
-        if (/^I can['’]t (?:say for sure|make out)/i.test(text)) return;
+        if (!text.trim() || /^I can['’]t make out/i.test(text)) return;
         if (!this.closed) this.hooks.announce(text);
       },
       putImage: async (slot, bytes) => {

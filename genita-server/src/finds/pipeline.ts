@@ -114,7 +114,8 @@ export function leftOutLine(say: string): string {
 export function fridgeLine(items: FindItem[], dish: string | null, firstStep?: string): string {
   const have = items.filter((i) => i.tier === "have").map((i) => i.name).slice(0, 4);
   const d = dish ? dish.toLowerCase() : "";
-  if (!have.length) return d ? `I can't say for sure what's in there yet. Tap what you have on the card — ${d} might work.` : "I can't say for sure what's in there yet. Tap what you have on the card.";
+  // P0 11/4: no canned "can't say" line — the dish idea stays (Codex #738), nothing to say without one
+  if (!have.length) return d ? `Maybe ${d}? Tap what you have on the card.` : "";
   if (!d) return `I can see ${listOf(have)}.`;
   // the dish may lean on something not confirmed ("tofu fried rice" with tofu only "맞아?"): say so, don't imply it
   const unsure = items.filter((i) => i.tier !== "have" && d.includes(i.name.toLowerCase().replace(/s$/, ""))).map((i) => i.name).slice(0, 2);

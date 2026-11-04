@@ -506,7 +506,7 @@ test("fridge order (D23, #122): one line, spoken after the boxes, naming only YE
 
 test("fridge line: nothing confirmed → no ingredient named", () => {
   const maybe = [{ id: "1", name: "kimchi", tier: "maybe" as const, from: "camera" as const }];
-  assert.equal(fridgeLine(maybe, "kimchi stew"), "I can't say for sure what's in there yet. Tap what you have on the card — kimchi stew might work.");
+  assert.equal(fridgeLine(maybe, "kimchi stew"), "Maybe kimchi stew? Tap what you have on the card.");
   assert.equal(fridgeLine([{ id: "2", name: "eggs", tier: "have" as const, from: "camera" as const }, { id: "3", name: "tofu", tier: "have" as const, from: "both" as const }], null), "I can see eggs and tofu.");
 });
 

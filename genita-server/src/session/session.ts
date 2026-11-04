@@ -2535,6 +2535,9 @@ export class Session {
           // said after the ingredient check (D23), so this line never lists ingredients
           const reactLine = started.kind === "recipe" ? RECIPE_REACTION_LINE : PRODUCT_REACTION_LINE;
           const react = this.sparkSource({ ...req, input: textOnly as typeof req.input, instructions: `${req.instructions ?? ""}\n${reactLine}\n`, tools: undefined }, signal, undefined, false);
+          // P0 11/4 (Codex #738): an empty recipe reaction falls back to the normal generated answer, never the fixed ack
+          const recipeTurn = started.kind === "recipe";
+          const fullAnswer = () => this.sparkSource({ ...req, tools: undefined }, signal, undefined, false);
           pre = (async function* () {
             let said = false;
             try {
@@ -2549,7 +2552,7 @@ export class Session {
             } catch (err) {
               if (said) throw err;
             }
-            if (!said) yield* fixed;
+            if (!said) yield* (recipeTurn ? fullAnswer() : fixed);
           })();
         } else pre = fixed;
         this.log("finds.ack", { utteranceId, kind: started.kind });
