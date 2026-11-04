@@ -97,7 +97,8 @@ struct MacV2Button: View {
     /// Disabled primary drops the ink tint and shows mute text (white on a 28 % ink fill was unreadable, A02-M "Send code").
     private var labelColor: Color {
         switch style {
-        case .primary: isEnabled ? MacSheetInk.onInk : MacSheetInk.mute
+        // disabled primary = Figma #C8C8C8 fill with the white label (D76)
+        case .primary: MacSheetInk.onInk
         case .secondary, .text: isEnabled ? MacSheetInk.ink : MacSheetInk.mute
         }
     }
@@ -137,7 +138,6 @@ private struct MacGlassButtonBody<Label: View>: View {
     let tint: Color
     let pressed: Bool
     @Environment(\.isEnabled) private var isEnabled
-    @Environment(\.controlActiveState) private var activeState
     @State private var hover = false
     var body: some View {
         surface
@@ -146,29 +146,19 @@ private struct MacGlassButtonBody<Label: View>: View {
             .animation(.easeOut(duration: 0.12), value: pressed)
             .animation(.easeOut(duration: 0.15), value: hover)
     }
+    /// CTAs are Figma (lead 11/4, scorecard MA-02, MAC-1 344:16 / 344:22): primary = solid #111 fill, secondary =
+    /// white with a 1 pt #E3E3E3 border, 12 round, no glass, no shadow. Glass stays on call controls and the HUD.
     @ViewBuilder private var surface: some View {
         switch kind {
         case .plain:
             label.opacity(pressed ? 0.6 : 1).background(Capsule().fill(MacSheetInk.ink.opacity(hover && isEnabled ? 0.05 : 0)))
-        case .prominent, .regular:
-            if #available(macOS 26.0, *) {
-                // prominent = ink in glass, the iPhone GlassCTA (#414) structure; MacInkGlass holds the ink in non-key windows
-                label.background { if kind == .prominent && isEnabled { shape.fill(tint.opacity(MacInkGlass.fillOpacity(activeState))) } }
-                    .glassEffect(glass, in: shape)
-                    .brightness(hover && isEnabled && kind == .prominent ? 0.08 : 0)
-                    .animation(.easeOut(duration: 0.2), value: activeState)
-            } else {
-                label.background {
-                    if kind == .prominent && isEnabled { shape.fill(tint).brightness(hover ? 0.08 : 0) }
-                    else { shape.fill(Color.white).overlay(shape.strokeBorder(hover && isEnabled ? MacSheetInk.faint : MacDesignV2.outline, lineWidth: 1)) }
-                }
-            }
+        case .prominent:
+            label.background { shape.fill(isEnabled ? tint : Color(white: 0.7834)).brightness(hover && isEnabled ? 0.08 : 0) }
+        case .regular:
+            label.background { shape.fill(Color.white).overlay(shape.strokeBorder(hover && isEnabled ? MacSheetInk.faint : MacDesignV2.outline, lineWidth: 1)) }
         }
     }
-    private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: 12, style: .continuous) }
-    @available(macOS 26.0, *) private var glass: Glass {
-        kind == .prominent && isEnabled ? .regular.tint(tint).interactive(isEnabled) : .regular.interactive(isEnabled)
-    }
+    private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: 12) }
 }
 
 /// One legal sentence with inline Terms and Privacy Policy links (13 pt mute, links ink + underline).

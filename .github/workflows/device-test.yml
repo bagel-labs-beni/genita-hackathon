@@ -3,7 +3,7 @@ name: Device test builds
 # Release builds:
 # - iOS: signed Release archive uploaded to TestFlight (internal + external groups).
 #   Build number = run_number * 10 + run_attempt, so every run is a new build.
-# - Mac: GenitaMac.app (shown as "Genita") signed with Developer ID (hardened runtime), packed in Genita-<version>.dmg,
+# - Mac: Genita.app (target GenitaMac) signed with Developer ID (hardened runtime), packed in Genita-<version>.dmg,
 #   notarized and stapled; artifact "Genita-Mac-dmg". Same build number as iOS.
 #   Sparkle auto-update: the DMG is EdDSA-signed (sign_update, key GENITA_SPARKLE_ED_PRIVATE = SSM
 #   /genita/apple/sparkle_ed_private) and published with an appcast entry to GitHub Pages
@@ -206,7 +206,7 @@ jobs:
           sudo xcode-select -s "$XC"
           xcodebuild -version
 
-      - name: Build GenitaMac (Release, unsigned)
+      - name: Build Genita.app (target GenitaMac, Release, unsigned)
         working-directory: ios-app
         run: |
           xcodebuild -resolvePackageDependencies -project Genita.xcodeproj | tail -n 5
@@ -217,18 +217,19 @@ jobs:
 
       - name: Check version and Sparkle in the app
         run: |
-          APP=ios-app/build/Release/GenitaMac.app
+          APP=ios-app/build/Release/Genita.app
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist")" = "$BUILD_NUMBER"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = "$MAC_VERSION"
           /usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$APP/Contents/Info.plist"
           /usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$APP/Contents/Info.plist" > /dev/null
           test -d "$APP/Contents/Frameworks/Sparkle.framework" || { echo "::error::Sparkle.framework is not embedded"; ls -la "$APP/Contents/Frameworks" || true; exit 1; }
-          echo "GenitaMac $MAC_VERSION ($BUILD_NUMBER), Sparkle embedded"
-          # Xcode's generated Info.plist writes CFBundleName = $(PRODUCT_NAME) = GenitaMac over mac-app/Info.plist; the menu
-          # bar and About/Hide/Quit read it. Set the visible names here, before Developer ID signing (Chelsea 11/4: "Genita").
-          /usr/libexec/PlistBuddy -c 'Set :CFBundleName Genita' "$APP/Contents/Info.plist"
-          # CFBundleDisplayName must equal the file name (GenitaMac) for Finder to use the localized "Genita" (en.lproj).
-          /usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName GenitaMac' "$APP/Contents/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c 'Add :CFBundleDisplayName string GenitaMac' "$APP/Contents/Info.plist"
+          echo "Genita.app $MAC_VERSION ($BUILD_NUMBER), Sparkle embedded"
+          # Chelsea 11/4: "Genita", never "GenitaMac" — PRODUCT_NAME = Genita gives the file, executable and both names.
+          for k in CFBundleName CFBundleDisplayName CFBundleExecutable; do
+            v="$(/usr/libexec/PlistBuddy -c "Print :$k" "$APP/Contents/Info.plist")"
+            test "$v" = Genita || { echo "::error::$k is '$v', want Genita"; exit 1; }
+          done
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")" = ai.thebeni.genita.mac
 
       - name: Install Developer ID identity
         id: identity
@@ -272,7 +273,7 @@ jobs:
 
       - name: Sign app with Developer ID (hardened runtime)
         run: |
-          APP=ios-app/build/Release/GenitaMac.app
+          APP=ios-app/build/Release/Genita.app
           SIGN=(codesign --force --options runtime --timestamp --keychain "$KC" --sign "$DEVID_HASH")
           # Sparkle's helpers first, in Sparkle's documented order (no --deep), then the framework
           SPK="$APP/Contents/Frameworks/Sparkle.framework"
@@ -301,10 +302,10 @@ jobs:
           ASC_KEY_P8: ${{ secrets.GENITA_ASC_KEY_P8 }}
           ASC_ISSUER_ID: ${{ secrets.GENITA_ASC_ISSUER_ID }}
         run: |
-          APP=ios-app/build/Release/GenitaMac.app
+          APP=ios-app/build/Release/Genita.app
           umask 077
           printf '%s\n' "$ASC_KEY_P8" > "$RUNNER_TEMP/AuthKey.p8"
-          ZIP="$RUNNER_TEMP/GenitaMac-notarize.zip"
+          ZIP="$RUNNER_TEMP/Genita-notarize.zip"
           ditto -c -k --keepParent "$APP" "$ZIP"
           xcrun notarytool submit "$ZIP" \
             --key "$RUNNER_TEMP/AuthKey.p8" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" \
@@ -323,11 +324,11 @@ jobs:
 
       - name: Build and sign DMG
         run: |
-          APP=ios-app/build/Release/GenitaMac.app
+          APP=ios-app/build/Release/Genita.app
           VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist" 2>/dev/null || echo 0.1)"
           STAGE="$RUNNER_TEMP/dmg-stage"
           mkdir -p "$STAGE" build-output
-          ditto "$APP" "$STAGE/GenitaMac.app"
+          ditto "$APP" "$STAGE/Genita.app"
           ln -s /Applications "$STAGE/Applications"
           DMG="build-output/Genita-$VERSION.dmg"
           hdiutil create -volname "Genita" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
@@ -362,38 +363,38 @@ jobs:
           spctl -a -t open --context context:primary-signature -v "$DMG"
           MNT="$(mktemp -d)"
           hdiutil attach -nobrowse -readonly -mountpoint "$MNT" "$DMG" >/dev/null
-          spctl -a -t exec -vv "$MNT/GenitaMac.app"
-          codesign --verify --deep --strict "$MNT/GenitaMac.app"
+          spctl -a -t exec -vv "$MNT/Genita.app"
+          codesign --verify --deep --strict "$MNT/Genita.app"
           # the app inside carries its own ticket (opens offline after the copy to /Applications)
-          xcrun stapler validate "$MNT/GenitaMac.app"
+          xcrun stapler validate "$MNT/Genita.app"
           # Sparkle compares versions: the shipped app must carry both, equal to this run's numbers
-          V="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$MNT/GenitaMac.app/Contents/Info.plist")"
-          SV="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$MNT/GenitaMac.app/Contents/Info.plist")"
+          V="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$MNT/Genita.app/Contents/Info.plist")"
+          SV="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$MNT/Genita.app/Contents/Info.plist")"
           echo "DMG app: $SV ($V)"
-          # Chelsea 11/4: people see "Genita", never "GenitaMac" (menu bar, About/Quit, Dock, Finder). File name stays (Sparkle).
-          N="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$MNT/GenitaMac.app/Contents/Info.plist")"
-          DN="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$MNT/GenitaMac.app/Contents/Info.plist")"
+          # Chelsea 11/4: people see "Genita", never "GenitaMac" (file, menu bar, About/Quit, Dock, Finder, Spotlight, TCC).
+          APPS="$(cd "$MNT" && ls -d *.app)"
+          test "$APPS" = Genita.app || { echo "::error::DMG holds '$APPS', want only Genita.app"; hdiutil detach "$MNT" >/dev/null; exit 1; }
+          N="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$MNT/Genita.app/Contents/Info.plist")"
+          DN="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$MNT/Genita.app/Contents/Info.plist")"
           echo "names: CFBundleName=$N CFBundleDisplayName=$DN"
-          test "$N" = Genita && test "$DN" = GenitaMac || { echo "::error::CFBundleName '$N' (want Genita) / CFBundleDisplayName '$DN' (want GenitaMac = file name)"; hdiutil detach "$MNT" >/dev/null; exit 1; }
+          test "$N" = Genita && test "$DN" = Genita || { echo "::error::CFBundleName '$N' / CFBundleDisplayName '$DN' (want Genita)"; hdiutil detach "$MNT" >/dev/null; exit 1; }
           # what Finder / Dock actually show for the installed copy
-          CHK="$(mktemp -d)"; ditto "$MNT/GenitaMac.app" "$CHK/GenitaMac.app"
-          SHOWN="$(osascript -l JavaScript -e 'ObjC.import("Foundation"); $.NSFileManager.defaultManager.displayNameAtPath(ObjC.wrap("'"$CHK"'/GenitaMac.app")).js')"
+          CHK="$(mktemp -d)"; ditto "$MNT/Genita.app" "$CHK/Genita.app"
+          SHOWN="$(osascript -l JavaScript -e 'ObjC.import("Foundation"); $.NSFileManager.defaultManager.displayNameAtPath(ObjC.wrap("'"$CHK"'/Genita.app")).js')"
           rm -rf "$CHK"; echo "Finder name: $SHOWN"
           test "$SHOWN" = Genita || { echo "::error::Finder shows '$SHOWN', not Genita"; hdiutil detach "$MNT" >/dev/null; exit 1; }
-          plutil -p "$MNT/GenitaMac.app/Contents/Resources/en.lproj/InfoPlist.strings" | grep -q '"CFBundleDisplayName" => "Genita"' \
-            || { echo "::error::en.lproj/InfoPlist.strings (localized display name) missing"; hdiutil detach "$MNT" >/dev/null; exit 1; }
           test "$V" = "$BUILD_NUMBER" && test "$SV" = "$MAC_VERSION" || { echo "::error::DMG Info.plist version $SV ($V) ≠ $MAC_VERSION ($BUILD_NUMBER)"; hdiutil detach "$MNT" >/dev/null; exit 1; }
           # #347: a notarized DMG must also start. Sparkle needs the Frameworks rpath, then a 10 s launch smoke.
-          BIN="$MNT/GenitaMac.app/Contents/MacOS/GenitaMac"
-          otool -l "$BIN" | grep -A2 LC_RPATH | grep -q "@executable_path/../Frameworks" || { echo "::error::GenitaMac has no @executable_path/../Frameworks rpath (Sparkle won't load)"; hdiutil detach "$MNT" >/dev/null; exit 1; }
+          BIN="$MNT/Genita.app/Contents/MacOS/Genita"
+          otool -l "$BIN" | grep -A2 LC_RPATH | grep -q "@executable_path/../Frameworks" || { echo "::error::Genita has no @executable_path/../Frameworks rpath (Sparkle won't load)"; hdiutil detach "$MNT" >/dev/null; exit 1; }
           "$BIN" > "$RUNNER_TEMP/launch.log" 2>&1 &
           APP=$!
           sleep 10
           if kill -0 "$APP" 2>/dev/null; then
             kill "$APP" 2>/dev/null || true
-            echo "launch smoke: GenitaMac still running after 10 s"
+            echo "launch smoke: Genita still running after 10 s"
           else
-            echo "::error::GenitaMac exited within 10 s of launch"; tail -n 40 "$RUNNER_TEMP/launch.log"; hdiutil detach "$MNT" >/dev/null; exit 1
+            echo "::error::Genita exited within 10 s of launch"; tail -n 40 "$RUNNER_TEMP/launch.log"; hdiutil detach "$MNT" >/dev/null; exit 1
           fi
           hdiutil detach "$MNT" >/dev/null || { sleep 2; hdiutil detach -force "$MNT" >/dev/null; }
           shasum -a 256 "$DMG"
