@@ -143,8 +143,7 @@ struct SettingsView: View {
         #if os(iOS)
         if model.useInsightReport {
             InsightReportView(model: model, showsCTA: false)
-                .navigationTitle("About you")
-                .navigationBarTitleDisplayMode(.inline)
+                .settingsTitle("About you")
         } else {
             AboutYouPage(model: model)
         }
@@ -350,6 +349,25 @@ struct SettingsPage<Content: View>: View {
     }
 }
 
+/// A settings sub-page's inline title, pinned to SettingsInk.ink in Pretendard SemiBold 17 like the root "Settings" (the
+/// bar keeps the text as its name for VoiceOver and tests). The system title colour followed the colour scheme, so a dark
+/// scheme left on the sheet drew it white on #F2F2F7 (UI QA b10, CI `preview-10b-about-you` / `10c-shows-up`).
+extension View {
+    func settingsTitle(_ title: String) -> some View {
+        #if os(iOS)
+        navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Text(title).font(SettingsType.font(17, .semibold, relativeTo: .headline)).foregroundStyle(SettingsInk.ink).lineLimit(1).accessibilityAddTraits(.isHeader)
+                }
+            }
+        #else
+        navigationTitle(title)
+        #endif
+    }
+}
+
 /// TF 331 (Chelsea 15:39): the inline "Settings" bar was see-through, so the first group slid under the title and the
 /// Done pill as a blur once scrolled. The bar is the page colour, always shown, with a hard edge (iOS 26).
 private struct SettingsSolidBar: ViewModifier {
@@ -518,9 +536,8 @@ struct SettingsCompanionPage: View {
                 #endif
             }
         }
-        .navigationTitle("Your companion")
+        .settingsTitle("Your companion")
         #if os(iOS)
-        .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $voiceOpen) { VoiceSettingsSheet(model: model) }
         #endif
     }
@@ -539,10 +556,7 @@ struct SettingsShowsUpPage: View {
                 }
             }
         }
-        .navigationTitle("How \(model.companionDisplayName) shows up")
-        #if os(iOS)
-        .navigationBarTitleDisplayMode(.inline)
-        #endif
+        .settingsTitle("How \(model.companionDisplayName) shows up")
     }
     /// Help with first (it is what the first screen shows), then the onboarding order, then anything else.
     static func keys(_ answers: [String: String]) -> [String] {
@@ -605,10 +619,7 @@ struct AboutYouPage: View {
                 SettingsRowLabel(title: "Your answers", value: model.setup.depth.title)
             }
         }
-        .navigationTitle("About you")
-        #if os(iOS)
-        .navigationBarTitleDisplayMode(.inline)
-        #endif
+        .settingsTitle("About you")
     }
 
     /// Still learning shows only while the card has a gap: nothing noticed yet, a heading with no claims, or a

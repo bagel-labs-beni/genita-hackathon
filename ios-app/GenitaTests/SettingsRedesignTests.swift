@@ -29,4 +29,14 @@ final class SettingsRedesignTests: XCTestCase {
         let keys = SettingsShowsUpPage.keys(["tempo": "2", "help": "Think with me", "zzz": "x", "relationship": "Friend"])
         XCTAssertEqual(keys, ["help", "relationship", "tempo", "zzz"])
     }
+
+    /// UI QA b10 (CI `preview-10b-about-you` / `10c-shows-up`): a full Finds state left behind turned the app dark under the
+    /// settings sheet, so the sub-page titles were white on #F2F2F7. A full sheet darkens only when Settings isn't up.
+    func testAFullFindsSheetNeverDarkensSettings() {
+        XCTAssertTrue(GenitaApp.findsFullDark(.full, settingsUp: false), "PF-1b: the dark band over a full sheet")
+        XCTAssertFalse(GenitaApp.findsFullDark(.full, settingsUp: true), "red on b10: Settings over a leftover full state went dark")
+        for state in SheetState.allCases where state != .full {
+            XCTAssertFalse(GenitaApp.findsFullDark(state, settingsUp: false), state.rawValue)
+        }
+    }
 }
