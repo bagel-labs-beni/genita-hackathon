@@ -44,8 +44,9 @@ struct ConversationView: View {
         #endif
         guard !hasFacePicture, model.prep?.isFailed != true else { return false }
         let prepRunning = model.prep.map { !$0.isReady } ?? false
-        // a face set download in flight is no idle wait either (17–48 s seen on CI; Codex P2)
-        return prepRunning || call.faceLoading || !waitCapOver
+        // a face set request on the wire (17–48 s seen on CI), or a loaded set whose poster is being drawn (Codex P2);
+        // the pauses between failed retries are idle (the 20 s cap applies)
+        return prepRunning || call.faceFetching || call.face != nil || !waitCapOver
     }
     private var hasFacePicture: Bool { companionImage != nil || call.facePoster != nil || call.faceStill != nil }
     /// the wait stage gives up after this long when nothing is being made (a scene or face set that never loads)

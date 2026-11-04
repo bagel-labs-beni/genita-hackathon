@@ -202,8 +202,10 @@ enum CallStop: Equatable {
     @ObservationIgnored private var faceAnimates = true
     @ObservationIgnored private var faceReduceMotion = false
     @ObservationIgnored private var faceLoad: Task<Void, Never>?
-    /// a face set download is in flight (from prepareFace or showFace); observed by S09's wait stage (it holds the orb)
-    private(set) var faceLoading = false
+    /// a face set download is in flight (from prepareFace or showFace)
+    @ObservationIgnored private var faceLoading = false
+    /// one face set request is on the wire now (not the pause between retries): S09's wait stage holds the orb for it
+    private(set) var faceFetching = false
     /// which load `faceLoading` belongs to (AU-25 × #524)
     @ObservationIgnored private var faceLoadGeneration = 0
     /// the account the load in flight is for
@@ -1256,6 +1258,7 @@ enum CallStop: Equatable {
         faceLoad = nil
         faceLoading = false
         faceLoadGeneration += 1
+        faceFetching = false
     }
 
     func setFaceReduceMotion(_ on: Bool) {
@@ -1297,7 +1300,12 @@ enum CallStop: Equatable {
         faceLoading = true
         faceLoadOwner = Self.tokenSubject(currentEndpoint.token)
         defer { if faceLoadGeneration == generation { faceLoading = false } }
-        while await loadFaceOnce() {
+        func once() async -> Bool {
+            faceFetching = true
+            defer { if faceLoadGeneration == generation { faceFetching = false } }
+            return await loadFaceOnce()
+        }
+        while await once() {
             try? await Task.sleep(for: faceRetryInterval)
             guard !Task.isCancelled, faceOnScreen, face == nil else { return }
         }
