@@ -16,6 +16,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 
 | date | change |
 |---|---|
+| 11/4 | F7 product cards carry **up to 6** products (`GENITA_PRODUCT_MAX`, default 6; 2 = as before). `products[]` and the `product-N` picture slots simply run longer (`product-1`…`product-6`); old apps that show the first 2 keep working (the first 2 are the same ones as before). The card still waits for 2 at most as long as before; the title names no count but "One" ("Picks for tonight"), `say` / `pill` never name another count than the card's ("Found 6 for you."). `find.started.title` is now "Finding picks for you…". Additive. |
 | 11/4 | perf(turn), additive: `turn.metrics` gets optional `trigger` (`voice` \| `text` \| `greeting` \| `initiative` \| `card` \| `watch`) and `replyStartToFirstAudioMs`. `speechEndToFirstAudioMs` / `first_audio_ms` of a typed turn now count from the typed line's arrival (the app already did); the greeting, an initiative turn and a card / watch line keep them `null` (no user line) — `trigger` says why. Server only: a voice turn with fresh camera `frames` is now speculated too (the guess carries the speech-start frame; a line about what the camera shows still waits for the speech-end frames). No wire change for frames. |
 | 11/4 | Handoff: a call's `start` now takes the conversation when the recorded owner has no live connection (no presence, no call; e.g. the Mac app was quit), and the call URL's `owner=` for an offline other device is ignored. A connected owner still keeps it. Server-only, no message changes; fixes the iPhone call staying silent after the Mac app quit. Additive. |
 | 11/4 | `backchannel.kind: "inhale"` (watch together, lead's call): a big move on the shared screen → the companion's instant nonverbal reaction, a small inhale in `audio` (≤ 0.45 s, ~−30 dBFS), no words; the spoken reaction follows as before. Apps that know it also raise the face's brows for ≤ 0.5 s; older apps just play the audio (the field is a string; nothing else changes). ≥ 30 s apart, shares the reaction gap. `GENITA_WATCH_NONVERBAL=0` turns it off. Additive. |
@@ -569,13 +570,14 @@ and send me the links"). That turn's reply is a short line ("On it.") — never 
 full answer, which would guess products and links — and the card follows:
 
 ```
-find.started {kind:"product", title:"Finding 2 for your style…", detail:"Jacket · searching shops", evidence?:{style:"<import line>", situation:""}}
-→ find.progress {detail:"Light jacket · checking 2 shops"} → find.created (products[], pictures pending)
-→ find.image {slot:"product-1"|"product-2"} → the companion says card.say
+find.started {kind:"product", title:"Finding picks for you…", detail:"Jacket · searching shops", evidence?:{style:"<import line>", situation:""}}
+→ find.progress {detail:"Light jacket · checking 6 shops"} → find.created (products[], pictures pending)
+→ find.image {slot:"product-1"…"product-6"} → the companion says card.say
 ```
 
-`products[]` holds at most 2 product detail pages. Each `url` is an `open_page` the
-search really completed (Spark's tool trace); a URL the model only wrote, a failed
+`products[]` holds up to 6 product detail pages (`GENITA_PRODUCT_MAX`; old apps show
+the first 2). Each `url` is an `open_page` the search really completed (Spark's tool
+trace) or a page the server read itself and found to be one product, in stock; a URL the model only wrote, a failed
 open, or a category / collection / search page (URL shape, or the page's own
 og:type / JSON-LD) is dropped. `price` only when the page showed it (absent → show
 "Price on site"). `taste` (blue chip) follows a line of the account's import

@@ -172,7 +172,7 @@ export type FindCard = {
   how: string[];
   page?: { url: string; opened: boolean };
   saved?: boolean;
-  /** kind "product" (F7 PF-1 / MAC-RS): up to 2 product detail pages the search really opened */
+  /** kind "product" (F7 PF-1 / MAC-RS): up to 6 verified product detail pages (GENITA_PRODUCT_MAX; old apps show the first 2) */
   products?: FindProduct[];
   /** kind "product": what this answer is based on (MAC-RS evidence line); kind "outfit": the taste line and the
    * occasion they named ("this weekend") — CW-02 */

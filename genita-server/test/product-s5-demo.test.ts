@@ -94,10 +94,11 @@ test("S5-2: one department per card — the account's own words, else the search
 test("S5-3: the card's words match the card — count, thing, color", () => {
   assert.equal(cardTitle("Two for the trench", 1), "One for the trench");
   assert.equal(cardTitle("Both go with the trench", 1), "One for you");
-  assert.equal(cardTitle("Two for the trench", 2), "Two for the trench");
+  // Chelsea 11/4 (up to 6 per card): a title names no count but "One"
+  assert.equal(cardTitle("Two for the trench", 2), "Picks for the trench");
   assert.equal(cardTitle("", 1), "One for you");
   assert.equal(cardTitle("A pair of picks", 1), "One for you");
-  assert.equal(cardTitle("One for you", 2), "Two for you");
+  assert.equal(cardTitle("One for you", 2), "Picks for you");
   // light-brown boots under "Dark brown, …" (b9 check): the plain line
   assert.equal(cardSubtitle("Dark brown, matched to your style.", "Shoes", ["Tan Chelsea Boot", "Light Brown Suede Boot"]), "Shoes, matched to your style.");
   assert.equal(cardSubtitle("Dark brown, matched to your style.", "Shoes", ["Espresso Chelsea Boot", "Dark Brown Loafer"]), "Dark brown, matched to your style.");

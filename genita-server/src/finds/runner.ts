@@ -14,7 +14,7 @@ import { reasonChips, tasteLines, type TasteLine } from "../personalize/reasons.
 import { randomUUID } from "node:crypto";
 import type { FindCard, FindImage, FindKind, FindProduct, ServerEvent } from "../protocol.ts";
 import { classifyTurn, isBareAccept, isGoesWithFollowUp, isLinksAsk, isProductAsk, refersToScreen } from "./intent.ts";
-import { PRODUCT_COUNT, SEARCH_TITLE, decidePick, guessLabel, runProduct, shortLabel, tasteLines as productTaste } from "./product.ts";
+import { SEARCH_TITLE, decidePick, guessLabel, runProduct, shortLabel, tasteLines as productTaste } from "./product.ts";
 import { runNamedRecipe } from "./namedRecipe.ts";
 import { walkPlan, type WalkPlan, type WalkState } from "./walkthrough.ts";
 import { choiceForSearch, isColorWord } from "./choice.ts";
@@ -714,8 +714,8 @@ export class FindsRunner {
     const n = products.length;
     const card: FindCard = {
       ...entry.card, id: c.findId, createdAt: new Date().toISOString(), products, saved: false,
-      // "2 shoes picks" (demo S5): the count reads as words, the thing is in the subtitle
-      title: n === 1 ? "One pick for you" : "Two picks for you",
+      // "2 shoes picks" (demo S5): no count in the title but "One" (Chelsea 11/4: up to 6), the thing is in the subtitle
+      title: n === 1 ? "One pick for you" : "Picks for you",
       subtitle: `${shortLabel(label)}, matched to your style.`,
       reasons: undefined, say: undefined, pill: undefined, status: `${n} link${n === 1 ? "" : "s"}`,
       ...(entry.card.evidence ? { evidence: { ...entry.card.evidence, situation: "" } } : {}),
@@ -1006,7 +1006,7 @@ export class FindsRunner {
     if (c.products?.length) {
       parts.push(`products: ${c.products.map((p, i) => `${i + 1}. ${p.name} (${p.store}, ${p.price ?? "price on the site"}; ${(old ? [] : [p.taste, p.situation]).filter(Boolean).join(", ")})`).join(" ")}`);
       if (c.evidence?.style && !old) parts.push(`their style line: ${c.evidence.style}`);
-      if (c.products.length < PRODUCT_COUNT) parts.push("only one product page opened");
+      if (c.products.length === 1) parts.push("only one product page opened");
     }
     if (c.options.length) parts.push(`options: ${c.options.map((o) => `${o.label}${o.picked ? " (your pick)" : ""}`).join(", ")}`);
     // the occasion the outfit is for: the call can say why it fits it (CW-02). The line is the model's, written with

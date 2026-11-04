@@ -17,7 +17,7 @@
  *
  * Events: find.started → find.progress → find.created (pictures pending) →
  * find.image per product picture (og:image, stored like an illustration).
- * Fewer than 2 proven products → the card shows what survived and says so;
+ * Up to GENITA_PRODUCT_MAX (default 6) proven products; fewer than 2 → the card shows what survived and says so;
  * none → find.failed (PF-1d "Couldn't find a good match").
  */
 import type { FindCard, FindProduct } from "../protocol.ts";
@@ -31,17 +31,33 @@ import { askedColors, colorFamilies, offColor } from "./productCache.ts";
 // one color rule for search, cache and warm-up (handover b9-6): it lives in productCache.ts
 export { askedColors, offColor };
 
-export const PRODUCT_COUNT = 2;
-/** verified products kept past the card's two, for a slot whose picture can't be found */
+/**
+ * The fewest products a card waits for (the search lanes, the soft and hard caps): 2, as before (Chelsea 11/4 option c).
+ * Old apps show the first 2 of `products[]`; new apps show all of them in a row.
+ */
+export const PRODUCT_MIN = 2;
+/**
+ * "Who recommends only two outfits?" (Chelsea 11/4): up to this many verified products per card. GENITA_PRODUCT_MAX,
+ * default 6 (2 = the old two-product card). The card never waits longer for more than the first 2 (see hedgedSearch and
+ * the page window in runProduct): it shows whatever is verified by then.
+ */
+export function productMax(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number(env.GENITA_PRODUCT_MAX);
+  return Number.isInteger(n) && n >= PRODUCT_MIN && n <= 12 ? n : 6;
+}
+/** product pages read at once (each read has its own budget inside one shared window) */
+export const PAGE_CONCURRENCY = 6;
+/** verified products kept past the card's last slot, for a slot whose picture can't be found */
 const MAX_SPARES = 3;
 /** spares one slot tries before it is omitted */
 const MAX_SWAP_TRIES = 2;
 /** PF-1 searching line: one line at 390 pt next to Stop (≈ 32 characters of Pretendard 16 medium) */
-export const SEARCH_TITLE = "Finding 2 for your style…";
+export const SEARCH_TITLE = "Finding picks for you…";
 /** The answer pill (card.say) is one line on both devices: ≤ 28 characters (#211). */
 export const PILL_MAX = 28;
-export const TWO_SAY = "Found two for you.";
 export const ONE_SAY = "Found one that fits.";
+/** the pill / spoken line when the model's own one doesn't fit: the count on the card ("Found 6 for you.") */
+export const foundSay = (n: number): string => (n === 1 ? ONE_SAY : `Found ${n} for you.`);
 
 /** The searching line's item label: whole words only, at most 16 characters ("Simple crewneck sweater" → "Simple crewneck"). */
 export function shortLabel(label: string, max = 16): string {
@@ -189,7 +205,7 @@ export function writeUpPrompt(searchPrompt: string, opened: string[]): string {
   return [
     searchPrompt.split("Shop for them:")[0].trim(),
     `You already searched and opened these product pages:\n${opened.slice(0, 6).map((u) => `- ${u}`).join("\n")}`,
-    `Pick up to ${PRODUCT_COUNT} of exactly these URLs (no others) that are one product each and fit them.`,
+    `Pick up to ${productMax()} of exactly these URLs (no others) that are one product each and fit them.`,
     searchPrompt.slice(searchPrompt.indexOf("Reply with only JSON")),
   ].join("\n\n");
 }
@@ -358,19 +374,30 @@ function departmentLine(d: Department | undefined, seeing: boolean): string {
     : "Use one department (women's or men's) for every pick, the one their taste lines point to; never mix them.";
 }
 
-/** "Two for the trench" over one product (demo S5): the count in the title follows what is on the card. */
+/** a count in a title or a spoken line ("Two for tonight", "A pair of picks", "Both simple cuts") */
+const COUNT_WORD = /(?<![$£€₩¥.,\d])\b(one|single|two|three|four|five|six|seven|eight|nine|ten|both|pair|couple|duo|trio|[1-9]|1[0-2])\b(?![.,]\d|°|%)/i;
+const COUNT_WORDS = new RegExp(COUNT_WORD.source, "gi");
+const NUMBER_OF: Record<string, number> = { one: 1, single: 1, two: 2, both: 2, pair: 2, couple: 2, duo: 2, three: 3, trio: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
+const countOf = (w: string): number => NUMBER_OF[w.toLowerCase()] ?? Number(w);
+/** every count the line names equals n (no count at all is fine) */
+export function countFits(line: string, n: number): boolean {
+  return [...line.matchAll(COUNT_WORDS)].every((m) => countOf(m[1]) === n);
+}
+/**
+ * "Two for the trench" over one product (demo S5), and "Two For Tonight" over six (Chelsea 11/4): the title names no
+ * count but "One" for a single product. A leading count becomes "Picks" ("Picks for tonight"); any other count → the plain title.
+ */
 export function cardTitle(model: string, n: number): string {
-  if (!model) return n === 1 ? "One for you" : "Two for you";
-  if (n === 1 && /\b(two|2|both|pair|couple)\b/i.test(model)) {
+  const plain = n === 1 ? "One for you" : "Picks for you";
+  if (!model) return plain;
+  if (n === 1) {
+    if (countFits(model, 1)) return model;
     const fixed = model.replace(/^(two|2)\b/i, "One");
-    return /\b(two|2|both|pair|couple)\b/i.test(fixed) ? "One for you" : fixed;
+    return countFits(fixed, 1) ? fixed : plain;
   }
-  // both ways (Codex r1): two products under "One for you" / "A single pick"
-  if (n >= 2 && /\b(one|single|1)\b/i.test(model)) {
-    const fixed = model.replace(/^(one|1)\b/i, "Two");
-    return /\b(one|single|1)\b/i.test(fixed) ? "Two for you" : fixed;
-  }
-  return model;
+  if (!COUNT_WORD.test(model)) return model;
+  const fixed = model.replace(/^(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)(?:\s+picks?)?\b/i, "Picks");
+  return COUNT_WORD.test(fixed) ? plain : fixed;
 }
 const SHADE_LIGHT = /\b(light|pale|tan|camel|sand|beige|cognac|honey)\b/i;
 const SHADE_DARK = /\b(dark|deep|espresso|chocolate|black)\b/i;
@@ -388,7 +415,7 @@ export function cardSubtitle(model: string, label: string, names: string[]): str
   return off || shade ? plain : model;
 }
 
-export function productPrompt(o: { pick?: ProductPick; question: string; recent: string[]; taste: string[]; previous?: string; city: string | null; region: string; today: string; seeing?: boolean; screen?: boolean; oneSearch?: boolean; department?: Department }): string {
+export function productPrompt(o: { pick?: ProductPick; question: string; recent: string[]; taste: string[]; previous?: string; city: string | null; region: string; today: string; seeing?: boolean; screen?: boolean; oneSearch?: boolean; department?: Department; max?: number }): string {
   return [
     `The user asked out loud: "${o.question.slice(0, 300)}"`,
     o.pick ? `You already told them out loud you'd find ${[o.pick.color, o.pick.item].filter(Boolean).join(" ")}. Shop for exactly that: every pick must be ${o.pick.item}${o.pick.color ? ` in ${o.pick.color}` : ""}, nothing else.` : "",
@@ -401,11 +428,11 @@ export function productPrompt(o: { pick?: ProductPick; question: string; recent:
       : "You know nothing about their taste; pick clean, widely liked options.",
     `Today is ${o.today}.${o.city ? ` They are in ${o.city}.` : ""}`,
     `Shop for them:
-1. Search the web for ${PRODUCT_COUNT} products that fit what they asked and their taste. Prefer ${o.region} online stores with English pages. Fit the occasion and the season: shoes for an outfit (a coat, a trench, a blazer) are closed shoes like boots, loafers or sneakers, never slippers, sandals, slides, flip-flops or mules unless they asked for those.
-2. Open each candidate's own product page with open_page — a page for ONE product you can buy. Never a category, collection, search, list, review or blog page. Open ${PRODUCT_COUNT + 1} candidates so ${PRODUCT_COUNT} survive.
+1. Search the web for up to ${o.max ?? productMax()} products that fit what they asked and their taste, from different stores where you can. Prefer ${o.region} online stores with English pages. Fit the occasion and the season: shoes for an outfit (a coat, a trench, a blazer) are closed shoes like boots, loafers or sneakers, never slippers, sandals, slides, flip-flops or mules unless they asked for those.
+2. Open the product pages of your ${PRODUCT_MIN + 1} best candidates with open_page — a page for ONE product you can buy. Never a category, collection, search, list, review or blog page. List up to ${o.max ?? productMax()} products in all: the ones you opened first, then other single-product page URLs from your search results (we check those pages ourselves).
 3. Only if they named a day or a trip ("this weekend", "next week"), search once for the forecast${o.city ? ` in ${o.city}` : ""}.
 ${o.oneSearch ? "Be quick: one product search, then open the pages." : "Be quick: at most 2 product searches, then open the pages."}`,
-    `Reply with only JSON: {"label": "what they want in 1-3 words, e.g. Light jacket", "title": "under 5 words, e.g. Two for the weekend", "subtitle": "under 8 words, e.g. Light jackets, matched to your style.", "style_line": "copy, word for word, the ONE taste line above these picks follow ('' if none)", "situation_line": "one short line about their situation from what they said, plus the weather if you looked, e.g. Mild and dry this weekend, 18°C", "items": [{"name": "short product name, under 6 words, e.g. Cotton chore jacket", "url": "the exact product page URL you opened", "store": "shop or brand", "price": "price as shown on that page, '' if you did not see it", "image": "the product photo URL from that page, '' if none", "taste": "2-3 word reason from the taste line, e.g. Clean, minimal", "situation": "2-4 word reason from the situation, e.g. Light for a weekend"}], "say": "a spoken line of at most 28 characters with the shared taste reason and no product names, e.g. Two, both simple cuts."}`,
+    `Reply with only JSON: {"label": "what they want in 1-3 words, e.g. Light jacket", "title": "under 5 words, no number, e.g. Picks for the weekend", "subtitle": "under 8 words, e.g. Light jackets, matched to your style.", "style_line": "copy, word for word, the ONE taste line above these picks follow ('' if none)", "situation_line": "one short line about their situation from what they said, plus the weather if you looked, e.g. Mild and dry this weekend, 18°C", "items": [{"name": "short product name, under 6 words, e.g. Cotton chore jacket", "url": "the exact product page URL you opened", "store": "shop or brand", "price": "price as shown on that page, '' if you did not see it", "image": "the product photo URL from that page, '' if none", "taste": "2-3 word reason from the taste line, e.g. Clean, minimal", "situation": "2-4 word reason from the situation, e.g. Light for a weekend"}], "say": "a spoken line of at most 28 characters with the shared taste reason, no product names and no number, e.g. All simple, clean cuts."}`,
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -452,7 +479,7 @@ function provenCount(r: SearchResult): number {
 
 /**
  * Spark's search time varies a lot (10–35 s for the same kind of ask, one timeout in 10 on 11/2), so n
- * identical calls race: the first that lists ${PRODUCT_COUNT} opened pages wins and the rest are aborted;
+ * identical calls race: the first that lists ${PRODUCT_MIN} opened pages wins and the rest are aborted;
  * if none does, the best one (most opened pages listed, then most opens) is used.
  */
 /**
@@ -641,7 +668,7 @@ export async function hedgedSearch(vendors: FindsVendors, prompt: string, n: num
       // others, QA 11/4: one-link cards 2/6); one page alone keeps waiting for the rest
       let pastHard = false;
       const enough = () => {
-        if (unionShowable(done, opts.keep) < (pastHard ? 1 : PRODUCT_COUNT)) return;
+        if (unionShowable(done, opts.keep) < (pastHard ? 1 : PRODUCT_MIN)) return;
         const b = [...done].sort((x, y) => showableUrls(y, opts.keep).length - showableUrls(x, opts.keep).length)[0];
         resolve(mergeLanes(b, done));
       };
@@ -651,7 +678,8 @@ export async function hedgedSearch(vendors: FindsVendors, prompt: string, n: num
         withTimeout(vendors.spark({ input: userMessage(prompt, images), tools: [{ type: "web_search" }], effort: "minimal", maxOutputTokens: 3000 }, AbortSignal.any([a.signal, signal])), SEARCH_TIMEOUT_MS, signal).then((r) => {
           if (r) {
             done.push(r);
-            if (showableUrls(r, opts.keep).length >= PRODUCT_COUNT) return resolve(r);
+            // the first 2 never wait for more (Chelsea 11/4): the lane's other listed pages are checked by our own reads
+            if (showableUrls(r, opts.keep).length >= PRODUCT_MIN) return resolve(r);
             if (pastSoft) enough();
           }
           finish();
@@ -670,6 +698,7 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
   const t0 = ctx.now();
   const ms = () => Math.round(ctx.now() - t0);
   const timings: Record<string, number> = {};
+  const max = productMax();
   const vendors: FindsVendors = ctx.vendors;
   const at = new Date();
   const label0 = guessLabel(ctx.question, ctx.previous ? guessLabel(ctx.previous, "Things") : "Things");
@@ -695,7 +724,7 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
   const pick = ctx.pick ? await ctx.pick.catch(() => null) : null;
   if (ctx.signal.aborted) return { card: null, timings };
   const keep = pick ? (name: string) => !contradictsPick(name, pick) : undefined;
-  const prompt = productPrompt({ pick: pick ?? undefined, question: ctx.question, recent: ctx.recent ?? [], taste, previous: ctx.previous, city: cityOf(ctx.timeZone), region: ctx.region ?? "US", today, seeing: look.length > 0, screen: ctx.screen === true && look.length > 0, oneSearch: process.env.GENITA_PRODUCT_ONE_SEARCH !== "0", department });
+  const prompt = productPrompt({ pick: pick ?? undefined, question: ctx.question, recent: ctx.recent ?? [], taste, previous: ctx.previous, city: cityOf(ctx.timeZone), region: ctx.region ?? "US", today, seeing: look.length > 0, screen: ctx.screen === true && look.length > 0, oneSearch: process.env.GENITA_PRODUCT_ONE_SEARCH !== "0", department, max });
 
   const res = await hedgedSearch(vendors, prompt, ctx.hedge ?? 2, ctx.signal, look, { background: ctx.background, ...(ctx.background ? {} : { softMs: productSoftMs(), hardMs: productHardMs() }), ...(keep ? { keep } : {}) });
   timings.searchMs = ms();
@@ -727,7 +756,7 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
   const dropped: { notOpened: number; notProduct: number; offOccasion?: number; offColor?: number; otherDepartment?: number; offPick?: number; unavailable?: number } = { notOpened: 0, notProduct: 0 };
   const colors = pick?.color ? colorFamilies(pick.color) : askedColors(ctx.question, ctx.previous);
   for (const item of raw) {
-    if (cands.length >= 6) break;
+    if (cands.length >= max + MAX_SPARES) break;
     const claimed = str(item?.url, 600);
     const hit = matchOpened(claimed, opened);
     const url = httpsOf(hit ?? claimed);
@@ -769,21 +798,22 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
   const situationLine = str(j?.situation_line, 120);
   if (cands.length) {
     const style = styleLine || startStyle;
-    ctx.emit({ type: "find.progress", findId: ctx.findId, detail: `${shortLabel(label)} · checking ${Math.min(cands.length, PRODUCT_COUNT + 1)} shops`, ...(style ? { evidence: { style, situation: situationLine } } : {}) });
+    ctx.emit({ type: "find.progress", findId: ctx.findId, detail: `${shortLabel(label)} · checking ${Math.min(cands.length, max)} shops`, ...(style ? { evidence: { style, situation: situationLine } } : {}) });
   }
 
-  // read each page (in parallel, capped): one product? price? picture?
-  // each read has its own budget, cut to what is left of the card's deadline (never under 1 s)
+  // read each page (in parallel, PAGE_CONCURRENCY at once): one product? price? picture?
+  // all reads share one window, cut to what is left of the card's deadline (never under 1 s): a read that starts late
+  // (a 7th page) gets only what is left of it, so more pages never make the card later than two did
   const deadline = productDeadlineMs();
   const pageMs = deadline ? Math.min(productPageMs(), Math.max(1000, deadline - ms())) : productPageMs();
   // a read that answered (even "nothing here") vs one that ran out of time: only the latter may fill a slot below
   const answered = new Set<number>();
-  const facts = await Promise.all(cands.map((p, i) => (vendors.pageFacts ? withTimeout(vendors.pageFacts(p.url, ctx.signal).then((f) => (answered.add(i), f), () => (answered.add(i), null)), pageMs, ctx.signal) : Promise.resolve(null))));
+  const facts = await readPages(cands.length, pageMs, ctx.signal, vendors.pageFacts ? (i, signal) => vendors.pageFacts!(cands[i].url, signal).then((f) => (answered.add(i), f), () => (signal.aborted ? null : (answered.add(i), null))) : null);
   timings.pagesMs = ms();
   if (ctx.signal.aborted) return { card: null, timings };
 
   const products: (FindProduct & { _image?: string })[] = [];
-  // no empty pictures: verified products past the first two, in the same order — a slot whose picture can't be
+  // no empty pictures: verified products past the card's last slot, in the same order — a slot whose picture can't be
   // found takes the next one that has a picture
   const spares: (FindProduct & { _image?: string })[] = [];
   const gate = imageGateOn();
@@ -797,8 +827,11 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
   const weak: number[] = [];
   const consider = (i: number, weakOk: boolean) => {
     const p = cands[i];
-    if (products.length >= PRODUCT_COUNT && (!gate || spares.length >= MAX_SPARES)) return;
-    const full = products.length >= PRODUCT_COUNT;
+    if (products.length >= max && (!gate || spares.length >= MAX_SPARES)) return;
+    const full = products.length >= max;
+    // the asked color (FD-02) still applies to a bigger card: another color only fills a card that would otherwise have
+    // fewer than PRODUCT_MIN, as it did when the card had two
+    if (products.length >= PRODUCT_MIN && offColor(str(p.item?.name, 200), colors)) return;
     const f = facts[i];
     // not in the trace: only a page we fetched ourselves and that says "one product" counts as opened
     if (!p.inTrace && f?.kind !== "product") {
@@ -854,16 +887,25 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
       situation: str(p.item.situation, 34),
     });
   };
-  order.forEach((i) => consider(i, false));
+  // a mix where the results allow it (Chelsea 11/4, six picks): within one rank (so the asked color and proven pages
+  // still come first), a store, or a color when none was asked, already on the card waits for the ones that add a new one
+  for (const r of [...new Set(order.map(rank))]) {
+    const later: number[] = [];
+    for (const i of order.filter((x) => rank(x) === r)) {
+      if (products.length && repeats(cands[i], products, colors.size === 0)) later.push(i);
+      else consider(i, false);
+    }
+    later.forEach((i) => consider(i, false));
+  }
   for (const i of weak) {
-    if (products.length >= PRODUCT_COUNT) break;
+    if (products.length >= max) break;
     consider(i, true);
   }
   // one-link cards (QA 11/4): a second listed result whose URL is one product's page fills the slot when its read
   // ran out of time (a slow shop). A read that answered — 404, a list, no product markup — never fills (invented URLs stay out)
-  if (products.length < PRODUCT_COUNT && fillUnread()) {
+  if (products.length < max && fillUnread()) {
     for (const i of order) {
-      if (products.length >= PRODUCT_COUNT) break;
+      if (products.length >= max) break;
       const p = cands[i];
       const f = facts[i];
       if (p.inTrace || f || answered.has(i) || !vendors.pageFacts || urlShape(p.url) !== "product" || !isProductPage(p.url, null)) continue;
@@ -895,10 +937,11 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
   }
 
   const domains = [...new Set(products.map((p) => p.domain))];
-  const one = products.length < PRODUCT_COUNT;
-  // the status pill shows this line on one line (iPhone and Mac, ≤ 28 chars, #211); a longer model line is replaced
+  const one = products.length === 1;
+  // the status pill shows this line on one line (iPhone and Mac, ≤ 28 chars, #211); a longer model line, or one that
+  // names another count than the card's ("Two, both simple cuts." over six), is replaced
   const modelSay = str(j?.say, 80);
-  const say = one ? ONE_SAY : modelSay && modelSay.length <= PILL_MAX ? modelSay : TWO_SAY;
+  const say = one ? ONE_SAY : modelSay && modelSay.length <= PILL_MAX && countFits(modelSay, products.length) ? modelSay : foundSay(products.length);
   const card: FindCard = {
     id: ctx.findId,
     kind: "product",
@@ -907,7 +950,7 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
     eyebrow: ctx.screen && look.length ? "From your screen" : "From what you said",
     title: cardTitle(str(j?.title, 40), products.length),
     subtitle: cardSubtitle(str(j?.subtitle, 60), label, products.map((p) => p.name)),
-    status: one ? `1 link · ${domains[0]}` : `${products.length} links · ${domains.join(", ")}`,
+    status: statusLine(products.length, domains),
     say,
     pill: say, // already ≤ PILL_MAX
     items: [],
@@ -1009,6 +1052,45 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
   );
   timings.picturesMs = ms();
   const domainsNow = [...new Set(final.map((p) => p.domain))];
-  const done: FindCard = { ...card, products: final, sources, status: one ? `1 link · ${domainsNow[0]}` : `${final.length} links · ${domainsNow.join(", ")}`, how: card.how.map((h) => (h === searchedLine(domains) ? searchedLine(domainsNow) : h)) };
+  const done: FindCard = { ...card, products: final, sources, status: statusLine(final.length, domainsNow), how: card.how.map((h) => (h === searchedLine(domains) ? searchedLine(domainsNow) : h)) };
   return { card: done, timings, label };
+}
+
+/** "6 links · a.com, b.com +3": the card's status line stays one line however many stores are on it */
+export function statusLine(n: number, domains: string[]): string {
+  if (n === 1) return `1 link · ${domains[0]}`;
+  return `${n} links · ${domains.slice(0, 2).join(", ")}${domains.length > 2 ? ` +${domains.length - 2}` : ""}`;
+}
+
+/** the candidate's store (or, when no color was asked, a color) is already on the card */
+function repeats(c: { item: ItemJson; url: string }, products: FindProduct[], byColor: boolean): boolean {
+  const domain = domainOf(c.url);
+  if (products.some((p) => p.domain === domain)) return true;
+  if (!byColor) return false;
+  const mine = colorFamilies(str(c.item?.name, 200));
+  return mine.size > 0 && products.some((p) => [...colorFamilies(p.name)].some((f) => mine.has(f)));
+}
+
+/**
+ * n page reads, at most PAGE_CONCURRENCY at once, all inside one window of `windowMs` from now: a read that has to
+ * wait for a free slot gets only what is left of the window (none once under 250 ms), and a read past its time is
+ * aborted so its slot really frees up. null = not read (no reader, no time left, timed out, failed).
+ */
+export async function readPages<T>(n: number, windowMs: number, signal: AbortSignal, read: ((i: number, signal: AbortSignal) => Promise<T | null>) | null): Promise<(T | null)[]> {
+  const out: (T | null)[] = new Array(n).fill(null);
+  if (!read) return out;
+  const end = Date.now() + windowMs;
+  let next = 0;
+  const worker = async () => {
+    while (next < n && !signal.aborted) {
+      const i = next++;
+      const left = end - Date.now();
+      if (left < 250) continue;
+      const stop = new AbortController();
+      out[i] = await withTimeout(read(i, AbortSignal.any([signal, stop.signal])), left, signal);
+      stop.abort();
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(PAGE_CONCURRENCY, n) }, worker));
+  return out;
 }

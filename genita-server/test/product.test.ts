@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { classifyTurn, isProductAsk } from "../src/finds/intent.ts";
-import { completedOpens, groundStyle, isProductPage, matchOpened, runProduct, tasteLines, urlKey, urlShape, cityOf, cleanPrice, hardList, hedgedSearch, httpsOf, shortLabel, shortName, SEARCH_TITLE, PILL_MAX, TWO_SAY, ONE_SAY, searchedLine, type ProductCtx } from "../src/finds/product.ts";
+import { completedOpens, groundStyle, isProductPage, matchOpened, runProduct, tasteLines, urlKey, urlShape, cityOf, cleanPrice, hardList, hedgedSearch, httpsOf, shortLabel, shortName, SEARCH_TITLE, PILL_MAX, foundSay, ONE_SAY, searchedLine, type ProductCtx } from "../src/finds/product.ts";
 import { allowedUrl, formatPrice, isImageBytes, isPrivateAddress, readPageFacts, type PageFacts } from "../src/finds/fetchPage.ts";
 import { webActions, type FindsVendors, type OutputItem } from "../src/finds/vendors.ts";
 import { FindsRunner } from "../src/finds/runner.ts";
@@ -212,20 +212,20 @@ test("product pipeline: 2 opened product pages → card with price from the page
   const r = await runProduct(ctx);
   const card = r.card!;
   assert.equal(card.kind, "product");
-  assert.equal(card.title, "Two for the weekend");
+  assert.equal(card.title, "Picks for the weekend", "the model's \"Two for the weekend\" names no count on the card (Chelsea 11/4)");
   assert.equal(card.eyebrow, "From what you said");
   assert.deepEqual(card.products!.map((p) => [p.name, p.url, p.price ?? null, p.taste, p.situation]), [
     ["Cotton chore jacket", P1, "$68", "Clean, minimal", "Light for a weekend"],
     ["Linen overshirt", P2, null, "Understated color", "Easy to layer"],
   ], "page price wins over the model's; no price when the page didn't show one");
   assert.deepEqual(card.evidence, { style: "Clean, minimal clothes. Understated colors.", situation: "Mild and dry this weekend, 18°C" });
-  assert.equal(card.say, TWO_SAY, "the model's 42-char line is too long for the one-line pill (#211)");
-  assert.equal(card.pill, TWO_SAY, "the pill line is sent with the card");
+  assert.equal(card.say, foundSay(2), "the model's 42-char line is too long for the one-line pill (#211)");
+  assert.equal(card.pill, foundSay(2), "the pill line is sent with the card");
   assert.equal(card.how[1], "Searched the web · northline.example.com +1", "one line on the card (#214)");
   // product-2 has no picture anywhere and there is no spare: its slot is omitted (never a hanger, never generated)
   assert.deepEqual(events.map((e) => e.type), ["find.started", "find.progress", "find.created", "find.image", "find.image"]);
   assert.deepEqual(events.slice(3).map((e) => [(e as { slot: string }).slot, (e as { status: string }).status, (e as { omit?: true }).omit ?? null]).sort(), [["product-1", "ready", null], ["product-2", "failed", true]]);
-  assert.equal((events[0] as { title: string }).title, "Finding 2 for your style…");
+  assert.equal((events[0] as { title: string }).title, "Finding picks for you…");
   assert.deepEqual(stored, ["product-1"], "only the product with a page picture gets one");
   // every card URL is in the tool trace
   const opened = new Set(completedOpens(v === undefined ? [] : [SEARCH, OPEN(P1), OPEN(P2)]));
@@ -400,7 +400,7 @@ test("#199: on the Mac (new call, no search yet) 'match my style' refines the ja
 });
 
 test("#211: pill strings are one-liners (≤ 28 chars): searching title, ack, answer", () => {
-  for (const s of [SEARCH_TITLE, TWO_SAY, ONE_SAY, "On it."]) assert.ok(s.length <= PILL_MAX, s);
+  for (const s of [SEARCH_TITLE, foundSay(6), foundSay(12), ONE_SAY, "On it."]) assert.ok(s.length <= PILL_MAX, s);
 });
 
 test("#214: the 'Searched the web' line fits one card line", () => {

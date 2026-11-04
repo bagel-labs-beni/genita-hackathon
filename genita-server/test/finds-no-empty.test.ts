@@ -39,6 +39,9 @@ afterEach(() => {
 });
 
 // ───────── products: page → web → swap → omit (never generated) ─────────
+// the swap mechanics on a two-product card (GENITA_PRODUCT_MAX=2): with the default 6, P3 is a third product, not a
+// spare (the six-product card is tested in product-six.test.ts)
+process.env.GENITA_PRODUCT_MAX = "2";
 
 const P1 = "https://www.northline.example.com/products/cotton-chore-jacket-navy";
 const P2 = "https://fieldandco.example.com/product/linen-overshirt-123456.html";
