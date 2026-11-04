@@ -157,7 +157,7 @@ export type SessionPersonalize = {
   isForgotten?(userId: string): boolean;
   /** bumped by "Forget all of this": a profile read from before it is never applied */
   generation?(userId: string): number;
-  voiceCorrection(userId: string, line: string, lastAssistant?: string, signal?: AbortSignal, asked?: UnknownItem | null): Promise<VoiceUpdate | null>;
+  voiceCorrection(userId: string, line: string, lastAssistant?: string, signal?: AbortSignal, asked?: UnknownItem | null, since?: number): Promise<VoiceUpdate | null>;
   endCall(userId: string, turns: CallTurn[], asked: string | null, startedAt?: string): Promise<number>;
   /** Knows-Me S1: the user cut two long replies short → observed "short replies" line; null = not saved */
   noteShorter?(userId: string): Promise<{ text: string; fields: string[]; profile: string } | null>;
@@ -596,6 +596,7 @@ export class Session {
     this.nod = null;
     if (this.started) this.finds?.configure({ owner: this.deps.userId, memories: this.memories, profile: undefined, userName: this.user.name, timeZone: this.timeZone, taste: [] });
     this.finds?.forgetTaste();   // the card on screen stops quoting the old taste (Codex #583 r5)
+    this.correcting?.abort();     // a voice correction under way was said under the old profile
     this.log("profile.forgotten_in_call", {});
   }
 
@@ -1498,9 +1499,11 @@ export class Session {
   }
 
   /** lane 개인화: "actually I don't like X" → merge → profile.updated. Beside the reply, never blocking it. */
-  private checkCorrection(text: string): void {
+  private checkCorrection(text: string, since?: number): void {
     const p = this.deps.personalize;
     const userId = this.deps.userId;
+    // the profile it was said under: a line queued behind another runs with it, so a forget in between drops it (Codex #583 r14)
+    const gen = since ?? (userId ? p?.generation?.(userId) : undefined);
     // "forget that …": from this line on, memory, notes and the turns handed on leave its target out (no Spark wait)
     if (isForgetRequest(text) && this.mode === "chat") {
       const target = forgetTarget(text);
@@ -1512,7 +1515,7 @@ export class Session {
     // a "forget that …" is never skipped because another check is still running: it runs right after it
     if (this.correcting && p && userId && this.mode === "chat" && isForgetRequest(text) && !this.closed) {
       const waitFor = this.correctionDone;
-      void waitFor.then(() => { if (!this.closed) this.checkCorrection(text); });
+      void waitFor.then(() => { if (!this.closed) this.checkCorrection(text, gen); });
       return;
     }
     if (!p || !userId || this.mode !== "chat" || this.correcting || this.correctionChecks >= MAX_CORRECTION_CHECKS || (!asked && !mightBeCorrection(text))) return;
@@ -1522,7 +1525,7 @@ export class Session {
     this.correctionChecks++;
     let done!: () => void;
     this.correctionDone = new Promise<void>((r) => (done = r));
-    void p.voiceCorrection(userId, text, lastAssistant, abort.signal, asked).then(
+    void p.voiceCorrection(userId, text, lastAssistant, abort.signal, asked, gen).then(
       (r) => {
         if (!r || this.closed || abort.signal.aborted) return;
         this.user = { ...this.user, profile: r.profile };

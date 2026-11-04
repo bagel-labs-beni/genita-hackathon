@@ -563,11 +563,12 @@ export class Personalize {
    * One user line in a call. `asked` = the companion just asked this call's question: the line is always
    * checked for an answer ("Noted: …"); otherwise only lines that look like a correction reach Spark ("Updated: …").
    */
-  async voiceCorrection(userId: string, line: string, lastAssistant?: string, signal?: AbortSignal, asked?: UnknownItem | null): Promise<VoiceUpdate | null> {
+  async voiceCorrection(userId: string, line: string, lastAssistant?: string, signal?: AbortSignal, asked?: UnknownItem | null, since?: number): Promise<VoiceUpdate | null> {
     if (!asked && !mightBeCorrection(line)) return null;
     // when it was said and under which profile: captured before any await (Codex #583 r12)
     const asOf = this.now().toISOString();
-    const gen = this.generation(userId);
+    const gen = since ?? this.generation(userId);
+    if (gen !== this.generation(userId)) return null;   // said before "Forget all of this", run after it
     const card = await this.store.getStyle(userId);
     if (!card) return null;
     const t0 = performance.now();

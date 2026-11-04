@@ -645,6 +645,8 @@ export class FindsRunner {
     // a prefetch searched with the old taste: stopped and never reused (Codex #583 r9)
     this.prefetched?.abort.abort();
     this.prefetched = null;
+    // searches already running were asked with the old taste: their card would say it ("Both leather, your style.")
+    for (const r of this.running.values()) r.abort.abort();
   }
 
   /** One line for the system prompt about the card on screen, or undefined. Data only. */
