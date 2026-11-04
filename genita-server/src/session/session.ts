@@ -53,7 +53,7 @@ import type { CallStart, VoiceUpdate } from "../personalize/service.ts";
 import type { CallTurn } from "../personalize/extract.ts";
 import { ASK_TURNS, replyAsks } from "../personalize/unknowns.ts";
 import { mightBeCorrection } from "../personalize/corrections.ts";
-import { avoidKeys, forgetTarget, isForgetRequest, scrubHistory, type Removed } from "../personalize/forgotten.ts";
+import { avoidKeys, forgetTarget, isForgetRequest, mentionsAvoided, scrubHistory, type Removed } from "../personalize/forgotten.ts";
 import { isForgetRequest as isMemoryForgetRequest } from "../memory/extract.ts";
 import { localTimeLine } from "../personalize/knows.ts";
 import type { UnknownItem } from "../personalize/story.ts";
@@ -276,6 +276,14 @@ function parseInterpretOptions(v: unknown): InterpretOptionsWire {
   };
 }
 const ANNOUNCE_WAIT_MS = 20_000;
+/** Codex #585 r2 P1: a last opener topic the user since asked to forget is never named, even as "don't open on X" */
+function lastSafeHook(recent: string[], removed: Removed[]): string | null {
+  const last = recent.at(-1) ?? null;
+  return last && removed.length && mentionsAvoided(last, avoidKeys(removed)) ? null : last;
+}
+/** AU-44: notes-based follow-up greetings, like the memory opener (memory/service.ts revisitGapHours) */
+const NOTES_OPENER_GAP_MS = 6 * 3_600_000;
+const NOTES_CALLBACK_MS = 10 * 60_000;
 /** hold cap: the longest the first sound waits on a held line (a pre-tool preamble) before a short beat */
 const HOLD_BEAT_MS = 1500;
 /** speech end → first sound cap (GENITA_HOLD_CAP_MS, 0 = off) */
@@ -931,6 +939,12 @@ export class Session {
           const revision = state.revision;
           // before this call's first user message: the previous call's last one (opener gap, DESIGN §4)
           if (!abandoned) { this.lastMessageAt = state.last_message_at; this.openerRecent = storedTopics(state); this.startMood = carriedMood(state, (memory.now ?? Date.now)(), this.moodBase); }
+          // AU-42: a start without a name (the Mac) uses the one the account's iPhone sent; a start with one keeps it fresh
+          if (!abandoned) {
+            const said = this.user?.name?.trim();
+            if (!said && state.user_name) this.user = { ...(this.user ?? {}), name: state.user_name };
+            else if (said && state.user_name !== said) { state.user_name = said; await memory.state.putState(userId, state); }
+          }
           if (this.closed) return;
           // a slow start never seeds old turns, but once verified, this call's NEW turns can hand off (Codex 11/3)
           if (abandoned) { if (this.historyRevision === null) this.historyRevision = revision; return; }
@@ -1810,16 +1824,25 @@ export class Session {
     let opener: string | undefined;
     if (turn.greeting) {
       const now = (this.deps.memory?.now ?? Date.now)();
-      const o = { hasProfile: !!this.user?.profile, sinceLastMs: last === undefined || last === null ? last : Math.max(0, now - last), hasItem: !!turn.greeting.item || !!this.memoryCall?.summaries.length || !!this.memoryCall?.lastCall };
+      const sinceLastMs = last === undefined || last === null ? last : Math.max(0, now - last);
+      // AU-44: notes are a thread to pick up only after the same 6 h gap as a memory opener (or right after a hang-up,
+      // lastCall); otherwise every call with notes was a "followup" on the same open thread, call after call
+      const notes = this.memoryCall?.visibleSummaries?.() ?? [];
+      // a call-back within minutes of the hang-up is the same conversation picking up (P1 FILM 11/3): still due
+      const notesDue = notes.length > 0 && (!!this.memoryCall?.lastCall || sinceLastMs === null || sinceLastMs === undefined || sinceLastMs < NOTES_CALLBACK_MS || sinceLastMs >= NOTES_OPENER_GAP_MS);
+      const o = { hasProfile: !!this.user?.profile, sinceLastMs, hasItem: !!turn.greeting.item || notesDue || !!this.memoryCall?.lastCall };
       // ^ notes from the last call (#307) are a thread to pick up too: "followup", not a bare "back" line (eval 11/3)
       // #341: open on a different profile thing than the last calls (not for a follow-up or a "back already" line)
       const kind = openerKind(o);
-      const rotates = kind === "first_known" || kind === "known" || kind === "back_today" || kind === "back_days";
-      const hooks = rotates ? profileHooks(this.user?.profile) : [];
+      // AU-44: a notes follow-up names ONE open thread / promise, rotated like profile hooks (recorded per account)
+      const notesFollowup = kind === "followup" && !turn.greeting.item && !this.memoryCall?.lastCall && notesDue;
+      if (this.memoryCall) this.memoryCall.notesOpener = notesDue || !!this.memoryCall.lastCall;
+      const rotates = kind === "first_known" || kind === "known" || kind === "back_today" || kind === "back_days" || notesFollowup;
+      const hooks = notesFollowup ? [...new Set(notes.flatMap((n) => [...n.open_threads, ...n.promises]).map((x) => x.trim().slice(0, 80)).filter((x) => x.length >= 3))].slice(0, 8) : rotates ? profileHooks(this.user?.profile) : [];
       // read-pick-record in one step for the account (an iPhone and a Mac greeting together never pick the same)
       const { hook, recent } = pickOpenerTopic(this.deps.userId, hooks, this.openerRecent, daySeed(now) + (kind === "first_known" ? Math.floor(Math.random() * 1000) : 0), this.memoryCall ? this.deps.memory : undefined, (e) => this.log("convo.opener_topic_failed", { message: String(e).slice(0, 120) }), this.deps.memory && this.deps.userId ? this.historyRevision : 0);
       // rotating kinds with no safe hook pass null (open on the companion's own thing); others pass undefined
-      opener = openerBlock({ ...o, hook: rotates ? hook : undefined, lastHook: recent.at(-1) ?? null, lastMood: this.memoryCall?.summaries[0]?.mood ?? null });
+      opener = openerBlock({ ...o, hook: rotates ? hook : undefined, lastHook: lastSafeHook(recent, this.removedLines), lastMood: this.memoryCall?.summaries[0]?.mood ?? null });
       if (hook) this.log("convo.opener", { kind, hooks: hooks.length, recent: recent.length });
       if (hook || o.hasItem) this.personalUsed++;
     }
@@ -2338,6 +2361,8 @@ export class Session {
     /** real sentences only: a hold beat ("Mm, okay.") is never the answer (Codex #384) */
     /** the name opener (greeting a) is said, but is not the model's answer: an empty greeting still retries (Codex #461) */
     const said = () => sentences.filter((x) => !x.beat && !x.drop && !x.opener);
+    /** AU-45: the greeting's "Hey, Summer!" opener went out — a whole greeting on its own when Spark adds nothing */
+    const openerSpoken = () => greeting && sentences.some((x) => x.opener && !x.drop);
     let emotion: string | null = null;
     const waiter: { wake: (() => void) | null } = { wake: null };
     let sparkDone = false;
@@ -2658,7 +2683,9 @@ export class Session {
           m.firstTokenAt = undefined;
         }
         // both tries came back empty or failed: the call goes on — one line in character, never the error card
-        if (!signal.aborted && !hasAnswer() && !interpret && !self) {
+        // AU-45: a greeting whose "Hey, Summer!" opener already went out is a fine greeting on its own — never followed by
+        // "Sorry, I lost you… say that again?" before the user said anything
+        if (!signal.aborted && !hasAnswer() && !interpret && !self && !openerSpoken()) {
           // a real crisis turn never gets "say that again": the help line instead (AI sweep, P1 safety)
           enqueueSentences([this.v1 && realCrisisSignal(text) ? CRISIS_HELP_LINE : LOST_LINE], true);
           lostLine = true;
@@ -2970,7 +2997,7 @@ export class Session {
     await producer;
     if (signal.aborted || this.reply !== reply) return;
 
-    if (!reply.spoken.join(" ").trim() || !hasAnswer()) {
+    if (!reply.spoken.join(" ").trim() || (!hasAnswer() && !openerSpoken())) {
       resolveSaid(null);
       this.error("spark_unavailable", "The companion could not answer. Try again.", true);
       this.log("spark.empty", { utteranceId, cause: self ? "self_filtered_only_content" : emptyCause ?? "upstream_error_before_text" });
@@ -2979,7 +3006,7 @@ export class Session {
     }
     if (sparkError) {
       // the lost-you line already covered it: no error card over a call that goes on
-      if (!lostLine) this.error("spark_unavailable", "The companion could not answer. Try again.", true);
+      if (!lostLine && !openerSpoken()) this.error("spark_unavailable", "The companion could not answer. Try again.", true);
       this.log("spark.error", { message: sparkError instanceof Error ? sparkError.message.slice(0, 200) : "unknown" });
     }
     if (device) {
