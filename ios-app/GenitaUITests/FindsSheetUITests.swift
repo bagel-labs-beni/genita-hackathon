@@ -197,7 +197,8 @@ final class FindsSheetUITests: XCTestCase {
         XCTAssertLessThan(lum, 0.2, "\(what): band above the sheet is dark (luminance \(lum))")
     }
 
-    /// PF-1: View ↗ opens the shop page in the sheet browser; Save to Finds becomes Open Finds.
+    /// PF-1 / r02: Open in browser ↗ goes straight to the shop page in Safari (no in-sheet browser); Save to Finds
+    /// becomes Open Finds.
     func testProductViewAndSave() throws {
         let app = launch(22)
         XCTAssertTrue(sheet(app).waitForExistence(timeout: 15))
@@ -205,8 +206,10 @@ final class FindsSheetUITests: XCTestCase {
         let link = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'productLink-'")).firstMatch
         XCTAssertTrue(link.waitForExistence(timeout: 5))
         link.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["findBrowser"].waitForExistence(timeout: 5), "View opens the in-sheet browser")
-        app.buttons["Done"].firstMatch.tap()
+        XCTAssertFalse(app.descendants(matching: .any)["findBrowser"].waitForExistence(timeout: 2), "r02: not the in-sheet browser")
+        let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
+        if safari.wait(for: .runningForeground, timeout: 8) { app.activate() }
+        XCTAssertTrue(sheet(app).waitForExistence(timeout: 10), "back on the call with the sheet")
         let save = app.buttons["findCTA"]
         XCTAssertTrue(save.waitForExistence(timeout: 5))
         save.tap()

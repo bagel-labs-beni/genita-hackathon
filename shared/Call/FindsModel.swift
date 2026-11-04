@@ -158,7 +158,8 @@ struct FindEntry: Identifiable, Equatable {
             update(i.findId) { e in
                 e.checking = i.checking
                 guard var card = e.card else { e.card = nil; e.searchDetail = Self.detail(from: i.items, fallback: e.searchDetail); return }
-                card.items = i.items
+                // visual cards: an ingredient's photo lands by id; an update without it keeps the one we have (never cleared)
+                card.items = Self.keepingImages(i.items, from: card.items)
                 if let s = i.subtitle { card.subtitle = s }
                 if let s = i.status { card.status = s }
                 if let p = i.pill { card.pill = p } // later item updates without a pill keep it
@@ -209,6 +210,12 @@ struct FindEntry: Identifiable, Equatable {
                 if i.slot.hasPrefix("product-"), let n = Int(i.slot.dropFirst(8)), card.products?.indices.contains(n - 1) == true { card.products?[n - 1].image = image }
                 // Finds r01: each web result's og:image; `source-N` is 0-based (unlike step-/product-, which are 1-based)
                 if i.slot.hasPrefix("source-"), let n = Int(i.slot.dropFirst(7)), card.sources.indices.contains(n) { card.sources[n].image = image }
+                // visual cards: `ingredient-<item id>` (by id, not position: items re-sort by tier)
+                if let id = FindItem.itemId(forImageSlot: i.slot) {
+                    // by id; a bare number that names no id is read as the 1-based position (a server that keys by index)
+                    if let k = card.items.firstIndex(where: { $0.id == id }) { card.items[k].image = image }
+                    else if let n = Int(id), card.items.indices.contains(n - 1) { card.items[n - 1].image = image }
+                }
                 e.card = card
             }
         case let .findFailed(f):
@@ -435,6 +442,14 @@ struct FindEntry: Identifiable, Equatable {
 
     /// Reopening a card this call made: the live card (its confirmed ingredients and status are newer than any list),
     /// with a picture the list has ready where the live one is still pending or was cut off by a reconnect (Codex r3/r4).
+    /// find.items replaces the list; a photo an item already has stays when the update doesn't carry one (contract v1 §2).
+    static func keepingImages(_ incoming: [FindItem], from current: [FindItem]) -> [FindItem] {
+        incoming.map { item in
+            guard item.image == nil, let had = current.first(where: { $0.id == item.id })?.image else { return item }
+            var kept = item; kept.image = had; return kept
+        }
+    }
+
     static func merged(_ listed: FindCard, keeping live: FindCard?) -> FindCard {
         guard var c = live else { return listed }
         // ingredients still being checked when the call lost the server: the server finished them, the list has that (Codex r5)
@@ -445,6 +460,7 @@ struct FindEntry: Identifiable, Equatable {
         c.hero = pick(c.hero, listed.hero)
         for s in c.steps.indices where listed.steps.indices.contains(s) { c.steps[s].image = pick(c.steps[s].image, listed.steps[s].image) }
         for s in c.sources.indices where listed.sources.indices.contains(s) { c.sources[s].image = pick(c.sources[s].image, listed.sources[s].image) }
+        for k in c.items.indices { c.items[k].image = pick(c.items[k].image, listed.items.first { $0.id == c.items[k].id }?.image) }
         if var products = c.products, let lp = listed.products {
             for p in products.indices where lp.indices.contains(p) { products[p].image = pick(products[p].image, lp[p].image) }
             c.products = products
@@ -520,6 +536,7 @@ struct FindEntry: Identifiable, Equatable {
             card.hero = stop(card.hero)
             for s in card.steps.indices { card.steps[s].image = stop(card.steps[s].image) }
             for s in card.sources.indices { card.sources[s].image = stop(card.sources[s].image) }
+            for k in card.items.indices { card.items[k].image = stop(card.items[k].image) }
             if let products = card.products { card.products = products.map { var p = $0; p.image = stop(p.image); return p } }
             if card != entries[i].card { entries[i].card = card }
             entries[i].checking = false

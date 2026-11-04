@@ -19,6 +19,8 @@ enum FindsInk {
     static let photoMissingGlyph = Color(red: 185 / 255, green: 178 / 255, blue: 166 / 255)
     /// D4: "From your style and what you said · …" Regular 13/18 #6E6E73
     static let sourceLine = Color(red: 110 / 255, green: 110 / 255, blue: 115 / 255)
+    /// r02: the serif initial on an ingredient tile with no photo (on the warm #F3F1ED tile)
+    static let tileInitial = Color(red: 138 / 255, green: 129 / 255, blue: 115 / 255)
 }
 
 /// D48 ③ reason chips under the card title: blue "Your style/taste: …" from the profile, grey "You said: …" from
@@ -78,11 +80,11 @@ struct FindPicture: View {
                 case .failed: failed
                 case .ready:
                     if let url = image.url, url.hasPrefix("bundle:"), let pic = BundlePicture.image(String(url.dropFirst(7))) {
-                        pic.resizable().scaledToFill().transition(fades ? .opacity : .identity)
+                        Self.fill(pic).transition(fades ? .opacity : .identity)
                     } else if let url = image.url.flatMap(resolve) {
                         AsyncImage(url: url, transaction: Transaction(animation: fades ? MotionFinds.photoIn : .fade)) { phase in
                             switch phase {
-                            case let .success(pic): pic.resizable().scaledToFill()
+                            case let .success(pic): Self.fill(pic)
                             case .failure: failed
                             default: Shimmer()
                             }
@@ -94,6 +96,13 @@ struct FindPicture: View {
         .findsPhotoFade(image?.status)
         .clipped()
     }
+    /// The picture fills the slot it is given and never sizes it: a `scaledToFill` image reports its own (bigger) size,
+    /// which let a portrait step photo grow past its frame and slide under the step text (P0, build 13 device shot).
+    /// As an overlay on a clear base it takes exactly the proposed size; the caller's clip shape then crops it.
+    static func fill(_ pic: Image) -> some View {
+        Color.clear.overlay { pic.resizable().scaledToFill() }.clipped()
+    }
+
     @ViewBuilder private var failed: some View {
         if let quietGlyph {
             // D4: a shop with no readable picture is a warm neutral tile (#F3F1ED) with a 34 pt line glyph (#B9B2A6), not a grey "broken" box
@@ -550,6 +559,8 @@ struct FindCardPage: View {
     @State private var chipTaps = 0
     /// Motion card 6: counts saves (not unsaves) — the bookmark pops, a shine crosses the card, one success haptic.
     @State private var saveTick = 0
+    @Environment(\.openURL) private var openURL
+    private var layout: FindCardLayout { card.cardLayout }
 
     var body: some View {
         ScrollViewReader { reader in
@@ -558,15 +569,18 @@ struct FindCardPage: View {
             VStack(alignment: .leading, spacing: 8) {
                 header.findsRise(0)
                 titleRow.onGeometryChange(for: CGFloat.self) { $0.size.height } action: { titleRowHeight = $0 }
-                switch card.kind {
+                // r02 visual cards: one layout per kind of answer (`card.layout`, else by `kind` as before)
+                switch layout {
                 case .recipe: recipe
                 case .outfit: outfit.findsRise(3)
                 case .product: product.findsRise(3)
-                case .link, .unknown: link.findsRise(3)
+                case .place: placeList
+                case .howTo: howTo.findsRise(3)
+                case .general: link.findsRise(3)
                 }
                 if !card.ask.isEmpty { askSection.findsRise(4).id("ask") }
                 // r01: a link / unknown card already lists its results once, as rows (no second "Sources" list)
-                if !card.sources.isEmpty, ![.product, .link, .unknown].contains(card.kind) { sourcesSection.findsRise(4).id("sources") }
+                if !card.sources.isEmpty, [.recipe, .outfit].contains(layout) { sourcesSection.findsRise(4).id("sources") }
                 if !card.how.isEmpty { howSection.findsRise(4).id("how") }
                 Color.clear.frame(height: full ? 96 : 24)
             }
@@ -640,7 +654,9 @@ struct FindCardPage: View {
                 let reasons = card.kind == .link ? [] : Array((card.reasons ?? []).prefix(2))
                 if !reasons.isEmpty || card.occasionChip != nil { FindReasonChips(reasons: reasons, occasion: card.occasionChip).padding(.top, 8).findsRise(2) }
             }.frame(maxWidth: .infinity, alignment: .leading)
-            if card.kind != .link, let hero = card.hero {
+            // r02: the 56 pt thumbnail stays where nothing bigger shows the picture (a named dish, place, how-to and web
+            // answers already draw it large)
+            if layout == .outfit || layout == .product || (layout == .recipe && card.camera != nil), let hero = card.hero {
                 FindPicture(image: hero, resolve: call.findsURL, showFailText: false).frame(width: 56, height: 56).clipShape(RoundedRectangle(cornerRadius: 12))
                     .accessibilityLabel("Illustration of \(card.title)")
                     .findsRise(3)
@@ -668,41 +684,61 @@ struct FindCardPage: View {
         return card.items.enumerated().sorted { (rank[$0.element.tier] ?? 9, $0.offset) < (rank[$1.element.tier] ?? 9, $1.offset) }.map(\.element)
     }
 
+    /// r02 recipe: the camera frame (fridge) or the dish photo (a named dish), the ingredient tiles (one scrolling row in
+    /// the half sheet, a 4-column grid in the full one), then the numbered step cards.
     @ViewBuilder private var recipe: some View {
-        let camHeight = full ? 196 : (entry.reopened ? (card.title.count <= 17 ? 196 : 130) : halfCameraHeight)
+        // a reopened card's half page is 396: 396 − 40 − 44 − 3 × 8 − 88 strip = 200 for title row + picture
+        let reopenedHeight = min(card.title.count <= 17 ? 196 : 130, titleRowHeight > 0 ? 200 - titleRowHeight : 196)
+        let camHeight = full ? 196 : (entry.reopened ? (reopenedHeight >= 72 ? reopenedHeight : 0) : halfCameraHeight)
         if let cam = card.camera, camHeight > 0 {
             CameraFrame(frame: entry.frames.indices.contains(cam.frame) ? entry.frames[cam.frame] : nil, camera: cam, items: card.items, selected: finds.selectedItem,
                         checking: entry.checking, height: camHeight)
                 .findsRise(3)
+        } else if let photo = card.dishPhoto, camHeight > 0 {
+            // r01 top-pick photo language: radius 12, 164 tall in the full sheet
+            FindPicture(image: photo, resolve: call.findsURL, showFailText: false, quietGlyph: "fork.knife")
+                .frame(height: full ? 164 : camHeight).frame(maxWidth: .infinity).clipShape(RoundedRectangle(cornerRadius: 12))
+                .accessibilityLabel("Photo of \(card.title)").accessibilityIdentifier("findDishPhoto")
+                .findsRise(3)
         }
-        chipRow.findsRise(4)
+        if full {
+            sectionLabel("Ingredients").findsRise(4)
+            ingredientGrid.findsRise(4)
+        } else {
+            ingredientStrip.findsRise(4)
+        }
         if let sel = card.items.first(where: { $0.id == finds.selectedItem }), sel.tier == .maybe { confirmRow(sel) }
-        if !card.steps.isEmpty { stepsSection.findsRise(4) }
+        if !card.steps.isEmpty { stepCards(doneButtons: true).findsRise(4) }
     }
 
-    /// Half sheet (344 pt page, scrolling off): the picture gives way so the ingredient chips show whole under a
-    /// two-line title. 344 − 40 top − 44 header − 3 × 8 spacing − 44 chips = 192 for title row + picture; 132 at most
-    /// (r03), 88 at least. Before: "Kimchi fried rice / with tofu and egg" cut the chip row in half (UI sweep 11/3).
-    /// With accessibility text sizes the title row alone can take the room (AX-L: 3-line title, Appetize build 7): when 88
-    /// no longer fits, the half sheet drops the picture (it is in the full sheet) so the ingredient chips stay whole.
+    private func sectionLabel(_ text: String) -> some View {
+        Text(text).font(TypeStyle.body(12, .medium)).foregroundStyle(CallInk.mute).padding(.top, 10)
+    }
+
+    /// The half-sheet ingredient strip: 64 pt tile + 7 + one 17 pt name line.
+    static let stripHeight: CGFloat = 88
+
+    /// Half sheet (344 pt page, scrolling off): the picture gives way so the ingredient tiles show whole under a
+    /// two-line title. 344 − 40 top − 44 header − 3 × 8 spacing − 88 tile strip = 148 for title row + picture; 132 at
+    /// most (r03), 72 at least. With accessibility text sizes the title row alone can take the room (AX-L): then the
+    /// half sheet drops the picture (it is in the full sheet) so the ingredient tiles stay whole.
     static func halfCameraHeight(titleRow: CGFloat) -> CGFloat {
-        let room = 192 - titleRow
-        return room >= 88 ? min(132, room) : 0
+        let room = 148 - titleRow
+        return room >= 72 ? min(132, room) : 0
     }
     private var halfCameraHeight: CGFloat { titleRowHeight > 0 ? Self.halfCameraHeight(titleRow: titleRowHeight) : 132 }
 
-    // r03 `.chiprow`: missing first (blue, +), then what you have (white, ✓); maybe = faded "?"
-    private var chipRow: some View {
+    // r02 tiles, r03 order: missing first (blue +), then what you have (✓); maybe = faded "?"
+    private var ingredientStrip: some View {
         ScrollView(.horizontal) {
-            HStack(spacing: 8) {
-                ForEach(orderedItems) { item in chip(item) }
-            }.padding(.horizontal, 38)
+            HStack(alignment: .top, spacing: 12) {
+                ForEach(orderedItems) { item in tile(item, strip: true) }
+            }.padding(.horizontal, 38).padding(.top, 6)
         }
         .scrollIndicators(.hidden)
         .onScrollGeometryChange(for: Bool.self) { g in g.contentOffset.x + g.containerSize.width >= g.contentSize.width - 1 } action: { _, end in chipsAtEnd = end }
         .padding(.horizontal, -38)
-        // the row runs off the sheet's edge: a 24 pt fade says "more", not a hard cut ("✓ Green or", design review 11/4);
-        // none once scrolled to the end
+        // the row runs off the sheet's edge: a 24 pt fade says "more", not a hard cut; none once scrolled to the end
         .mask {
             HStack(spacing: 0) {
                 Color.black
@@ -713,42 +749,75 @@ struct FindCardPage: View {
         .accessibilityElement(children: .contain).accessibilityLabel("Ingredients")
     }
 
-    private func chip(_ item: FindItem) -> some View {
+    private var ingredientGrid: some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12, alignment: .topLeading), count: 4), alignment: .leading, spacing: 16) {
+            ForEach(orderedItems) { item in tile(item, strip: false) }
+        }
+        .padding(.top, 6)
+        .findsHaptic(.selection, trigger: chipTaps)
+        .accessibilityElement(children: .contain).accessibilityLabel("Ingredients")
+    }
+
+    /// One ingredient: 64 pt photo tile (warm tile + serif initial when there is none), the have / need / maybe chip
+    /// on its corner, the name (13 medium) and, in the grid, the amount (12 mute). Same taps as the r03 chips.
+    private func tile(_ item: FindItem, strip: Bool) -> some View {
         // MO-05: "+" = add it to the recipe's shopping list; ✓ only once it is added, a second tap takes it off.
         // Rides the `motionDetails` flag: off → the old tap (select it, "Not on your camera").
         let addable = item.tier == .buy && MotionDetails.enabled
         let pressed = finds.selectedItem == item.id && !addable
         let added = addable && finds.isAdded(item.id, in: entry.id)
         let miss = item.tier == .buy && !added
-        let icon = miss ? "plus" : item.tier == .maybe ? "questionmark" : "checkmark"
-        let fg: Color = pressed ? CallInk.onInk : miss ? FindsInk.blueText : CallInk.ink
-        let bg: Color = pressed ? CallInk.ink : miss ? FindsInk.blueSoft : FindsInk.white
-        let border: Color = pressed ? CallInk.ink : miss ? FindsInk.blueSoft : FindsInk.line
-        // motion card 5: background/colors 200 ms (.fade), press 0.96 on a spring, the icon swaps with the replace effect
+        let amount = [item.tileAmount, item.optional == true ? "optional" : nil].compactMap { $0 }.joined(separator: " · ")
         return Button {
             chipTaps += 1
             withAnimation(.fade) { if addable { finds.toggleAdded(item.id, in: entry.id) } else { finds.tapItem(item) } }
         } label: {
-            HStack(spacing: 6) {
-                // one 16 pt box for every glyph, centered: + / ✓ / ? / spinner sit in the same spot and the text never shifts
-                Group {
-                    if item.tier == .checking { ProgressView().controlSize(.mini).tint(CallInk.mute) }
-                    else { Image(systemName: icon).font(.system(size: 13, weight: .semibold)).foregroundStyle(pressed ? CallInk.onInk : miss ? FindsInk.blueText : CallInk.mute).findsSymbolReplace(icon) }
-                }.frame(width: 16, height: 16, alignment: .center)
-                // one line, never cut: the chip grows instead (Chelsea 11/4)
-                Text(item.name.capitalizedFirst).font(TypeStyle.body(14, .medium)).lineLimit(1).fixedSize(horizontal: true, vertical: false)
-                if item.optional == true { Text("optional").font(TypeStyle.body(12)).lineLimit(1).fixedSize(horizontal: true, vertical: false) }
+            VStack(alignment: .leading, spacing: 0) {
+                ZStack {
+                    FindsInk.photoMissing
+                    if let pic = item.tilePicture {
+                        FindPicture(image: pic, resolve: call.findsURL, showFailText: false, quietGlyph: "fork.knife")
+                    } else {
+                        Text(item.tileInitial).font(TypeStyle.title(24)).foregroundStyle(FindsInk.tileInitial)
+                    }
+                }
+                .frame(width: 64, height: 64).clipShape(RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(pressed ? CallInk.ink : .clear, lineWidth: 2))
+                .opacity(item.tier == .maybe && !pressed ? 0.55 : item.tier == .checking ? 0.5 : 1)
+                .overlay(alignment: .topTrailing) { tileBadge(item, pressed: pressed, added: added, miss: miss).offset(x: 5, y: -5) }
+                Text(item.tileName).font(TypeStyle.body(13, .medium)).foregroundStyle(miss ? FindsInk.blueText : CallInk.ink)
+                    .lineLimit(strip ? 1 : 2).multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true).padding(.top, 7)
+                if !strip, !amount.isEmpty {
+                    Text(amount).font(TypeStyle.body(12)).foregroundStyle(CallInk.mute).lineLimit(1)
+                }
             }
-            .foregroundStyle(fg).padding(.horizontal, 12).frame(height: 44)
-            .background(bg, in: RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(border, lineWidth: 1))
-            .opacity(item.tier == .maybe && !pressed ? 0.55 : item.tier == .checking ? 0.5 : 1)
+            .frame(width: strip ? 64 : nil, alignment: .leading)
+            .frame(maxWidth: strip ? 64 : .infinity, alignment: .leading)
+            .contentShape(Rectangle())
         }
         .buttonStyle(FindsChipPress())
-        .accessibilityLabel(chipLabel(item, added: added))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(chipLabel(item, added: added) + (item.tileAmount.map { ", \($0)" } ?? ""))
         .accessibilityHint(addable ? (added ? "Takes it off your list" : "Adds it to your list") : "")
-        .accessibilityAddTraits(pressed || added ? .isSelected : [])
+        .accessibilityAddTraits(pressed || added ? [.isSelected, .isButton] : .isButton)
         .accessibilityIdentifier("chip-\(item.name)")
+    }
+
+    /// 22 pt chip on the tile's corner with a 2 pt sheet ring: + need (blue soft), ✓ added (blue), ✓ have (ink),
+    /// ? maybe (white), spinner while checking.
+    private func tileBadge(_ item: FindItem, pressed: Bool, added: Bool, miss: Bool) -> some View {
+        let icon = miss ? "plus" : item.tier == .maybe ? "questionmark" : "checkmark"
+        let fg: Color = miss ? FindsInk.blueText : item.tier == .maybe ? CallInk.mute : CallInk.onInk
+        let bg: Color = miss ? FindsInk.blueSoft : added ? FindsInk.blueText : item.tier == .maybe || item.tier == .checking ? FindsInk.white : CallInk.ink
+        return ZStack {
+            Circle().fill(bg)
+            if item.tier == .maybe || item.tier == .checking { Circle().strokeBorder(FindsInk.line, lineWidth: 1) }
+            if item.tier == .checking { ProgressView().controlSize(.mini).tint(CallInk.mute) }
+            else { Image(systemName: icon).font(.system(size: 11, weight: .bold)).foregroundStyle(fg).findsSymbolReplace(icon) }
+        }
+        .frame(width: 22, height: 22)
+        .background(Circle().fill(CallInk.sheet).padding(-2))
+        .accessibilityHidden(true)
     }
 
     private func chipLabel(_ item: FindItem, added: Bool) -> String {
@@ -769,41 +838,51 @@ struct FindCardPage: View {
         }.transition(.opacity)
     }
 
-    private var stepsSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Steps").font(TypeStyle.body(12, .medium)).foregroundStyle(CallInk.mute)
-            ScrollView(.horizontal) {
-                HStack(alignment: .top, spacing: 12) {
-                    ForEach(Array(card.steps.enumerated()), id: \.offset) { i, step in stepCard(i, step) }
-                }.padding(.horizontal, 38).scrollTargetLayout()
+    /// r02 numbered step cards (recipe and how-to): the step's photo 150 tall when one came (none → text only, never an
+    /// empty box), serif number, 15/21 text, a hairline between steps; recipes keep the 36 pt Done pill.
+    private func stepCards(doneButtons: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            sectionLabel("Steps").padding(.bottom, 2)
+            ForEach(Array(card.steps.enumerated()), id: \.offset) { i, step in
+                stepCard(i, step, doneButton: doneButtons)
+                    .overlay(alignment: .top) { if i > 0 { FindsInk.line.frame(height: 1) } }
             }
-            .scrollTargetBehavior(.viewAligned)
-            .scrollIndicators(.hidden)
-            .padding(.horizontal, -38)
-        }.padding(.top, 8)
+        }.accessibilityElement(children: .contain).accessibilityIdentifier("findSteps")
     }
 
-    private func stepCard(_ i: Int, _ step: FindCard.Step) -> some View {
-        let done = finds.doneSteps[entry.id]?.contains(i) == true
-        let now = !done && (finds.doneSteps[entry.id] ?? []).count == i && full
-        return VStack(alignment: .leading, spacing: 4) {
-            FindPicture(image: step.image, resolve: call.findsURL).frame(width: 240, height: 136).clipShape(RoundedRectangle(cornerRadius: 12)).opacity(done ? 0.5 : 1)
-                .accessibilityLabel("Illustration of step \(i + 1)")
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text("\(i + 1)").font(TypeStyle.title(18)).frame(width: 20, alignment: .leading)
-                Text(step.text).font(TypeStyle.body(14)).fixedSize(horizontal: false, vertical: true)
-            }.foregroundStyle(now ? FindsInk.blueText : CallInk.ink).padding(.top, 4)
-            if let source = step.source { Text("From \(source)").font(TypeStyle.body(12)).foregroundStyle(CallInk.mute).padding(.leading, 24) }
-            Button { withAnimation(.fade) { finds.toggleStep(i) } } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "checkmark").font(.system(size: 12, weight: .semibold))
-                    Text("Done").font(TypeStyle.body(14, .medium))
+    private func stepCard(_ i: Int, _ step: FindCard.Step, doneButton: Bool) -> some View {
+        let done = doneButton && finds.doneSteps[entry.id]?.contains(i) == true
+        let now = doneButton && !done && (finds.doneSteps[entry.id] ?? []).count == i && full
+        return VStack(alignment: .leading, spacing: 0) {
+            Group {
+                if let img = step.image, img.status != .failed {
+                    FindPicture(image: img, resolve: call.findsURL, showFailText: false, quietGlyph: "photo")
+                        .frame(height: 150).frame(maxWidth: .infinity).clipShape(RoundedRectangle(cornerRadius: 12))
+                        .accessibilityLabel("Photo of step \(i + 1)")
+                        .padding(.bottom, 12)
                 }
-                .foregroundStyle(done ? FindsInk.blueText : CallInk.ink).padding(.horizontal, 12).frame(height: 44)
-                .background(done ? FindsInk.blueSoft : FindsInk.white, in: RoundedRectangle(cornerRadius: 12))
-                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(done ? FindsInk.blueSoft : FindsInk.line, lineWidth: 1))
-            }.buttonStyle(PressScale()).accessibilityLabel("Step \(i + 1) done").accessibilityAddTraits(done ? .isSelected : [])
-        }.frame(width: 240, alignment: .leading)
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text("\(i + 1)").font(TypeStyle.title(20)).frame(width: 24, alignment: .leading)
+                    Text(step.text).font(TypeStyle.body(15)).lineSpacing(3).fixedSize(horizontal: false, vertical: true)
+                }.foregroundStyle(now ? FindsInk.blueText : CallInk.ink)
+                if let source = step.source { Text("From \(source)").font(TypeStyle.body(12)).foregroundStyle(CallInk.mute).padding(.leading, 30).padding(.top, 4) }
+            }.opacity(done ? 0.5 : 1)
+            if doneButton {
+                Button { withAnimation(.fade) { finds.toggleStep(i) } } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "checkmark").font(.system(size: 11, weight: .semibold))
+                        Text("Done").font(TypeStyle.body(13, .medium))
+                    }
+                    .foregroundStyle(done ? FindsInk.blueText : CallInk.ink).padding(.horizontal, 14).frame(height: 36)
+                    .background(done ? FindsInk.blueSoft : CallInk.sheet, in: Capsule())
+                    .overlay(Capsule().strokeBorder(done ? FindsInk.blueSoft : FindsInk.line, lineWidth: 1))
+                    .padding(.vertical, 4).contentShape(Rectangle())
+                }.buttonStyle(PressScale()).padding(.leading, 30).padding(.top, 6)
+                .accessibilityLabel("Step \(i + 1) done").accessibilityAddTraits(done ? .isSelected : [])
+            }
+        }
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: outfit (r03 "Wear the navy one.")
@@ -842,7 +921,8 @@ struct FindCardPage: View {
 
     @ViewBuilder private var link: some View {
         if card.sources.isEmpty, let hero = card.hero {
-            FindPicture(image: hero, resolve: call.findsURL).frame(height: 132).frame(maxWidth: .infinity).clipShape(RoundedRectangle(cornerRadius: 12))
+            // r02: every answer leads with its picture, r01 top-pick size
+            FindPicture(image: hero, resolve: call.findsURL, showFailText: false, quietGlyph: "photo").frame(height: 164).frame(maxWidth: .infinity).clipShape(RoundedRectangle(cornerRadius: 12))
                 .accessibilityLabel("Illustration for \(card.title)")
         }
         if card.page?.opened == false {
@@ -1024,18 +1104,154 @@ struct FindCardPage: View {
         return palette[sum % palette.count]
     }
 
-    // MARK: product (PF-1b: two columns, Open in browser ↗ opens the shop page in the sheet browser)
+    // MARK: r02 place: #1 photo 164 + name + ★ rating (reviews) · hours + address + Map / Website pills; the rest as r01
+    // rows with the rating line and the address instead of the reason
+
+    @ViewBuilder private var placeList: some View {
+        let sources = card.sources
+        let photo = topPhoto
+        if let photo, let first = sources.first {
+            placeTop(first, photo: photo).findsRise(3)
+        }
+        let rest = Array(sources.enumerated()).dropFirst(photo == nil ? 0 : 1)
+        VStack(spacing: 0) {
+            ForEach(Array(rest.enumerated()), id: \.element.element.url) { n, item in
+                placeRow(item.element, index: item.offset, divider: n > 0).findsRise(min(4 + n, 8))
+            }
+        }.padding(.top, photo == nil ? 4 : 10)
+        .accessibilityElement(children: .contain).accessibilityIdentifier("placeList")
+    }
+
+    private func placeTop(_ s: FindCard.Source, photo: FindImage) -> some View {
+        let place = s.place
+        return VStack(alignment: .leading, spacing: 0) {
+            Button { openSource(s) } label: {
+                VStack(alignment: .leading, spacing: 0) {
+                    FindPicture(image: photo, resolve: call.findsURL, showFailText: false, quietGlyph: "photo")
+                        .frame(height: 164).frame(maxWidth: .infinity).clipShape(RoundedRectangle(cornerRadius: 12))
+                        .overlay(alignment: .topLeading) {
+                            Text("Top pick").font(TypeStyle.body(12, .medium)).foregroundStyle(CallInk.ink)
+                                .padding(.horizontal, 9).padding(.vertical, 3)
+                                .background(CallInk.sheet.opacity(0.92), in: Capsule()).padding(10)
+                        }
+                    Text(s.placeName).font(TypeStyle.body(17, .semibold)).foregroundStyle(CallInk.ink).lineLimit(2)
+                        .multilineTextAlignment(.leading).padding(.top, 12)
+                    if let place { placeMeta(place).padding(.top, 3) }
+                    if let address = place?.address, !address.isEmpty {
+                        Text(address).font(TypeStyle.body(14)).foregroundStyle(CallInk.mute).lineLimit(2).multilineTextAlignment(.leading).padding(.top, 2)
+                    } else if let why = Self.why(s, index: 0, steps: card.steps, sourceCount: card.sources.count) {
+                        Text(why).font(TypeStyle.body(14)).foregroundStyle(Self.whyInk).lineLimit(2).multilineTextAlignment(.leading).padding(.top, 3)
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+            }
+            .buttonStyle(PressScale(scale: 0.99)).opacity(offline ? 0.5 : 1)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(["Top pick", s.placeName, place?.accessibilityText].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ". "))
+            .accessibilityIdentifier("placeTop")
+            HStack(spacing: 8) {
+                if let map = place?.mapLink {
+                    Button { openURL(map) } label: { pillLabel("Map", icon: "mappin.and.ellipse", filled: true) }
+                        .buttonStyle(PressScale()).accessibilityLabel("Open \(s.placeName) in Maps").accessibilityIdentifier("placeMap")
+                }
+                Button { openSource(s) } label: { pillLabel("Website", icon: "arrow.up.right", filled: place?.mapLink == nil, trailingIcon: true) }
+                    .buttonStyle(PressScale()).opacity(offline ? 0.5 : 1).accessibilityIdentifier("placeWebsite")
+            }.padding(.top, 8)
+        }.padding(.top, 10)
+    }
+
+    /// r01 36 pt pill (ink filled or outlined) inside a 44 pt target.
+    private func pillLabel(_ text: String, icon: String, filled: Bool, trailingIcon: Bool = false) -> some View {
+        HStack(spacing: 5) {
+            if !trailingIcon { Image(systemName: icon).font(.system(size: 12, weight: .medium)) }
+            Text(text).font(TypeStyle.body(13, .medium)).lineLimit(1)
+            if trailingIcon { Image(systemName: icon).font(.system(size: 11, weight: .medium)) }
+        }
+        .foregroundStyle(filled ? CallInk.onInk : CallInk.ink).padding(.horizontal, 16).frame(height: 36)
+        .background(filled ? CallInk.ink : CallInk.sheet, in: Capsule())
+        .overlay { if !filled { Capsule().strokeBorder(FindsInk.line, lineWidth: 1) } }
+        .padding(.vertical, 4).contentShape(Rectangle())
+    }
+
+    /// "★ 4.6 (1,203) · Open until 10 PM" on one line; only the parts the server sent.
+    @ViewBuilder private func placeMeta(_ p: FindCard.Source.Place) -> some View {
+        let hours = p.hours?.trimmingCharacters(in: .whitespaces) ?? ""
+        if p.ratingText != nil || !hours.isEmpty {
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                if let r = p.ratingText {
+                    Text("★ " + r).font(TypeStyle.body(14, .semibold)).foregroundStyle(CallInk.ink)
+                    if let n = p.reviewsText { Text(n).font(TypeStyle.body(14)).foregroundStyle(Self.whyInk) }
+                }
+                if p.ratingText != nil, !hours.isEmpty { Text("·").font(TypeStyle.body(14)).foregroundStyle(Self.whyInk) }
+                if !hours.isEmpty { Text(hours).font(TypeStyle.body(14, p.hoursSayOpen ? .medium : .regular)).foregroundStyle(p.hoursSayOpen ? CallInk.ink : Self.whyInk).lineLimit(1) }
+            }.lineLimit(1)
+        }
+    }
+
+    private func placeRow(_ s: FindCard.Source, index: Int, divider: Bool) -> some View {
+        let place = s.place
+        let why = Self.why(s, index: index, steps: card.steps, sourceCount: card.sources.count)
+        return Button { openSource(s) } label: {
+            HStack(alignment: .top, spacing: 12) {
+                ZStack {
+                    FindsInk.photoMissing
+                    if let img = s.image, img.status != .failed {
+                        FindPicture(image: img, resolve: call.findsURL, showFailText: false, quietGlyph: "photo")
+                    } else {
+                        Text(Self.initial(s.placeName)).font(TypeStyle.body(14, .bold)).foregroundStyle(CallInk.onInk)
+                            .frame(width: 28, height: 28).background(Self.siteColor(s.domain), in: RoundedRectangle(cornerRadius: 8))
+                    }
+                }.frame(width: 64, height: 64).clipShape(RoundedRectangle(cornerRadius: 12)).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(s.placeName).font(TypeStyle.body(15.5, .semibold)).foregroundStyle(CallInk.ink).lineLimit(1)
+                    if let place { placeMeta(place).padding(.top, 1) }
+                    if let address = place?.address, !address.isEmpty {
+                        Text(address).font(TypeStyle.body(13)).foregroundStyle(CallInk.mute).lineLimit(1).padding(.top, 2)
+                    } else if let why {
+                        Text(why).font(TypeStyle.body(14)).lineSpacing(3).foregroundStyle(Self.whyInk).lineLimit(2)
+                            .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true).padding(.top, 1)
+                    }
+                    if place == nil { sourceLine(s).padding(.top, 4) }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.vertical, 12).padding(.horizontal, 10)
+            .overlay(alignment: .top) {
+                if divider { FindsInk.line.frame(height: 1).padding(.leading, 86).padding(.trailing, 10) }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressScale(scale: 0.99)).opacity(offline ? 0.5 : 1)
+        .padding(.horizontal, -10)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel([s.placeName, place?.accessibilityText, place == nil ? why : nil].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ". "))
+        .accessibilityIdentifier("source-\(s.domain)")
+    }
+
+    // MARK: r02 how-to: the same step cards (no Done), then the sources once as r01 rows
+
+    @ViewBuilder private var howTo: some View {
+        stepCards(doneButtons: false)
+        if !card.sources.isEmpty {
+            sectionLabel("Sources")
+            VStack(spacing: 0) {
+                ForEach(Array(card.sources.enumerated()), id: \.element.url) { i, s in
+                    resultRow(s, index: i, divider: i > 0)
+                }
+            }
+        }
+    }
+
+    // MARK: product (PF-1b: two columns; r02: Open in browser goes straight to the shop page in the browser)
 
     @ViewBuilder private var product: some View {
         let items = Array((card.products ?? []).prefix(2))
         HStack(alignment: .top, spacing: 12) {
-            ForEach(items) { p in productColumn(p) }
+            ForEach(Array(items.enumerated()), id: \.element.id) { i, p in productColumn(p, primary: i == 0) }
             if items.count == 1 { Color.clear.frame(maxWidth: .infinity) }
         }.padding(.top, 8)
         .accessibilityElement(children: .contain).accessibilityIdentifier("productView")
     }
 
-    private func productColumn(_ p: FindCard.Product) -> some View {
+    private func productColumn(_ p: FindCard.Product, primary: Bool) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             FindPicture(image: p.image, resolve: call.findsURL, showFailText: false, quietGlyph: "hanger")
                 .aspectRatio(1, contentMode: .fit).clipShape(RoundedRectangle(cornerRadius: 12))
@@ -1048,15 +1264,17 @@ struct FindCardPage: View {
             if !p.taste.isEmpty { productChip(p.taste, mark: ProductPicks.styleMark, fg: FindsInk.blueText, bg: FindsInk.blueSoft) }
             if !p.situation.isEmpty { productChip(p.situation, mark: ProductPicks.saidMark, fg: CallInk.ink, bg: FindsInk.skip) }
             Button {
-                if !offline { withAnimation(.drawer) { finds.state = .full; finds.browser = FindCard.Source.make(title: p.name, url: p.url, domain: p.domain) } }
+                // r02: straight to the shop's page in the browser (not the in-sheet one)
+                if !offline, let url = ExternalLink.web(p.url) { openURL(url) }
             } label: {
-                // Dyno's video (2:20): "Open in browser ↗" in a blue outline capsule; 13 pt so it stays one line in a column
+                // r01: a 36 pt pill, the first card ink, the other outlined; 13 pt so it stays one line in a column
                 HStack(spacing: 4) {
                     Text("Open in browser").font(TypeStyle.body(13, .medium)).lineLimit(1).minimumScaleFactor(0.85)
                     Image(systemName: "arrow.up.right").font(.system(size: 11, weight: .medium))
-                }.foregroundStyle(CallInk.ink).padding(.horizontal, 10).frame(maxWidth: .infinity).frame(height: 34)
-                .overlay(Capsule().strokeBorder(Color(red: 0, green: 162 / 255, blue: 1), lineWidth: 1))
-                .padding(.vertical, 5).contentShape(Rectangle())
+                }.foregroundStyle(primary ? CallInk.onInk : CallInk.ink).padding(.horizontal, 10).frame(maxWidth: .infinity).frame(height: 36)
+                .background(primary ? CallInk.ink : CallInk.sheet, in: Capsule())
+                .overlay { if !primary { Capsule().strokeBorder(FindsInk.line, lineWidth: 1) } }
+                .padding(.vertical, 4).contentShape(Rectangle())
             }.buttonStyle(PressScale()).opacity(offline ? 0.5 : 1)
             .accessibilityLabel("Open \(p.name) at \(p.store) in the browser").accessibilityIdentifier("productLink-\(p.id)")
         }.frame(maxWidth: .infinity, alignment: .leading)
