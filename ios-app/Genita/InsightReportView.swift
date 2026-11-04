@@ -534,7 +534,7 @@ struct InsightShareCard: View {
         }
     }
 
-    private var isPrefix: String { title.hasSuffix(type.name) ? String(title.dropLast(type.name.count)).trimmingCharacters(in: .whitespaces) : title }
+    private var isPrefix: String { (title.hasSuffix(type.name) ? String(title.dropLast(type.name.count)).trimmingCharacters(in: .whitespaces) : title).firstLetterUppercased }
 
     var card: some View {
         ZStack(alignment: .topLeading) {
