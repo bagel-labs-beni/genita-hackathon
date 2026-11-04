@@ -6,13 +6,13 @@
  * on screen so "Ask about this" follow-ups make sense.
  */
 import { webAnswerCard, type WebSearch } from "./webAnswer.ts";
-import { applySourceImage, assessLine, runGeneral } from "./general.ts";
+import { applySourceImage, assessLine, rowPictures, runGeneral } from "./general.ts";
 import { JUDGE_TIMEOUT_MS, judgeEnabled, judgeWithin, sparkJudge, type Judge, type JudgeResult } from "./judge.ts";
 import type { Intent } from "./intent.ts";
 import { findUrl } from "./parse.ts";
 import { reasonChips, tasteLines, type TasteLine } from "../personalize/reasons.ts";
 import { randomUUID } from "node:crypto";
-import type { FindCard, FindKind, ServerEvent } from "../protocol.ts";
+import type { FindCard, FindImage, FindKind, ServerEvent } from "../protocol.ts";
 import { classifyTurn, isBareAccept, isGoesWithFollowUp, isLinksAsk, isProductAsk, refersToScreen } from "./intent.ts";
 import { PRODUCT_COUNT, SEARCH_TITLE, decidePick, guessLabel, runProduct, shortLabel, tasteLines as productTaste } from "./product.ts";
 import { runNamedRecipe } from "./namedRecipe.ts";
@@ -153,6 +153,20 @@ export type TurnInput = {
   /** the turn's own signal (barge-in, cancel): a judged card for a cancelled turn never starts */
   signal?: AbortSignal;
 };
+
+/** A find.image on the stored card: hero · step-N (1-based) · product-N (1-based) · source-N (0-based) · ingredient-<item id>. */
+export function applyFindImage(card: FindCard, img: FindImage): void {
+  if (img.slot === "hero") card.hero = img;
+  const m = img.slot.match(/^step-(\d+)$/);
+  if (m && card.steps[Number(m[1]) - 1]) card.steps[Number(m[1]) - 1].image = img;
+  const p = img.slot.match(/^product-(\d+)$/);
+  if (p && card.products?.[Number(p[1]) - 1]) card.products[Number(p[1]) - 1].image = img;
+  if (img.slot.startsWith("ingredient-")) {
+    const item = card.items.find((i) => i.id === img.slot.slice("ingredient-".length));
+    if (item) item.image = img;
+  }
+  applySourceImage(card, img);
+}
 
 /** reaction: S5 — the spoken line made from the same pick the search shops (null = say the plain ack) */
 export type TurnStarted = { findId: string; kind: FindKind | "identify"; named?: true; ack?: string; reaction?: Promise<string | null> };
@@ -544,6 +558,20 @@ export class FindsRunner {
     card.reasons = [];
     this.onEvent({ type: "find.created", findId, card });
     this.hooks.log("find.done", { findId, kind: "answer", ok: true, sources: card.sources.length });
+    // visual everything: every row gets its page's picture (else a web photo), the first is the hero
+    const abort = new AbortController();
+    const release = this.deps.store.work.track(this.owner, () => abort.abort());
+    void rowPictures(
+      {
+        findId, vendors: this.deps.vendors, signal: abort.signal, emit: (e) => this.onEvent(e), log: this.hooks.log,
+        putImage: async (slot, bytes) => {
+          if (this.purged || (this.owner && this.deps.store.work.isDeleted(this.owner))) throw new Error("account deleted");
+          await this.deps.store.work.write(this.owner, () => this.deps.store.putImage(findId, slot, bytes));
+          return `${this.deps.imageBase}/${findId}/images/${slot}`;
+        },
+      },
+      card.sources.map((s) => ({ title: s.title, url: s.url })),
+    ).catch(() => {}).finally(release);
     return findId;
   }
 
@@ -824,13 +852,7 @@ export class FindsRunner {
     } else if (e.type === "find.image") {
       const card = this.cards.get(e.findId);
       if (card) {
-        const img = { slot: e.slot, status: e.status, ...(e.url ? { url: e.url } : {}) } as const;
-        if (e.slot === "hero") card.hero = img;
-        const m = e.slot.match(/^step-(\d+)$/);
-        if (m && card.steps[Number(m[1]) - 1]) card.steps[Number(m[1]) - 1].image = img;
-        const p = e.slot.match(/^product-(\d+)$/);
-        if (p && card.products?.[Number(p[1]) - 1]) card.products[Number(p[1]) - 1].image = img;
-        applySourceImage(card, img);
+        applyFindImage(card, { slot: e.slot, status: e.status, ...(e.url ? { url: e.url } : {}) });
         void this.persist(card);
       }
     }

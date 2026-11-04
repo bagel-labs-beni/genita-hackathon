@@ -12,7 +12,7 @@
  * natural hedge when it doesn't), with no search of its own, while the sheet fills; "I put a few links up for you."
  * when the card lands (after that sentence). The results are never read aloud.
  */
-import type { FindCard, FindImage } from "../protocol.ts";
+import type { FindCard, FindImage, FindLayout, FindPlace } from "../protocol.ts";
 import type { SparkStreamEvent } from "../meta/spark.ts";
 import { SentenceSplitter } from "../text/sentences.ts";
 import { parseTaggedSentence } from "../text/tags.ts";
@@ -22,6 +22,7 @@ import { domainOf, lastJsonObject, str, strList } from "./parse.ts";
 import type { PipelineCtx, PipelineResult } from "./pipeline.ts";
 import { userMessage, type OutputItem } from "./vendors.ts";
 import { answerTitle, isBlockedSite } from "./webAnswer.ts";
+import { findWebImage, pagePicture, sendFoundImages, stepQuery } from "./imageFinder.ts";
 
 /** said when the card lands (after the one-sentence answer) */
 export const GENERAL_SAY = "I put a few links up for you.";
@@ -228,8 +229,39 @@ export function generalIntent(text: string): { kind: "answer" } | null {
 
 // ───────── the search ─────────
 
-type GeneralJson = { title?: unknown; results?: Array<{ title?: unknown; why?: unknown; url?: unknown }>; ask?: unknown };
-type Result = { title: string; why: string; url: string; domain: string };
+type RawPlace = { address?: unknown; rating?: unknown; reviews?: unknown; hours?: unknown };
+type GeneralJson = { title?: unknown; results?: Array<{ title?: unknown; why?: unknown; url?: unknown } & RawPlace>; steps?: unknown; ask?: unknown };
+type Result = { title: string; why: string; url: string; domain: string; raw?: RawPlace };
+
+// ───────── visual everything: per-info layout ─────────
+
+const HOWTO_ASK = /^(?:how (?:do|can|should|would|to)\b|how\s+(?:i|we|you)\b)|\bhow to\b|\bsteps? (?:to|for)\b|\btutorial\b|어떻게|방법/i;
+const PLACE_ASK = /\b(?:near(?:by| me)?|around (?:here|me)|restaurants?|caf[eé]s?|coffee shops?|bars?|pubs?|hotels?|bakery|bakeries|brunch|ramen|sushi|pizza|bbq|museums?|galleries|parks?|beaches|places? to (?:eat|go|stay|visit)|where (?:to|can i|should i) (?:eat|go|stay|get)|things to do in)\b|맛집|카페|근처/i;
+/** which layout a web answer gets: places (map, rating), a how-to (numbered steps), else the general rows */
+export function generalLayout(question: string): FindLayout {
+  const q = question.trim();
+  if (HOWTO_ASK.test(q)) return "how-to";
+  if (PLACE_ASK.test(q)) return "place";
+  return "general";
+}
+
+/** What the search said about a place (each field only when it said it), plus a maps link from the name + address. */
+export function placeFields(name: string, raw: RawPlace | undefined): FindPlace | undefined {
+  const n = name.trim();
+  if (!n) return undefined;
+  const address = str(raw?.address, 120);
+  const num = (v: unknown) => (typeof v === "number" ? v : Number.parseFloat(String(v ?? "").replace(/,/g, "")));
+  const rating = num(raw?.rating);
+  const reviews = Math.round(num(raw?.reviews));
+  const hours = str(raw?.hours, 60);
+  return {
+    ...(address ? { address } : {}),
+    ...(Number.isFinite(rating) && rating > 0 && rating <= 5 ? { rating: Math.round(rating * 10) / 10 } : {}),
+    ...(Number.isFinite(reviews) && reviews > 0 ? { reviews } : {}),
+    ...(hours ? { hours } : {}),
+    mapUrl: `https://maps.apple.com/?q=${encodeURIComponent(address ? `${n}, ${address}` : n)}`,
+  };
+}
 
 /** every page the search really returned or opened (never a URL the model only wrote) */
 export function tracedUrls(output: OutputItem[]): string[] {
@@ -285,17 +317,17 @@ export function pickResults(j: GeneralJson | null, traced: string[]): Result[] {
   for (const u of traced) if (!byUrl.has(samePageKey(u))) byUrl.set(samePageKey(u), u);
   const seen = new Set<string>();
   const out: Result[] = [];
-  const add = (title: string, why: string, url: string) => {
+  const add = (title: string, why: string, url: string, raw?: RawPlace) => {
     const domain = domainOf(url);
     if (!domain || seen.has(domain) || isBlockedSite(domain) || out.length >= GENERAL_MAX_RESULTS) return;
     seen.add(domain);
-    out.push({ title: readableTitle(title, why, url, domain), why, url, domain });
+    out.push({ title: readableTitle(title, why, url, domain), why, url, domain, ...(raw ? { raw } : {}) });
   };
   for (const r of Array.isArray(j?.results) ? j.results : []) {
     const url = str(r?.url, 600);
     if (!url) continue;
     const page = byUrl.get(samePageKey(url));
-    if (page) add(str(r?.title, 100), str(r?.why, 160), page);
+    if (page) add(str(r?.title, 100), str(r?.why, 160), page, r);
   }
   // nothing usable from the model: the search's own pages
   if (!out.length) for (const u of traced) add("", "", u);
@@ -358,37 +390,69 @@ export function cutOff<T>(run: (signal: AbortSignal) => Promise<T>, ms: number, 
   });
 }
 
-/** Each result's own og:image, read in parallel (≤ GENERAL_IMAGE_MS per read), stored like a product photo. */
-async function resultPictures(ctx: PipelineCtx, results: Result[]): Promise<void> {
+export type PictureCtx = Parameters<typeof sendFoundImages>[0];
+export type PictureRow = { title: string; url: string; address?: string };
+
+/**
+ * Every row's picture (visual everything, r02 on all searches): its own og:image (else the page's first content
+ * picture), else a web photo of the row (the place / page name). `hero` is row 0's picture, or — when row 0 has
+ * none — the first other row's that lands (old builds draw hero). Only ready pictures are sent; a row with none gets
+ * no slot. How-to steps get a step-N photo each when one is found.
+ */
+export async function rowPictures(ctx: PictureCtx, rows: PictureRow[], opts: { layout?: FindLayout; topic?: string; steps?: string[]; heroFromRows?: boolean } = {}): Promise<void> {
   const { pageFacts, productImage } = ctx.vendors;
   if (!pageFacts || !productImage) return;
-  await Promise.all(
-    results.map(async (r, i) => {
-      const slot = `source-${i}`;
-      const facts = await cutOff((s) => pageFacts(r.url, s), GENERAL_IMAGE_MS, ctx.signal);
-      const bytes = facts?.image ? await cutOff((s) => productImage(facts.image!, s), GENERAL_IMAGE_MS, ctx.signal) : null;
-      if (ctx.signal.aborted) return;
-      try {
-        if (!bytes?.length) throw new Error(facts?.image ? "image unreadable" : "no og:image");
-        // #1 is also the card's hero (the iPhone link layout already draws it)
-        if (i === 0) ctx.emit({ type: "find.image", findId: ctx.findId, slot: "hero", status: "ready", url: await ctx.putImage("hero", bytes) });
-        ctx.emit({ type: "find.image", findId: ctx.findId, slot, status: "ready", url: await ctx.putImage(slot, bytes) });
-      } catch (err) {
-        if (ctx.signal.aborted) return;
-        ctx.emit({ type: "find.image", findId: ctx.findId, slot, status: "failed" });
-        ctx.log("find.general_image_failed", { findId: ctx.findId, slot, message: String(err).slice(0, 120) });
+  const store = async (slot: string, bytes: Buffer) => {
+    try {
+      ctx.emit({ type: "find.image", findId: ctx.findId, slot, status: "ready", url: await ctx.putImage(slot, bytes) });
+      return true;
+    } catch (err) {
+      ctx.log("find.general_image_failed", { findId: ctx.findId, slot, message: String(err).slice(0, 120) });
+      return false;
+    }
+  };
+  let heroSent = opts.heroFromRows === false;
+  let heroWait: Promise<void> = Promise.resolve();
+  const found = rows.map(async (r, i) => {
+    const own = await pagePicture(ctx.vendors, r.url, ctx.signal, GENERAL_IMAGE_MS);
+    if (ctx.signal.aborted) return null;
+    const bytes = own ?? (await findWebImage(ctx.vendors, opts.layout === "place" ? `${r.title} ${r.address ?? ""}`.trim() : r.title, ctx.signal));
+    if (!bytes || ctx.signal.aborted) {
+      if (!ctx.signal.aborted) ctx.log("find.web_image_none", { findId: ctx.findId, slot: `source-${i}` });
+      return null;
+    }
+    await store(`source-${i}`, bytes);
+    return bytes;
+  });
+  if (!heroSent && found.length) {
+    heroWait = (async () => {
+      // row 0 first; else whichever other row lands first
+      let bytes = await found[0];
+      if (!bytes && found.length > 1) {
+        bytes = await new Promise<Buffer | null>((resolve) => {
+          let left = found.length - 1;
+          for (const f of found.slice(1)) f.then((b) => { left--; if (b) resolve(b); else if (!left) resolve(null); }, () => { left--; if (!left) resolve(null); });
+        });
       }
-    }),
-  );
+      if (bytes && !ctx.signal.aborted && !heroSent) heroSent = await store("hero", bytes);
+    })();
+  }
+  const steps = opts.steps ?? [];
+  const stepPics = sendFoundImages(ctx, steps.map((t, i) => ({ slot: `step-${i + 1}`, query: stepQuery(opts.topic ?? "", t) })));
+  await Promise.all([...found, heroWait, stepPics]);
 }
 
-function prompt(question: string, timeZone?: string): string {
+function prompt(question: string, timeZone?: string, layout: FindLayout = "general"): string {
   return [
     "Search the web for what the user asked and pick the best pages your search returned.",
     `The user asked: "${question.slice(0, 300)}"`,
     ...(timeZone ? [`Their time zone: ${timeZone}.`] : []),
     `Reply with only JSON: {"title": "what this is about, under 8 words", "results": [up to ${GENERAL_MAX_RESULTS} pages, best first: {"title": "the page or place name, under 10 words", "why": "what it says or why it fits, one line under 18 words", "url": "the exact page URL from your search"}], "ask": [2 short follow-up questions, under 5 words]}`,
     "Use only pages your search returned. Never invent a URL. Official sites and large outlets first.",
+    ...(layout === "place"
+      ? ['Each result is one place: also give "address", "rating" (number out of 5) and "reviews" (count) and "hours" (short, like "11:00–21:00") — only what the search results state; leave a field out when they don\'t.']
+      : []),
+    ...(layout === "how-to" ? ['Also give "steps": [3-6 short imperative steps that answer it, under 14 words each].'] : []),
   ].join("\n");
 }
 
@@ -398,9 +462,10 @@ export async function runGeneral(ctx: PipelineCtx): Promise<PipelineResult> {
   ctx.emit({ type: "find.started", findId: ctx.findId, utteranceId: ctx.utteranceId, kind: "answer", title: questionTitle(ctx.question), detail: "Searching the web" });
   let j: GeneralJson | null = null;
   let traced: string[] = [];
+  const layout = generalLayout(ctx.question);
   try {
     const signal = AbortSignal.any([ctx.signal, AbortSignal.timeout(GENERAL_TIMEOUT_MS)]);
-    const res = await ctx.vendors.spark({ input: userMessage(prompt(ctx.question, ctx.timeZone)), tools: [{ type: "web_search" }], effort: "minimal", maxOutputTokens: 1400 }, signal);
+    const res = await ctx.vendors.spark({ input: userMessage(prompt(ctx.question, ctx.timeZone, layout)), tools: [{ type: "web_search" }], effort: "minimal", maxOutputTokens: 1400 }, signal);
     j = lastJsonObject<GeneralJson>(res.text);
     traced = tracedUrls(res.output);
   } catch (err) {
@@ -420,20 +485,23 @@ export async function runGeneral(ctx: PipelineCtx): Promise<PipelineResult> {
   const pages = new Set(traced.map(samePageKey)).size;
   if (pages) ctx.emit({ type: "find.progress", findId: ctx.findId, detail: `Reading ${pages} page${pages > 1 ? "s" : ""}` });
   ctx.emit({ type: "find.progress", findId: ctx.findId, detail: `Picking the best ${n}` });
-  const pictures = !!(ctx.vendors.pageFacts && ctx.vendors.productImage);
+  const howSteps = layout === "how-to" ? strList(j?.steps, 6, 120) : [];
+  const title = str(j?.title, 80) || answerTitle("", ctx.question);
   const card: FindCard = {
     id: ctx.findId,
     kind: "answer",
+    layout,
     createdAt: new Date().toISOString(),
     eyebrow: "From the web",
-    title: str(j?.title, 80) || answerTitle("", ctx.question),
+    title,
     subtitle: `Web search · ${n} result${n > 1 ? "s" : ""}`,
     status: `${n} result${n > 1 ? "s" : ""}`,
     say: GENERAL_SAY,
     items: [],
     // each result once: in Sources, as "title — why" with its link (P0 11/4: the Mac listed them twice); one summary line
     // above them because the iPhone link layout always shows its Takeaways label
-    steps: [{ text: `Top ${n} result${n > 1 ? "s" : ""} from the web. Tap one to open it.` }],
+    // how-to (visual everything): the real steps, numbered by the app with a photo each when one is found
+    steps: howSteps.length ? howSteps.map((text) => ({ text })) : [{ text: `Top ${n} result${n > 1 ? "s" : ""} from the web. Tap one to open it.` }],
     options: [],
     why: [],
     ask: strList(j?.ask, 2, 40),
@@ -445,7 +513,8 @@ export async function runGeneral(ctx: PipelineCtx): Promise<PipelineResult> {
         url: r.url,
         domain: r.domain,
         ...(why ? { why } : {}),
-        ...(pictures ? { image: { slot: `source-${i}`, status: "pending" as const } } : {}),
+        // no pending picture (an empty grey square if it never comes): find.image source-N sets it once ready
+        ...(layout === "place" ? { place: placeFields(r.title, r.raw) } : {}),
       };
     }),
     // never taste chips on a looked-up fact
@@ -456,7 +525,7 @@ export async function runGeneral(ctx: PipelineCtx): Promise<PipelineResult> {
   ctx.emit({ type: "find.created", findId: ctx.findId, card });
   timings.cardMs = Math.round(ctx.now() - t0);
   ctx.log("find.general", { findId: ctx.findId, results: n, traced: traced.length });
-  await resultPictures(ctx, results);
+  await rowPictures(ctx, results.map((r) => ({ title: r.title, url: r.url, ...(r.raw?.address ? { address: str(r.raw.address, 60) } : {}) })), { layout, topic: title, steps: howSteps });
   timings.picturesMs = Math.round(ctx.now() - t0);
   return { card, timings };
 }

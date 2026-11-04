@@ -6,7 +6,8 @@
  * pages' own og:images (never generated), and the spoken side is one short line.
  */
 import type { FindCard, FindItem } from "../protocol.ts";
-import { GENERAL_IMAGE_MS, cutOff, tracedUrls, samePageKey } from "./general.ts";
+import { GENERAL_IMAGE_MS, tracedUrls, samePageKey } from "./general.ts";
+import { ingredientLookups, pagePicture, sendFoundImages, stepQuery } from "./imageFinder.ts";
 import { domainOf, lastJsonObject, str, strList } from "./parse.ts";
 import { HEALTH_ADVICE, withoutHealthAdvice, sentenceCase, type PipelineCtx, type PipelineResult } from "./pipeline.ts";
 import { recipeSummary } from "./tiers.ts";
@@ -71,6 +72,7 @@ export function namedRecipeCard(findId: string, j: NamedJson | null, traced: str
   return {
     id: findId,
     kind: "recipe",
+    layout: "recipe",
     createdAt: at.toISOString(),
     eyebrow: "Recipe",
     title: sentenceCase(dish),
@@ -85,7 +87,7 @@ export function namedRecipeCard(findId: string, j: NamedJson | null, traced: str
     why: why && !HEALTH_ADVICE.test(why) ? [why] : [],
     ask: strList(j?.ask, 4, 40).filter((t) => !HEALTH_ADVICE.test(t)).slice(0, 2),
     sources,
-    how: [sources.length ? "Searched the web; the steps come from the search results." : "I couldn't find a recipe page, so this is from what I know.", ...(pictures && sources.length ? ["Photos are from the recipe pages."] : []), "Muse Spark"],
+    how: [sources.length ? "Searched the web; the steps come from the search results." : "I couldn't find a recipe page, so this is from what I know.", ...(pictures ? ["Photos are from the web."] : []), "Muse Spark"],
   };
 }
 
@@ -115,31 +117,39 @@ export async function runNamedRecipe(ctx: PipelineCtx & { recent?: string[] }): 
   }
   ctx.emit({ type: "find.created", findId: ctx.findId, card });
   timings.cardMs = Math.round(ctx.now() - t0);
-  if (pictures) await sourcePhotos(ctx, card);
+  if (pictures) await recipePhotos(ctx, card, str(j?.dish, 60));
   timings.picturesMs = Math.round(ctx.now() - t0);
   return { card, timings };
 }
 
-/** the first recipe page whose og:image loads is the dish photo (hero); nothing is sent when none loads */
-async function sourcePhotos(ctx: PipelineCtx, card: FindCard): Promise<void> {
-  const { pageFacts, productImage } = ctx.vendors;
-  if (!pageFacts || !productImage) return;
-  let heroDone = false;
-  await Promise.all(
-    card.sources.map(async (s, i) => {
-      const facts = await cutOff((sig) => pageFacts(s.url, sig), GENERAL_IMAGE_MS * 2, ctx.signal);
-      const bytes = facts?.image ? await cutOff((sig) => productImage(facts.image!, sig), GENERAL_IMAGE_MS * 2, ctx.signal) : null;
-      if (ctx.signal.aborted || heroDone) return;
-      if (!bytes?.length) {
-        ctx.log("find.named_recipe_image_failed", { findId: ctx.findId, source: i, message: facts?.image ? "image unreadable" : "no og:image" });
-        return;
-      }
-      heroDone = true;
-      try {
-        ctx.emit({ type: "find.image", findId: ctx.findId, slot: "hero", status: "ready", url: await ctx.putImage("hero", bytes) });
-      } catch (err) {
-        ctx.log("find.named_recipe_image_failed", { findId: ctx.findId, source: i, message: String(err).slice(0, 120) });
-      }
-    }),
-  );
+/**
+ * Visual everything: the dish photo (the first recipe page whose og:image loads, else a web photo of the dish), one
+ * photo per ingredient and per step — each sent only once it is ready; a row with none found gets no slot.
+ */
+async function recipePhotos(ctx: PipelineCtx, card: FindCard, dish: string): Promise<void> {
+  const heroP = (async () => {
+    let fromPage = false;
+    await Promise.all(
+      card.sources.map(async (s, i) => {
+        const bytes = await pagePicture(ctx.vendors, s.url, ctx.signal, GENERAL_IMAGE_MS * 2);
+        if (ctx.signal.aborted || fromPage || !bytes) {
+          if (!bytes && !ctx.signal.aborted) ctx.log("find.named_recipe_image_failed", { findId: ctx.findId, source: i, message: "no og:image" });
+          return;
+        }
+        fromPage = true;
+        try {
+          ctx.emit({ type: "find.image", findId: ctx.findId, slot: "hero", status: "ready", url: await ctx.putImage("hero", bytes) });
+        } catch (err) {
+          fromPage = false;
+          ctx.log("find.named_recipe_image_failed", { findId: ctx.findId, source: i, message: String(err).slice(0, 120) });
+        }
+      }),
+    );
+    if (!fromPage && !ctx.signal.aborted) await sendFoundImages(ctx, [{ slot: "hero", query: `${dish} dish`, wiki: [dish] }]);
+  })();
+  const rows = sendFoundImages(ctx, [
+    ...card.items.map((it) => ({ slot: `ingredient-${it.id}`, ...ingredientLookups(it.name) })),
+    ...card.steps.map((s, i) => ({ slot: `step-${i + 1}`, query: stepQuery(dish, s.text) })),
+  ]);
+  await Promise.all([heroP, rows]);
 }

@@ -411,19 +411,20 @@ test("r01: og:image per result (read in parallel, ≤ 1.5 s each) → find.image
   const stored: string[] = [];
   const ctx = { ...ctxFor(imageVendors(json, pages), events), putImage: async (slot: string, bytes: Buffer) => { stored.push(`${slot}=${bytes}`); return `https://img/${slot}`; } };
   const t0 = Date.now();
-  const card = (await runGeneral(ctx)).card!;
+  // the page's own og:image path alone (the web photo fallback is finds-visual.test.ts)
+  process.env.GENITA_FIND_WEB_IMAGES = "0";
+  const card = await runGeneral(ctx).then((r) => r.card!).finally(() => delete process.env.GENITA_FIND_WEB_IMAGES);
   assert.ok(Date.now() - t0 < GENERAL_IMAGE_MS * 2 + 800, "the slow page is cut off, not waited for");
-  assert.deepEqual(card.sources.map((s) => s.image), [
-    { slot: "source-0", status: "pending" }, { slot: "source-1", status: "pending" }, { slot: "source-2", status: "pending" },
-  ], "the card lands first with pending pictures");
+  // visual everything (11/4): no pending slot on the card — an image that never comes stayed an empty grey square
+  assert.deepEqual(card.sources.map((s) => s.image), [undefined, undefined, undefined], "the card lands first, no pending pictures");
   const created = events.findIndex((e) => e.type === "find.created");
   const imgs = events.filter((e): e is Extract<ServerEvent, { type: "find.image" }> => e.type === "find.image");
   assert.ok(events.indexOf(imgs[0]) > created, "pictures follow the card");
   const bySlot = Object.fromEntries(imgs.map((e) => [e.slot, e]));
   assert.deepEqual(bySlot.hero, { type: "find.image", findId: "f1", slot: "hero", status: "ready", url: "https://img/hero" });
   assert.deepEqual(bySlot["source-0"], { type: "find.image", findId: "f1", slot: "source-0", status: "ready", url: "https://img/source-0" });
-  assert.equal(bySlot["source-1"].status, "failed", "no og:image → failed (the app shows the initial tile)");
-  assert.equal(bySlot["source-2"].status, "failed", "past 1.5 s → failed");
+  assert.equal(bySlot["source-1"], undefined, "no og:image (and no web photo) → no event at all, never failed");
+  assert.equal(bySlot["source-2"], undefined, "past 1.5 s → no event");
   assert.deepEqual(stored.sort(), ["hero=img:https://media.timeout.com/a.jpg", "source-0=img:https://media.timeout.com/a.jpg"]);
   for (const e of events) assert.deepEqual(checkServerEvent(e), [], JSON.stringify(e));
 });

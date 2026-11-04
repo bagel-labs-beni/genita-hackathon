@@ -67,6 +67,9 @@ test("card payload: recipe kind, every ingredient 'buy' with its amount, steps, 
 });
 
 test("runNamedRecipe: started → created → hero from the page's og:image; no image generation", async () => {
+  // the recipe page's own og:image path alone (web photos per row: finds-visual.test.ts)
+  process.env.GENITA_FIND_WEB_IMAGES = "0";
+  try {
   const events: ServerEvent[] = [];
   let generated = 0;
   const ctx = {
@@ -88,9 +91,15 @@ test("runNamedRecipe: started → created → hero from the page's og:image; no 
   const imgs = events.filter((e) => e.type === "find.image") as { slot: string; status: string }[];
   assert.deepEqual(imgs.map((e) => [e.slot, e.status]), [["hero", "ready"]]);
   assert.equal(generated, 0);
+  } finally {
+    delete process.env.GENITA_FIND_WEB_IMAGES;
+  }
 });
 
 test("no og:image anywhere → no hero event at all (never a failed / grey slot)", async () => {
+  // the recipe page's own og:image path alone (web photos per row: finds-visual.test.ts)
+  process.env.GENITA_FIND_WEB_IMAGES = "0";
+  try {
   const events: ServerEvent[] = [];
   const ctx = {
     findId: "f3", utteranceId: 1, kind: "recipe", question: "how do I make bibimbap", frames: [], memories: [],
@@ -105,4 +114,7 @@ test("no og:image anywhere → no hero event at all (never a failed / grey slot)
   const r = await runNamedRecipe(ctx);
   assert.ok(r.card && !r.card.hero);
   assert.deepEqual(events.map((e) => e.type), ["find.started", "find.created"]);
+  } finally {
+    delete process.env.GENITA_FIND_WEB_IMAGES;
+  }
 });

@@ -128,11 +128,18 @@ export type FindItem = {
   hint?: NormBox;
   /** the user answered "맞아?" */
   confirmed?: "yes" | "no";
+  /** visual-everything: the ingredient's photo (find.image slot `ingredient-<id>`, keyed by id; only ever ready) */
+  image?: FindImage;
 };
+/** visual-everything: per-info layout hint, separate from `kind` (absent → the app lays out by kind) */
+export type FindLayout = "recipe" | "product" | "place" | "how-to" | "general";
+/** layout "place": what the search said about a place (any field may be missing); mapUrl is server-built */
+export type FindPlace = { address?: string; rating?: number; reviews?: number; hours?: string; mapUrl?: string };
 export type FindImage = { slot: string; status: "pending" | "ready" | "failed"; url?: string };
 export type FindCard = {
   id: string;
   kind: FindKind;
+  layout?: FindLayout;
   createdAt: string;
   eyebrow: string;
   title: string;
@@ -153,7 +160,7 @@ export type FindCard = {
   ask: string[];
   /** r01 (11/4): `why` = the reason line on its own (≤ 18 words; `title` still reads "Title — why" for apps that predate
    * it); `image` = the page's og:image (find.image slot "source-N", N 0-based); `favicon` = site icon URL (not sent yet) */
-  sources: { title: string; url: string; domain: string; why?: string; image?: FindImage; favicon?: string }[];
+  sources: { title: string; url: string; domain: string; why?: string; image?: FindImage; favicon?: string; place?: FindPlace }[];
   /** lane 개인화 E: 1–2 chips from the user's own taste lines, e.g. "Your style: clean, minimal clothes", "You said: no cilantro" (source = that line) */
   reasons?: { text: string; source: string; from: "profile" | "call" }[];
   how: string[];

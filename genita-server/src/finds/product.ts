@@ -24,6 +24,7 @@ import type { FindCard, FindProduct } from "../protocol.ts";
 import { domainOf, lastJsonObject, str } from "./parse.ts";
 import { userMessage, type FindsVendors, type OutputItem } from "./vendors.ts";
 import type { PageFacts } from "./fetchPage.ts";
+import { findWebImage } from "./imageFinder.ts";
 import type { PipelineCtx, PipelineResult, ProductPick } from "./pipeline.ts";
 import { askedColors, colorFamilies, offColor } from "./productCache.ts";
 // one color rule for search, cache and warm-up (handover b9-6): it lives in productCache.ts
@@ -806,6 +807,7 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
   const card: FindCard = {
     id: ctx.findId,
     kind: "product",
+    layout: "product",
     createdAt: at.toISOString(),
     eyebrow: ctx.screen && look.length ? "From your screen" : "From what you said",
     title: cardTitle(str(j?.title, 40), products.length),
@@ -833,12 +835,17 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
   // pictures: the page's own og:image, stored like an illustration (the app loads it from us, not the shop)
   await Promise.all(
     products.map(async (p, i) => {
-      if (!p._image) return;
       const slot = `product-${i + 1}`;
       try {
-        const bytes = vendors.productImage ? await withTimeout(vendors.productImage(p._image, ctx.signal), PAGE_TIMEOUT_MS, ctx.signal) : null;
+        const own = p._image && vendors.productImage ? await withTimeout(vendors.productImage(p._image, ctx.signal), PAGE_TIMEOUT_MS, ctx.signal) : null;
         if (ctx.signal.aborted) return;
-        if (!bytes) throw new Error("no image");
+        // visual everything: no picture on the page → a web photo of the product (no slot at all when none is found)
+        const bytes = own ?? (await findWebImage(vendors, `${p.name} ${p.store}`.trim(), ctx.signal));
+        if (ctx.signal.aborted) return;
+        if (!bytes) {
+          if (!p._image) return;
+          throw new Error("no image");
+        }
         const url = await ctx.putImage(slot, bytes);
         ctx.emit({ type: "find.image", findId: ctx.findId, slot, status: "ready", url });
       } catch (err) {

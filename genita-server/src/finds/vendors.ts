@@ -6,7 +6,7 @@ import { metaJson } from "../meta/http.ts";
 import { museImageGenerate, samDetect } from "../meta/media.ts";
 import { SPARK_MODEL, outputText, sparkStream, type InputMessage, type SparkRequest, type SparkStreamEvent } from "../meta/spark.ts";
 import type { SamBox } from "../meta/sam.ts";
-import { fetchImage, fetchPageFacts, type PageFacts } from "./fetchPage.ts";
+import { fetchImage, fetchPageFacts, fetchWikiImageUrl, type PageFacts } from "./fetchPage.ts";
 
 export type OutputItem = { type: string; status?: string; action?: { type?: string; url?: string; query?: string }; content?: Array<{ type: string; text?: string }> };
 export type SparkResult = { text: string; output: OutputItem[] };
@@ -24,6 +24,8 @@ export interface FindsVendors {
   pageFacts?(url: string, signal?: AbortSignal): Promise<PageFacts | null>;
   /** F7: the product's own picture bytes (JPEG/PNG/WebP), null = none */
   productImage?(url: string, signal?: AbortSignal): Promise<Buffer | null>;
+  /** visual everything: Wikipedia's lead picture URL for a title (ingredients, dishes), null = none */
+  wikiImage?(title: string, signal?: AbortSignal): Promise<string | null>;
 }
 
 /** samMasks: request one_bit masks with every SAM call (GENITA_SAM_MASKS=1). */
@@ -54,6 +56,7 @@ export function metaVendors(key: string, opts: { samMasks?: boolean } = {}): Fin
     image: (prompt, signal) => museImageGenerate(key, prompt, "512x512", signal),
     pageFacts: (url, signal) => fetchPageFacts(url, signal),
     productImage: (url, signal) => fetchImage(url, signal),
+    wikiImage: (title, signal) => fetchWikiImageUrl(title, signal),
   };
 }
 

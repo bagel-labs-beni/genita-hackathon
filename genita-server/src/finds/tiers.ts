@@ -8,7 +8,7 @@
  * A seen item that Spark then says NO to, and no recipe needs, is dropped.
  * Pure: the pipeline feeds results in, the list comes out.
  */
-import type { FindItem, FindTier, NormBox } from "../protocol.ts";
+import type { FindImage, FindItem, FindTier, NormBox } from "../protocol.ts";
 import type { SamInstance } from "./instances.ts";
 import { cleanName, isStaple, nameKey, sameIngredient } from "./names.ts";
 
@@ -31,6 +31,8 @@ export type Candidate = {
   samDone: boolean;
   confirmed: "yes" | "no" | null;
   order: number;
+  /** visual-everything: the ingredient's web photo once ready (find.image slot `ingredient-<id>`) — kept on every re-send */
+  image?: FindImage;
 };
 
 export const MAX_CANDIDATES = 12;
@@ -124,6 +126,7 @@ export function toWire(cands: readonly Candidate[]): FindItem[] {
     if (tier === "have" && c.box) item.box = c.box;
     if (tier === "maybe" && c.hint) item.hint = c.hint;
     if (c.confirmed) item.confirmed = c.confirmed;
+    if (c.image) item.image = c.image;
     out.push(item);
   }
   out.sort((a, b) => RANK[a.tier] - RANK[b.tier] || a._o - b._o);
