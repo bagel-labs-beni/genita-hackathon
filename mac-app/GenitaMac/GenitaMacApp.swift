@@ -107,9 +107,10 @@ struct MacGlassControl: View {
                 // glyph = 55 % of the circle, the same rule as the iPhone (GlassGlyph); ⋮ as three dots
                 let g = GlassGlyph.size(pixels: CGSize(width: bitmap.pixelsWide, height: bitmap.pixelsHigh), diameter: size)
                 if icon == GlassGlyph.moreIcon { GlassDots(diameter: size) }
+                else if slashed, let symbol = GlassGlyph.offSymbol(for: icon) { GlassOffSymbol(name: symbol, diameter: size) }   // mic / camera off
                 else { resourceImage(icon).resizable().frame(width: g.width, height: g.height) }
             }
-            if slashed { Capsule().fill(.white).frame(width: 26, height: 1.5).rotationEffect(.degrees(45)) }
+            if slashed, GlassGlyph.offSymbol(for: icon) == nil { Capsule().fill(.white).frame(width: 26, height: 1.5).rotationEffect(.degrees(45)) }
         }.frame(width: size, height: size).contentShape(Circle())
     }
     @ViewBuilder private var clearGlass: some View {

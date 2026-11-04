@@ -136,6 +136,16 @@ export async function startServer(
   const touches = new Map<string, () => void>();
   const sessionUsers = new Map<string, string>(); // ws session id → users.id
   const prep = createPrep(config, log, env, accounts?.prepStore); // onboarding prep routes (src/prep/routes.ts)
+  // About you → "Forget all of this" (AU-92): after the profile row, call memory and summaries, the handed-off turns,
+  // opener topics and the product cards made from the old taste go too; the companion stays
+  prep.deps.onProfileForgotten = async (userId) => {
+    // live calls stop using it at once (their next reply and search), not at the next call (Codex #583 P1)
+    for (const [id, u] of sessionUsers) if (u === userId) sessions.get(id)?.profileForgotten();
+    dropLastTurns(userId);
+    forgetOpenerTopics(userId);
+    forgetProductCache(ownerKey(userId), { block: false });
+    await deps.memory?.forget(userId);
+  };
   // the judge demo copy at sign-in is a companion create: it takes the same lock as POST /v1/companion (Codex #514 P2)
   if (accounts?.seedDemo) accounts.seedDemo = guardDemoSeed(accounts.seedDemo, prep.runner, log);
   // D41: the judge demo template ("Jin") is built by the server itself, in the background after the accounts
@@ -557,12 +567,15 @@ export async function startServer(
     const storedCompanion = () => (companion ??= prep.deps.store.getCompanion(who.userId));
     const companionVoiceId = () => storedCompanion().then((c) => c?.voiceId ?? null);
     const companionName = () => storedCompanion().then((c) => c?.name ?? null);
+    // D42: the account's own name for a start without one. Placeholder names of dev/judge rows ("Judge", "Demo
+    // template", dev user names) are never used as the user's name.
+    const accountName = accounts ? () => accounts.accounts.getUser(who.userId).then((u) => (u && u.provider !== "dev" ? u.displayName : null)) : undefined;
     // Demo S4: an iPhone call may suggest moving to this account's open Mac app
     const macNearby = here === "iphone" ? () => handoff.isPresent(who.userId, "mac") : undefined;
     // lane 개인화: the stored profile, first-call asks, voice corrections and post-call growth for this account
     // D41: judge demo accounts get a per-code daily turn cap (auth/judge.ts), on top of the D46 ops caps
     const turnGate = who.judge && accounts ? accounts.judgeTurns.gate(who.judge) : undefined;
-    const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, turnGate, renameCompanion: rename, companionVoiceId, companionName,
+    const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, turnGate, renameCompanion: rename, companionVoiceId, companionName, accountName,
       priorTurns: (revision) => priorTurns(who.userId, id, revision, callDevice), priorThread: () => priorThread(id), lastCall: () => lastCall(id),
       personalize: deps.personalize ?? prep.deps.personalize, macNearby,
       continuesCall: () => continuesOtherDevice(who.userId, id, callDevice),

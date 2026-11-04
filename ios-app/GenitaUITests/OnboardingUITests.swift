@@ -155,6 +155,9 @@ final class OnboardingUITests: XCTestCase {
         input.tap()
         input.typeText("Communication style: warm and direct. Response preferences: two options, one recommended.")
         capture("I02")
+        // a reply long enough to scroll: its top lines go under "Your AI’s response" and the Paste pill with a fade, not a cut
+        input.typeText((1...14).map { "\n\($0). Likes: quick weeknight meals." }.joined())
+        capture("I02-long-scrolled")
         // the primary button comes back once the keyboard is down (tap the title, as on the device)
         app.buttons["Dismiss keyboard"].tap()
         XCTAssertTrue(primary.waitForExistence(timeout: 5))
@@ -265,20 +268,19 @@ final class OnboardingUITests: XCTestCase {
         capture("V04-S")
         primary.tap()
 
-        // NM01: pre-filled from the server's suggestion, editable, empty keeps Continue off, 20 characters max
+        // NM01: opens empty (placeholder) with the server's suggestion as "Use Jin" (TF 331: never pre-filled);
+        // empty keeps Continue off, 20 characters max
         let name = app.textFields["companionNameInput"]
         XCTAssertTrue(name.waitForExistence(timeout: 10))
-        let suggested = NSPredicate(format: "value == %@", "Jin")
-        expectation(for: suggested, evaluatedWith: name)
-        waitForExpectations(timeout: 10)
-        capture("NM01")
-        app.buttons["clearName"].tap()
+        XCTAssertNotEqual(name.value as? String, "Jin", "not pre-filled")
         XCTAssertFalse(primary.isEnabled, "NM01-0: empty name, Continue off")
-        XCTAssertTrue(app.buttons["useSuggestedName"].waitForExistence(timeout: 3), "NM01-0: Use Jin (154:2)")
+        XCTAssertTrue(app.buttons["useSuggestedName"].waitForExistence(timeout: 10), "NM01-0: Use Jin (154:2)")
         capture("NM01-0")
         app.buttons["useSuggestedName"].tap()
+        let suggested = NSPredicate(format: "value == %@", "Jin")
         expectation(for: suggested, evaluatedWith: name)
         waitForExpectations(timeout: 5)
+        capture("NM01")
         app.buttons["clearName"].tap()
         name.typeText("Maxwell the Wonderful Companion")
         XCTAssertEqual((name.value as? String)?.count, 20, "the 21st character can't be typed")
@@ -497,7 +499,9 @@ final class OnboardingUITests: XCTestCase {
         primary.tap()
         let name = app.textFields["companionNameInput"]
         XCTAssertTrue(name.waitForExistence(timeout: 10))
-        expectation(for: NSPredicate(format: "value != %@ AND value != %@", "", "Name"), evaluatedWith: name); waitForExpectations(timeout: 10)
+        XCTAssertTrue(app.buttons["useSuggestedName"].waitForExistence(timeout: 10), "NM01 opens empty: Use {name}")
+        app.buttons["useSuggestedName"].tap()
+        expectation(for: NSPredicate(format: "value != %@ AND value != %@ AND value != %@", "", "Name", "Their name"), evaluatedWith: name); waitForExpectations(timeout: 10)
         primary.tap()
         let quick = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Quick start'")).firstMatch
         XCTAssertTrue(quick.waitForExistence(timeout: 10), "D01")

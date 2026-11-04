@@ -54,6 +54,7 @@ import type { CallStart, VoiceUpdate } from "../personalize/service.ts";
 import type { CallTurn } from "../personalize/extract.ts";
 import { ASK_TURNS, replyAsks } from "../personalize/unknowns.ts";
 import { mightBeCorrection } from "../personalize/corrections.ts";
+import { taskHint } from "../convo/taskHints.ts";
 import { ageSays, foldAge, isMinor, MINOR_LINE, NO_AGE, type AgeSay } from "../convo/minorBoundary.ts";
 import { cameraOffHint } from "../convo/cameraAsk.ts";
 import { unbackedPast } from "../convo/pastGuard.ts";
@@ -161,6 +162,8 @@ export type SessionDeps = {
    * start.persona.name, so a device with a cached older name still calls the companion by its current one.
    */
   companionName?: () => Promise<string | null | undefined>;
+  /** D42: the account's own name (users.display_name), used only when neither the start nor the account's earlier calls gave one */
+  accountName?: () => Promise<string | null | undefined>;
 };
 
 /** Demo S5 (agreed with the convo lane 11/3): the product-ask turn's reply while the search runs in the background. */
@@ -171,7 +174,11 @@ export type SessionPersonalize = {
   startCall(userId: string, opts?: { plan?: boolean }): Promise<CallStart | null>;
   /** watch together attached before the question: not a new conversation after all (give the count back) */
   unplanCall?(userId: string, item: string | null): Promise<void>;
-  voiceCorrection(userId: string, line: string, lastAssistant?: string, signal?: AbortSignal, asked?: UnknownItem | null): Promise<VoiceUpdate | null>;
+  /** "Forget all of this" was the last profile event in this process (AU-92): a failed / timed-out read uses no profile */
+  isForgotten?(userId: string): boolean;
+  /** bumped by "Forget all of this": a profile read from before it is never applied */
+  generation?(userId: string): number;
+  voiceCorrection(userId: string, line: string, lastAssistant?: string, signal?: AbortSignal, asked?: UnknownItem | null, since?: number): Promise<VoiceUpdate | null>;
   endCall(userId: string, turns: CallTurn[], asked: string | null, startedAt?: string): Promise<number>;
   /** Knows-Me S1: the user cut two long replies short → observed "short replies" line; null = not saved */
   noteShorter?(userId: string): Promise<{ text: string; fields: string[]; profile: string } | null>;
@@ -201,7 +208,8 @@ const schedule = (fn: () => void, ms: number) => {
 
 type Mode = "chat" | "interpret";
 export type HistoryItem = { role: "user" | "assistant"; text: string };
-type Frames = { images: string[]; at: number };
+/** `unclear`: the app judged every frame too dark or too blurry to see anything (D59, `frames.unclear`) */
+type Frames = { images: string[]; at: number; unclear?: boolean };
 
 type Reply = {
   utteranceId: number;
@@ -570,6 +578,7 @@ export class Session {
   private readonly ownedVoice: Promise<string | null>;
   /** AU-53: the stored companion name, looked up as the socket opens (bounded) */
   private readonly ownedName: Promise<string | null>;
+  private readonly accountName: Promise<string | null>;
   private history: HistoryItem[] = [];
   private historyRevision: number | null = null;
   private recentReplies: string[] = [];
@@ -654,6 +663,7 @@ export class Session {
     // looked up from the socket's open, so `start` rarely waits for it (Codex P2: no input window)
     this.ownedVoice = this.companionVoice();
     this.ownedName = this.boundedLookup(deps.companionName, 80);
+    this.accountName = this.boundedLookup(deps.accountName, 80);
     this.bargeCfg = { bargeInMinMs: deps.config.bargeInMinMs, bargeInMinWords: deps.config.bargeInMinWords };
     if (deps.config.perception) {
       this.perceptionCtl = new PerceptionController({
@@ -682,6 +692,25 @@ export class Session {
   }
 
   /** F6-L7: `start` was accepted (the handoff layer gives a conversation nobody holds to this device). */
+  /**
+   * "Forget all of this" during this call (AU-92): the profile, taste lines, the planned question and the first-call
+   * nod go now — the next reply and the next search know nothing about them.
+   */
+  profileForgotten(): void {
+    // the call's own turns go too, like a memory Forget — not left to the memory subscription, which a failed memory
+    // start may not have (Codex #583 r22)
+    this.dropSpeculation(); this.dispatch({ type: "client_barge_in" });
+    this.history = []; this.recentReplies = []; this.memories = []; this.greeting = null;
+    this.user = { ...this.user, profile: undefined };
+    this.taste = [];
+    this.ask = null;
+    this.nod = null;
+    if (this.started) this.finds?.configure({ owner: this.deps.userId, memories: this.memories, profile: undefined, userName: this.user.name, timeZone: this.timeZone, taste: [] });
+    this.finds?.forgetTaste();   // the card on screen stops quoting the old taste (Codex #583 r5)
+    this.correcting?.abort();     // a voice correction under way was said under the old profile
+    this.log("profile.forgotten_in_call", {});
+  }
+
   get hasStarted(): boolean {
     return this.started && !this.closed;
   }
@@ -818,7 +847,7 @@ export class Session {
         if (msg.mode === "chat" || msg.mode === "interpret") this.switchMode(msg.mode, "client", parseInterpretOptions(msg.interpret));
         return;
       case "frames":
-        this.setFrames(msg.images);
+        this.setFrames(msg.images, msg.unclear === true);
         return;
       case "perception.frame":
         // PERC-1: background face read (the controller skips it in interpretation / watch together)
@@ -891,7 +920,10 @@ export class Session {
     if (!persona) return this.error("bad_persona", "start.persona.name is required", false);
     this.persona = persona;
     const u = msg.user && typeof msg.user === "object" ? (msg.user as Record<string, unknown>) : {};
-    this.user = { name: str(u.name, 80), profile: str(u.profile, 4000) };
+    // fail closed (lead 11/4, AU-92): with the server's profile store, the app's copy is never used — not even for a
+    // line that arrives before the store answers. Only the server's profile (when it lands) counts.
+    const serverProfile = !!(this.deps.personalize && this.deps.userId);
+    this.user = { name: str(u.name, 80), profile: serverProfile ? undefined : str(u.profile, 4000) };
     this.memories = !this.deps.memory && Array.isArray(msg.memories) ? msg.memories.map((m) => str(m, 300)).filter((m): m is string => !!m).slice(-24) : [];
     if (Array.isArray(msg.history) && !this.deps.memory) {
       for (const h of msg.history.slice(-MAX_HISTORY)) {
@@ -1025,8 +1057,11 @@ export class Session {
     // One voice per reply: if something already started speaking (input raced the lookup), this call keeps it.
     if (owned && this.turn.utteranceId === 0 && !this.reply) this.pickVoice(owned, persona.kind);
     else if (owned) this.log("voice.owned_late", {});
-    const ownedName = await this.ownedName;
+    const [ownedName, accountName] = await Promise.all([this.ownedName, this.accountName]);
     if (this.closed) return;
+    // D42: a Mac-only account (no iPhone start ever saved a name) is greeted by the account's own name; a name the app
+    // sent, or one an earlier call saved, always wins
+    if (!this.user?.name?.trim() && accountName) this.user = { ...(this.user ?? {}), name: accountName };
     // AU-53: the stored companion name is the current one (a voice rename saved it); a device's cached start may be older.
     // Unlike the voice, a name can switch even if a first input raced the lookup: like a voice rename, a reply already
     // under way keeps its prompt and the next one uses the stored name (Codex AU-53 P2).
@@ -1046,29 +1081,66 @@ export class Session {
         try { continuation ||= this.deps.continuesCall?.() ?? false; } catch { /* never fails the call */ }
         this.callPlanned = !continuation;
         const profileT0 = this.now();
+        const TIMED_OUT = Symbol("timed_out");
+        const genAtStart = this.deps.personalize.generation?.(this.deps.userId);
+        const read = this.deps.personalize.startCall(this.deps.userId, { plan: !continuation });
         const p = await Promise.race([
-          this.deps.personalize.startCall(this.deps.userId, { plan: !continuation }),
-          new Promise<null>((r) => setTimeout(() => r(null), STARTCALL_TIMEOUT_MS).unref?.()),
+          read,
+          new Promise<typeof TIMED_OUT>((r) => setTimeout(() => r(TIMED_OUT), STARTCALL_TIMEOUT_MS).unref?.()),
         ]);
         span("profileMs", profileT0);
         this.callStartedAt = new Date().toISOString();
-        // a stored profile always wins, even an empty one (a deleted preference must not come back from the app's copy)
-        if (p) this.user = { ...this.user, profile: p.profile || undefined };
-        if (p?.nod) this.nod = p.nod;
-        // what they removed from their profile stays out of memory, notes and the handed-off turns
-        if (p?.removed?.length) {
-          // keep what a handed-off call already forgot (Codex #547 P1) alongside the profile's removed lines
-          this.removedLines = [...p.removed, ...this.removedLines.filter((r) => !p.removed!.includes(r))].slice(-40);
-          this.memoryCall?.setAvoid(this.removedLines);
-          this.history = scrubHistory(this.history, avoidKeys(p.removed));
+        if (p === TIMED_OUT) {
+          // fail closed (lead 11/4, AU-92): never the app's copy — it may hold what they asked to forget. No profile until
+          // the server's lands, then it applies to the rest of the call.
+          this.user = { ...this.user, profile: undefined }; this.taste = [];
+          this.log("profile.start_timeout", {});
+          void read.then((late) => {
+            if (!late || this.closed) return;
+            // read before "Forget all of this" landed: never applied (Codex #583 r4)
+            if (this.deps.userId && this.deps.personalize?.generation?.(this.deps.userId) !== genAtStart) return;
+            this.user = { ...this.user, profile: late.profile || undefined };
+            this.taste = late.taste ?? [];
+            // Finds was configured meanwhile with the app's copy: it follows too
+            if (this.started) this.finds?.configure({ owner: this.deps.userId, memories: this.memories, profile: this.user.profile, userName: this.user.name, timeZone: this.timeZone, taste: this.taste });
+          }).catch(() => {});
         }
-        if (p?.calls) this.callNumber = p.calls;
-        if (p?.ask && p.askItem) this.ask = { line: p.ask, item: p.askItem, topic: p.askTopic ?? null, asked: false };
-        this.taste = p?.taste ?? [];
+        // read before "Forget all of this" landed (answered in time, but from the old profile): not used (Codex #583 r5)
+        const stale = p !== TIMED_OUT && !!p && !!this.deps.userId && this.deps.personalize.generation?.(this.deps.userId) !== genAtStart;
+        if (stale) { this.user = { ...this.user, profile: undefined }; this.taste = []; }
+        const got = p === TIMED_OUT || stale ? null : p;
+        // a stored profile always wins, even an empty one (a deleted preference must not come back from the app's copy)
+        if (got) this.user = { ...this.user, profile: got.profile || undefined };
+        if (got?.nod) this.nod = got.nod;
+        // what they removed from their profile stays out of memory, notes and the handed-off turns
+        if (got?.removed?.length) {
+          // keep what a handed-off call already forgot (Codex #547 P1) alongside the profile's removed lines
+          this.removedLines = [...got.removed, ...this.removedLines.filter((r) => !got.removed!.includes(r))].slice(-40);
+          this.memoryCall?.setAvoid(this.removedLines);
+          this.history = scrubHistory(this.history, avoidKeys(got.removed));
+        }
+        if (got?.calls) this.callNumber = got.calls;
+        if (got?.ask && got.askItem) this.ask = { line: got.ask, item: got.askItem, topic: got.askTopic ?? null, asked: false };
+        this.taste = got?.taste ?? [];
       } catch (err) {
+        // the read failed: fail closed (lead 11/4, AU-92) — no profile rather than the app's copy
+        this.user = { ...this.user, profile: undefined }; this.taste = [];
         this.log("profile.unavailable", { message: String(err).slice(0, 120) });
       }
       if (this.closed) return;
+    } else if (this.deps.personalize && this.deps.userId) {
+      // an interpretation start: no call plan, but the profile is still the server's, never the app's copy — a switch
+      // to chat later must not use what they asked to forget (Codex #583 r6). Profile only (plan: false), off the path.
+      const personalize = this.deps.personalize, userId = this.deps.userId;
+      const gen = personalize.generation?.(userId);
+      // interpretation doesn't use the profile: the app's copy is dropped outright, only the server's (when it lands) counts
+      this.user = { ...this.user, profile: undefined }; this.taste = [];
+      void personalize.startCall(userId, { plan: false }).then((p) => {
+        if (!p || this.closed || personalize.generation?.(userId) !== gen) return;
+        this.user = { ...this.user, profile: p.profile || undefined };
+        this.taste = p.taste ?? [];
+        if (this.started) this.finds?.configure({ owner: userId, memories: this.memories, profile: this.user.profile, userName: this.user.name, timeZone: this.timeZone, taste: this.taste });
+      }).catch(() => {});
     }
     // owner = the authenticated account (server.ts); start.user.id is not trusted for ownership
     this.timeZone = str(u.timeZone, 40);
@@ -1754,7 +1826,7 @@ export class Session {
 
   // ───────────────────────── reply pipeline ─────────────────────────
 
-  private setFrames(images: unknown): void {
+  private setFrames(images: unknown, unclear = false): void {
     if (!Array.isArray(images)) return;
     const urls: string[] = [];
     for (const img of images.slice(0, MAX_FRAMES)) {
@@ -1763,16 +1835,20 @@ export class Session {
       if (url.length > MAX_FRAME_BYTES * 1.4) return this.error("frame_too_large", "Each frame must be under 1.5 MB", false);
       urls.push(url);
     }
-    this.frames = urls.length ? { images: urls, at: this.now() } : null;
+    this.frames = urls.length ? { images: urls, at: this.now(), ...(unclear ? { unclear: true } : {}) } : null;
     if (urls.length) this.initiative?.framesSent(this.now());
   }
 
   private takeFrames(): string[] {
     const f = this.frames;
     this.frames = null;
+    this.framesUnclear = false;
     if (!f || this.now() - f.at > FRAMES_TTL_MS) return [];
+    this.framesUnclear = f.unclear === true;
     return f.images;
   }
+  /** the frames the last request took were all too dark / blurry (D59) */
+  private framesUnclear = false;
 
   /** Knows-Me S1: the second long reply cut off → "Updated: shorter replies" + one "I'll keep it short" line. */
   private noteLongCut(): void {
@@ -1800,9 +1876,11 @@ export class Session {
   }
 
   /** lane 개인화: "actually I don't like X" → merge → profile.updated. Beside the reply, never blocking it. */
-  private checkCorrection(text: string): void {
+  private checkCorrection(text: string, since?: number): void {
     const p = this.deps.personalize;
     const userId = this.deps.userId;
+    // the profile it was said under: a line queued behind another runs with it, so a forget in between drops it (Codex #583 r14)
+    const gen = since ?? (userId ? p?.generation?.(userId) : undefined);
     // "forget that …": from this line on, memory, notes and the turns handed on leave its target out (no Spark wait)
     // "forget I said that" points back: the line to forget is their previous one (strict match, not loose words of
     // "i don't wanna get into it" — intel eval 11/4)
@@ -1819,7 +1897,7 @@ export class Session {
     // a "forget that …" is never skipped because another check is still running: it runs right after it
     if (this.correcting && p && userId && this.mode === "chat" && isForgetRequest(text) && !this.closed) {
       const waitFor = this.correctionDone;
-      void waitFor.then(() => { if (!this.closed) this.checkCorrection(text); });
+      void waitFor.then(() => { if (!this.closed) this.checkCorrection(text, gen); });
       return;
     }
     if (!p || !userId || this.mode !== "chat" || this.correcting || this.correctionChecks >= MAX_CORRECTION_CHECKS || (!asked && !mightBeCorrection(text))) return;
@@ -1829,7 +1907,7 @@ export class Session {
     this.correctionChecks++;
     let done!: () => void;
     this.correctionDone = new Promise<void>((r) => (done = r));
-    void p.voiceCorrection(userId, text, lastAssistant, abort.signal, asked).then(
+    void p.voiceCorrection(userId, text, lastAssistant, abort.signal, asked, gen).then(
       (r) => {
         if (!r || this.closed || abort.signal.aborted) return;
         this.user = { ...this.user, profile: r.profile };
@@ -1933,7 +2011,9 @@ export class Session {
       // first in the line: the This-turn block is cut at 400 chars, the safety part must never be the cut part
       if (minor) turnLine = turnLine ? turnLine.replace(/^This turn: /, `This turn: ${minor} `) : `This turn: ${minor}`;
     }
-    return { style: "v1", opener, initiative: turn.cue?.block, perception, perceptionHint, turn: turnLine };
+    // intel eval 11/4: plan / math / how-to asks get the real work, an unknown "him" gets a question, a reused word is named
+    const task = !turn.greeting && !turn.cue && userText ? taskHint(userText, this.history, this.crisisInCall, this.persona?.kind) ?? undefined : undefined;
+    return { style: "v1", opener, initiative: turn.cue?.block, perception, perceptionHint, turn: turnLine, task };
   }
 
   private stopInitiative(): void {
@@ -2359,7 +2439,7 @@ export class Session {
       const said = new Promise<string | null>((r) => (resolveSaid = r));
       // history already holds this turn (remember above): the lines before it
       const recent = this.history.slice(-7, -1).map((h) => `${h.role === "user" ? "User" : "You"}: ${h.text}`);
-      const started = this.finds.onTurn({ text, frames: built.images, utteranceId, replyText: said, recent });
+      const started = this.finds.onTurn({ text, frames: built.images, utteranceId, replyText: said, recent, unclear: built.images.length > 0 && this.framesUnclear });
       cardTurn = !!started;
       signal.addEventListener("abort", () => resolveSaid(null), { once: true });
       if (started?.ack) {

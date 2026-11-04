@@ -62,7 +62,7 @@ struct MacConversationView: View {
                 Button { withAnimation { menuOpen.toggle() } } label: { MacGlassControl(icon: "glass-menu-icon") }
                     .buttonStyle(.plain).position(x: 47.5, y: topRowY).opacity(sheetFull || linkOpened != nil || menuOpen ? 0 : 1).allowsHitTesting(!sheetFull && linkOpened == nil && !menuOpen).accessibilityIdentifier("macOpenMenu")
                 if interpret.isLive {
-                    InterpretOverlay(board: call.interpretBoard, onClose: { interpret.stop() }, onHold: { call.setHold($0) })
+                    InterpretOverlay(board: call.interpretBoard, level: { call.inputLevel }, onClose: { interpret.stop() }, onHold: { call.setHold($0) })
                         .frame(width: 390, height: 844)
                 } else if waitingCopy == nil {
                     if MacDesignV2.enabled {
@@ -75,7 +75,7 @@ struct MacConversationView: View {
                         selfView.position(x: 87.5, y: 700.5 - railShift).opacity(sheetCovers ? 0 : 1)
                     }
                     VStack(spacing: 13) {
-                        Button { call.toggleCamera() } label: { MacGlassControl(icon: "glass-camera-icon", size: 46) }.buttonStyle(MacUnchangedControlStyle())
+                        Button { call.toggleCamera() } label: { MacGlassControl(icon: "glass-camera-icon", size: 46, slashed: !call.cameraOn) }.buttonStyle(MacUnchangedControlStyle())
                             .modifier(MacControlEntrance(shown: call.link != .connecting, index: 0))
                             .accessibilityLabel(call.cameraOn ? "Turn camera off" : "Turn camera on").accessibilityIdentifier("macCameraToggle")
                         // motion details card 2: pressed to 0.92, a blue ring that follows the user's voice while the mic is on
@@ -236,6 +236,7 @@ struct MacConversationView: View {
     private var cueText: String? {
         // MC-M (90:2): the face beside the open menu carries nothing
         if linkOpened != nil || menuOpen { return nil }
+        if let line = handoff.moveLine { return line }   // AU-88: Move to iPhone waiting / failed
         if sharing.isSharing, let message = sharing.connectionMessage { return message }
         // MS-2 "Reacting" and MS-3 black-screen card own that spot while a share is live
         if sharing.isSharing && (sharing.reacting || sharing.blank) { return nil }
@@ -268,10 +269,9 @@ struct MacConversationView: View {
                 Image(systemName: "video.slash").font(.system(size: 18, weight: .regular)).foregroundStyle(Color.white.opacity(0.7))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 16).fill(.ultraThinMaterial).environment(\.colorScheme, .dark)
-                            RoundedRectangle(cornerRadius: 16).fill(Color.black.opacity(0.28))
-                        }
+                        // MA-04: a live material over the animated face re-blurs every frame (CA commit on the main
+                        // thread). Solid stand-in with the same look in a still: the dark material + 28 % black composites to #211D22 (the material look, 춘식이 3× median) ; solved from two CI renders (춘식이 region medians, icon excluded) for a #211D22 composite: #201C21 at 92 %.
+                        RoundedRectangle(cornerRadius: 16).fill(Color(red: 32.0 / 255, green: 28.0 / 255, blue: 33.0 / 255).opacity(0.92))
                     }
                     .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.white.opacity(0.35), lineWidth: 0.7))
                     .accessibilityElement().accessibilityLabel("Your camera is off")

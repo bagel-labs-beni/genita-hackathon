@@ -201,6 +201,12 @@ extension OnboardingClient {
         return try await auth.send("PATCH", "/v1/profile", json: body, timeout: 45)
     }
 
+    /// About you → "Forget all of this" (AU-92): `DELETE /v1/profile`. What Genita knows about the user (import,
+    /// HISY, corrections, insights) and the call memory go; the companion and the account stay. `429 rate_limited`.
+    public func forgetProfile() async throws {
+        let _: ProfileForgetResult = try await auth.send("DELETE", "/v1/profile", timeout: 30)
+    }
+
     /// PATCH /v1/profile `text` limit, counted like the server (`text.length`, UTF-16 units).
     public static let correctionMaxLength = 200
 
@@ -216,4 +222,9 @@ extension OnboardingClient {
         }
         return out
     }
+}
+
+/// `DELETE /v1/profile` answer.
+public struct ProfileForgetResult: Decodable, Equatable, Sendable {
+    public var ok: Bool
 }

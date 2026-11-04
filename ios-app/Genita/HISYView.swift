@@ -25,6 +25,17 @@ enum HISYInk {
 }
 
 /// Figma line heights on top of the fonts' own (Noto Serif KR 35/39 → the app's serif, Pretendard 16/24 …).
+enum HISYCopy {
+    /// Join the last `words` words with no-break spaces so the last line never holds a lone short tail.
+    static func keepTail(_ s: String, words: Int = 3) -> String {
+        var parts = s.components(separatedBy: " ")
+        guard parts.count > words else { return s }
+        let tail = parts.suffix(words).joined(separator: "\u{00A0}")
+        parts.removeLast(words)
+        return (parts + [tail]).joined(separator: " ")
+    }
+}
+
 enum HISYType {
     static func serif(_ size: CGFloat = 35) -> Font { TypeStyle.title(size) }
     static func serifSpacing(_ size: CGFloat, line: CGFloat) -> CGFloat {
@@ -75,7 +86,7 @@ struct HISYView: View {
                     .transition(.asymmetric(insertion: .move(edge: forward ? .trailing : .leading).combined(with: .opacity),
                                             removal: .move(edge: forward ? .leading : .trailing).combined(with: .opacity)))
                     // motion details card 8: the dots stay while the cards slide, and their capsule moves on
-                    if movingDots, toast == nil, page >= 1, page <= cards.count {
+                    if movingDots, page >= 1, page <= cards.count {
                         HISYDots(count: cards.count, current: page - 1, moving: true).position(x: w / 2, y: 52 + top + 22).allowsHitTesting(false)
                     }
                     if let fixing {
@@ -100,7 +111,7 @@ struct HISYView: View {
 
     private func close() { withAnimation(.easeOut(duration: 0.22)) { fixing = nil } }
 
-    /// C3: back on the same card, the new texts with the blue border, "Got it. I'll remember that." for 2.5 s.
+    /// C3: back on the same card, the new texts with the blue border, "Got it. I’ll remember that." for 1.6 s, under the nav row.
     private func saved(_ cardId: String) {
         guard fixing?.id == cardId else { return }
         close()
@@ -118,7 +129,7 @@ struct HISYView: View {
         #if DEBUG
         if let ms = ProcessInfo.processInfo.environment["GENITA_HISY_TOAST_MS"].flatMap(Int.init) { return ms }
         #endif
-        return 2500
+        return 1600
     }
 
     // MARK: HISY-0 / S0
@@ -172,12 +183,16 @@ struct HISYView: View {
         Button { go(page - 1) } label: { Image(resource: "reference-back").resizable().frame(width: 8.8, height: 15.8).frame(width: 44, height: 44) }
             .buttonStyle(.plain).position(x: 16 + 22, y: 52 + top + 22).accessibilityLabel("Back").accessibilityIdentifier("hisyBack")
         ZStack {
-            if let toast {
-                HISYToast(text: toast).transition(.opacity)
-            } else if !movingDots {
+            if !movingDots {
                 HISYDots(count: cards.count, current: index)
             }
         }.position(x: w / 2, y: 52 + top + 22)
+        // C3 toast under the nav row (top 98 + 8), never over the dots and Skip (design review 11/4, build 5 h13-3):
+        // drops 8 pt and fades in 200 ms, holds 1.6 s, fades out 200 ms; 24 pt side margins at the least
+        if let toast {
+            HISYToast(text: toast).frame(maxWidth: w - 48).transition(.opacity.combined(with: .offset(y: -8)))
+                .position(x: w / 2, y: 106 + top + 23).zIndex(10)   // over the card's eyebrow and headline
+        }
         Button { go(facePage) } label: {
             Text("Skip").hisyBody(15, .medium, line: 22).padding(.horizontal, 12).frame(height: 44).contentShape(Rectangle())
         }.buttonStyle(.plain).position(x: w - 16 - 27, y: 52 + top + 22).accessibilityIdentifier("hisySkip")
@@ -203,8 +218,15 @@ struct HISYView: View {
         .accessibilityAction(named: "Next card") { go(page + 1) }
 
         HISYPrimary(title: "Next", id: "hisyNext") { go(page + 1) }.position(x: w / 2, y: h - 140 + 25)
-        HISYTextButton(title: "That’s not me", id: "hisyNotMe") { withAnimation(.easeOut(duration: 0.25)) { fixing = card } }
+        // the open-questions card lists what I don't know yet — nothing there to be "not me" about (TF 331)
+        if card.id != "unknowns" {
+            HISYTextButton(title: "That’s not me", id: "hisyNotMe") {
+                // a fix sheet never opens under the last C3 toast (it floats above the card, Codex P3)
+                toastTask?.cancel(); toast = nil
+                withAnimation(.easeOut(duration: 0.25)) { fixing = card }
+            }
             .frame(width: w - 62).position(x: w / 2, y: h - 88 + 22)
+        }
     }
 }
 
@@ -635,7 +657,8 @@ struct HISYCardBody: View {
     private var unknowns: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let sub = card.subline, !sub.isEmpty {
-                Text(sub).hisyBody(16, line: 24, color: HISYInk.mute).fixedSize(horizontal: false, vertical: true).padding(.top, 8)
+                // the last words travel together: no lone "at a time." on the last line (TF 331, 3× check)
+                Text(HISYCopy.keepTail(sub)).hisyBody(16, line: 24, color: HISYInk.mute).fixedSize(horizontal: false, vertical: true).padding(.top, 8)
             }
             VStack(spacing: 8) {
                 ForEach(Array((card.unknowns ?? []).enumerated()), id: \.offset) { _, u in
@@ -863,8 +886,11 @@ struct HISYFixSheet: View {
 
     private func begin() {
         defer { starting = false }
-        guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US")) ?? SFSpeechRecognizer(), recognizer.isAvailable else {
-            note = "Speech isn’t available right now. Type it instead."; return
+        // on this phone only (AU audit P2): Genita's AI is Meta's; Apple's server speech recognition is never used
+        // (it's not in the privacy notice). No en-US recognizer, or no on-device model → type it instead.
+        guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US")), recognizer.isAvailable,
+              recognizer.supportsOnDeviceRecognition else {
+            note = "Speech isn’t available on this iPhone. Type it instead."; return
         }
         do {
             let session = AVAudioSession.sharedInstance()
@@ -873,7 +899,7 @@ struct HISYFixSheet: View {
             let engine = AVAudioEngine()
             let request = SFSpeechAudioBufferRecognitionRequest()
             request.shouldReportPartialResults = true
-            if recognizer.supportsOnDeviceRecognition { request.requiresOnDeviceRecognition = true }
+            request.requiresOnDeviceRecognition = true
             let input = engine.inputNode
             input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { buffer, _ in request.append(buffer) }
             engine.prepare()

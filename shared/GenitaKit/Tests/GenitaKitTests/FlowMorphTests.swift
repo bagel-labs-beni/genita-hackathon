@@ -348,9 +348,10 @@ struct LipRigTests {
         m.amountsOverride = [0.35, 0.45]
         let narrow = Int(pixels(m.render(.rest, at: 2))[k])
         #expect(wide > 200)
-        // shaded: 212 vs 235 on CI — the 4-row synthetic inside is mostly rim (rim pixels keep the key), so the full
-        // x0.55 only reaches its middle; without the shade both are 235
-        #expect(Double(narrow) < 0.95 * Double(wide))
+        // the narrow gap gives way to what lies under the teeth layer (f07da2c9): 227 vs 235 on CI — the 4-row synthetic
+        // inside is mostly rim and the layer underneath is close to the teeth's brightness; without any narrow-gap
+        // handling both are the opaque layer's 235
+        #expect(narrow <= wide - 4)
     }
 
     /// p6 regression in #539: a prep inside mask leaking past the mouth corner showed the key's inside on the cheek.
@@ -398,6 +399,23 @@ struct LipRigTests {
         #expect(lum(30, 21) < 50)                       // the cavity stays dark
     }
 
+    /// CA-06 (p6, dim photo): a pure black inside reads as a cut-out hole; it takes a warm, dark red-brown from the
+    /// skin's light instead (still clearly darker than the skin).
+    @Test func aBlackVoidTakesAWarmLitTone() throws {
+        let w = 60, h = 30
+        var p = [Float](repeating: 0, count: w * h * 3), inn = [Float](repeating: 0, count: w * h)
+        for y in 0..<h { for x in 0..<w {
+            let i = (y * w + x) * 3, inside = (10..<50).contains(x) && (10..<26).contains(y)
+            if inside { inn[y * w + x] = 1 }
+            let c: (Float, Float, Float) = inside ? (4, 4, 4) : (170, 130, 110)
+            p[i] = c.0; p[i + 1] = c.1; p[i + 2] = c.2
+        } }
+        let o = FlowMorph.toneTeethLit(p, interior: inn, width: w, height: h, tone: FlowMap.Rig.TeethTone())
+        let i = (18 * w + 30) * 3
+        #expect(o[i] > 25 && o[i] > o[i + 1] + 8)      // lit, warm (red over green)
+        #expect(o[i] < 80)                               // still a dark inside
+    }
+
     /// The chin rows follow a slow, scaled copy of the amounts: a sudden opening barely moves them.
     @Test func theChinFollowsSlowly() throws {
         let set = try Synth.faceSet(keys: ["MBP", "AH2"], rig: true)
@@ -431,6 +449,45 @@ struct FramingTests {
     @Test func v44TeethToneAndExitDecode() throws {
         let rig = try JSONDecoder().decode(FlowMap.Rig.self, from: Data(#"{"teethTop":{"tone":{"cavityDark":0.4,"split":0.5},"exitBeforeClose":1},"blendFloor":[0.12,0.4]}"#.utf8))
         #expect(rig.teethTone?.cavityDark == 0.4 && rig.teethTone?.teethLift == 0.5 && rig.teethExitBeforeClose && rig.blendFloor == [0.12, 0.4])
+    }
+}
+
+struct Flat2DTests {
+    /// CA-06 / CA-07 (2D bear): a drawn key keeps only its mouth, its inside one flat dark tone from the drawing's ink;
+    /// a stroke the key drew away from the mouth stays out (the still shows there).
+    @Test func aDrawnMouthGoesFlatAndOnlyTheMouthReplaces() throws {
+        let w = 60, h = 40
+        var n = [Float](repeating: 235, count: w * h * 3), p = n
+        let mask = [Float](repeating: 1, count: w * h)
+        for x in 20..<40 { let i = (20 * w + x) * 3; n[i] = 40; n[i + 1] = 40; n[i + 2] = 40 }          // the closed mouth line
+        for y in 0..<3 { for x in 0..<w { let i = (y * w + x) * 3; n[i] = 40; n[i + 1] = 40; n[i + 2] = 40 } }   // other ink in the drawing
+        p = n.enumerated().map { $0.offset / 3 / w == 20 && (20..<40).contains($0.offset / 3 % w) ? 235 : $0.element }   // the key: no closed line
+        for y in 15..<27 { for x in 18..<42 {
+            let i = (y * w + x) * 3, edge = y == 15 || y == 26 || x == 18 || x == 41
+            let c: (Float, Float, Float) = edge ? (35, 35, 35) : (y < 18 ? (240, 240, 240) : (120, 50, 40))   // outline, teeth row, brown inside
+            p[i] = c.0; p[i + 1] = c.1; p[i + 2] = c.2
+        } }
+        for y in 5..<35 { let i = (y * w + 5) * 3; p[i] = 60; p[i + 1] = 60; p[i + 2] = 60 }           // a stray arc far left
+        let r = try #require(FlowMorph.flatten2D(key: p, neutral: n, mask: mask, width: w, height: h, mouth: CGRect(x: 20, y: 18, width: 20, height: 4)))
+        // teeth and inside: one flat dark tone that keeps the key's pencil grain (±10 %, df7ddd2b) — the teeth row is no
+        // longer 240; the 2 px rim is the drawing's ink outline, so the tooth is sampled 2 px inside (row 17)
+        let tooth = (17 * w + 30) * 3, inside = (22 * w + 30) * 3
+        #expect(r.pix[tooth] < 100 && r.pix[inside] < 100)
+        #expect(abs(r.pix[tooth] - r.pix[inside]) < 0.2 * r.pix[inside])
+        #expect(r.region[22 * w + 30] > 0.9)                                      // the mouth replaces the still
+        #expect(r.region[20 * w + 5] < 0.1)                                       // the stray arc does not
+        // codex P1: a mouth box outside the ROI returns nil, never crashes
+        #expect(FlowMorph.flatten2D(key: p, neutral: n, mask: mask, width: w, height: h, mouth: CGRect(x: 70, y: 45, width: 20, height: 10)) == nil)
+    }
+}
+
+struct ChinWarpTests {
+    /// Prep sends `chinWarp` for animals (px, springMs, from, sideW); a bad block keeps the defaults, values are clamped.
+    @Test func chinWarpDecodes() throws {
+        let m = try JSONDecoder().decode(FlowMap.self, from: Data(#"{"ladder":{"viseme":"A","steps":[["AH",0]],"gain":[1,0]},"mix":{},"consonant":{},"consonantJaw":{"key":"AH","from":0.5,"gain":0},"fallback":{},"smoothing":{"fps":25,"attack":0.7,"release":0.5},"focus":1,"colourEdge":0.2,"chinWarp":{"px":7,"springMs":170,"from":"lip","sideW":0.2}}"#.utf8))
+        #expect(m.chinWarp?.px == 7 && m.chinWarp?.springMs == 170 && m.chinWarp?.sideW == 0.2)
+        let bad = try JSONDecoder().decode(FlowMap.ChinWarp.self, from: Data(#"{"px":99,"sideW":"x"}"#.utf8))
+        #expect(bad.px == 20 && bad.sideW == 0.2)
     }
 }
 

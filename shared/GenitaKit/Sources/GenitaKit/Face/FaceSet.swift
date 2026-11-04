@@ -109,6 +109,8 @@ public final class FaceSet: @unchecked Sendable {
     public let expressions: [FaceExpression: CGImage]
     /// Alignment of each expression still to the neutral one (pixels, y down).
     public let expressionShift: [FaceExpression: (dx: Int, dy: Int)]
+    /// Key-patch mouths. Empty when `flow` loaded: the flow morph draws the mouth, so the visemes aren't built
+    /// (forcing `FaceRenderer.useFlow = false` on such a face leaves only the jaw warp; nothing in the apps does).
     public let patches: [LipViseme: FaceMouthPatch]
     /// Flow-morph data when prep produced it (option B).
     public let flow: FaceFlowData?
@@ -183,63 +185,94 @@ public final class FaceSet: @unchecked Sendable {
         mouthBox = rect(manifest.mouthBox) ?? CGRect(x: Double(w) * 0.4, y: Double(h) * 0.55, width: Double(w) * 0.2, height: Double(h) * 0.03)
 
         var notes: [String] = []
+        // Flow first: a face that morphs from flows never draws the key patches (FaceRenderer.image(at:)), so its
+        // viseme stills are neither read nor aligned (face-load plan item 4). A flow block that fails to load keeps
+        // the key-patch engine, visemes and all.
+        var flowData: FaceFlowData?, flowNote: String?
+        if let fm = manifest.flow {
+            do { flowData = try FaceFlowData(manifest: fm, stillSize: pixelSize, load: load) } catch { flowNote = "flow: \(error) → key patches" }
+        }
+        self.flow = flowData
+
         let base = PixelBuffer(neutral, width: w, height: h)
         let baseGray = base.analysis()
+        // Plain values for the parallel closures (they must not capture `self` before init ends).
+        let faceBox = self.faceBox, mouthBox = self.mouthBox
+
+        // Expressions: bytes are read here in order (`load` need not be thread-safe); decoding and alignment run
+        // one image per core. Each iteration writes only its own slot.
+        let others = FaceExpression.allCases.filter { $0 != .neutral }
+        let exprBytes = others.map { e in Result { try manifest.images[e.rawValue].map { try load($0) } } }
+        let exprDone = Self.parallelMap(others.count) { i -> Result<(CGImage, Int, Int)?, Error> in
+            Result {
+                guard let bytes = try exprBytes[i].get() else { return nil }
+                let pix = PixelBuffer(try FaceSet.decode(bytes, name: others[i].rawValue), width: w, height: h)
+                let s = FaceSet.align(baseGray, pix.analysis(), around: faceBox, excluding: nil, imageWidth: w)
+                return (pix.makeImage(), s.dx, s.dy)
+            }
+        }
         var expressions: [FaceExpression: CGImage] = [.neutral: base.makeImage()]
         var exprShift: [FaceExpression: (dx: Int, dy: Int)] = [.neutral: (0, 0)]
-        for e in FaceExpression.allCases where e != .neutral {
-            guard let ref = manifest.images[e.rawValue] else { notes.append("\(e.rawValue): missing → neutral"); continue }
-            do {
-                let pix = PixelBuffer(try Self.decode(try load(ref), name: e.rawValue), width: w, height: h)
-                let s = Self.align(baseGray, pix.analysis(), around: faceBox, excluding: nil, imageWidth: w)
-                expressions[e] = pix.makeImage()
-                exprShift[e] = (s.dx, s.dy)
-                if s.dx != 0 || s.dy != 0 { notes.append("\(e.rawValue): shift \(s.dx),\(s.dy) px") }
-            } catch {
-                notes.append("\(e.rawValue): \(error) → neutral")
+        for (i, e) in others.enumerated() {
+            switch exprDone[i] {
+            case .success(nil): notes.append("\(e.rawValue): missing → neutral")
+            case .success(let r?):
+                expressions[e] = r.0
+                exprShift[e] = (r.1, r.2)
+                if r.1 != 0 || r.2 != 0 { notes.append("\(e.rawValue): shift \(r.1),\(r.2) px") }
+            case .failure(let error): notes.append("\(e.rawValue): \(error) → neutral")
             }
         }
         self.expressions = expressions
         self.expressionShift = exprShift
 
-        // Patches also cover the smile/warm mouths (aligned) so no expression mouth shows round them.
-        var cover = mouthBox
-        for e in [FaceExpression.smile, .warm] where expressions[e] != nil {
-            guard let m = rect(manifest.boxes?[e.rawValue]?.mouth), let s = exprShift[e] else { continue }
-            cover = cover.union(m.offsetBy(dx: CGFloat(-s.dx), dy: CGFloat(-s.dy)))
-        }
         var patches: [LipViseme: FaceMouthPatch] = [:]
-        for v in LipViseme.shapes {
-            guard let ref = manifest.visemes[v.rawValue] else { notes.append("\(v.rawValue): missing"); continue }
-            do {
-                let pix = PixelBuffer(try Self.decode(try load(ref), name: v.rawValue), width: w, height: h)
-                let own = rect(manifest.boxes?[v.rawValue]?.mouth) ?? mouthBox
-                guard let patch = Self.makePatch(base: base, baseGray: baseGray, viseme: pix, ownMouth: own, mouth: mouthBox, cover: cover, face: faceBox) else {
-                    notes.append("\(v.rawValue): mouth box outside the image"); continue
+        if flowData != nil {
+            notes.append("visemes: skipped (flow morph draws the mouth)")
+        } else {
+            // Patches also cover the smile/warm mouths (aligned) so no expression mouth shows round them.
+            var cover = mouthBox
+            for e in [FaceExpression.smile, .warm] where expressions[e] != nil {
+                guard let m = rect(manifest.boxes?[e.rawValue]?.mouth), let s = exprShift[e] else { continue }
+                cover = cover.union(m.offsetBy(dx: CGFloat(-s.dx), dy: CGFloat(-s.dy)))
+            }
+            let shapes = LipViseme.shapes
+            let visBytes = shapes.map { v in Result { try manifest.visemes[v.rawValue].map { try load($0) } } }
+            let owns = shapes.map { rect(manifest.boxes?[$0.rawValue]?.mouth) ?? mouthBox }
+            let coverBox = cover
+            let visDone = Self.parallelMap(shapes.count) { i -> Result<FaceMouthPatch??, Error> in
+                Result {
+                    guard let bytes = try visBytes[i].get() else { return nil }
+                    let pix = PixelBuffer(try FaceSet.decode(bytes, name: shapes[i].rawValue), width: w, height: h)
+                    return .some(FaceSet.makePatch(base: base, baseGray: baseGray, viseme: pix, ownMouth: owns[i], mouth: mouthBox, cover: coverBox, face: faceBox))
                 }
-                if patch.surroundDiff > Self.maxSurroundDiff {
-                    notes.append(String(format: "%@: rejected, surroundings differ %.3f after alignment", v.rawValue, patch.surroundDiff))
-                    continue
+            }
+            for (i, v) in shapes.enumerated() {
+                switch visDone[i] {
+                case .success(nil): notes.append("\(v.rawValue): missing")
+                case .success(.some(nil)): notes.append("\(v.rawValue): mouth box outside the image")
+                case .success(.some(let patch?)):
+                    if patch.surroundDiff > Self.maxSurroundDiff {
+                        notes.append(String(format: "%@: rejected, surroundings differ %.3f after alignment", v.rawValue, patch.surroundDiff))
+                    } else {
+                        patches[v] = patch
+                    }
+                case .failure(let error): notes.append("\(v.rawValue): \(error)")
                 }
-                patches[v] = patch
-            } catch {
-                notes.append("\(v.rawValue): \(error)")
             }
         }
         self.patches = patches
-        var flowData: FaceFlowData?
-        if let fm = manifest.flow {
-            do { flowData = try FaceFlowData(manifest: fm, stillSize: pixelSize, load: load) } catch { notes.append("flow: \(error) → key patches") }
-        }
-        self.flow = flowData
+        if let flowNote { notes.append(flowNote) }
         var person: CGImage?   // prep only
         if let ref = manifest.images["person"] {
             do { person = try Self.decode(try load(ref), name: "person") } catch { notes.append("person: \(error) → ellipse layers") }
         }
         personMask = person
         let resolved = Self.resolve(available: Set(patches.keys))
-        for v in LipViseme.shapes where resolved[v]! != v {
-            notes.append("\(v.rawValue) → \(resolved[v]!.map(\.rawValue) ?? "rest")")
+        if flowData == nil {
+            for v in LipViseme.shapes where resolved[v]! != v {
+                notes.append("\(v.rawValue) → \(resolved[v]!.map(\.rawValue) ?? "rest")")
+            }
         }
         self.resolved = resolved
         self.notes = notes
@@ -250,6 +283,19 @@ public final class FaceSet: @unchecked Sendable {
               let img = CGImageSourceCreateImageAtIndex(src, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
         else { throw FaceSetError.undecodable(name) }
         return img
+    }
+
+    /// `body(0..<n)` on all cores, results in index order. Each iteration writes only its own slot of the
+    /// output; `body` must only read shared state (here: immutable pixel buffers, boxes, the decoded
+    /// neutral). Core Graphics decoding and drawing into a context of one's own are thread-safe.
+    static func parallelMap<T>(_ n: Int, _ body: (Int) -> T) -> [T] {
+        guard n > 1 else { return (0..<n).map(body) }
+        var out = [T?](repeating: nil, count: n)
+        out.withUnsafeMutableBufferPointer { slots in
+            let slots = slots   // the buffer itself is never resized while the iterations run
+            DispatchQueue.concurrentPerform(iterations: n) { i in slots[i] = body(i) }
+        }
+        return out.map { $0! }
     }
 
     // MARK: patch building
@@ -302,6 +348,7 @@ public final class FaceSet: @unchecked Sendable {
         let pw = Int(r.width), ph = Int(r.height), ox = Int(r.minX), oy = Int(r.minY)
         let shade = localShading(base: base, viseme: viseme, shift: (shift.dx, shift.dy), gain: gain, bias: bias,
                                  rect: r, mouth: union)
+        let g = SIMD3(gain[0], gain[1], gain[2]), b = SIMD3(bias[0], bias[1], bias[2])
         var out = [UInt8](repeating: 0, count: pw * ph * 4)
         let cx = Double(pw) / 2, cy = Double(ph) / 2
         for y in 0..<ph {
@@ -313,15 +360,19 @@ public final class FaceSet: @unchecked Sendable {
                 let vx = ox + x + shift.dx, vy = oy + y + shift.dy
                 let i = (y * pw + x) * 4
                 let j = y * pw + x
-                var src = [0.0, 0.0, 0.0], v = [0.0, 0.0, 0.0]
+                // SIMD3 locals, not [Double]: no heap array per pixel (same arithmetic, same order).
+                var src = SIMD3<Double>(), v = SIMD3<Double>()
+                let inside = viseme.contains(vx, vy)
                 for c in 0..<3 {
-                    src[c] = viseme.contains(vx, vy) ? Double(viseme.at(vx, vy, c)) : Double(base.at(ox + x, oy + y, c))
-                    v[c] = src[c] * gain[c] + bias[c] + Double(shade.shade[c][j])
+                    src[c] = inside ? Double(viseme.at(vx, vy, c)) : Double(base.at(ox + x, oy + y, c))
+                    v[c] = src[c] * g[c] + b[c] + Double(shade.shade[c][j])
                 }
                 if shade.content[j] {
                     // Lips, teeth, tongue: brightness change only. A skin hue correction would tint
                     // the teeth (seen as mint-green teeth on the human set).
-                    let dl = (0..<3).reduce(0.0) { $0 + v[$1] - src[$1] } / 3
+                    var dl = 0.0
+                    for c in 0..<3 { dl = dl + v[c] - src[c] }
+                    dl /= 3
                     for c in 0..<3 { v[c] = src[c] + dl }
                 }
                 for c in 0..<3 { out[i + c] = UInt8((min(255, max(0, v[c])) * a).rounded()) }
@@ -346,16 +397,17 @@ public final class FaceSet: @unchecked Sendable {
                              rect r: CGRect, mouth: CGRect) -> (shade: [[Float]], content: [Bool]) {
         let pw = Int(r.width), ph = Int(r.height), ox = Int(r.minX), oy = Int(r.minY)
         let hole = mouth.insetBy(dx: -mouth.width * 0.08, dy: -mouth.height * 0.15)
+        let g = SIMD3(gain[0], gain[1], gain[2]), b = SIMD3(bias[0], bias[1], bias[2])
         var num = [[Float]](repeating: [Float](repeating: 0, count: pw * ph), count: 3)
         var den = [Float](repeating: 0, count: pw * ph)
         for y in 0..<ph {
             for x in 0..<pw {
                 let bx = ox + x, by = oy + y, vx = bx + shift.0, vy = by + shift.1
                 guard viseme.contains(vx, vy), !hole.contains(CGPoint(x: Double(bx) + 0.5, y: Double(by) + 0.5)) else { continue }
-                var d = [0.0, 0.0, 0.0]
+                var d = SIMD3<Double>()   // no heap array per pixel
                 var big = false
                 for c in 0..<3 {
-                    d[c] = Double(base.at(bx, by, c)) - (Double(viseme.at(vx, vy, c)) * gain[c] + bias[c])
+                    d[c] = Double(base.at(bx, by, c)) - (Double(viseme.at(vx, vy, c)) * g[c] + b[c])
                     if abs(d[c]) > shadingMaxDiff { big = true }
                 }
                 guard !big else { continue }

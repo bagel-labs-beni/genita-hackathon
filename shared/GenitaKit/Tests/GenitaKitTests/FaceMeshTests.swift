@@ -72,7 +72,8 @@ struct FaceMeshTests {
                                    place: { a in [CGPoint(x: a.cx - a.rx, y: a.cy - a.ry), CGPoint(x: a.cx + a.rx, y: a.cy - a.ry),
                                                   CGPoint(x: a.cx + a.rx, y: a.cy + a.ry), CGPoint(x: a.cx - a.rx, y: a.cy + a.ry)] },
                                    tris: [[0, 1, 2], [0, 2, 3], [2, 1, 0]])
-        let mesh = try #require(FaceMesh.make(outline: nil, points: nil, headBox: ImageHeadBox(nx1: 0.2, ny1: 0.1, nx2: 0.8, ny2: 0.6), layout: square))
+        let c = try check("," + String(companionGeometry.dropFirst().dropLast()))
+        let mesh = try #require(FaceMesh.make(outline: nil, points: c.facePoints, headBox: ImageHeadBox(nx1: 0.2, ny1: 0.1, nx2: 0.8, ny2: 0.6), layout: square))
         #expect(mesh.triangles == [[0, 1, 2], [0, 2, 3]], "a repeated triangle is filled once")
         #expect(mesh.edges.count == 5)
     }
@@ -91,8 +92,8 @@ struct FaceMeshTests {
     @Test func fallsBackToAnOvalInTheHeadBoxWithoutAnOutline() throws {
         let box = ImageHeadBox(nx1: 0.2, ny1: 0.1, nx2: 0.8, ny2: 0.6)
         let mesh = try #require(FaceMesh.make(outline: nil, points: nil, headBox: box))
-        #expect(mesh.points.count == 34)
-        for p in mesh.points { #expect(p.x > 0.2 && p.x < 0.8 && p.y > 0.1 && p.y < 0.6) }
+        #expect(mesh.points.count == 12, "no eye / mouth boxes: the rim only")
+        for p in mesh.points { #expect(p.x >= 0.2 && p.x <= 0.8 && p.y >= 0.1 && p.y <= 0.6) }
         #expect(FaceMesh.make(outline: nil, points: nil, headBox: nil) == nil)
         #expect(FaceMesh.make(outline: [[0.5, 0.5]], points: nil, headBox: ImageHeadBox(nx1: nil, ny1: nil, nx2: nil, ny2: nil)) == nil)
     }
@@ -170,5 +171,25 @@ struct FaceMeshTests {
         #expect(abs(left.x) < 0.01)
         let top = FaceMesh.aspectFill(CGPoint(x: 0.5, y: 0), image: image, in: view)
         #expect(abs(top.y - (-183.84)) < 0.01, "the top of a tall photo is cropped above the frame")
+    }
+
+    /// D28 (scenario: points come from Meta only): an animal or character without SAM eye / mouth boxes gets the head oval
+    /// alone — 12 rim points in a ring, no triangles, nothing at the r02 human eye / nose / mouth places.
+    @Test func withoutEyeOrMouthBoxesOnlyTheOvalIsDrawn() throws {
+        let dog = ImageHeadBox(nx1: 0.07, ny1: 0.14, nx2: 0.90, ny2: 0.46)
+        for layout in [FaceNetLayout.r02, .r02Small] {
+            let mesh = try #require(FaceMesh.make(outline: nil, points: nil, headBox: dog, layout: layout))
+            #expect(mesh.points.count == 12)
+            #expect(mesh.triangles.isEmpty)
+            #expect(mesh.edges.count == 12, "a closed ring")
+            // every point sits on the oval (normalised radius 1), none inside where a made-up eye or mouth would go
+            let cx = (0.07 + 0.90) / 2, cy = 0.14 + (0.46 - 0.14) * 0.6, rx = (0.90 - 0.07) * 0.36, ry = (0.46 - 0.14) * 0.38
+            for p in mesh.points { #expect(abs(pow((p.x - cx) / rx, 2) + pow((p.y - cy) / ry, 2) - 1) < 1e-6) }
+        }
+        // empty eye / mouth lists count as none; with real boxes the full net is back
+        let empty = FacePoints(leftEye: [], rightEye: [], leftBrow: [], rightBrow: [], nose: [], lips: [])
+        #expect(try #require(FaceMesh.make(outline: nil, points: empty, headBox: dog)).points.count == 12)
+        let c = try check("," + String(companionGeometry.dropFirst().dropLast()))
+        #expect(try #require(FaceMesh.make(outline: c.faceOutline, points: c.facePoints, headBox: c.headBox)).points.count == 34)
     }
 }

@@ -22,4 +22,14 @@ import MultipeerConnectivity
         }
         await fulfillment(of: [answered], timeout: 3)
     }
+
+    /// MV-02 (AU-85): the code invitation is bound to the account, without revealing the account id.
+    func testCodeInvitationIsBoundToTheAccount() {
+        let mine = HandoffLink.codeContext("482918", account: "user-a")
+        XCTAssertEqual(mine, HandoffLink.codeContext("482918", account: "user-a"))
+        XCTAssertNotEqual(mine, HandoffLink.codeContext("482918", account: "user-b"), "another account's iPhone is turned away")
+        XCTAssertNotEqual(mine, "code:482918", "a bare code no longer pairs")
+        XCTAssertFalse(mine.contains("user-a"))
+        XCTAssertTrue(mine.hasPrefix("code:482918|acct:"))
+    }
 }

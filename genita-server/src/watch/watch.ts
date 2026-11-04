@@ -92,7 +92,7 @@ const PAGE_NEW_MOTION = 0.3;
 /**
  * Instant nonverbal reaction (lead's call 11/4): a big move that out-moves the last ~2 s for two frames in a row gets
  * brows up + a small inhale at once, the spoken line follows from the looks as before. Not on a cut (one frame that
- * changes the whole picture), not on a page (scrolling), never inside the 25 s reaction gap (shared both ways).
+ * changes the whole picture), not on a page (scrolling), never inside the 30 s reaction gap (shared both ways).
  * GENITA_WATCH_NONVERBAL=0 turns it off.
  */
 const NV_ON = process.env.GENITA_WATCH_NONVERBAL !== "0";
@@ -258,6 +258,11 @@ export class WatchController {
   /** the share's first frame: the nonverbal needs ~2.5 s of history to know what "out-moves" means (Codex #613 P2) */
   private firstFrameAt: number | null = null;
   private protectedPending = false;
+  /** MS-3 in a browser (AU-64): the last look saw a DRM-black video in a page that otherwise captures; the Mac shows
+   *  the black-screen card from `state.blank` until a clear picture comes back */
+  private protectedShown = false;
+  /** start time of the look whose DRM verdict the card follows: an older look finishing late never overrides it */
+  private protectedAt = -Infinity;
   private protectedSince = 0;
   /** a funny moment waiting for the video's line (or the conversation) to pause */
   private held: { v: MemoVerdict; at: number } | null = null;
@@ -367,6 +372,9 @@ export class WatchController {
     for (const q of this.quickInFlight) q.abort();
     this.quickInFlight.clear();
     this.quickSpikeAt = null;
+    // the DRM card was about the old video; a cancelled look must not leave it up (Codex AU-64 r1 P2)
+    this.protectedAt = -Infinity;
+    this.setProtectedShown(false);
     if (why === "title" || why === "source") {
       // the old video's frames and lines are not the new one's (Codex #445 P2); the newest frame stays: the title
       // arrives after the page changed, so it is already the new picture (and a paused screen sends no more)
@@ -394,7 +402,7 @@ export class WatchController {
     }
     if (this.sharing) {
       // another window or display: an older "protected" verdict was about the old one
-      if (source !== null && source !== this.source) this.protectedPending = false;
+      if (source !== null && source !== this.source) { this.protectedPending = false; this.protectedShown = false; }
       if (source !== null && source !== this.source) this.resetClip("source");
       this.source = source ?? this.source;
       return this.emitState();
@@ -411,6 +419,7 @@ export class WatchController {
     this.blankSpoken = false;
     this.protectedSpoken = false;
     this.protectedPending = false;
+    this.protectedShown = false;
     this.salientAt = null;
     this.lineSinceMemo = false;
     this.openAsr();
@@ -464,6 +473,7 @@ export class WatchController {
     this.flushWaiters();
     this.setSpeaker(null);
     this.blank = false;
+    this.protectedShown = false;
     this.emitState();
     this.log("watch.stop", { reason, ...this.summary() });
   }
@@ -699,11 +709,15 @@ export class WatchController {
     if (v.page) this.lastMemoPage = true;
     else if (v.moment !== "none") this.lastMemoPage = false;
     this.log("watch.memo", { ms, memo: v.memo.slice(0, 160), moment: v.moment, reaction: v.reaction, frames: frames.length, lines: lines.length, salient, protectedVideo: v.protectedVideo === true, page: v.page === true });
+    const newest = at >= this.protectedAt;
+    if (newest) this.protectedAt = at;
     if (v.protectedVideo) {
       this.speakProtected();
+      if (newest) this.setProtectedShown(true);
       return v;
     }
     this.protectedPending = false; // a clear picture now: an older "protected" no longer applies
+    if (newest) this.setProtectedShown(false);
     if (v.moment !== "none" && !early) {
       if (!v.page) this.noteMoment(v.moment, v.reaction, contentAt, frames.at(-1) ?? null);
       this.tryReact({ ...v, talkOverSeq: memoSeq, pageGen: memoPageGen }, v.page ? now : contentAt);
@@ -770,7 +784,7 @@ export class WatchController {
     if (!QUICK_ON || this.deps.quick === false || !this.sharing || this.closed) return;
     const now = this.deps.now();
     // 11/3 21:3x (lead's call): when a reaction couldn't go out (reactions off, the user or companion talking, inside
-    // the 25 s gap) the quick look still runs at half the rate and only remembers the moment, so "did you see that
+    // the 30 s gap) the quick look still runs at half the rate and only remembers the moment, so "did you see that
     // dunk?" right after a reaction or mid-conversation is answerable (#400). Never spoken from here.
     const remember = this.deps.reactions === false || !this.host.conversationQuiet() || (this.lastReactionAt !== null && now - this.lastReactionAt < REACT_MIN_GAP_MS);
     const slow = remember ? 2 : 1;
@@ -817,7 +831,7 @@ export class WatchController {
         this.log("watch.quick.error", { message: String(err).slice(0, 200) });
         // 11/4: a look that timed out saw nothing: the next look picks from its frames again
         // (min: two looks failing in a row both get their frames back, Codex #542 P2; a frame seen twice costs a look,
-        // a moment said twice can't happen: the 25 s gap and the seen list)
+        // a moment said twice can't happen: the 30 s gap and the seen list)
         if (gen === this.clipGen) {
           this.lastLookedAt = Math.min(this.lastLookedAt, lookedBefore);
           // only the first retry: a look that fails twice is let go
@@ -1008,8 +1022,16 @@ export class WatchController {
     };
   }
 
+  private setProtectedShown(on: boolean): void {
+    if (on === this.protectedShown) return;
+    this.protectedShown = on;
+    this.emitState();
+    this.log("watch.protected.card", { on });
+  }
+
   private emitState(): void {
-    this.sink?.send({ type: "state", sharing: this.sharing, blank: this.blank, source: this.source });
+    // blank = the window captures black, or the video in it does (DRM in a browser): the Mac's MS-3 card either way
+    this.sink?.send({ type: "state", sharing: this.sharing, blank: this.blank || (this.sharing && this.protectedShown), source: this.source });
   }
 
   private log(event: string, data: Record<string, unknown>): void {
