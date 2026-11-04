@@ -379,9 +379,6 @@ struct CallMoreSheet: View {
                 call.setInterpreting(on)
                 if on { close() }
             }
-            if textChatEnabled {
-                row("text.bubble", "Text chat", "Same conversation, in writing", id: "moreTextChat", enabled: openTextChat != nil) { close(); openTextChat?() }
-            }
             let n = max(call.finds.cardCount, call.findsCount)
             row("bookmark", "Finds", n == 0 ? "Nothing looked up yet" : n == 1 ? "1 thing I looked up" : "\(n) things I looked up", id: "moreFinds", enabled: openFinds != nil) { close(); openFinds?() }
             if pasteHasLink && call.mode != .interpret {
@@ -395,6 +392,8 @@ struct CallMoreSheet: View {
             row("camera", "Flip camera", call.cameraOn ? "Switch front and back" : "Turn your camera on first", id: "moreFlip", enabled: call.canFlipCamera) { call.flipCamera() }
             row("laptopcomputer", "Move to Mac", moveToMacSubtitle, id: "moreMoveToMac") { close(); moveToMac() }
             if let report { row("flag", "Report", "A reply or picture that's wrong", id: "moreReport") { close(); report() } }
+            // D40 / MORE-B1 (AU-51): Text chat is always the last row, greyed and inert until the flag turns it on
+            row("text.bubble", "Text chat", "Same conversation, in writing", id: "moreTextChat", enabled: textChatEnabled && openTextChat != nil) { close(); openTextChat?() }
         }
         .padding(.top, 28).padding(.horizontal, 16).padding(.bottom, 40)
         .frame(maxWidth: .infinity)

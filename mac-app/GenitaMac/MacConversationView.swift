@@ -236,6 +236,7 @@ struct MacConversationView: View {
     private var cueText: String? {
         // MC-M (90:2): the face beside the open menu carries nothing
         if linkOpened != nil || menuOpen { return nil }
+        if let line = handoff.moveLine { return line }   // AU-88: Move to iPhone waiting / failed
         if sharing.isSharing, let message = sharing.connectionMessage { return message }
         // MS-2 "Reacting" and MS-3 black-screen card own that spot while a share is live
         if sharing.isSharing && (sharing.reacting || sharing.blank) { return nil }

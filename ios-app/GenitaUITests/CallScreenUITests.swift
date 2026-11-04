@@ -83,7 +83,9 @@ final class CallScreenUITests: XCTestCase {
         }
         XCTAssertTrue(moreSheet.waitForExistence(timeout: 5))
         capture("MORE-B2-sheet")
-        XCTAssertFalse(app.buttons["moreTextChat"].exists, "Text chat stays hidden while the bundled app-config flag is false")
+        // D40 / MORE-B1 (AU-51): Text chat is shown greyed, last, and does nothing while the app-config flag is false
+        XCTAssertTrue(app.buttons["moreTextChat"].exists)
+        XCTAssertFalse(app.buttons["moreTextChat"].isEnabled, "Text chat is greyed out")
         XCTAssertFalse(app.buttons["moreFlip"].isEnabled, "Flip camera needs the camera on")
         // INT-0: switching interpretation on closes the sheet and shows INT-1 over the face
         app.buttons["moreInterpret"].tap()
