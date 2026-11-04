@@ -132,7 +132,8 @@ struct LiveCaptions: Equatable {
             if reply?.aligned.contains(a.sentence) != true, !a.words.isEmpty {
                 reply?.starts[a.sentence, default: []].append(contentsOf: a.words.map(\.s))
                 reply?.spoken[a.sentence, default: []].append(contentsOf: a.words.map(\.w))
-                reply?.ends[a.sentence] = max(reply?.ends[a.sentence] ?? 0, a.words.map(\.e).max() ?? 0)
+                let end = max(reply?.ends[a.sentence] ?? 0, a.words.map(\.e).max() ?? 0)
+                reply?.ends[a.sentence] = end
             }
         case let .audioTiming(t):
             guard reply?.utteranceId == t.utteranceId, !t.words.isEmpty else { break }
@@ -147,8 +148,9 @@ struct LiveCaptions: Equatable {
             reply?.says.append(s.text)
         case let .utteranceCancelled(c):
             guard reply?.utteranceId == c.utteranceId, reply?.endedAt == nil else { break }
+            let shown = reply?.shown ?? 0
             reply?.cut = true
-            reply?.frozen = reply?.shown ?? 0
+            reply?.frozen = shown
             reply?.endedAt = now   // CAP-6 clears it like a finished reply
         default:
             break
@@ -161,8 +163,9 @@ struct LiveCaptions: Equatable {
     /// The app stopped this utterance itself (face tap, local barge-in) before the server's cancel: freeze it now.
     mutating func cut(utteranceId: Int, now: Double) {
         guard reply?.utteranceId == utteranceId, reply?.cut == false, reply?.endedAt == nil else { return }
+        let shown = reply?.shown ?? 0
         reply?.cut = true
-        reply?.frozen = reply?.shown ?? 0
+        reply?.frozen = shown
         reply?.endedAt = now
     }
 
