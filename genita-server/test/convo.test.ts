@@ -1635,3 +1635,8 @@ test("Codex r10: forced help is main's rule only — a reply with any help point
   assert.equal(String(reply.text), "I'm really glad you told me. Please call or text 988 right now.");
   session.close();
 });
+
+test("Codex r11: a help-line sentence is protected before every filter (camera off 'You look scared so please call 988.')", () => {
+  assert.equal(guardSentence("You look scared so please call 988.", { camera: false, userText: "I'm going to slash my throat tonight" }), null);
+  assert.equal(guardSentence("Your hair looks wild, but call the crisis line now.", { camera: false, userText: "I'm going to slash my throat tonight" }), null);
+});

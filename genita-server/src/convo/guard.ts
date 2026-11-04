@@ -322,9 +322,11 @@ function energyLabel(s: string): boolean {
 
 export function guardSentence(sentence: string, ctx: GuardContext): GuardClass | null {
   // emergency help and real crisis turns first (Codex #372 r2: "You can cut me off and call 911 right now")
-  if (INTERRUPTION.test(sentence) && !EMERGENCY_HELP.test(sentence) && !realCrisisSignal(ctx.userText)) return "interruption";
+  if (INTERRUPTION.test(sentence) && !EMERGENCY_HELP.test(sentence) && !HELP_LINE.test(sentence) && !realCrisisSignal(ctx.userText)) return "interruption";
   // emergency help and real crisis turns come before everything, narration included (Codex #356 P1)
-  if (EMERGENCY_HELP.test(sentence)) return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;
+  // #545 Codex r11: a help-line sentence (988, crisis line, hotline…) is protected like emergency help, before every
+  // other filter (unseen, appearance, sensitive…): "You look scared so please call 988." is spoken
+  if (EMERGENCY_HELP.test(sentence) || HELP_LINE.test(sentence)) return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;
   // saving out loud is never said, even after real content (Codex gate P2: "Pistachio is elite. I'll save that detail quietly.")
   if (!realCrisisSignal(ctx.userText) && SAVE_TALK.some((re) => re.test(sentence.replace(/’/g, "'")))) return "save_talk";
   if (!realCrisisSignal(ctx.userText) && isNarration(sentence)) return "narration";
