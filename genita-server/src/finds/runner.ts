@@ -363,6 +363,8 @@ export class FindsRunner {
       void done.finally(() => clearTimeout(timer));
     }
     if (ACK[intent.kind]) this.acked.add(findId);
+    // an outfit pick is answered out loud by the turn itself: its card only shows it (demo S4, one verdict)
+    else if (intent.kind === "outfit") this.answered.set(findId, t.replyText);
     return { findId, kind: intent.kind, ...(ACK[intent.kind] ? { ack: ACK[intent.kind] } : {}) };
   }
 
@@ -587,6 +589,7 @@ export class FindsRunner {
     if (this.purged || (this.owner && this.deps.store.work.isDeleted(this.owner))) return;
     // after the call ends, finished cards still get their pictures saved
     if (e.type === "find.created" || e.type === "find.failed") this.landed.add(e.findId);
+    if (e.type === "find.failed") this.answered.delete(e.findId);
     if (e.type === "find.created") {
       // lane 개인화 E: 1–2 reason chips from the user's own taste lines (never model-written)
       if (!e.card.reasons) {
@@ -602,7 +605,7 @@ export class FindsRunner {
       this.cards.set(e.findId, e.card);
       this.focusId = e.findId;
       void this.persist(e.card);
-      if (e.card.say && !this.closed) this.hooks.announce(e.card.say);
+      if (e.card.say && !this.closed) this.announceCard(e.findId, e.card.say);
     } else if (e.type === "find.image") {
       const card = this.cards.get(e.findId);
       if (card) {
@@ -618,6 +621,23 @@ export class FindsRunner {
     if (e.type === "find.failed" && e.reason !== "stopped" && !this.closed && this.acked.has(e.findId)) this.hooks.announce(e.message);
     if (!this.closed) this.hooks.emit(e);
   }
+  /**
+   * A card's own line. Demo S4 build 9 (4/6 runs): the spoken answer already gave the outfit verdict ("Black one
+   * wins, Summer…") and the card, landing 11–14 s later, said it again ("Black one wins, no contest cutie."). A card
+   * whose turn answered out loud stays silent — waiting for that answer when it is still under way — and its line is
+   * said only when the answer said nothing (the reply failed or was cut before a word).
+   */
+  private announceCard(findId: string, say: string): void {
+    const answer = this.answered.get(findId);
+    if (!answer) return this.hooks.announce(say);
+    this.answered.delete(findId);
+    void answer.then((said) => {
+      if (said?.trim()) this.hooks.log("find.say_skipped", { findId, reason: "answered" });
+      else if (!this.closed) this.hooks.announce(say);
+    }, () => {});
+  }
+  /** finds whose turn's own spoken reply is the answer (outfit): the reply text, once said */
+  private readonly answered = new Map<string, Promise<string | null>>();
   /** finds that already have a card or a failure on screen */
   private readonly landed = new Set<string>();
   /** finds whose turn got only the short line (ACK): their failure is said out loud */
