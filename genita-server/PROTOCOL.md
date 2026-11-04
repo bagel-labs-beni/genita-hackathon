@@ -39,6 +39,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 | 11/3 | D41 judge demo companion: a Judge access account with no companion gets a ready-made "Jin" at sign-in (copied from the `demo:template` account, `npm run demo:template`). `/me` (and the sign-in body) adds `companionDemo: boolean`; `GET /v1/companion` adds `demo: boolean`; `POST /v1/companion` replaces a `demo:true` companion instead of `409` (see PREP_API.md). Additive. |
 | 11/3 | D41 Judge access daily cap: new `error` code `daily_limit` (retryable `false`) when a judge demo account has used today's turns (per code, UTC day, `GENITA_JUDGE_DAILY_TURNS`, default 200). The socket stays open; the refused turn gets no reply. Additive: apps that don't know the code just log it. |
 | 11/2 | F8-L1 interpretation: new events `interpret.pair` and `interpret.bubble` (two-language bubbles with speaker side); new app message `hold`; `start` and `mode` take optional `interpret {source, other, app}`; Mac call mode sends app→server binary frames with a `GA` header (kind `3` mic, `4` call sound); `mode.changed.by` can be `model` (voice switch). In interpret mode speech no longer cancels Genita (only `barge_in` does). Additive: a chat-only app sees nothing new. |
+| 11/4 | F8 free language switch (`GENITA_INTERPRET_FREE_LANG`, default on): `interpret.pair` is sent again whenever the pair changes (a new language heard, or "translate to Japanese" by voice) and its `user` is the user's side of the pair; new `interpret.bubble.reason` values `ask_language` (Genita asks which language) and `language_switch` (the voice command, `skipped`). Additive: older apps show the question as a normal bubble and the pair bar updates from `interpret.pair`. |
 | 11/3 | Pill line: optional `FindCard.pill` and `find.items.pill` — the status pill's text for a card, ≤ 28 characters (one line on iPhone and Mac). `say` is spoken, `pill` is shown. Product: same as `say`. Additive. |
 | 11/3 | #199: `find.started` and `find.progress` take optional `evidence {style, situation}` on product searches — the import line the search follows (top Likes line at start, the line the picks follow once known); show as-is when present. A product ask on a call continued from the other device refines the search asked there (from the conversation's turns). Additive. |
 | 11/3 | SAM masks (#298, behind server env `GENITA_SAM_MASKS=1`): `observe.boxes.items[]` gains optional `mask {w, h, rle}` — a w×h binary grid stretched over that item's `box`, row-major run lengths alternating 0s then 1s (the first run may be 0), `sum(rle) == w*h`, long side ≤ 96. With the flag on, an ingredient with several matches arrives as one item per match (same `label` repeated, each with its own `box`/`mask`), at most 12 items; over that, the largest group arrives as one merged item. An item without `mask` (flag off, or a mask that did not decode) is drawn as a box. Additive. |
@@ -478,6 +479,15 @@ switches back. Genita only passes on what was said — no answers, no advice; Ko
 the language of each utterance decides: the user's language = `me`, anything else = `them`. Muse Transcribe has no
 language field, so the script decides (Hangul → Korean, kana → Japanese, Han → Chinese, Latin → the user's language).
 The first non-user language heard becomes `other` (`interpret.pair`, `by:"auto"`). While `hold` is on the mic is `me`.
+**Free language switch** (server env `GENITA_INTERPRET_FREE_LANG`, on unless `0`): the pair follows the conversation.
+A new language heard (Japanese mid-way through Korean ↔ English) becomes `other`; "translate to Japanese" /
+"일본어로 해줘" / "日本語で" sets `other` at once, and the language the command was said in becomes `user`, so
+`interpret.pair.user` is the user's side of the pair, not always `start.language`. Every change sends a new
+`interpret.pair`. When the language is unclear, a line mixes in a language outside the pair, or the user speaks their
+own language before any other was heard, Genita asks once per pair, face to face only: a bubble with
+`reason:"ask_language"` whose `translation` is her question in the user's language ("Which language should I translate
+into?"), spoken like a translation. The next line naming a language ("Japanese", "일본어요") answers it, and the line
+she asked about is translated into that language. The command line itself is a `skipped` bubble (`language_switch`).
 On the Mac (`source: call`) the call's sound (frame kind 4, its own ASR stream) is always `them` and the mic is `me`
 only while held — otherwise it is replaced by silence.
 
@@ -492,6 +502,8 @@ only while held — otherwise it is replaced by silence.
 | `skipped` | `no_other_language` | the user spoke before the other language was known — nothing to translate into; hide it |
 | `skipped` | `same_language` | call sound in the user's own language; hide it |
 | `skipped` | `echo` | Genita heard her own translation through the speaker; hide it |
+| `done` | `ask_language` | the translation is Genita asking which language to translate into (free switch) |
+| `skipped` | `language_switch` | "translate to Japanese" — a voice switch, not speech to pass on; hide it |
 | `cancelled` | — | `barge_in` tap or leaving the mode |
 
 **Audio.** A bubble's translation is a normal utterance: `reply.delta`, `speaking`, `audio` + binary frames, `reply

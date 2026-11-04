@@ -25,6 +25,15 @@
  *     sentence/clause goes to TTS as soon as it is complete.
  *   - Echo guard: a heard utterance that mostly repeats what Genita just said
  *     (her own voice through the phone speaker) is dropped.
+ *   - Free language switch (Chelsea 11/4, `freeLang`): the pair follows the
+ *     conversation — a third language heard (Japanese mid-way) replaces the
+ *     other side; "translate to Japanese" / "일본어로 해줘" / "日本語で" sets it
+ *     at once (the command's own language becomes the user's side). When it
+ *     can't tell (script unclear, a line mixing a language outside the pair, or
+ *     the user's own language before any other was heard) Genita asks once,
+ *     in the user's language, "Which language should I translate into?", and
+ *     the answer's language gets the waiting line. At most one question per
+ *     pair; after that she falls back to the old guess (English↔Korean).
  */
 import type { SparkRequest, SparkStreamEvent } from "../meta/spark.ts";
 import { SPARK_MODEL } from "../meta/spark.ts";
@@ -35,7 +44,7 @@ import type { Alignment } from "../lips/visemes.ts";
 import type { BubbleReason, BubbleStatus, BubbleVia, InterpretBubbleEvent, InterpretSource, MouthCue, Phase, ServerEvent, WordTiming } from "../protocol.ts";
 import { SentenceSplitter } from "../text/sentences.ts";
 import { Eager } from "../util/eager.ts";
-import { containment, detectLanguage, type Speaker } from "./language.ts";
+import { askLanguageLine, containment, detectInPair, detectLanguage, languageAnswer, languageCommand, mixedLanguages, switchedLine, type Speaker } from "./language.ts";
 import { buildTranslateInstructions } from "./prompt.ts";
 import { CORRECT_CONTEXT_LINES, correctKorean, type ContextLine, type CorrectResult } from "./asrCorrect.ts";
 
@@ -73,12 +82,17 @@ export type InterpretOptions = {
   speculateStableMs?: number;
   /** Korean ASR post-correction before translating (asrCorrect.ts); null/unset = off */
   asrCorrect?: { timeoutMs: number } | null;
+  /** free language switch + ask when unclear (GENITA_INTERPRET_FREE_LANG); unset = off (the fixed first-heard pair) */
+  freeLang?: boolean;
 };
 
 type Lang = string;
 type Resolved =
   | { ok: true; speaker: "them" | "me"; via: BubbleVia; from: Lang; to: Lang; setsOther: Lang | null; guessed?: boolean }
-  | { ok: false; speaker: Speaker; via: BubbleVia; lang: Lang | null; status: "unknown" | "skipped"; reason: BubbleReason };
+  | { ok: false; speaker: Speaker; via: BubbleVia; lang: Lang | null; status: "unknown" | "skipped"; reason: BubbleReason; ask?: AskWhy };
+
+/** why Genita asks which language to translate into */
+type AskWhy = "unclear" | "mixed" | "no_other";
 
 type Bubble = {
   id: number;
@@ -139,11 +153,19 @@ export class Interpreter {
   readonly source: InterpretSource;
   readonly app: string | undefined;
   private readonly host: InterpretHost;
+  /** the profile language */
   private readonly user: Lang;
+  /** the user's side of the pair: the profile language, or the language a voice switch was said in */
+  private self: Lang;
   private other: Lang | null;
   /** `other` was assumed from the ASR pair (English↔Korean), not heard yet */
   private otherGuessed = false;
-  private readonly otherFixed: boolean;
+  private otherFixed: boolean;
+  private readonly freeLang: boolean;
+  /** Genita already asked which language since the pair last changed (once per pair) */
+  private asked = false;
+  /** the line that made her ask; translated into the language the answer names */
+  private pendingAsk: { text: string; lang: Lang | null; speaker: Speaker; via: BubbleVia } | null = null;
   private readonly speculate: boolean;
   private readonly stableMs: number;
   private bubbleSeq = 0;
@@ -171,6 +193,8 @@ export class Interpreter {
   constructor(host: InterpretHost, opts: InterpretOptions) {
     this.host = host;
     this.user = opts.userLanguage;
+    this.self = opts.userLanguage;
+    this.freeLang = opts.freeLang ?? false;
     this.source = opts.source;
     this.app = opts.app;
     this.other = opts.other && opts.other !== opts.userLanguage ? opts.other : null;
@@ -181,7 +205,7 @@ export class Interpreter {
   }
 
   get pair(): { user: Lang; other: Lang | null } {
-    return { user: this.user, other: this.other };
+    return { user: this.self, other: this.other };
   }
 
   /** Mac call mode: the mic is only listened to while "Hold to reply" is down. */
@@ -191,7 +215,7 @@ export class Interpreter {
 
   begin(): void {
     this.sendPair();
-    this.host.log("interpret.started", { source: this.source, user: this.user, other: this.other, app: this.app ?? null });
+    this.host.log("interpret.started", { source: this.source, user: this.self, other: this.other, app: this.app ?? null, freeLang: this.freeLang });
   }
 
   // ───────────────────────── input ─────────────────────────
@@ -223,7 +247,7 @@ export class Interpreter {
     b.original = { lang: r.ok ? r.from : r.lang, text };
     b.status = "hearing";
     this.emit(b);
-    if (r.ok) this.considerSpeculation(ch, text, r.from, r.to);
+    if (r.ok && !(this.freeLang && ch === "mic" && (this.pendingAsk || languageCommand(text)))) this.considerSpeculation(ch, text, r.from, r.to);
   }
 
   /** The utterance on this channel ended (ASR speechComplete). */
@@ -243,10 +267,26 @@ export class Interpreter {
       if (b) this.closeBubble(b, "skipped", clean ? "echo" : "empty");
       return;
     }
+    if (this.freeLang && ch === "mic") {
+      // the answer to "Which language?" (just a name is enough), or a voice switch at any time
+      const target = this.pendingAsk ? languageAnswer(clean) : languageCommand(clean);
+      if (target) {
+        spec?.abort.abort();
+        return this.switchTo(target, clean, b);
+      }
+      if (this.pendingAsk) {
+        this.host.log("interpret.ask_unanswered", { language: this.pendingAsk.lang });
+        this.pendingAsk = null;
+      }
+    }
     const r = this.resolve(ch, clean, held);
     const bubble = b ?? this.newBubble(r.via);
     bubble.speaker = r.speaker;
     bubble.via = r.via;
+    if (!r.ok && r.ask) {
+      spec?.abort.abort();
+      return this.ask(bubble, clean, r.lang, r.ask);
+    }
     if (!r.ok) {
       spec?.abort.abort();
       bubble.original = { lang: r.lang, text: clean };
@@ -259,11 +299,7 @@ export class Interpreter {
       if (b) this.closeBubble(b, "cancelled");
       return;
     }
-    if (r.setsOther) {
-      this.other = r.setsOther;
-      this.otherGuessed = !!r.guessed;
-      this.sendPair();
-    }
+    if (r.setsOther) this.setOther(r.setsOther, !!r.guessed);
     bubble.original = { lang: r.from, text: clean };
     this.host.log("interpret.detected", { language: r.from, to: r.to, speaker: r.speaker, via: r.via, ...(r.guessed ? { pair: "assumed" } : {}) });
     let speculative: Job["speculative"] = "none";
@@ -334,17 +370,13 @@ export class Interpreter {
     const bubble = this.newBubble("text");
     bubble.speaker = "me";
     // typed text follows the same rule as speech: the script decides the language, the target is the other side
-    const from = detectLanguage(clean, this.user) ?? this.user;
-    const to = from === this.user ? (this.other ?? guessOther(this.user)) : this.user;
+    const from = this.detect(clean) ?? this.self;
+    const to = from === this.self ? (this.other ?? guessOther(this.self)) : this.self;
     bubble.original = { lang: from, text: clean };
     if (!to || to === from) return this.closeBubble(bubble, "skipped", "no_other_language");
     if (!this.host.admitTurn()) return this.closeBubble(bubble, "cancelled"); // refused by a daily cap: no open bubble
-    const learned = from === this.user ? (this.other ? null : to) : this.learnsOther(from);
-    if (learned) {
-      this.other = learned;
-      this.otherGuessed = from === this.user;
-      this.sendPair();
-    }
+    const learned = from === this.self ? (this.other ? null : to) : this.learnsOther(from);
+    if (learned) this.setOther(learned, from === this.self);
     this.remember({ speaker: "me", lang: from, text: clean });
     const abort = new AbortController();
     const now = this.host.now();
@@ -355,7 +387,7 @@ export class Interpreter {
   /** A fixed line in Genita's voice (e.g. the voice-command confirmation); no bubble. */
   say(text: string): void {
     if (this.stopped) return;
-    this.enqueue(null, fixedText(text), new AbortController(), "none", { startAt: this.host.now() }, this.user);
+    this.enqueue(null, fixedText(text), new AbortController(), "none", { startAt: this.host.now() }, this.self);
   }
 
   /** User tapped to stop Genita: cancel what is playing and what is queued. */
@@ -395,42 +427,120 @@ export class Interpreter {
 
   // ───────────────────────── decisions ─────────────────────────
 
+  private detect(text: string): Lang | null {
+    return this.freeLang ? detectInPair(text, this.user, [this.self, this.other]) : detectLanguage(text, this.user);
+  }
+
   private resolve(ch: Channel, text: string, held = false): Resolved {
-    const lang = detectLanguage(text, this.user);
+    const lang = this.detect(text);
     if (ch === "call") {
       const via: BubbleVia = "call";
       if (!lang) return { ok: false, speaker: "them", via, lang, status: "unknown", reason: "language_unclear" };
-      if (lang === this.user) return { ok: false, speaker: "them", via, lang, status: "skipped", reason: "same_language" };
-      return { ok: true, speaker: "them", via, from: lang, to: this.user, setsOther: this.learnsOther(lang) };
+      if (lang === this.self) return { ok: false, speaker: "them", via, lang, status: "skipped", reason: "same_language" };
+      return { ok: true, speaker: "them", via, from: lang, to: this.self, setsOther: this.learnsOther(lang) };
     }
     const forcedMe = held || this.holding || this.source === "call";
     const via: BubbleVia = held || this.holding ? "hold" : "voice";
     // Chelsea 11/4: the direction follows the language heard, never the label or the button held.
     // Held speech with an unclear script is still the user's own language (as before).
-    const from = lang ?? (forcedMe ? this.user : null);
-    if (!from) return { ok: false, speaker: "unknown", via, lang, status: "unknown", reason: "language_unclear" };
-    const speaker: "me" | "them" = forcedMe || from === this.user ? "me" : "them";
-    if (from === this.user) {
+    const from = lang ?? (forcedMe ? this.self : null);
+    const noOther = !this.other || this.otherGuessed;
+    if (!from) {
+      // letters in more than one script and nothing heard yet to go by: ask rather than drop it
+      if (noOther && this.canAsk() && [...text.matchAll(/\p{L}/gu)].length >= 2) {
+        return { ok: false, speaker: "unknown", via, lang, status: "unknown", reason: "ask_language", ask: "unclear" };
+      }
+      return { ok: false, speaker: "unknown", via, lang, status: "unknown", reason: "language_unclear" };
+    }
+    const speaker: "me" | "them" = forcedMe || from === this.self ? "me" : "them";
+    if (this.canAsk()) {
+      const mixed = mixedLanguages(text, this.user);
+      if (mixed && !mixed.every((l) => this.knows(l))) return { ok: false, speaker, via, lang: from, status: "unknown", reason: "ask_language", ask: "mixed" };
+      if (from === this.self && noOther) return { ok: false, speaker, via, lang: from, status: "unknown", reason: "ask_language", ask: "no_other" };
+    }
+    if (from === this.self) {
       // the user's language goes to the other side; before anyone else spoke, assume the pair (English↔Korean)
-      const to = this.other ?? guessOther(this.user);
+      const to = this.other ?? guessOther(this.self);
       if (!to || to === from) return { ok: false, speaker, via, lang: from, status: "skipped", reason: "no_other_language" };
       return { ok: true, speaker, via, from, to, setsOther: this.other ? null : to, guessed: !this.other };
     }
-    // another language (whoever holds the button) goes into the user's language. The pair is fixed by the
-    // first one heard (a guess is replaced by a real one); a third language is still passed on to the user.
-    return { ok: true, speaker, via, from, to: this.user, setsOther: this.learnsOther(from) };
+    // another language (whoever holds the button) goes into the user's language. Fixed pair: set by the first
+    // one heard (a guess is replaced by a real one). Free switch: a third language becomes the other side.
+    return { ok: true, speaker, via, from, to: this.self, setsOther: this.learnsOther(from) };
   }
 
-  /** the language heard becomes "other" when none is known yet or the current one was only a guess */
+  /** the language heard becomes "other" when none is known yet, the current one was only a guess, or (free switch) it is a new one */
   private learnsOther(lang: Lang): Lang | null {
-    if (lang === this.user) return null;
+    if (lang === this.self) return null;
     if (!this.other || (this.otherGuessed && this.other !== lang)) return lang;
+    if (this.freeLang && !this.otherFixed && this.other !== lang) return lang;
     return null;
+  }
+
+  private setOther(lang: Lang, guessed: boolean): void {
+    const changed = lang !== this.other;
+    this.other = lang;
+    this.otherGuessed = guessed;
+    // a real new pair may ask once again; a guess (after an unanswered question) does not
+    if (!guessed && changed) this.asked = false;
+    this.sendPair();
+  }
+
+  /** a language this pair already covers (an assumed English↔Korean counts before anyone else spoke) */
+  private knows(lang: Lang): boolean {
+    return lang === this.self || lang === (this.other ?? guessOther(this.self));
+  }
+
+  /** Face to face only: on a Mac call the question would go out through the speaker to the other person. */
+  private canAsk(): boolean {
+    return this.freeLang && this.source === "face" && !this.asked;
+  }
+
+  /** "Which language should I translate into?" in the user's language, on the line that was unclear; once per pair. */
+  private ask(bubble: Bubble, text: string, lang: Lang | null, why: AskWhy): void {
+    this.asked = true;
+    this.pendingAsk = { text, lang, speaker: bubble.speaker, via: bubble.via };
+    bubble.original = { lang, text };
+    bubble.reason = "ask_language";
+    this.host.log("interpret.ask", { why, language: lang, user: this.self, other: this.other });
+    // no Spark call, so no daily-cap turn; the question is spoken and shown as this bubble's line from Genita
+    this.enqueue(bubble, fixedText(askLanguageLine(this.self)), new AbortController(), "none", { startAt: this.host.now() }, this.self);
+  }
+
+  /**
+   * Voice switch or answer: `target` is the other side from now on. The language the command was said in becomes
+   * the user's side ("일본어로 해줘" → Korean ↔ Japanese), else the profile language.
+   */
+  private switchTo(target: Lang, text: string, open: Bubble | null): void {
+    const said = this.detect(text);
+    const self = [said, this.user, this.self, this.other].find((l): l is Lang => !!l && l !== target);
+    const pending = this.pendingAsk;
+    this.pendingAsk = null;
+    if (open) this.closeBubble(open, "skipped", "language_switch");
+    if (!self) return this.host.log("interpret.switch_ignored", { to: target });
+    this.self = self;
+    this.otherFixed = false;
+    this.setOther(target, false);
+    this.asked = false;
+    this.host.log("interpret.switch", { to: target, user: self, by: pending ? "answer" : "voice" });
+    // on a Mac call a spoken OK would go out to the other person; the pair bar shows the switch there
+    if (!pending) return this.source === "face" ? this.say(switchedLine(self, target)) : undefined;
+    // the line that made her ask goes out now, in the language just named (never into itself)
+    const from = pending.lang ?? this.self;
+    const to = from === target ? this.self : target;
+    if (!this.host.admitTurn()) return;
+    const bubble = this.newBubble(pending.via);
+    bubble.speaker = pending.speaker;
+    bubble.original = { lang: from, text: pending.text };
+    this.remember({ speaker: pending.speaker, lang: from, text: pending.text });
+    const abort = new AbortController();
+    const stream = new Eager(this.host.translate(this.request(pending.text, from, to), abort.signal));
+    this.enqueue(bubble, stream, abort, "none", { startAt: this.host.now() }, to);
   }
 
   private request(text: string, from: Lang, to: Lang): SparkRequest {
     // never translate a language into itself: flip to the other side of the pair
-    if (to === from) to = from === this.user ? (this.other ?? guessOther(this.user) ?? to) : this.user;
+    if (to === from) to = from === this.self ? (this.other ?? guessOther(this.self) ?? to) : this.self;
     return { instructions: buildTranslateInstructions(from, to), input: text, maxOutputTokens: 300 };
   }
 
@@ -710,7 +820,7 @@ export class Interpreter {
   }
 
   private sendPair(): void {
-    this.host.send({ type: "interpret.pair", user: this.user, other: this.other, source: this.source, by: this.otherFixed ? "client" : "auto", ...(this.app ? { app: this.app } : {}) });
+    this.host.send({ type: "interpret.pair", user: this.self, other: this.other, source: this.source, by: this.otherFixed ? "client" : "auto", ...(this.app ? { app: this.app } : {}) });
   }
 
   private newBubble(via: BubbleVia): Bubble {

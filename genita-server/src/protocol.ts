@@ -30,7 +30,8 @@ export type InterpretSource = "face" | "call";
 /** how the original reached Genita: mic by language, mic while held, the Mac call's sound, typed */
 export type BubbleVia = "voice" | "hold" | "call" | "text";
 export type BubbleStatus = "hearing" | "translating" | "speaking" | "done" | "unknown" | "skipped" | "cancelled";
-export type BubbleReason = "language_unclear" | "no_other_language" | "same_language" | "echo" | "empty";
+/** ask_language: Genita asks which language to translate into (the translation is her question); language_switch: a voice switch line, hidden */
+export type BubbleReason = "language_unclear" | "no_other_language" | "same_language" | "echo" | "empty" | "ask_language" | "language_switch";
 export type InterpretOptionsWire = { source?: InterpretSource; other?: string; app?: string };
 export type InterpretBubbleEvent = {
   type: "interpret.bubble";
