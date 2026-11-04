@@ -359,6 +359,9 @@ struct ConversationView: View {
         .onChange(of: model.prep?.isReady == true) { _, ready in
             // face plan item 3: a load waiting out its 5 s retry asks again now
             if ready { call.faceSetReady() }
+            // the scene is fetched beside it (followPrep no longer waits on it in the call); one that failed while
+            // prep ran is tried again now, the same URL wouldn't restart the scene task (Codex P2)
+            if ready && model.sceneImageData == nil { Task { await model.loadScene() } }
             if ready && !connecting && scenePhase == .active { showFace() }
         }
         .onAppear {
