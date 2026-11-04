@@ -83,7 +83,7 @@ export const adapter = {
       crisisInCall: userLines.some(realCrisisSignal),
     }) ?? undefined;
     // scripted calls send no camera frames: the session's camera-off hint for a "do I look ok?" line
-    const instructions = buildInstructions({ ...base, turn, perceptionHint: cameraOffHint(t.text, false) ?? undefined }) + memoryPrompt((s.memories ?? []).map(mem), false);
+    const instructions = buildInstructions({ ...base, turn, perceptionHint: userLines.some(realCrisisSignal) ? undefined : cameraOffHint(t.text, false) ?? undefined }) + memoryPrompt((s.memories ?? []).map(mem), false);
     return { instructions, input: [...msgs(ctx.history), { role: "user", content: t.text }], maxOutputTokens: 800, effort: "minimal" };
   },
 

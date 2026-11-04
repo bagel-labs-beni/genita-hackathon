@@ -1590,3 +1590,12 @@ test("intel eval 11/4 camera-off-look: 'do I look ok?' with no camera frames car
   assert.doesNotMatch(calls.at(-1)!.instructions ?? "", /camera is off right now/);
   session.close();
 });
+
+test("Codex #541 r3: no camera-off hint on a crisis line", { skip: !v1 }, async () => {
+  const { client, session, calls } = setup(["<sad> I care about you. Please call 988 right now."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "I do not want to be alive anymore. Can you see me?" }));
+  await client.waitFor((m) => m.type === "reply" && m.final === true);
+  assert.doesNotMatch(calls.at(-1)!.instructions ?? "", /camera is off right now/);
+  session.close();
+});
