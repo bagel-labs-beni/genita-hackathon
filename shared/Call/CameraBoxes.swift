@@ -225,6 +225,11 @@ struct LiveBox: Identifiable, Equatable {
     private(set) var holding = false
     /// The hold ended (faded, or the boxes were cleared): FindsModel raises a card that waited at peek.
     @ObservationIgnored var onHoldEnded: (() -> Void)?
+    /// A new hold began for this find: FindsModel folds a card that only just rose by itself (card before masks).
+    @ObservationIgnored var onHoldStarted: ((String) -> Void)?
+    /// `find.started.utteranceId` per find: the turn's own reply ("Ooh, let me see."). Her answer about what she sees is
+    /// the server's follow-up reply with a new utteranceId (PROTOCOL.md 11/2), so the ack never counts, however late it plays.
+    @ObservationIgnored var ackUtterance: [String: Int] = [:]
     @ObservationIgnored var now: () -> ContinuousClock.Instant = { ContinuousClock.now }
     @ObservationIgnored private var holdFind: String?
     @ObservationIgnored private var landedAt: ContinuousClock.Instant?
@@ -238,7 +243,7 @@ struct LiveBox: Identifiable, Equatable {
     /// The companion's voice started playing utterance `id` (CallController, once per utterance).
     func companionStarted(_ id: Int) {
         playingUtterance = id
-        guard holding, speechStart == nil, id != fillerUtterance else { return }
+        guard holding, speechStart == nil, id != fillerUtterance, id != holdFind.flatMap({ ackUtterance[$0] }) else { return }
         speechStart = now(); speechUtterance = id
         scheduleHoldFade()
     }
@@ -260,6 +265,7 @@ struct LiveBox: Identifiable, Equatable {
             holdFind = findId
             speechStart = nil; speechEnd = nil; speechUtterance = nil
             fillerUtterance = playingUtterance
+            if let findId { onHoldStarted?(findId) }
         }
         landedAt = now()
         visible = true

@@ -186,6 +186,41 @@ import XCTest
         XCTAssertEqual(n.state, .peek)
     }
 
+    /// Codex P2: the turn's own "Ooh, let me see." (find.started.utteranceId) plays late, after the masks landed — it is
+    /// not her answer; the server's follow-up reply is.
+    func testTheTurnsAckPlayingLateIsNotTheAnswer() async throws {
+        let m = FindsModel()
+        m.boxes.hold = .init(minimum: 0.05, cap: 3, sentence: 2, afterSpeech: 0.05)
+        m.apply(try ServerEvent.decode(#"{"type":"find.started","findId":"s3","utteranceId":4,"kind":"recipe","title":"t","detail":"d"}"#))
+        m.apply(.observeBoxes(event(find: "s3", [("Tomato", egg)])))
+        m.boxes.companionStarted(4); m.boxes.companionStopped(4)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertTrue(m.boxes.visible, "the ack doesn't end the hold")
+        m.boxes.companionStarted(5); m.boxes.companionStopped(5)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertFalse(m.boxes.visible, "her answer does")
+    }
+
+    /// Codex P2: the card can land first (recipe and SAM run side by side). Masks right after it fold it back to peek.
+    func testMasksRightAfterTheCardFoldItBackToPeek() async throws {
+        let m = FindsModel()
+        m.boxes.hold = .init(minimum: 0.05, cap: 0.3)
+        m.apply(try ServerEvent.decode(#"{"type":"find.started","findId":"s3","utteranceId":1,"kind":"recipe","title":"t","detail":"d"}"#))
+        m.apply(created("s3"))
+        XCTAssertEqual(m.state, .rising)
+        m.apply(.observeBoxes(event(find: "s3", [("Tomato", egg)])))
+        XCTAssertEqual(m.state, .peek, "waits for the masks like a card that came second")
+        try await Task.sleep(for: .milliseconds(1000))
+        XCTAssertEqual(m.state, .half, "and rises when they fade")
+        // a card the user is already reading is left alone
+        let n = FindsModel()
+        n.apply(try ServerEvent.decode(#"{"type":"find.started","findId":"s4","utteranceId":1,"kind":"recipe","title":"t","detail":"d"}"#))
+        n.apply(created("s4"))
+        n.state = .full
+        n.apply(.observeBoxes(event(find: "s4", [("Tomato", egg)])))
+        XCTAssertEqual(n.state, .full)
+    }
+
     func testCardWithoutBoxesRisesStraightAway() {
         let m = FindsModel()
         m.apply(try! ServerEvent.decode(#"{"type":"find.started","findId":"p1","utteranceId":1,"kind":"recipe","title":"t","detail":"d"}"#))

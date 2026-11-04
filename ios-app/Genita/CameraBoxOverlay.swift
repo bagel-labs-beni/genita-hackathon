@@ -46,7 +46,9 @@ struct CameraStage: View {
     private var lift: CGFloat {
         let b = call.finds.boxes, state = call.finds.state
         guard b.holding, b.visible, state == .searching || state == .peek else { return 0 }
+        // only what the overlay draws (a box above the HUD floor is left out there, so it can't hold the lift back)
         let rects = b.boxes.map { CameraBoxes.rect($0.box, frame: b.frameSize, in: size, mirrored: mirrored) }
+            .filter { !CameraBoxes.aboveView($0, topInset: grid.labelFloor) }
         return CameraBoxes.stageLift(boxes: rects, sheetTop: size.height - state.height, viewHeight: size.height, floor: grid.labelFloor)
     }
 

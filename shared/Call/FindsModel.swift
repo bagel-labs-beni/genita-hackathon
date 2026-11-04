@@ -59,10 +59,17 @@ struct FindEntry: Identifiable, Equatable {
 @MainActor @Observable final class FindsModel {
     // DEBUG fixtures (FindsFixture state 25) set the pill/say on the shown card, so the setter is not private
     var entries: [FindEntry] = []
-    var state: SheetState = .idle { didSet { if state != .peek { heldAtPeek = nil } } }
+    var state: SheetState = .idle {
+        didSet {
+            if state != .peek { heldAtPeek = nil }
+            if state != .rising && state != .half { autoRaised = nil }
+        }
+    }
     /// Demo S3: the card that waits at peek while its camera masks are held (the half sheet would cover them);
     /// it rises when they fade. Anything that moves the sheet off peek lets go of it.
     @ObservationIgnored private var heldAtPeek: String?
+    /// The card that rose by itself when it landed, and when (masks that come right after it fold it back to peek).
+    @ObservationIgnored private var autoRaised: (id: String, at: ContinuousClock.Instant)?
     /// Index into `entries` of the card on screen.
     var page = 0
     /// Ingredient chip the user tapped (its camera box lights up; r03 #4/#5).
@@ -88,6 +95,7 @@ struct FindEntry: Identifiable, Equatable {
 
     init() {
         boxes.onHoldEnded = { [weak self] in self?.boxesHoldEnded() }
+        boxes.onHoldStarted = { [weak self] id in self?.boxesHoldStarted(id) }
     }
     /// FT-NOSEE: a small card on the camera says what the companion cannot see and asks to move the camera. Never a guess.
     private(set) var noSee: NoSeeCheck?
@@ -119,6 +127,7 @@ struct FindEntry: Identifiable, Equatable {
         switch event {
         case let .findStarted(s):
             boxEpoch[s.findId] = boxes.epoch
+            boxes.ackUtterance[s.findId] = s.utteranceId
             let frames = latestFrames.compactMap { Data(base64Encoded: $0) }
             entries.append(FindEntry(id: s.findId, kind: s.kind, utteranceId: s.utteranceId, searchTitle: s.title, searchDetail: s.detail, frames: frames, question: latestQuestion))
             // these frames belong to this find now: a later find (camera off by then) must not pick them up (AU-75)
@@ -155,6 +164,7 @@ struct FindEntry: Identifiable, Equatable {
                 heldAtPeek = c.findId
             } else if state == .searching && page == index {
                 state = .rising
+                autoRaised = (c.findId, ContinuousClock.now)
                 risingTask?.cancel()
                 risingTask = Task { [weak self] in
                     try? await Task.sleep(for: .milliseconds(420))
@@ -233,6 +243,16 @@ struct FindEntry: Identifiable, Equatable {
         return true
     }
     func pipTapped() { if state == .full { state = .half } }
+
+    /// Masks landed just after their card rose by itself (the server runs the recipe and SAM side by side): within 4 s
+    /// and before the user touched it, the card folds back to peek and waits for them like a card that came second.
+    private func boxesHoldStarted(_ findId: String) {
+        guard let a = autoRaised, a.id == findId, current?.id == findId, state == .rising || state == .half,
+              !touching, selectedItem == nil, newFind == nil, ContinuousClock.now - a.at < .seconds(4) else { return }
+        risingTask?.cancel()
+        state = .peek
+        heldAtPeek = findId
+    }
 
     /// The held masks faded: the card that waited at peek rises as it would have (searching → rising → half).
     private func boxesHoldEnded() {
@@ -480,6 +500,7 @@ struct FindEntry: Identifiable, Equatable {
         interrupted()
         heldAtPeek = nil
         boxes.clear()
+        boxes.ackUtterance = [:]
         risingTask?.cancel(); toastTask?.cancel()
         state = .idle
         browser = nil
