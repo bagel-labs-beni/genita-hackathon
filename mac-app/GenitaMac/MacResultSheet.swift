@@ -7,9 +7,9 @@ import AppKit
 /// peek, close + Undo, and the same drag / tap rules. Product links open in the Mac's default browser
 /// (MAC-LINK, 184:150), never inside the sheet.
 extension SheetState {
-    /// MAC-RS-a is taller than the iPhone's 148: the searching row plus the scan line (198 visible).
+    /// Finds r01: searching is 328 like the iPhone (question title, stage line, 3 skeleton rows).
     /// Mac v2: the full sheet stops 54 pt lower so the face pip (top 28) never covers its ✕ and bookmark.
-    var macHeight: CGFloat { self == .searching ? 198 : (self == .full && MacDesignV2.enabled ? 674 : height) }
+    var macHeight: CGFloat { self == .searching ? 328 : (self == .full && MacDesignV2.enabled ? 674 : height) }
 }
 
 struct MacResultSheet: View {
@@ -73,30 +73,45 @@ struct MacResultSheet: View {
             ? ProductPicks.searchingWhy(after: finds.entries.filter { $0.id != entry?.id }.compactMap(\.card)) : nil
         return VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center, spacing: 12) {
-                MacTalkWave(color: MacSheetInk.ink)
+                if failed == nil { MacSearchOrb() } else { MacTalkWave(color: MacSheetInk.ink) }
                 VStack(alignment: .leading, spacing: 0) {
                     // one line each next to Stop, as the iPhone (#211): server copy, never wrapped, never a cut word
                     OneLineText(text: failed?.title ?? entry?.searchTitle ?? "Looking", font: MacSheetInk.sans(16, .medium), color: MacSheetInk.ink)
                         .accessibilityIdentifier("macResultSearchTitle")
-                    if let detail = failed?.body ?? entry?.searchDetail, !detail.isEmpty {
-                        OneLineText(text: detail, font: MacSheetInk.sans(14), color: MacSheetInk.mute, alternates: OneLineText.afterDot(detail))
+                    if let failed {
+                        if !failed.body.isEmpty {
+                            OneLineText(text: failed.body, font: MacSheetInk.sans(14), color: MacSheetInk.mute, alternates: OneLineText.afterDot(failed.body))
+                                .accessibilityIdentifier("macResultSearchDetail")
+                        }
+                    } else {
+                        // r01: server detail first, then the steps it is taking, every 2 s, pushed up from below
+                        MacStageLine(lines: MacStageLine.lines(detail: entry?.searchDetail ?? ""))
                             .accessibilityIdentifier("macResultSearchDetail")
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 // PF-1d on the Mac too: a failed product search can be asked again; other failures close
-                Button(failed == nil ? "Stop" : retry ? "Retry" : "Close") {
+                Button {
                     withAnimation { failed == nil ? finds.stop() : retry ? finds.retry() : finds.close() }
+                } label: {
+                    Text(failed == nil ? "Stop" : retry ? "Retry" : "Close").font(MacSheetInk.sans(14, .medium)).foregroundStyle(MacSheetInk.ink)
+                        .padding(.horizontal, 14).frame(height: 36)
+                        .background(MacSheetInk.sheet, in: Capsule())
+                        .overlay(Capsule().strokeBorder(MacFindsInk.line, lineWidth: 1))
+                        .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
                 }
-                    .buttonStyle(.plain).font(MacSheetInk.sans(14, .medium)).foregroundStyle(MacSheetInk.ink)
-                    .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+                    .buttonStyle(.plain)
                     .accessibilityIdentifier(failed == nil ? "macResultStop" : retry ? "macResultRetry" : "macResultClose")
-            }.frame(minHeight: 68)
-            if failed == nil { MacScanLine().padding(.top, 6) }
+            }.frame(minHeight: 52)
             if let why {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Why").font(MacSheetInk.sans(12)).foregroundStyle(MacSheetInk.faint)
                     Text(why).font(MacSheetInk.sans(13)).foregroundStyle(MacSheetInk.ink).lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 }.padding(.top, 10).accessibilityElement(children: .combine).accessibilityIdentifier("macResultSearchWhy")
+            }
+            if failed == nil {
+                VStack(spacing: 14) {
+                    ForEach(0..<(why == nil ? 3 : 2), id: \.self) { i in MacSkeletonRow(last: i == 2) }
+                }.padding(.top, 18).accessibilityHidden(true)
             }
         }
         .padding(.horizontal, 38).padding(.top, 32)
@@ -125,6 +140,7 @@ struct MacResultSheet: View {
     @ViewBuilder private var results: some View {
         if let card {
             let picks = card.kind == .product ? ProductPicks.picks(from: card) : []
+            let hidden = max(0, 728 - finds.state.macHeight)
             let evidence = ProductPicks.evidence(from: card)
             ZStack(alignment: .bottom) {
                 MacScroll {
@@ -142,7 +158,10 @@ struct MacResultSheet: View {
                                 .padding(.top, 8)
                                 .accessibilityLabel(occasion.accessibilityLabel).accessibilityIdentifier("macOutfitOccasion")
                         }
-                        if picks.isEmpty {
+                        if picks.isEmpty, [.link, .unknown].contains(card.kind), !card.sources.isEmpty {
+                            // r01: one row per result, picture first, the reason once
+                            MacFindRows(rows: card.macFindRows)
+                        } else if picks.isEmpty {
                             // chip flow → the rest: 12 pt (춘식이 11/4), else the usual 16 under the subtitle
                             generic(card).padding(.top, card.occasionChip != nil ? 12 : 16)
                         } else {
@@ -153,34 +172,37 @@ struct MacResultSheet: View {
                                 if picks.count == 1 { Spacer(minLength: 0) }
                             }.padding(.top, 16)
                         }
+                        // r01: "Why these" is one quiet line under the results, never hidden behind the button
                         if !evidence.lines.isEmpty {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("Why these").font(MacSheetInk.sans(12)).foregroundStyle(MacSheetInk.faint)
-                                ForEach(Array(evidence.lines.enumerated()), id: \.offset) { i, line in
-                                    // D4 / QA: one line when it fits; else each " · " part on its own line, the "·" dropped —
-                                    // never a line that ends or starts with "·"
-                                    ViewThatFits(in: .horizontal) {
-                                        Text(line).lineLimit(1)
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            ForEach(Array(Self.parts(line).enumerated()), id: \.offset) { _, part in
-                                                Text(part).fixedSize(horizontal: false, vertical: true)
-                                            }
-                                        }
-                                    }
-                                    .font(MacSheetInk.sans(14)).foregroundStyle(i == 0 ? MacSheetInk.ink : MacSheetInk.mute)
-                                }
-                            }.padding(.top, 36).accessibilityElement(children: .combine).accessibilityIdentifier("macResultEvidence")
+                            Text(evidence.lines.joined(separator: " · ")).font(MacSheetInk.sans(13)).foregroundStyle(MacSheetInk.mute)
+                                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                                .padding(.top, 18).accessibilityLabel("Why these: " + evidence.lines.joined(separator: ". "))
+                                .accessibilityIdentifier("macResultEvidence")
                         }
-                        Color.clear.frame(height: 110)
+                        // the part of the 728 frame below the visible sheet + the foot (12 + 50 + 24) + 16
+                        Color.clear.frame(height: hidden + Self.footHeight + 16)
                     }.padding(.horizontal, 38).padding(.top, 64)
                 }
-                // PF-1c: saved turns the one button grey (the Mac has no Finds tab to open; the card is in Finds on the iPhone)
-                let saved = entry?.saved == true
-                Button { finds.toggleSave() } label: {
-                    Text(saved ? "Saved to Finds" : "Save to Finds").font(MacSheetInk.sans(16, .medium)).foregroundStyle(saved ? MacSheetInk.ink : MacSheetInk.onInk)
-                        .frame(width: 314, height: 50).contentShape(RoundedRectangle(cornerRadius: 12))
-                }.buttonStyle(MacGlassButtonStyle(kind: saved ? .regular : .prominent)).padding(.bottom, 56).accessibilityIdentifier("macResultSave").accessibilityValue(saved ? "saved" : "")
+                foot(hidden: hidden)
             }
+        }
+    }
+
+    /// r01 foot: 12 pt sheet bar + 50 pt button + 24 pt to the VISIBLE bottom of the sheet, a 28 pt fade above.
+    static let footHeight: CGFloat = 12 + 50 + 24
+
+    private func foot(hidden: CGFloat) -> some View {
+        // PF-1c: saved turns the one button grey (the Mac has no Finds tab to open; the card is in Finds on the iPhone)
+        let saved = entry?.saved == true
+        return VStack(spacing: 0) {
+            LinearGradient(colors: [MacSheetInk.sheet.opacity(0), MacSheetInk.sheet], startPoint: .top, endPoint: .bottom)
+                .frame(height: 28).allowsHitTesting(false)
+            Button { finds.toggleSave() } label: {
+                Text(saved ? "Saved to Finds" : "Save to Finds").font(MacSheetInk.sans(16, .medium)).foregroundStyle(saved ? MacSheetInk.ink : MacSheetInk.onInk)
+                    .frame(width: 314, height: 50).contentShape(RoundedRectangle(cornerRadius: 12))
+            }.buttonStyle(MacGlassButtonStyle(kind: saved ? .regular : .prominent)).accessibilityIdentifier("macResultSave").accessibilityValue(saved ? "saved" : "")
+                .padding(.top, 12).padding(.bottom, 24 + hidden)
+                .frame(maxWidth: .infinity).background(MacSheetInk.sheet)
         }
     }
 
@@ -258,7 +280,7 @@ struct MacProductCard: View {
     private static let outlineBlue = Color(red: 156.0 / 255, green: 211.0 / 255, blue: 245.0 / 255)
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            picture.frame(width: 151, height: 151).clipShape(RoundedRectangle(cornerRadius: 8))
+            picture.frame(width: 151, height: 151).clipShape(RoundedRectangle(cornerRadius: 12))
             Text(pick.name).font(MacSheetInk.sans(15, .medium)).foregroundStyle(MacSheetInk.ink).lineLimit(1).padding(.top, 14)
             Text(pick.brandLine).font(MacSheetInk.sans(13)).foregroundStyle(MacSheetInk.mute).lineLimit(1).minimumScaleFactor(0.8).padding(.top, 6)
             VStack(alignment: .leading, spacing: 6) {
@@ -267,13 +289,14 @@ struct MacProductCard: View {
                 if !pick.situation.isEmpty { chip(pick.situation, mark: ProductPicks.saidMark, fg: MacSheetInk.ink, bg: MacSheetInk.chip).accessibilityIdentifier("macProductSituation") }
             }.padding(.top, 10).frame(minHeight: 58, alignment: .top)
             Button(action: open) {
-                Text("Open in browser ↗").font(MacSheetInk.sans(14, .medium))
+                // r01: a 36 pt pill, the first card ink, the others outlined
+                Text("Open in browser ↗").font(MacSheetInk.sans(13, .medium))
                     .foregroundStyle(filled ? MacSheetInk.onInk : MacSheetInk.ink)
-                    .frame(width: 151, height: 34)
-                    .background { if filled { GlassCTA(color: MacSheetInk.ink, radius: 6) } else { RoundedRectangle(cornerRadius: 6).fill(Color.white) } }
-                    .overlay { if !filled { RoundedRectangle(cornerRadius: 6).strokeBorder(Self.outlineBlue, lineWidth: 1) } }
-                    .contentShape(RoundedRectangle(cornerRadius: 6))
-            }.buttonStyle(.plain).onHover { hover = $0 }.padding(.top, 6)
+                    .frame(width: 151, height: 36)
+                    .background(filled ? MacSheetInk.ink : MacSheetInk.sheet, in: Capsule())
+                    .overlay { if !filled { Capsule().strokeBorder(MacFindsInk.line, lineWidth: 1) } }
+                    .contentShape(Capsule())
+            }.buttonStyle(.plain).onHover { hover = $0 }.padding(.top, 10)
                 .accessibilityLabel("Open \(pick.name) in your browser").accessibilityIdentifier("macOpenInBrowser")
         }.frame(width: 151, alignment: .leading)
     }
@@ -373,22 +396,6 @@ extension MacCallCue {
     }
 }
 
-/// r03 scan line: a blue segment across a 2 pt grey track while looking.
-struct MacScanLine: View {
-    @State private var x: CGFloat = 0
-    var body: some View {
-        ZStack(alignment: .leading) {
-            Capsule().fill(MacSheetInk.line)
-            Capsule().fill(MacSheetInk.scan).frame(width: 126).offset(x: x)
-        }.frame(height: 2).clipped()
-        .onAppear {
-            guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, ProcessInfo.processInfo.environment["GENITA_MAC_REVIEW_OUT"] == nil else { return }
-            withAnimation(.easeInOut(duration: 1.4).repeatForever(autoreverses: true)) { x = 314 - 126 }
-        }
-        .accessibilityHidden(true)
-    }
-}
-
 /// A vertical scroll view. Review renders (ImageRenderer, GENITA_MAC_REVIEW_OUT) can't draw AppKit's scroll view,
 /// so they get the plain stack — the same content, top-aligned.
 struct MacScroll<Content: View>: View {
@@ -398,6 +405,299 @@ struct MacScroll<Content: View>: View {
             content.frame(maxHeight: .infinity, alignment: .top)
         } else {
             ScrollView(.vertical, showsIndicators: false) { content }
+        }
+    }
+}
+
+// MARK: Finds r01 (board Ao82Jv1iTdDL9FtFjZR2g6): searching orb + stage line + skeleton rows, the result row list
+
+/// r01 tokens the Mac ink set doesn't have yet (board `--blueSoft`, `--blue`, `--line`, warm tile, why grey).
+enum MacFindsInk {
+    static let blueSoft = Color(red: 215.0 / 255, green: 241.0 / 255, blue: 1)
+    static let blueText = Color(red: 0, green: 99.0 / 255, blue: 159.0 / 255)
+    static let blue = Color(red: 0, green: 162.0 / 255, blue: 1)
+    static let line = Color(white: 227.0 / 255)
+    static let tile = Color(red: 243.0 / 255, green: 241.0 / 255, blue: 237.0 / 255)
+    static let why = Color(white: 74.0 / 255)
+    static let hover = Color(white: 246.0 / 255)
+    @MainActor static var reduceMotion: Bool {
+        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion || ProcessInfo.processInfo.environment["GENITA_MAC_REVIEW_OUT"] != nil
+    }
+}
+
+/// 32 pt blue-soft orb with a magnifier; a 40 pt ring turns every 1.1 s (TimelineView, so it never freezes the way
+/// an onAppear animation did while the sheet was hidden).
+struct MacSearchOrb: View {
+    var body: some View {
+        ZStack {
+            Circle().fill(MacFindsInk.blueSoft).frame(width: 32, height: 32)
+            Image(systemName: "magnifyingglass").font(.system(size: 14, weight: .semibold)).foregroundStyle(MacFindsInk.blueText)
+            if !MacFindsInk.reduceMotion {
+                TimelineView(.animation) { ctx in
+                    let t = ctx.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.1) / 1.1
+                    Circle().trim(from: 0, to: 0.5).stroke(MacFindsInk.blue, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                        .frame(width: 38, height: 38).rotationEffect(.degrees(135 + t * 360))
+                }
+            }
+        }.frame(width: 40, height: 40).accessibilityHidden(true)
+    }
+}
+
+/// The line under the question: what the search is doing now, changing every 2 s, pushed up from below (200 ms).
+struct MacStageLine: View {
+    let lines: [String]
+
+    /// Server detail first ("Searching the web", later "Reading 8 pages"), then the generic steps it hasn't said.
+    static func lines(detail: String) -> [String] {
+        let d = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        var out = d.isEmpty ? ["Searching the web"] : [d]
+        for s in ["Reading pages", "Picking the best"] where !out.contains(where: { $0.lowercased().hasPrefix(s.lowercased().components(separatedBy: " ")[0]) }) {
+            out.append(s)
+        }
+        return out
+    }
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 2)) { ctx in
+            let i = lines.isEmpty ? 0 : Int(ctx.date.timeIntervalSinceReferenceDate / 2) % lines.count
+            let text = lines.isEmpty ? "" : (MacFindsInk.reduceMotion ? lines[0] : lines[i])
+            ZStack(alignment: .leading) {
+                Text(text).font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.mute).lineLimit(1)
+                    .id(text)
+                    .transition(.asymmetric(insertion: .offset(y: 8).combined(with: .opacity), removal: .offset(y: -8).combined(with: .opacity)))
+            }
+            .frame(maxWidth: .infinity, minHeight: 20, maxHeight: 20, alignment: .leading).clipped()
+            .animation(.easeOut(duration: 0.2), value: text)
+        }
+    }
+}
+
+/// Board `.sh`: grey bar with a light band sweeping across every 1.4 s.
+struct MacShimmer: View {
+    var radius: CGFloat = 8
+    private static let base = Color(white: 233.0 / 255)
+    private static let light = Color(white: 247.0 / 255)
+    var body: some View {
+        if MacFindsInk.reduceMotion {
+            RoundedRectangle(cornerRadius: radius).fill(Self.base)
+        } else {
+            TimelineView(.animation) { ctx in
+                let p = ctx.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.4) / 1.4
+                RoundedRectangle(cornerRadius: radius).fill(LinearGradient(
+                    stops: [.init(color: Self.base, location: 0.3), .init(color: Self.light, location: 0.5), .init(color: Self.base, location: 0.7)],
+                    startPoint: UnitPoint(x: -2 + 2 * p, y: 0.5), endPoint: UnitPoint(x: 1 + 2 * p, y: 0.5)))
+            }
+        }
+    }
+}
+
+/// One skeleton row: 64 thumb (r12) + bars 14 / 12 / 10 high at 78 / 94 / 40 %, 7 apart.
+struct MacSkeletonRow: View {
+    var last = false
+    var body: some View {
+        HStack(spacing: 12) {
+            MacShimmer(radius: 12).frame(width: 64, height: 64)
+            GeometryReader { g in
+                VStack(alignment: .leading, spacing: 7) {
+                    MacShimmer().frame(width: g.size.width * (last ? 0.60 : 0.78), height: 14)
+                    MacShimmer().frame(width: g.size.width * (last ? 0.82 : 0.94), height: 12)
+                    MacShimmer().frame(width: g.size.width * 0.40, height: 10)
+                }.frame(maxHeight: .infinity, alignment: .center)
+            }.frame(height: 64)
+        }
+    }
+}
+
+/// r01 result list: #1 as a 164 pt photo with "Top pick" when it has a picture, then 64 pt thumbnail rows.
+/// Whole row = button → the Mac's default browser.
+struct MacFindRows: View {
+    let rows: [MacFindRow]
+
+    private var heroRow: MacFindRow? { rows.first.flatMap { $0.picture != nil ? $0 : nil } }
+
+    var body: some View {
+        let rest = heroRow == nil ? rows : Array(rows.dropFirst())
+        VStack(alignment: .leading, spacing: 0) {
+            if let hero = heroRow { MacTopPick(row: hero).padding(.top, 18) }
+            VStack(spacing: 0) {
+                ForEach(Array(rest.enumerated()), id: \.element.id) { i, row in
+                    MacFindRowView(row: row, divider: i > 0)
+                }
+            }.padding(.top, heroRow == nil ? 12 : 14)
+        }
+        .accessibilityElement(children: .contain).accessibilityIdentifier("macResultRows")
+    }
+}
+
+/// Picture from the server (ready → AsyncImage, pending → shimmer); nil = the warm tile + site initial.
+struct MacRowPicture: View {
+    let row: MacFindRow
+    var initialSize: CGFloat = 28
+    var body: some View {
+        ZStack {
+            MacFindsInk.tile
+            if let img = row.picture, img.status == .pending {
+                MacShimmer(radius: 0)
+            } else if let path = row.picture?.url, let url = CallController.shared.findsURL(path) {
+                AsyncImage(url: url) { phase in
+                    if let image = phase.image { image.resizable().scaledToFill().transition(.opacity) }
+                    else if phase.error != nil { MacInitialTile(row: row, size: initialSize) }
+                    else { MacShimmer(radius: 0) }
+                }
+            } else {
+                MacInitialTile(row: row, size: initialSize)
+            }
+        }.clipped()
+    }
+}
+
+struct MacInitialTile: View {
+    let row: MacFindRow
+    var size: CGFloat = 28
+    var body: some View {
+        let c = row.tint
+        Text(row.initial).font(.system(size: size * 0.5, weight: .bold)).foregroundStyle(MacSheetInk.onInk)
+            .frame(width: size, height: size)
+            .background(Color(red: c.r, green: c.g, blue: c.b), in: RoundedRectangle(cornerRadius: size * 0.28))
+    }
+}
+
+/// Favicon (16, r4) + domain, 13 mute.
+struct MacSourceLine: View {
+    let row: MacFindRow
+    var body: some View {
+        HStack(spacing: 6) {
+            Group {
+                if let f = row.favicon, let url = f.hasPrefix("http") ? URL(string: f) : CallController.shared.findsURL(f) {
+                    AsyncImage(url: url) { phase in
+                        if let image = phase.image { image.resizable().scaledToFit() } else { MacInitialTile(row: row, size: 16) }
+                    }.frame(width: 16, height: 16).clipShape(RoundedRectangle(cornerRadius: 4))
+                } else {
+                    MacInitialTile(row: row, size: 16)
+                }
+            }
+            Text(row.domain.replacingOccurrences(of: "www.", with: "")).font(MacSheetInk.sans(13)).foregroundStyle(MacSheetInk.mute).lineLimit(1)
+        }
+    }
+}
+
+@MainActor private func openRow(_ row: MacFindRow) {
+    if let url = ExternalLink.web(row.url) { NSWorkspace.shared.open(url) }
+}
+
+struct MacTopPick: View {
+    let row: MacFindRow
+    @State private var hover = false
+    var body: some View {
+        Button { openRow(row) } label: {
+            VStack(alignment: .leading, spacing: 0) {
+                MacRowPicture(row: row, initialSize: 44).frame(maxWidth: .infinity).frame(height: 164)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay(alignment: .topLeading) {
+                        Text("Top pick").font(MacSheetInk.sans(12, .medium)).foregroundStyle(MacSheetInk.ink)
+                            .padding(.horizontal, 9).padding(.vertical, 3)
+                            .background(MacSheetInk.sheet.opacity(0.92), in: Capsule()).padding(10)
+                    }
+                Text(row.title).font(MacSheetInk.sans(17, .semibold)).foregroundStyle(MacSheetInk.ink).lineLimit(2)
+                    .lineSpacing(1).padding(.top, 12).fixedSize(horizontal: false, vertical: true)
+                if let why = row.why {
+                    Text(why).font(MacSheetInk.sans(14)).foregroundStyle(MacFindsInk.why).lineLimit(2).lineSpacing(3)
+                        .fixedSize(horizontal: false, vertical: true).padding(.top, 3)
+                }
+                MacSourceLine(row: row).padding(.top, 6)
+            }.contentShape(Rectangle()).opacity(hover ? 0.92 : 1)
+        }
+        .buttonStyle(MacRowPress())
+        .onHover { hover = $0 }
+        .accessibilityLabel("Top pick: \(row.title). \(row.why ?? "") \(row.domain)")
+        .accessibilityIdentifier("macResultTopPick")
+    }
+}
+
+struct MacFindRowView: View {
+    let row: MacFindRow
+    let divider: Bool
+    @State private var hover = false
+    var body: some View {
+        Button { openRow(row) } label: {
+            HStack(alignment: .top, spacing: 12) {
+                MacRowPicture(row: row).frame(width: 64, height: 64).clipShape(RoundedRectangle(cornerRadius: 12))
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(row.title).font(MacSheetInk.sans(15.5, .semibold)).foregroundStyle(MacSheetInk.ink).lineLimit(1)
+                    if let why = row.why {
+                        Text(why).font(MacSheetInk.sans(14)).foregroundStyle(MacFindsInk.why).lineLimit(2).lineSpacing(3)
+                            .fixedSize(horizontal: false, vertical: true).padding(.top, 1)
+                    }
+                    MacSourceLine(row: row).padding(.top, 4)
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 12)
+            .background(hover ? MacFindsInk.hover : Color.clear, in: RoundedRectangle(cornerRadius: 14))
+            .overlay(alignment: .top) {
+                if divider && !hover { Rectangle().fill(MacFindsInk.line).frame(height: 1).padding(.leading, 86).padding(.trailing, 10) }
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 14))
+        }
+        .buttonStyle(MacRowPress())
+        .onHover { hover = $0 }
+        .padding(.horizontal, -10)
+        .accessibilityLabel("\(row.title). \(row.why ?? "") \(row.domain)")
+        .accessibilityHint("Opens in your browser")
+        .accessibilityIdentifier("macResultRow")
+    }
+}
+
+/// Board `.row:active`: scale .99.
+struct MacRowPress: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.scaleEffect(configuration.isPressed ? 0.99 : 1).animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
+/// Finds r01: one row per web result (link / unknown cards), shared by the iPhone and Mac sheets.
+/// Old servers send no `why` / `image`: the reason then comes from the " — why" tail of the title or the matching
+/// step ("Title — why"), and the picture falls back to the domain-initial tile.
+struct MacFindRow: Identifiable, Equatable {
+    var id: Int
+    var title: String
+    var why: String?
+    var domain: String
+    var url: String
+    var image: FindImage?
+    var favicon: String?
+
+    /// The picture to draw: ready → URL, pending → shimmer, nil / failed → initial tile.
+    var picture: FindImage? { image.flatMap { $0.status == .failed ? nil : $0 } }
+    var initial: String { (domain.replacingOccurrences(of: "www.", with: "").first ?? title.first).map { String($0).uppercased() } ?? "•" }
+    /// A steady colour per site for the initial tile (no favicon yet).
+    var tint: (r: Double, g: Double, b: Double) {
+        let palette: [(Double, Double, Double)] = [(0.12, 0.44, 0.70), (0.91, 0.35, 0.05), (0.0, 0.67, 0.42), (0.44, 0.28, 0.91), (0.79, 0.16, 0.16), (0.10, 0.55, 0.60)]
+        let h = domain.unicodeScalars.reduce(0) { ($0 &* 31 &+ Int($1.value)) & 0xFFFF }
+        let p = palette[h % palette.count]
+        return (r: p.0, g: p.1, b: p.2)
+    }
+}
+
+extension FindCard {
+    /// Rows for the r01 list, or [] when the card has no web sources (recipe / outfit keep their own layout).
+    var macFindRows: [MacFindRow] {
+        sources.enumerated().map { i, s in
+            var title = s.displayTitle
+            var why = s.why?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if why?.isEmpty != false {
+                why = nil
+                if let r = title.range(of: " — ") {
+                    why = String(title[r.upperBound...]); title = String(title[..<r.lowerBound])
+                } else {
+                    let step = steps.first { $0.text.hasPrefix(title) } ?? (steps.count == sources.count ? steps[i] : nil)
+                    if let t = step?.text {
+                        if let r = t.range(of: " — ") { why = String(t[r.upperBound...]) } else if t != title { why = t }
+                    }
+                }
+            }
+            var image = s.image
+            if i == 0, image?.status != .ready, hero?.status == .ready { image = hero }
+            return MacFindRow(id: i, title: title, why: why.flatMap { $0.isEmpty ? nil : $0 }, domain: s.domain, url: s.url, image: image, favicon: s.favicon)
         }
     }
 }
