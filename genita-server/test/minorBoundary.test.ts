@@ -77,3 +77,8 @@ test("Codex #640 r15: '16 looking for my first job' is an age; '18 months sober'
   for (const t of ["I'm 16 looking for my first job.", "I'm 15 living with my mom", "I'm almost 18", "I turn 18 tomorrow", "I'm 15-year-old lol"]) assert.ok(minorLine([t]), t);
   for (const t of ["I'm 30. I'm almost 18 months sober.", "I'm going to be 18 minutes late", "I'm 30. I'm five-foot-eight.", "I'm 5-foot-8", "I'm 15 meetings deep today"]) assert.equal(minorLine([t]), null, t);
 });
+
+test("Codex #640 r16: 'I'll be 17', 'I'll turn 18' are minors; 'five or ten minutes', '15 fucking minutes', 'not quite 18 months sober' are not", () => {
+  for (const t of ["I'll be 17 next month", "I'll turn 18 tomorrow", "I'm 16 looking for my first job."]) assert.ok(minorLine([t]), t);
+  for (const t of ["I'm 30. I'm five or ten minutes away", "I'm 30. I'm 15 fucking minutes late", "I'm 30. I'm not quite 18 months sober yet"]) assert.equal(minorLine([t]), null, t);
+});
