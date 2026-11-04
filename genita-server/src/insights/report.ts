@@ -272,7 +272,10 @@ export function linkSources(card: Pick<StyleCard, "sections">, o: Pick<Observati
   const basis = new Set((o.basis ?? []).map((t) => norm(t)));
   // demo P0 #2 (11/4): a paste quote of 3+ words said whole inside a line ("tomato soup on rainy days" in "Loves tomato
   // soup on rainy days.") is that line — the import's report cites the paste, not the card, so this was its only link
-  const inLine = o.evidence.filter((e) => e.source === "import").map((e) => norm(e.quote)).filter((q) => q.split(" ").length >= 3);
+  // …only when exactly one profile line has it: a shared phrase ("on rainy days" in two lines) links neither (Codex r3)
+  const allLines = Object.entries(card.sections ?? {}).filter(([k, v]) => Array.isArray(v) && !OPERATIONAL.has(k)).flatMap(([, v]) => (v as Array<{ text: string }>).map((f) => norm(f.text)));
+  const inLine = o.evidence.filter((e) => e.source === "import").map((e) => norm(e.quote))
+    .filter((q) => q.split(" ").length >= 3 && allLines.filter((l) => wordIn(q, l)).length === 1);
   for (const [section, list] of Object.entries(card.sections ?? {})) {
     if (!Array.isArray(list) || OPERATIONAL.has(section)) continue;
     for (const f of list as Array<{ text: string }>) {

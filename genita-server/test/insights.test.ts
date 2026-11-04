@@ -968,3 +968,12 @@ test("demo P0 #1 (Codex P2): a 'refreshing' flag left by a restart (no write run
   assert.equal(r.report!.refreshing, false);
   assert.ok(!(await h.store.getStyle("u1"))!.insights!.refreshing);
 });
+
+test("demo P0 #2 (Codex r3): a quoted phrase two profile lines share links neither", async () => {
+  const { linkSources } = await import("../src/insights/report.ts");
+  const card = toStyleCard({ sections: { tendencies: [], communication: [], response: [], help: [], support: [], interests: [], likes: [f("Loves tomato soup on rainy days."), f("Reads science fiction on rainy days.")], boundaries: [], approach: [] }, rules: [], to_confirm: [] }, "import");
+  const links = linkSources(card, { evidence: [ev("import", "tomato soup"), ev("import", "on rainy days")], chips: [] });
+  assert.ok(!links.some((l) => /science fiction/.test(l.text)), "the unrelated line isn't linked");
+  const one = linkSources(card, { evidence: [ev("import", "tomato soup on rainy days")], chips: [] });
+  assert.deepEqual(one.map((l) => l.text), ["Loves tomato soup on rainy days."]);
+});
