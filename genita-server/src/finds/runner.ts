@@ -614,9 +614,10 @@ export class FindsRunner {
         const reasons = reasonChips(this.taste.length ? this.taste : tasteLines(this.profile), e.card);
         if (reasons.length) e.card.reasons = reasons;
       }
-      // CW-02: an outfit card always carries a taste reason — the model's, else the account's own top taste line
-      if (e.card.kind === "outfit" && !e.card.subtitle && e.card.reasons?.length) {
-        const top = e.card.reasons[0];
+      // CW-02: an outfit card carries a taste reason — the model's (grounded), else the account's imported top taste
+      // line (P1-7: never a line said in this call, which is the grey chip; no import → no taste line)
+      const top = e.card.kind === "outfit" && !e.card.subtitle ? e.card.reasons?.find((r) => r.from === "profile") : undefined;
+      if (top) {
         e.card.subtitle = top.text;
         e.card.evidence = { style: top.text, situation: e.card.evidence?.situation ?? "" };
       }

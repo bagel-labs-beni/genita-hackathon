@@ -51,6 +51,37 @@ test("CW-02: an outfit card with no taste line from the model gets the account's
   assert.ok(c.why.length >= 2, "seen reasons");
 });
 
+test("P1-7: the taste fallback is the imported preference, never a line said in this call or one made up", async () => {
+  const run = async (o: { profile?: string; taste?: import("../src/personalize/reasons.ts").TasteLine[] }) => {
+    const events: import("../src/protocol.ts").ServerEvent[] = [];
+    const vendors = {
+      async spark() {
+        return { text: '{"pick":0,"title":"Wear the trench.","taste":"","situation":"","options":[{"label":"Beige trench","frame":1},{"label":"Denim jacket","frame":0}],"why":["Clean camel.","Casual blue."],"ask":[],"say":"Trench."}', output: [] };
+      },
+      async *sparkStream() {},
+      async sam() { return []; },
+      async image() { return null; },
+    } as unknown as FindsVendors;
+    const runner = new FindsRunner({ vendors, store: new MemoryFindsStore(), images: false, imageBase: "/v1/finds" }, { emit: (e) => events.push(e), announce() {}, log() {}, now: () => performance.now() });
+    runner.configure({ owner: "acct-a", memories: [], ...o });
+    runner.onTurn({ text: "Which one looks better on me?", frames: ["data:image/jpeg;base64,AAA", "data:image/jpeg;base64,BBB"], utteranceId: 1, replyText: Promise.resolve(null), recent: [] });
+    await runner.settle();
+    return (events.find((e) => e.type === "find.created") as Extract<import("../src/protocol.ts").ServerEvent, { type: "find.created" }>).card;
+  };
+  // said in this call + imported: the card's taste line is the imported one
+  const both = await run({ taste: [{ text: "Style: oversized hoodies", label: null, fromCall: true }, { text: "Style: clean, minimal clothes", label: "explicit" }] });
+  assert.equal(both.subtitle, "Your style: clean, minimal clothes");
+  assert.equal(both.evidence?.style, both.subtitle);
+  // only a line said in this call: no imported preference → no taste line (the grey chip still shows it)
+  const call = await run({ taste: [{ text: "Style: oversized hoodies", label: null, fromCall: true }] });
+  assert.equal(call.subtitle, "");
+  assert.equal(call.evidence, undefined);
+  // no import at all (demo account d): nothing on the line
+  const none = await run({});
+  assert.equal(none.subtitle, "");
+  assert.equal(none.evidence, undefined);
+});
+
 test("AU-70 (Codex r2): a slower read of an earlier pick never takes the newer pick back", async () => {
   let release!: () => void;
   const gate = new Promise<void>((r) => (release = r));
