@@ -57,6 +57,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 | 11/4 | Voice identity (Chelsea build 7: "왜 여자 + 기계식"): with server TTS, `say` is no longer sent by default — over the seat cap the call keeps the server voice; a clause the voice service fails is retried once, then the reply is captions only (`error tts_unavailable`, `turn.metrics.ttsModel` never `device`). `GENITA_VOICE_DEVICE_FALLBACK=1` restores the 11/3 rows below. Device mode (`tts: device`) is unchanged. `GET /v1/companion/voices`: the face's gender (image check `voice_fit`) orders the list and sets `suggested`. No wire changes. |
 | 11/3 | D27 voice GPU capacity: above `GENITA_VOICE_MAX_CALLS` (default 3, 0 = unlimited), chat and interpretation replies use the existing `say` fallback; server voice resumes from the next reply once a seat is free. Voice never switches mid-reply. No wire or `ready` changes. |
 | 11/3 | D27 capacity for judging: `GENITA_VOICE_MAX_CALLS` default 3 → 8 (the voice GPU now autoscales early, up to 4 containers). A full GPU queue answers 503 `busy` within 2.5 s; that sentence uses the existing `say` fallback and server voice is retried after 2 s (other failures still 30 s). No wire changes. |
+| 11/4 | Finds audit (additive): new client message `find.focus {findId}` ("Talk about this on a call" names the card, including one from an earlier call; AU-70). Outfit cards: the occasion line ("for this weekend") is the last `why` line and `evidence {style, situation}` is set (CW-02, AU-57). |
 | 11/4 | Device QA test photos: `/me` (and the sign-in body) adds `qaSamplePhotos: true` **only** for accounts listed in server env `GENITA_QA_SAMPLE_PHOTOS` (account ids / verified emails); every other account's `/me` is unchanged (no key). The iPhone app then shows "Use a test photo" on V01 (bundled samples → the same `POST /v1/companion/image`). Additive. |
 
 ```
@@ -108,6 +109,7 @@ queues and plays it, and flushes the queue on `utterance.cancelled`.
 | `stop` | — | end the call |
 | `find.confirm` | `findId`, `itemId`, `yes` | the user answered "맞아?" on a maybe ingredient (IC-3): yes → have, no → buy (or gone if no recipe needs it) |
 | `find.stop` | `findId` | Stop on the searching sheet; answered with `find.failed {reason:"stopped"}` |
+| `find.focus` | `findId` | "Talk about this on a call" (FD-01): later turns are about this card. A card from an earlier call is read back from this account's Finds; an unknown id is ignored. No reply. |
 
 `text` may carry `findId` ("Ask about this" chip): that card becomes the context of the reply.
 `start.user` may carry `id` (stable per install until login; owner of saved Finds) and `timeZone` (IANA, for "7:12 PM" in cards).

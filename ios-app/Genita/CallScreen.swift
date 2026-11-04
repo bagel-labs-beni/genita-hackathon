@@ -64,6 +64,10 @@ struct CompanionFaceView: View {
             LipLayer(source: lip).allowsHitTesting(false)
         }
         .animation(reduceMotion || CallMotion.reviewStill ? nil : CompanionFace.revealCurve, value: face.map(ObjectIdentifier.init))
+        // one accessibility element for the whole face (still + poster + live are layers of one picture): with the
+        // layers as separate elements the identifier matched several of them, and UI tests read the still's value
+        // even after the face had landed ("still" on b9-3…b9-6; probe run 41745964955: "multiple matching elements")
+        .accessibilityElement(children: .ignore)
         .accessibilityValue(Self.layer(face: face != nil, poster: poster != nil, still: still != nil))
     }
     /// What's on top, for UI tests: live (the talking face) > poster (its rest frame) > still (scene / fixture) > ground.
@@ -364,6 +368,8 @@ struct CallMoreSheet: View {
     /// RP-1 (D37): the system report sheet
     var report: (() -> Void)?
     var close: () -> Void
+    /// FD-01 step 6 (AU-71): a copied link is on the pasteboard (checked without reading it, so no paste prompt here).
+    @State private var pasteHasLink = UIPasteboard.general.hasURLs
     var body: some View {
         VStack(spacing: 0) {
             Capsule().fill(CallInk.handle).frame(width: 47, height: 5).padding(.bottom, 24)
@@ -375,6 +381,14 @@ struct CallMoreSheet: View {
             }
             let n = max(call.finds.cardCount, call.findsCount)
             row("bookmark", "Finds", n == 0 ? "Nothing looked up yet" : n == 1 ? "1 thing I looked up" : "\(n) things I looked up", id: "moreFinds", enabled: openFinds != nil) { close(); openFinds?() }
+            if pasteHasLink && call.mode != .interpret {
+                // no S08 text field yet: the system paste of a copied link is the way in (link card F10-13 / F10-14)
+                row("link", "Paste link", "Talk about the link you copied", id: "morePasteLink") {
+                    let pasted = UIPasteboard.general.url?.absoluteString ?? UIPasteboard.general.string ?? ""
+                    close()
+                    call.sendLink(pasted)
+                }
+            }
             row("camera", "Flip camera", call.cameraOn ? "Switch front and back" : "Turn your camera on first", id: "moreFlip", enabled: call.canFlipCamera) { call.flipCamera() }
             row("laptopcomputer", "Move to Mac", moveToMacSubtitle, id: "moreMoveToMac") { close(); moveToMac() }
             if let report { row("flag", "Report", "A reply or picture that's wrong", id: "moreReport") { close(); report() } }
@@ -388,6 +402,12 @@ struct CallMoreSheet: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("More")
         .accessibilityIdentifier("moreSheet")
+        .task {
+            // a link copied as text (Notes, Messages) has no URL type: ask iOS whether it looks like one, without reading it
+            guard !pasteHasLink, UIPasteboard.general.hasStrings else { return }
+            let web = \UIPasteboard.DetectedValues.probableWebURL
+            if let found = try? await UIPasteboard.general.detectedPatterns(for: [web]), found.contains(web) { pasteHasLink = true }
+        }
     }
 
     private func row(_ symbol: String, _ title: String, _ subtitle: String, id: String, enabled: Bool = true, toggle: Bool? = nil, action: @escaping () -> Void) -> some View {

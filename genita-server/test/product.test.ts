@@ -425,6 +425,24 @@ test("QA 11/3: shoes for an outfit are never slippers / sandals / mules unless a
   assert.match(productPrompt({ question: ask, recent: [], taste: [], city: null, region: "US", today: "Tuesday, November 3" }), /never slippers, sandals, slides, flip-flops or mules unless they asked/);
 });
 
+test("AU-79 FD-02: a category page nothing could read never fills a product slot", () => {
+  // unread (bot-blocked) or markerless pages with a category slug
+  assert.equal(isProductPage("https://shop.example.com/womens-brown-boots", null), false);
+  assert.equal(isProductPage("https://shop.example.com/boots-dark-brown/", { kind: "unknown" }), false);
+  assert.equal(isProductPage("https://shop.example.com/mens-jackets.html", null), false);
+  assert.equal(isProductPage("https://shop.example.com/a/b", { kind: "unknown", title: "Women's Boots | Shop" }), false);
+  assert.equal(isProductPage("https://shop.example.com/a/b", { kind: "unknown", title: "Shop 24 results" }), false);
+  // one item, by URL shape or slug, still counts
+  assert.equal(isProductPage("https://shop.example.com/products/boots-dark-brown", null), true);
+  assert.equal(isProductPage("https://shop.example.com/en/highwood-chelsea-boot", null), true);
+  assert.equal(isProductPage("https://shop.example.com/a/b", { kind: "unknown", title: "Highwood Chelsea Boot – Dark Brown" }), true);
+  assert.equal(isProductPage("https://shop.example.com/collections/x", { kind: "product" }), true, "the page's own markup wins (unchanged)");
+  // Codex r1: a product URL with a category word in its title, and a title that names one item after the category
+  assert.equal(isProductPage("https://shop.example.com/products/heritage-chelsea-12345", { kind: "unknown", title: "Women's Boots - Heritage Chelsea Boot" }), true);
+  assert.equal(isProductPage("https://shop.example.com/a/b", { kind: "unknown", title: "Women's Boots - Heritage Chelsea Boot" }), true);
+  assert.equal(isProductPage("https://shop.example.com/a/b", { kind: "unknown", title: "Brown boots collection – Acme" }), false);
+});
+
 test("AU-78 FD-02: 'dark brown boots' never shows a black or tan boot while a brown one is there; brown shades and plain names stay", async () => {
   const { askedColors, offColor } = await import("../src/finds/product.ts");
   const brown = askedColors("Can we look for dark brown boots for my trench?");
@@ -454,4 +472,17 @@ test("AU-78 FD-02: 'dark brown boots' never shows a black or tan boot while a br
   const one = vendors({ items: [{ ...ITEM1, name: "Red Wing Classic Moc" }], output: [SEARCH, OPEN(P1)], facts: { [P1]: { kind: "product" } } });
   const c2 = (await runProduct(ctxFor(one, { question: "Can we look for brown boots?" }).ctx)).card;
   assert.ok(c2, "still a card");
+});
+
+test("AU-79 (Codex #602 r2): a plural product name is not a category; the asked color still comes before a proven page", async () => {
+  assert.equal(isProductPage("https://shop.example.com/en/highwood-chelsea-boots", { kind: "unknown", title: "Highwood Chelsea Boots – Dark Brown" }), true);
+  assert.equal(isProductPage("https://shop.example.com/a/b", { kind: "unknown", title: "Boots | Acme" }), false);
+  const B1 = "https://shop1.example.com/en/brown-one", B2 = "https://shop2.example.com/en/brown-two";
+  const v = vendors({
+    items: [{ ...ITEM1, name: "Black Chelsea Boot" }, { ...ITEM2, url: B1, name: "Dark Brown Chelsea Boot" }, { ...ITEM2, url: B2, name: "Brown Suede Boot" }],
+    output: [SEARCH, OPEN(P1), OPEN(B1), OPEN(B2)],
+    facts: { [P1]: { kind: "product" }, [B1]: null, [B2]: null },
+  });
+  const card = (await runProduct(ctxFor(v, { question: "Can we look for dark brown boots?" }).ctx)).card!;
+  assert.deepEqual(card.products!.map((p) => p.name), ["Dark Brown Chelsea Boot", "Brown Suede Boot"]);
 });

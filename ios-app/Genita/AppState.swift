@@ -69,6 +69,8 @@ struct SavedSetup: Codable {
     var skipOwner: String?
     /// The first call after onboarding waits up to 2 s for the user to speak first (D21, `start.greetAfterMs`)
     var firstCallPending: Bool?
+    /// I01: which AI the prompt went to ("ChatGPT" / "Claude"), for the SUM report's "· ChatGPT" source line
+    var importAI: String?
     /// The persona card the server wrote from the setup answers (`POST /v1/companion/prefs` → session.persona)
     var serverPersona: ClientMessage.Persona?
     /// The account this setup belongs to (`/me` user id). Another account on this phone starts clean.
@@ -76,7 +78,7 @@ struct SavedSetup: Codable {
     /// The judge account's ready-made companion (server `demo: true`), labelled "Demo companion"
     var companionDemo: Bool?
     enum CodingKeys: String, CodingKey { case stage, name, response, depth, voice, answers, boundaries, presence, presenceCardIDs, hasOnboarded,
-        companionName, imageId, imageType, styleRows, styleProfile, stylePartial, companionCreated, voiceId, voiceName, deviceVoice, skipInterests, skipReplies, skipAvoid, skipLikes, skipSent, skipOwner, firstCallPending, serverPersona, accountId, companionDemo }
+        companionName, imageId, imageType, styleRows, styleProfile, stylePartial, companionCreated, voiceId, voiceName, deviceVoice, skipInterests, skipReplies, skipAvoid, skipLikes, skipSent, skipOwner, firstCallPending, serverPersona, accountId, companionDemo, importAI }
 
 }
 /// A launch response belongs to the token and authentication lifetime that requested it.
@@ -149,12 +151,21 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
             storage.set(sceneImage.key, forKey: Self.sceneKeyKey)
         }
     }
-    var sceneKey: String? { prep?.sceneURL.map { "\(setup.accountId ?? "-")|\($0.absoluteString)" } }
-    /// Until `/prep` answers (no `sceneKey` yet) the saved scene counts only for the same account.
+    var sceneKey: String? { prep?.sceneURL.map { "\(sceneOwner)\($0.absoluteString)" } }
+    var sceneOwner: String { "\(setup.accountId ?? "-")|" }
+    /// A scene on this phone only counts once it's known to be the account's current companion (handover b9-6:
+    /// another phone deleted and remade the companion, and this one opened its call on the old cached scene; the
+    /// scene URL is the same for every companion, so the key alone can't tell). Either this launch asked the server
+    /// and it's the same companion (`sceneCompanionConfirmed`), or the scene was downloaded in this launch (`sceneFresh`).
+    var sceneCompanionConfirmed = false
+    var sceneFresh = false   // both observed: a view that drew the placeholder redraws when trust arrives (Codex P2)
+    var sceneTrusted: Bool { sceneCompanionConfirmed || sceneFresh }
+    /// Until `/prep` answers (no `sceneKey` yet) the saved scene counts only for this account.
     var sceneImageData: Data? {
-        sceneImage.flatMap { saved in
+        guard sceneTrusted else { return nil }
+        return sceneImage.flatMap { saved in
             if let key = sceneKey { return saved.key == key ? saved.data : nil }
-            return saved.key.hasPrefix("\(setup.accountId ?? "-")|") ? saved.data : nil
+            return saved.key.hasPrefix(sceneOwner) ? saved.data : nil
         }
     }
     var sceneFileURL: URL { imageURL.deletingLastPathComponent().appending(path: "scene.jpg") }
@@ -175,8 +186,22 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     var storyChanged: [String: [String]] = [:]
     /// HISY page: 0 = opener (HISY-0 / S0), 1…n = the cards, n + 1 = HISY-7 "Now give me a face."
     var hisyPage = 0
+    /// SUM insight report (Chelsea 11/4, 춘식이 r02 R1): what Genita noticed. Transient, read again with GET /v1/profile/insights.
+    var insightReport: InsightReport?
+    var insightLoading = false
+    /// no report could be had (flag off, failed, none): SUM shows the old four lines
+    var insightUnavailable = false
+    /// the answers last sent with POST /v1/profile/insights (sent again only when they change)
+    @ObservationIgnored var insightAnswersSent: String?
+    /// the answers POST in flight (SUM's GET waits for it, so it reads the rewrite, not the older report)
+    @ObservationIgnored var insightAnswersTask: Task<Void, Never>?
+    /// verdicts one after another (a later answer never brings back a removed trait)
+    @ObservationIgnored var insightVerdictTask: Task<String?, Never>?
     @ObservationIgnored var importTask: Task<Void, Never>?
     @ObservationIgnored var companionTask: Task<Void, Never>?
+    /// `409 reset_in_progress` on create: this many more tries, this far apart (tests shorten it)
+    @ObservationIgnored var resetRetries = 4
+    @ObservationIgnored var resetRetryDelay: Duration = .seconds(2)
     @ObservationIgnored var imageCheckTask: Task<Void, Never>?
     @ObservationIgnored var imageCheckTicket: UUID?
     /// Changes whenever sign-in state changes, so old account responses cannot affect the new account.
@@ -253,6 +278,10 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
         if setup.stage == .preparing { if stage != .preferences { history.append(.preferences) } }
         else { history.append(setup.stage) }
         setup.stage = stage
+        // the last P screen opens: the server rewrites the SUM report with the answers so far, while the user picks
+        #if os(iOS)
+        if stage == .presence || stage == .summary { sendInsightAnswers() }
+        #endif
     }
     func back() {
         if let previous = history.popLast() { setup.stage = previous; return }
@@ -287,6 +316,9 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     private func invalidateOnboardingWork() {
         onboardingSession.invalidate()
         importTask?.cancel(); importTask = nil
+        // SUM insight report: queued answers / verdicts belong to the old session
+        insightAnswersTask?.cancel(); insightAnswersTask = nil; insightAnswersSent = nil
+        insightVerdictTask?.cancel(); insightVerdictTask = nil
         companionTask?.cancel(); companionTask = nil
         imageCheckTask?.cancel(); imageCheckTask = nil; imageCheckTicket = nil
         importing = false; creatingCompanion = false; checkingImage = false; polishing = false
@@ -349,7 +381,7 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
             }
             setup = fresh
             history = []
-            story = nil; storyChanged = [:]; storyFailed = false; hisyPage = 0
+            story = nil; storyChanged = [:]; storyFailed = false; hisyPage = 0; insightReport = nil; insightUnavailable = false; insightAnswersSent = nil
             prep = nil; sceneImage = nil
         }
         setup.accountId = id
@@ -391,7 +423,7 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
             setup.skipAvoid = old.skipAvoid; setup.skipLikes = old.skipLikes
             setup.skipSent = false   // still unsent: a later N3 pick must not clear them (Codex r4)
         }
-        story = nil; storyChanged = [:]; storyFailed = false; hisyPage = 0
+        story = nil; storyChanged = [:]; storyFailed = false; hisyPage = 0; insightReport = nil; insightUnavailable = false; insightAnswersSent = nil
         prep = nil; sceneImage = nil
     }
     /// M02 "Make a new companion" (server `POST /v1/companion/reset` done, or its 4410 call close): this phone drops the
@@ -473,6 +505,14 @@ extension AppState {
             setup.boundaries = ["Message anyone for me"]
             setup.presence = ["Calm"]
         }
+        // SUM insight report review (R1): GENITA_REVIEW_VARIANT=insight / insight-empty
+        #if os(iOS)
+        if reviewStage == .summary, variant.hasPrefix("insight") {
+            insightReport = InsightFixture.report(empty: variant == "insight-empty")
+            setup.importAI = "ChatGPT"
+            setup.name = "Summer"
+        }
+        #endif
         if variant == "image" || reviewStage == .conversation || reviewStage == .connecting,
            let url = Bundle.main.url(forResource: "companion", withExtension: "png") { setup.imageData = try? Data(contentsOf: url) }
         else { setup.imageData = nil }

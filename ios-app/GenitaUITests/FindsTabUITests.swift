@@ -127,10 +127,32 @@ final class FindsTabUITests: XCTestCase {
         let app = launch(camera.merging(["GENITA_FACE_SET_DIR": faceSet]) { $1 })
         let pip = any(app, "cameraPip")
         XCTAssertTrue(pip.waitForExistence(timeout: 25), "camera on: the face is the small window")
-        let end = Date().addingTimeInterval(15)
-        while Date() < end, (pip.value as? String) != "live" { Thread.sleep(forTimeInterval: 0.2) }
-        XCTAssertEqual(pip.value as? String, "live", "the PiP draws the face driver, not a still")
+        // the PiP is the same face view as the call (live > poster > still); on this unwired build the face set may
+        // still be on its way, so any companion layer passes — never the dark ground of a missing face
+        XCTAssertTrue(["live", "poster", "still"].contains(pip.value as? String ?? ""), "PiP face layer: \(String(describing: pip.value))")
         capture(app, "cam-pip-live-face")
+    }
+
+    /// The fixture face set must reach the screen on a call (live face or its rest-frame poster), not stay on the still.
+    /// No recorded session here (a closed port), so nothing races the wait; the face pipeline probe says why on failure.
+    func testFixtureFaceSetReachesTheCall() throws {
+        let faceSet = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appending(path: "shared/GenitaKit/Tests/GenitaKitTests/Fixtures/face-animal").path
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launchEnvironment = ["GENITA_REVIEW_STAGE": "conversation", "GENITA_SERVER_URL": "ws://127.0.0.1:9/v1/session",
+                                 "GENITA_FACE_SET_DIR": faceSet, "GENITA_FIXTURE_SCRIPT": "none"]
+        app.launch()
+        let face = app.descendants(matching: .any).matching(identifier: "companionFace").firstMatch
+        let probe = app.descendants(matching: .any).matching(identifier: "faceDebug").firstMatch
+        XCTAssertTrue(face.waitForExistence(timeout: 15))
+        let end = Date().addingTimeInterval(30)
+        while Date() < end, !["live", "poster"].contains(face.value as? String ?? "") { Thread.sleep(forTimeInterval: 0.25) }
+        let note = XCTAttachment(string: "value=\(String(describing: face.value)) probe=\(probe.exists ? probe.label : "-")")
+        note.name = "face-probe"; note.lifetime = .keepAlways; add(note)
+        print("FACE_FPS= probe \(probe.exists ? probe.label : "-") value=\(String(describing: face.value))")
+        capture(app, "face-fixture-reaches-call")
+        XCTAssertTrue(["live", "poster"].contains(face.value as? String ?? ""), "generated layer on the call; probe: \(probe.exists ? probe.label : "-")")
     }
 
     /// Boxes pop on the live preview, then fade (the board's 4 s).

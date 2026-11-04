@@ -17,7 +17,7 @@ import { SentenceSplitter } from "../text/sentences.ts";
 import { clauseExpression, parseTaggedSentence, type Expression } from "../text/tags.ts";
 import { NarrationJudge, type NarrationDecision } from "../text/toolNarration.ts";
 import { isMostlyHangul, speechLang } from "../text/language.ts";
-import { RECOVER_LINE, resolveSpeaker, seamlessLang, SEAMLESS_MODEL } from "../tts/seamless.ts";
+import { HOLD_LINE, RECOVER_LINE, resolveSpeaker, seamlessLang, SEAMLESS_MODEL } from "../tts/seamless.ts";
 import type { VoiceSeats } from "../tts/capacity.ts";
 import { spokenText } from "../voice/normalize.ts";
 import { chunkTiming, type LipMode, type LipPlan } from "../lips/source.ts";
@@ -53,7 +53,8 @@ import type { CallStart, VoiceUpdate } from "../personalize/service.ts";
 import type { CallTurn } from "../personalize/extract.ts";
 import { ASK_TURNS, replyAsks } from "../personalize/unknowns.ts";
 import { mightBeCorrection } from "../personalize/corrections.ts";
-import { avoidKeys, forgetTarget, isForgetRequest, scrubHistory, type Removed } from "../personalize/forgotten.ts";
+import { ageSays, foldAge, isMinor, MINOR_LINE, NO_AGE, type AgeSay } from "../convo/minorBoundary.ts";
+import { avoidKeys, forgetTarget, isForgetRequest, mentionsAvoided, scrubHistory, type Removed } from "../personalize/forgotten.ts";
 import { isForgetRequest as isMemoryForgetRequest } from "../memory/extract.ts";
 import { localTimeLine } from "../personalize/knows.ts";
 import type { UnknownItem } from "../personalize/story.ts";
@@ -105,6 +106,8 @@ export type SessionDeps = {
   greetScheduler?: (fn: () => void, ms: number) => () => void;
   /** Server voice (Seamless): cache a speaker's filler clauses when a call starts with it */
   voicePrefetch?: (speaker: number) => void;
+  /** boot only (main.ts): prefetch the curated speakers so their cold-GPU lines are on disk */
+  voiceWarm?: () => void;
   /** Shared by all calls to the process's voice GPU (not one gate per session). */
   voiceSeats?: VoiceSeats;
   /** Identity is assigned by the authenticated upgrade, never by start.user. */
@@ -119,6 +122,9 @@ export type SessionDeps = {
    * (server.ts). With server memory on, `start.history` is otherwise ignored, so the Mac lost the iPhone's turns.
    */
   priorTurns?: (revision: number) => HistoryItem[] | null;
+  /** Codex #640 r13: what this account's other / just-ended calls said about their age, held by the server and handed
+   * over at start, independent of a slow memory read or history restore */
+  accountAge?: () => AgeSay;
   /** Session memory: the thread those turns belong to (same conversation on the next device), read right after priorTurns */
   priorThread?: (revision: number) => ThreadState | null;
   /** same-device return visit: the last lines of the call the user just hung up (server.ts), read right after priorTurns */
@@ -177,6 +183,8 @@ const MAX_CORRECTION_CHECKS = 12;
 const COMPANION_VOICE_WAIT_MS = 800;
 /** waits before each retry of a clause the voice service failed (a busy GPU frees a slot in ~0.5 s; a cold one takes longer) */
 const TTS_RETRY_MS = [400, 1500];
+/** first-byte budget of a reply's last retry while nothing of it was heard: a cold voice GPU starts in 25-40 s */
+const COLD_WAIT_MS = 40_000;
 
 /** Demo S4: said once per call, on the first outfit ask while the Mac app is open. */
 export const SUGGEST_MAC_LINE =
@@ -272,6 +280,14 @@ function parseInterpretOptions(v: unknown): InterpretOptionsWire {
   };
 }
 const ANNOUNCE_WAIT_MS = 20_000;
+/** Codex #585 r2 P1: a last opener topic the user since asked to forget is never named, even as "don't open on X" */
+function lastSafeHook(recent: string[], removed: Removed[]): string | null {
+  const last = recent.at(-1) ?? null;
+  return last && removed.length && mentionsAvoided(last, avoidKeys(removed)) ? null : last;
+}
+/** AU-44: notes-based follow-up greetings, like the memory opener (memory/service.ts revisitGapHours) */
+const NOTES_OPENER_GAP_MS = 6 * 3_600_000;
+const NOTES_CALLBACK_MS = 10 * 60_000;
 /** hold cap: the longest the first sound waits on a held line (a pre-tool preamble) before a short beat */
 const HOLD_BEAT_MS = 1500;
 /** speech end → first sound cap (GENITA_HOLD_CAP_MS, 0 = off) */
@@ -484,6 +500,10 @@ export class Session {
   /** the open segment's latest partial; a watchdog commit keeps it, and then that segment's late final is dropped */
   private segmentPartial = "";
   private dropLateFinal = false;
+  /** bumped on a proximity handoff: an echo check that started before it never completes a turn */
+  private asrEpoch = 0;
+  /** set by stopForHandoff; the server feeds this call's mic again only once it owns the sound (mayPlay) */
+  private handedOff = false;
   private echoPending = 0;
   private lastAsrAt = 0;
   /** the user is talking, or paused inside a turn the end-of-turn hold keeps open */
@@ -563,6 +583,12 @@ export class Session {
   private bargeCfg: { bargeInMinMs: number; bargeInMinWords: number };
   private readonly client: ClientSink;
   private finds: FindsRunner | null = null;
+  /** FD-01: the in-flight read of a card named by find.focus; a typed turn waits for it */
+  private readonly focusLoads = new Set<Promise<void>>();
+  /** barge_in count: a typed turn that waited for a card and was interrupted meanwhile is dropped (Codex r4) */
+  private bargeSeq = 0;
+  /** typed questions so far: one that waited for a card is dropped when a newer one came meanwhile (Codex r6) */
+  private textSeq = 0;
   /** lane 개인화: this call's one still-to-confirm question (first ASK_TURNS user turns) */
   private ask: { line: string; item: string; topic: UnknownItem | null; asked: boolean } | null = null;
   /** the companion just asked this call's question: the next user line is checked for the answer */
@@ -676,6 +702,18 @@ export class Session {
   stopForHandoff(): void {
     // the other device has the sound now: this call never speaks first again (Codex 11/3 P2)
     this.stopInitiative();
+    // a turn the end-of-turn hold kept open is not answered here later (CA-14, handover b9-6 P2): this device lost the
+    // sound and the mic, so its reply would only land in the shared history; no cue either
+    this.dropHeld();
+    // …nor a final still on its way from this device (an open segment, an echo check): Codex b9-6 P2
+    if (this.segmentOpen) this.dropLateFinal = true;
+    this.segmentOpen = false;
+    this.asrEpoch++;
+    // the dropped turn's cue-echo filter goes with it (Codex b9-6 r2)
+    this.cuedTurn = false;
+    this.handedOff = true;
+    this.bcGen++;
+    this.backchannel?.stop();
     if (this.started && !this.closed) this.dispatch({ type: "client_barge_in" });
   }
 
@@ -718,12 +756,25 @@ export class Session {
           this.log("finds.ask_ignored_interpreting", { findId: msg.findId.slice(0, 64) });
           return;
         }
-        if (typeof msg.findId === "string") this.finds?.focus(msg.findId);
+        // a card "Talk about this" just named may still be loading from Finds: this turn is about it (Codex P2);
+        // interrupted, closed or switched to interpreting meanwhile → this question is over (Codex r4/r5)
+        const barge = this.bargeSeq;
+        // a newer typed question while this one waited for its card wins (Codex r6)
+        const mine = ++this.textSeq;
+        const waited = this.focusLoads.size > 0 || typeof msg.findId === "string";
+        if (this.focusLoads.size) await this.focusSettled();
+        if (typeof msg.findId === "string") await this.finds?.focus(msg.findId.slice(0, 64));
+        if (waited && (this.closed || barge !== this.bargeSeq || mine !== this.textSeq)) return;
+        if (waited && this.interp && typeof msg.findId === "string") {
+          this.log("finds.ask_ignored_interpreting", { findId: msg.findId.slice(0, 64) });
+          return;
+        }
         this.client.sendJson({ type: "transcript", final: true, text, source: "text" });
         if (this.interp) return this.interp.typed(text);
         return this.dispatch({ type: "text", text });
       }
       case "barge_in":
+        this.bargeSeq++;
         if (this.interp) return this.interp.bargeIn();
         return this.dispatch({ type: "client_barge_in" });
       case "hold":
@@ -758,6 +809,18 @@ export class Session {
       case "find.stop":
         if (typeof msg.findId === "string") this.finds?.stop(msg.findId);
         return;
+      case "find.focus":
+        // FD-01 "Talk about this on a call": later turns are about this card (one from an earlier call too)
+        if (typeof msg.findId === "string") {
+          const load: Promise<void> = (this.finds?.focus(msg.findId.slice(0, 64)) ?? Promise.resolve()).catch(() => {}).then(() => {
+            this.focusLoads.delete(load);
+          });
+          this.focusLoads.add(load);
+          // a guess built before the card was there has no card in it
+          this.dropSpeculation();
+          await load;
+        }
+        return;
       default:
         return this.error("unknown_type", `Unknown message type ${String(type).slice(0, 40)}`, false);
     }
@@ -765,6 +828,12 @@ export class Session {
 
   onClientAudio(frame: Buffer): void {
     if (!this.started) return;
+    if (this.handedOff) {
+      // the sound came back to this device: what the user says now is theirs, even inside the segment the move cut
+      // (no new speechStart) — its final is answered (Codex b9-6 r2)
+      this.handedOff = false;
+      this.dropLateFinal = false;
+    }
     let pcm = frame;
     // F8 Mac call mode: frames carry a "GA" header saying mic (3) or call sound (4)
     if (frame.length > FRAME_HEADER_BYTES && frame[0] === 0x47 && frame[1] === 0x41 && frame[3] === 0 && (frame[2] === CLIENT_FRAME_KIND_MIC || frame[2] === CLIENT_FRAME_KIND_CALL)) {
@@ -808,7 +877,9 @@ export class Session {
       this.recentReplies = this.history.filter((h) => h.role === "assistant").map((h) => h.text).slice(-3);
       // the whole claimed history, not just the kept 16 (Codex #502 P1 r5)
       if (claimedCrisis(msg.history)) this.crisisInCall = true;
+      this.ageSaid = foldAge(this.ageSaid, claimedAge(msg.history));
     }
+    this.ageSaid = foldAge(this.ageSaid, this.deps.accountAge?.() ?? NO_AGE);
     const startMode: Mode = msg.mode === "interpret" ? "interpret" : "chat";
     // the mic ASR opened during start listens in the start mode's languages (no English-only stream to replace)
     this.startingMode = startMode;
@@ -840,6 +911,11 @@ export class Session {
       const memory = this.deps.memory;
       const userId = this.deps.userId;
       this.memoryCall = new MemoryCall(memory, userId, this.id, (revision) => {
+        // a turn the end-of-turn hold kept open, and a final still in its echo check, are from before the Forget:
+        // never answered (and so never saved) after it (CA-14, #585 Codex P1)
+        // …and so is the segment being spoken at that moment: its late final is dropped (d5c9c86e Codex P1)
+        this.dropHeld(); this.asrEpoch++; this.bcGen++; this.backchannel?.stop(); this.cuedTurn = false;
+        if (this.segmentOpen) { this.dropLateFinal = true; this.segmentOpen = false; }
         this.dropSpeculation(); this.dispatch({ type: "client_barge_in" });
         this.history = []; this.recentReplies = []; this.memories = []; this.greeting = null;
         this.historyRevision = revision;
@@ -869,6 +945,12 @@ export class Session {
           const revision = state.revision;
           // before this call's first user message: the previous call's last one (opener gap, DESIGN §4)
           if (!abandoned) { this.lastMessageAt = state.last_message_at; this.openerRecent = storedTopics(state); this.startMood = carriedMood(state, (memory.now ?? Date.now)(), this.moodBase); }
+          // AU-42: a start without a name (the Mac) uses the one the account's iPhone sent; a start with one keeps it fresh
+          if (!abandoned) {
+            const said = this.user?.name?.trim();
+            if (!said && state.user_name) this.user = { ...(this.user ?? {}), name: state.user_name };
+            else if (said && state.user_name !== said) { state.user_name = said; await memory.state.putState(userId, state); }
+          }
           if (this.closed) return;
           // a slow start never seeds old turns, but once verified, this call's NEW turns can hand off (Codex 11/3)
           if (abandoned) { if (this.historyRevision === null) this.historyRevision = revision; return; }
@@ -884,6 +966,8 @@ export class Session {
           // a crisis anywhere in the handed-over turns stays with the call: server turns carry the flag (server.ts);
           // a client-claimed history is read whole, not just the kept 16 (Codex #502 P1 r4/r5)
           if (server?.length ? seed.some((h) => h.role === "user" && realCrisisSignal(h.text)) : claimedCrisis(msg.history)) this.crisisInCall = true;
+          // Codex #640 r4: fold the flags (never a bare "minor" from a partial history; an adult age can still win)
+          this.ageSaid = foldAge(this.ageSaid, server?.length ? seed.filter((h) => h.role === "user").reduce((a, h) => foldAge(a, ageSays(h.text)), NO_AGE) : claimedAge(msg.history));
           // a handoff is the same conversation: one thread, one summary (iPhone and Mac write the same row)
           this.memoryCall?.continueThread(server?.length ? this.deps.priorThread?.(revision) ?? null : null, this.history);
           this.recentReplies = [...this.recentReplies, ...this.history.filter((h) => h.role === "assistant").map((h) => h.text)].slice(-3);
@@ -1350,7 +1434,8 @@ export class Session {
           // in order: a slow echo check must not let a later utterance go first (Codex 11/2) — an empty final too, while
           // one is pending (Codex CA-14 r2)
           this.echoPending++;
-          this.echoChain = this.echoChain.then(() => this.completeUnlessEcho(e.turnId, e.text)).catch(() => {}).finally(() => { this.echoPending--; });
+          const epoch = this.asrEpoch;
+          this.echoChain = this.echoChain.then(() => (epoch === this.asrEpoch ? this.completeUnlessEcho(e.turnId, e.text, epoch) : undefined)).catch(() => {}).finally(() => { this.echoPending--; });
           return;
         }
         return this.completeTurn(e.turnId, e.text);
@@ -1476,15 +1561,17 @@ export class Session {
   /** While sharing, the video's own lines leaking into the mic are not a user turn (F5-L13). */
   private echoChain: Promise<void> = Promise.resolve();
 
-  private async completeUnlessEcho(turnId: number, text: string): Promise<void> {
+  private async completeUnlessEcho(turnId: number, text: string, epoch = this.asrEpoch): Promise<void> {
     const echo = text.trim() ? ((await this.watch?.isEcho(text)) ?? false) : false;
-    // re-check after the wait: the call may have closed or switched to interpretation meanwhile
-    if (this.closed || this.mode === "interpret") return;
+    // re-check after the wait: the call may have closed, switched to interpretation or moved to the other device
+    if (this.closed || this.mode === "interpret" || epoch !== this.asrEpoch) return;
     if (!echo) return this.completeTurn(turnId, text);
     this.log("watch.echo_dropped", { text: text.slice(0, 120) });
     // a held turn waits again from here (the video's line was not the user going on); if the user went on meanwhile,
     // the hold's clock waits for their final (holdTimerFired)
     if (this.held) return this.completeTurn(turnId, "");
+    // the turn ended (as the video's echo): the cue-echo filter is for that turn only (handover b9-6 P2)
+    this.cuedTurn = false;
     this.dispatch({ type: "speech_complete", text: "" });
     this.dropSpeculation();
   }
@@ -1745,16 +1832,25 @@ export class Session {
     let opener: string | undefined;
     if (turn.greeting) {
       const now = (this.deps.memory?.now ?? Date.now)();
-      const o = { hasProfile: !!this.user?.profile, sinceLastMs: last === undefined || last === null ? last : Math.max(0, now - last), hasItem: !!turn.greeting.item || !!this.memoryCall?.summaries.length || !!this.memoryCall?.lastCall };
+      const sinceLastMs = last === undefined || last === null ? last : Math.max(0, now - last);
+      // AU-44: notes are a thread to pick up only after the same 6 h gap as a memory opener (or right after a hang-up,
+      // lastCall); otherwise every call with notes was a "followup" on the same open thread, call after call
+      const notes = this.memoryCall?.visibleSummaries?.() ?? [];
+      // a call-back within minutes of the hang-up is the same conversation picking up (P1 FILM 11/3): still due
+      const notesDue = notes.length > 0 && (!!this.memoryCall?.lastCall || sinceLastMs === null || sinceLastMs === undefined || sinceLastMs < NOTES_CALLBACK_MS || sinceLastMs >= NOTES_OPENER_GAP_MS);
+      const o = { hasProfile: !!this.user?.profile, sinceLastMs, hasItem: !!turn.greeting.item || notesDue || !!this.memoryCall?.lastCall };
       // ^ notes from the last call (#307) are a thread to pick up too: "followup", not a bare "back" line (eval 11/3)
       // #341: open on a different profile thing than the last calls (not for a follow-up or a "back already" line)
       const kind = openerKind(o);
-      const rotates = kind === "first_known" || kind === "known" || kind === "back_today" || kind === "back_days";
-      const hooks = rotates ? profileHooks(this.user?.profile) : [];
+      // AU-44: a notes follow-up names ONE open thread / promise, rotated like profile hooks (recorded per account)
+      const notesFollowup = kind === "followup" && !turn.greeting.item && !this.memoryCall?.lastCall && notesDue;
+      if (this.memoryCall) this.memoryCall.notesOpener = notesDue || !!this.memoryCall.lastCall;
+      const rotates = kind === "first_known" || kind === "known" || kind === "back_today" || kind === "back_days" || notesFollowup;
+      const hooks = notesFollowup ? [...new Set(notes.flatMap((n) => [...n.open_threads, ...n.promises]).map((x) => x.trim().slice(0, 80)).filter((x) => x.length >= 3))].slice(0, 8) : rotates ? profileHooks(this.user?.profile) : [];
       // read-pick-record in one step for the account (an iPhone and a Mac greeting together never pick the same)
       const { hook, recent } = pickOpenerTopic(this.deps.userId, hooks, this.openerRecent, daySeed(now) + (kind === "first_known" ? Math.floor(Math.random() * 1000) : 0), this.memoryCall ? this.deps.memory : undefined, (e) => this.log("convo.opener_topic_failed", { message: String(e).slice(0, 120) }), this.deps.memory && this.deps.userId ? this.historyRevision : 0);
       // rotating kinds with no safe hook pass null (open on the companion's own thing); others pass undefined
-      opener = openerBlock({ ...o, hook: rotates ? hook : undefined, lastHook: recent.at(-1) ?? null, lastMood: this.memoryCall?.summaries[0]?.mood ?? null });
+      opener = openerBlock({ ...o, hook: rotates ? hook : undefined, lastHook: lastSafeHook(recent, this.removedLines), lastMood: this.memoryCall?.summaries[0]?.mood ?? null });
       if (hook) this.log("convo.opener", { kind, hooks: hooks.length, recent: recent.length });
       if (hook || o.hasItem) this.personalUsed++;
     }
@@ -1780,6 +1876,13 @@ export class Session {
         recentReplies: this.recentReplies,
         crisisInCall: this.crisisInCall,
       }) ?? undefined;
+    }
+    // safety gate 11/4: once they said they're a minor in this call, no romance at all (rides the This-turn line)
+    // Codex #640 r3: every chat request of a call known to be with a minor carries it (greeting and cues too)
+    {
+      const minor = isMinor([this.ageSaid, userText ? ageSays(userText) : NO_AGE]) ? MINOR_LINE : null;
+      // first in the line: the This-turn block is cut at 400 chars, the safety part must never be the cut part
+      if (minor) turnLine = turnLine ? turnLine.replace(/^This turn: /, `This turn: ${minor} `) : `This turn: ${minor}`;
     }
     return { style: "v1", opener, initiative: turn.cue?.block, perception, perceptionHint, turn: turnLine };
   }
@@ -1870,6 +1973,12 @@ export class Session {
   /** a real crisis line came up anywhere in this call: sticky (the 16-line history trim never clears it) and handed to
    * the next device with the turns (server.ts), like forgetAsked. No take nudge after it (Codex #502 P1 r1–r3) */
   crisisInCall = false;
+  /** Codex #640: what they said about their own age in this call, kept past the 16-line trim (never stored) */
+  ageSaid: AgeSay = NO_AGE;
+  /** they're a minor by what this call said (server.ts carries ageSaid across a handoff, like crisisInCall) */
+  get minorInCall(): boolean { return isMinor([this.ageSaid]); }
+  /** a handed-over or claimed history said "minor" (explicitly) */
+  set minorInCall(v: boolean) { if (v) this.ageSaid = foldAge(this.ageSaid, { minor: true, adult: false, teen: false }); }
   /** set by the server when this call picked up a dropped one (same device, or > RECONNECT_GAP_MS later): RECONNECT_LINE */
   reconnected = false;
   /** the user hung up (`stop`), as opposed to a dropped socket or a move to the other device */
@@ -1880,6 +1989,8 @@ export class Session {
     // either detector: #442's (personalize, drives the do-not-mention scrub) or memory's broader one (#443)
     if (role === "user" && (isForgetRequest(text) || isMemoryForgetRequest(text))) this.forgetAsked = true;
     if (role === "user" && realCrisisSignal(text)) this.crisisInCall = true;
+    // Codex #640: kept for the whole call (the 16-line history trim would drop the "I'm 15" line)
+    if (role === "user") this.ageSaid = foldAge(this.ageSaid, ageSays(text));
     this.history.push({ role, text });
     if (this.history.length > MAX_HISTORY) this.history.splice(0, this.history.length - MAX_HISTORY);
     this.deps.onHistoryChange?.(role);
@@ -2014,6 +2125,7 @@ export class Session {
     if (this.deps.turnGate && !this.deps.turnGate.peek()) return; // over the judge daily cap: no Spark guess
     const norm = normTranscript(text);
     if (!norm || this.closed || this.spec?.norm === norm) return;
+    if (this.focusLoads.size) return; // the card "Talk about this" named is still loading (Codex r2)
     this.dropSpeculation();
     const built = this.buildRequest(text);
     const abort = new AbortController();
@@ -2031,6 +2143,11 @@ export class Session {
       if (ev.type === "text" && ev.delta.trim()) onText(this.now());
       yield ev;
     }
+  }
+
+  /** Every find.focus read started so far is done, a later one included (overlapping picks, Codex r3). */
+  private async focusSettled(): Promise<void> {
+    while (this.focusLoads.size) await Promise.all([...this.focusLoads]);
   }
 
   private dropSpeculation(): void {
@@ -2150,6 +2267,11 @@ export class Session {
       memoryRetry = preGreet.memoryRetry;
       this.log("call.greet_prestarted", { utteranceId });
     } else preGreet?.abort.abort();
+    if (!built && this.focusLoads.size) {
+      await this.focusSettled();
+      // barged in or replaced while the card loaded: this turn is over (Codex r3)
+      if (signal.aborted || this.reply !== reply || this.closed) return;
+    }
     built ??= this.buildRequest(text, renamedFrom, { greeting, cue });
     if (greeting) this.nod = null;
     const greetLine = greeting && !self && this.deps.greetOpener === true ? this.greetOpener : null;
@@ -2262,6 +2384,8 @@ export class Session {
     /** real sentences only: a hold beat ("Mm, okay.") is never the answer (Codex #384) */
     /** the name opener (greeting a) is said, but is not the model's answer: an empty greeting still retries (Codex #461) */
     const said = () => sentences.filter((x) => !x.beat && !x.drop && !x.opener);
+    /** AU-45: the greeting's "Hey, Summer!" opener went out — a whole greeting on its own when Spark adds nothing */
+    const openerSpoken = () => greeting && sentences.some((x) => x.opener && !x.drop);
     let emotion: string | null = null;
     const waiter: { wake: (() => void) | null } = { wake: null };
     let sparkDone = false;
@@ -2582,7 +2706,9 @@ export class Session {
           m.firstTokenAt = undefined;
         }
         // both tries came back empty or failed: the call goes on — one line in character, never the error card
-        if (!signal.aborted && !hasAnswer() && !interpret && !self) {
+        // AU-45: a greeting whose "Hey, Summer!" opener already went out is a fine greeting on its own — never followed by
+        // "Sorry, I lost you… say that again?" before the user said anything
+        if (!signal.aborted && !hasAnswer() && !interpret && !self && !openerSpoken()) {
           // a real crisis turn never gets "say that again": the help line instead (AI sweep, P1 safety)
           enqueueSentences([this.v1 && realCrisisSignal(text) ? CRISIS_HELP_LINE : LOST_LINE], true);
           lostLine = true;
@@ -2613,7 +2739,7 @@ export class Session {
 
     // Consumer: sentences → TTS (one sentence prefetched ahead) → client
     const jobs: Eager<TtsChunk>[] = [];
-    const ttsJob = (s: (typeof sentences)[number], force?: true) =>
+    const ttsJob = (s: (typeof sentences)[number], force?: true, waitMs?: number) =>
       new Eager(
         this.deps.tts({
           voiceId: this.voiceId,
@@ -2624,6 +2750,7 @@ export class Session {
           signal,
           lang: speechLang(s.display || s.tts, lang),
           ...(force ? { force } : {}),
+          ...(waitMs ? { waitMs } : {}),
         }),
       );
     const startJob = (i: number) => {
@@ -2635,6 +2762,44 @@ export class Session {
     // out, then once the cached recovery line
     let retries = 0;
     let recovered = false;
+    let held = false; // the hold line was tried for this reply
+    let holdVoiced = false;
+    let heard = false; // a clause of the reply itself was voiced (the hold line does not count)
+    // a cold-GPU line from the cache or disk (never the service) into the reply's audio; true if any of it went out
+    const playCached = async (text: string, sentence: number): Promise<boolean> => {
+      let voiced = false;
+      const offset = reply.audioMs; // the clip's alignment is from its own start (Codex re-review P2)
+      try {
+        for await (const chunk of this.deps.tts({ voiceId: this.voiceId, text, emotion: null, model: SEAMLESS_MODEL, signal, lang: "en-US", cachedOnly: true })) {
+          if (signal.aborted || !chunk.audio.length) continue;
+          if (reply.firstAudioAt === null) {
+            await this.untilUserQuiet(signal);
+            if (signal.aborted) break;
+            reply.firstAudioAt = this.now();
+            m.firstAudioAt = reply.firstAudioAt;
+            this.dispatch({ type: "first_audio", utteranceId });
+            noteFirstAudio();
+            this.client.sendJson({ type: "speaking", on: true, utteranceId, emotion: "neutral" });
+          } else if (!voiced) {
+            // a later clip (the recovery line after the hold line and a wait): the user may be talking now (Codex P2)
+            await this.untilUserQuiet(signal);
+            if (signal.aborted) break;
+          }
+          // the player sat idle during the wait: this clip's playback starts now (done timer, Codex P1)
+          const idle = this.now() - (reply.firstAudioAt + reply.audioMs);
+          if (idle > 0) reply.firstAudioAt += idle;
+          const seq = ++this.seq;
+          const durationMs = pcmDurationMs(chunk.audio.length);
+          this.client.sendJson({ type: "audio", utteranceId, seq, sentence, offsetMs: Math.round(reply.audioMs), durationMs: Math.round(durationMs), sampleRate: PCM_SAMPLE_RATE, model: chunk.model, ...chunkTiming(this.lip.active, chunk.alignment, offset) });
+          this.client.sendBinary(Buffer.concat([encodeFrameHeader(FRAME_KIND_TTS_PCM, seq), chunk.audio]));
+          reply.audioMs += durationMs;
+          reply.playEnd = Math.max(reply.playEnd, this.now()) + durationMs; // AU-49 queue clock, cached clips too
+          ttsModelUsed = chunk.model;
+          voiced = true;
+        }
+      } catch { /* not cached for this speaker: nothing to play */ }
+      return voiced;
+    };
     let ttsModelUsed: string | null = null;
     let sentEmotion: string | null | undefined;
     // The app speaks it: plain text (tags already stripped), no vendor call, no audio frames.
@@ -2722,7 +2887,16 @@ export class Session {
             m.firstAudioAt = reply.firstAudioAt;
             this.dispatch({ type: "first_audio", utteranceId });
             noteFirstAudio();
+          } else if (held && !heard) {
+            // the reply itself after the hold line and a wait: the user may have started talking meanwhile (Codex P2)
+            await this.untilUserQuiet(signal);
+            if (signal.aborted) break;
+            if (stillAsked()) { skipped = true; break; }
           }
+          // the app's player went idle in a gap (a wait for the GPU after the hold line): the reply's playback clock
+          // restarts now, so the done timer covers the audio still to play (Codex P1)
+          const idle = this.now() - (reply.firstAudioAt + reply.audioMs);
+          if (idle > 0) reply.firstAudioAt += idle;
           if (s.emotion !== sentEmotion) {
             sentEmotion = s.emotion;
             this.client.sendJson({ type: "speaking", on: true, utteranceId, emotion: s.emotion ?? "neutral" });
@@ -2742,6 +2916,7 @@ export class Session {
             ...chunkTiming(this.lip.active, chunk.alignment, sentenceOffset),
           });
           sentAudio = true;
+          heard = true;
           if (chunk.alignment) sentChars += chunk.alignment.chars.join("");
           if (chunk.audio.length) {
             this.client.sendBinary(Buffer.concat([encodeFrameHeader(FRAME_KIND_TTS_PCM, seq), chunk.audio]));
@@ -2769,53 +2944,41 @@ export class Session {
         const ttsOff = err instanceof Error && err.message === "tts_off";
         const ownVoiceOnly = !ttsOff && !!this.deps.config.voice && !this.deps.config.voice.deviceFallback;
         const reason = err instanceof Error ? err.message.slice(0, 120) : "unknown";
+        if (ownVoiceOnly && !sentAudio && !heard && !held) {
+          // handover b9-6: the reply's first clause missed (usually a cold GPU, 25-40 s): "One sec." in the companion's
+          // own voice from the cache or disk right away, while the clause is retried below
+          held = true;
+          holdVoiced = await playCached(HOLD_LINE, i);
+          if (signal.aborted) break;
+          this.log("tts.hold_line", { sessionId: this.id, utteranceId, voiced: holdVoiced, reason });
+        }
         if (ownVoiceOnly && !sentAudio && retries < TTS_RETRY_MS.length) {
           // the companion's own voice, never the phone's (11/4): wait for the voice service and ask again for this
-          // clause, even while it is parked as down (a cold or busy GPU usually answers within a few seconds)
+          // clause, even while it is parked as down. While nothing of the reply was heard, the last retry waits for a
+          // cold container (COLD_WAIT_MS) instead of the 4 s live budget.
           const waitMs = TTS_RETRY_MS[retries++];
+          const last = retries === TTS_RETRY_MS.length;
           this.log("tts.retry", { sessionId: this.id, utteranceId, sentence: i, attempt: retries, reason });
           await new Promise<void>((r) => { const t = setTimeout(r, waitMs); signal.addEventListener("abort", () => { clearTimeout(t); r(); }, { once: true }); });
           if (signal.aborted) break;
           // watch together may have taken the question back (or swapped it for the short reaction) meanwhile:
           // the loop head judges it again (Codex review P2)
-          jobs[i] = sentences[i] === s && !sentences[i]?.drop ? ttsJob(s, true) : (undefined as never);
+          jobs[i] = sentences[i] === s && !sentences[i]?.drop ? ttsJob(s, true, last && !heard ? COLD_WAIT_MS : undefined) : (undefined as never);
           i--;
           continue;
         }
-        if (ownVoiceOnly && !sentAudio && reply.firstAudioAt === null && !recovered) {
+        if (ownVoiceOnly && !sentAudio && !heard && !recovered) {
           // nothing of this reply was heard and the voice service stayed down: say the short recovery line in the
-          // companion's own voice from the cache (prefetched with the fillers), so the call is never just silent
-          // (the call screen shows no captions, Codex review P1). The reply's words still go to the history.
+          // companion's own voice (cache, or the copy kept on disk), so the call is never just silent (the call screen
+          // shows no captions, Codex review P1). The reply's words still go to the history.
           recovered = true;
           ttsFailed = true;
           const taken = askedAt(i) || !!sentences[i]?.drop;
           if (!taken && !sentences[i]?.beat) reply.spoken.push(sentences[i].display);
-          let voiced = false;
-          const recoverOffset = reply.audioMs; // the line's alignment is from its own start (Codex re-review P2)
-          try {
-            for await (const chunk of this.deps.tts({ voiceId: this.voiceId, text: RECOVER_LINE, emotion: null, model: SEAMLESS_MODEL, signal, lang: "en-US", cachedOnly: true })) {
-              if (signal.aborted || !chunk.audio.length) continue;
-              if (reply.firstAudioAt === null) {
-                await this.untilUserQuiet(signal);
-                if (signal.aborted) break;
-                reply.firstAudioAt = this.now();
-                m.firstAudioAt = reply.firstAudioAt;
-                this.dispatch({ type: "first_audio", utteranceId });
-                noteFirstAudio();
-                this.client.sendJson({ type: "speaking", on: true, utteranceId, emotion: "neutral" });
-              }
-              const seq = ++this.seq;
-              const durationMs = pcmDurationMs(chunk.audio.length);
-              this.client.sendJson({ type: "audio", utteranceId, seq, sentence: i, offsetMs: Math.round(reply.audioMs), durationMs: Math.round(durationMs), sampleRate: PCM_SAMPLE_RATE, model: chunk.model, ...chunkTiming(this.lip.active, chunk.alignment, recoverOffset) });
-              this.client.sendBinary(Buffer.concat([encodeFrameHeader(FRAME_KIND_TTS_PCM, seq), chunk.audio]));
-              reply.audioMs += durationMs;
-              ttsModelUsed = chunk.model;
-              voiced = true;
-            }
-          } catch { /* not cached for this speaker: nothing to play */ }
+          const voiced = await playCached(RECOVER_LINE, i);
           if (signal.aborted) break;
           this.log("tts.recover_line", { sessionId: this.id, userId: this.deps.userId, utteranceId, voiced, reason });
-          if (!voiced) this.error("tts_unavailable", "Voice failed for this reply; showing text only", true);
+          if (!voiced && !holdVoiced) this.error("tts_unavailable", "Voice failed for this reply; showing text only", true);
           continue;
         }
         ttsFailed = true;
@@ -2858,7 +3021,7 @@ export class Session {
     await producer;
     if (signal.aborted || this.reply !== reply) return;
 
-    if (!reply.spoken.join(" ").trim() || !hasAnswer()) {
+    if (!reply.spoken.join(" ").trim() || (!hasAnswer() && !openerSpoken())) {
       resolveSaid(null);
       this.error("spark_unavailable", "The companion could not answer. Try again.", true);
       this.log("spark.empty", { utteranceId, cause: self ? "self_filtered_only_content" : emptyCause ?? "upstream_error_before_text" });
@@ -2867,7 +3030,7 @@ export class Session {
     }
     if (sparkError) {
       // the lost-you line already covered it: no error card over a call that goes on
-      if (!lostLine) this.error("spark_unavailable", "The companion could not answer. Try again.", true);
+      if (!lostLine && !openerSpoken()) this.error("spark_unavailable", "The companion could not answer. Try again.", true);
       this.log("spark.error", { message: sparkError instanceof Error ? sparkError.message.slice(0, 200) : "unknown" });
     }
     if (device) {
@@ -3021,6 +3184,12 @@ export class Session {
 
 /** `start.history` from the app: role + text only, capped. */
 /** a real crisis line anywhere in a claimed start.history (the whole list, before the 16-line trim; Codex #502 P1 r5) */
+/** Codex #640: what a handed-over history (up to 200 lines) said about their own age, as flags */
+function claimedAge(v: unknown): AgeSay {
+  if (!Array.isArray(v)) return NO_AGE;
+  return v.slice(-200).filter((h) => (h as Record<string, unknown>)?.role === "user" && typeof (h as Record<string, unknown>).text === "string")
+    .reduce((a: AgeSay, h) => foldAge(a, ageSays(String((h as Record<string, unknown>).text).slice(0, 1000))), NO_AGE);
+}
 function claimedCrisis(v: unknown): boolean {
   if (!Array.isArray(v)) return false;
   return v.slice(-200).some((h) => {

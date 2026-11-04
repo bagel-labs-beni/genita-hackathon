@@ -929,3 +929,114 @@ test("Codex #502 P1 r5: with memory on, a client-claimed handoff history of 20 k
   assert.doesNotMatch(requests.map((r) => r.instructions ?? "").join("\n"), /own take/);
   ws.terminate();
 });
+
+test("AU-42: a Mac start without a name uses the name the account's iPhone sent (greeting + name guards work on the Mac)", { timeout: 30_000 }, async (t) => {
+  const never: Summarizer = () => new Promise(() => {});
+  const { deps, requests } = setup(never);
+  const logs: string[] = [];
+  const server = await startServer({ ...config, sessionToken: "test-token" }, (e) => { logs.push(e); }, { ...deps, log: (e) => { logs.push(e); } }, {}, null);
+  t.after(() => new Promise<void>((r) => server.close(() => r())));
+  const addr = server.address(); assert.ok(addr && typeof addr === "object");
+  const headers = { authorization: "Bearer test-token", "x-genita-user": "acct-au42" };
+  const sockets: WebSocket[] = [];
+  const open = (device: string) => new Promise<{ ws: WebSocket; replies: () => number }>((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${addr.port}/v1/session?device=${device}`, { headers });
+    sockets.push(ws); let n = 0;
+    ws.on("message", (d, bin) => { if (bin) return; const m = JSON.parse(String(d)); if (m.type === "reply") n++; });
+    ws.once("open", () => resolve({ ws, replies: () => n })); ws.once("error", reject);
+  });
+  const phone = await open("iphone");
+  phone.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false, user: { name: "Summer" } }));
+  await waitFor(() => phone.replies() >= 1);
+  phone.ws.send(JSON.stringify({ type: "stop" })); await waitFor(() => logs.includes("session.close"));
+  requests.length = 0;
+  const mac = await open("mac");
+  mac.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  // (right after the iPhone call the Mac may continue it without a greeting: ask something instead)
+  await pause(); const n = mac.replies(); mac.ws.send(JSON.stringify({ type: "text", text: "what should I eat" }));
+  try {
+    await waitFor(() => mac.replies() > n);
+    assert.match(requests.at(-1)!.instructions ?? "", /The user's name is Summer/);
+  } finally { for (const w of sockets) w.terminate(); }
+});
+
+test("CA-14 × Forget (#585 Codex P1): a turn held open at the Forget is dropped — never answered, never saved after it", async () => {
+  const { memory, deps, requests } = setup();
+  const asr = deps.openAsr([]) as unknown as EventEmitter;
+  const c = client();
+  const seen: string[] = [];
+  const sink0 = c.sink.sendJson;
+  c.sink.sendJson = (e) => { seen.push(String((e as { type: string }).type) + ((e as { state?: string }).state ? ":" + (e as { state?: string }).state : "")); sink0(e); };
+  const s = new Session("call-held", c.sink, deps);
+  await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" } }));
+  await waitFor(c.ready);
+  // the greeting plays out first (talking over it would be a barge-in, not a turn)
+  await waitFor(() => seen.includes("reply") && seen.lastIndexOf("state:listening") > seen.indexOf("reply"), 8000);
+  const before = requests.length;
+  asr.emit("event", { type: "speechStart", turnId: 0 });
+  asr.emit("event", { type: "speechEnd", turnId: 0 });
+  asr.emit("event", { type: "speechComplete", turnId: 0, text: "My ex Daniel lives on Maple Street and" }); // held
+  await new Promise((r) => setTimeout(r, 50));
+  await memory.forget("acct-a");
+  await new Promise((r) => setTimeout(r, 2600)); // past the 2.0 s hold
+  assert.equal(requests.length, before, "the held line never reached Spark");
+  assert.doesNotMatch(JSON.stringify(requests), /Maple Street/);
+  s.close(); await memory.drain();
+  assert.doesNotMatch(JSON.stringify(await memory.list("acct-a")), /Maple Street/);
+});
+
+test("CA-14 × Forget (Codex P1 r2): the user resumed the held turn when the Forget came — its late final is not answered or saved", async () => {
+  const { memory, deps, requests } = setup();
+  const asr = deps.openAsr([]) as unknown as EventEmitter;
+  const c = client();
+  const seen: string[] = [];
+  const sink0 = c.sink.sendJson;
+  c.sink.sendJson = (e) => { seen.push(String((e as { type: string }).type) + ((e as { state?: string }).state ? ":" + (e as { state?: string }).state : "")); sink0(e); };
+  const s = new Session("call-held-2", c.sink, deps);
+  await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" } }));
+  await waitFor(c.ready);
+  await waitFor(() => seen.includes("reply") && seen.lastIndexOf("state:listening") > seen.indexOf("reply"), 8000);
+  const before = requests.length;
+  asr.emit("event", { type: "speechStart", turnId: 0 });
+  asr.emit("event", { type: "speechEnd", turnId: 0 });
+  asr.emit("event", { type: "speechComplete", turnId: 0, text: "So my ex Daniel and" }); // held
+  await new Promise((r) => setTimeout(r, 50));
+  asr.emit("event", { type: "speechStart", turnId: 1 });
+  asr.emit("event", { type: "partial", text: "I like jasmine tea" });
+  await memory.forget("acct-a");
+  asr.emit("event", { type: "speechEnd", turnId: 1 });
+  asr.emit("event", { type: "speechComplete", turnId: 1, text: "I like jasmine tea." });
+  await new Promise((r) => setTimeout(r, 2600));
+  assert.equal(requests.length, before);
+  assert.doesNotMatch(JSON.stringify(requests), /jasmine|Daniel/);
+  s.close(); await memory.drain();
+  assert.doesNotMatch(JSON.stringify(await memory.list("acct-a")), /jasmine|Daniel/);
+});
+
+test("Codex #640: a minor's boundary travels with the conversation to the other device, past the history trim", { timeout: 30_000 }, async (t) => {
+  const { deps, requests } = setup();
+  const logs: string[] = [];
+  const server = await startServer({ ...config, sessionToken: "test-token" }, (e) => { logs.push(e); }, { ...deps, log: (e) => { logs.push(e); } }, {}, null);
+  t.after(() => new Promise<void>((r) => server.close(() => r())));
+  const addr = server.address(); assert.ok(addr && typeof addr === "object");
+  const headers = { authorization: "Bearer test-token", "x-genita-user": "acct-minor" };
+  const sockets: WebSocket[] = [];
+  const open = (device: string) => new Promise<{ ws: WebSocket; replies: () => number; ready: () => boolean }>((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${addr.port}/v1/session?device=${device}`, { headers });
+    sockets.push(ws);
+    let n = 0; let ok = false;
+    ws.on("message", (d, bin) => { if (bin) return; const m = JSON.parse(String(d)); if (m.type === "reply") n++; if (m.type === "ready") ok = true; });
+    ws.once("open", () => resolve({ ws, replies: () => n, ready: () => ok })); ws.once("error", reject);
+  });
+  const start = (c: { ws: WebSocket }) => c.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  const say = async (c: { ws: WebSocket; replies: () => number }, text: string) => { const n = c.replies(); c.ws.send(JSON.stringify({ type: "text", text })); await waitFor(() => c.replies() > n); };
+  try {
+    const phone = await open("iphone"); start(phone); await waitFor(() => phone.replies() >= 1);
+    await say(phone, "i'm 15 btw");
+    for (let i = 0; i < 9; i++) await say(phone, "ok");
+    const mac = await open("mac"); start(mac); await waitFor(mac.ready);
+    requests.length = 0;
+    await say(mac, "do you have a crush on me lol");
+    assert.match(requests.map((r) => r.instructions ?? "").join("\n"), /under 18: no flirting or romance at all/);
+  } finally { for (const w of sockets) w.terminate(); }
+});
