@@ -8,10 +8,14 @@
  *   - Who is talking is decided by language (face to face): the user's own
  *     language = "me" → translated into the other language for the person in
  *     front of them; anything else = "them" → translated into the user's
- *     language. Hold-to-talk forces "me". On the Mac, call audio
- *     (ScreenCaptureKit) is always "them" and the mic only counts while held.
+ *     language. Hold-to-talk labels the bubble "me", but the direction always
+ *     follows the language heard (Chelsea 11/4: Korean → English, English →
+ *     Korean, never into itself). On the Mac, call audio (ScreenCaptureKit)
+ *     is always "them" and the mic only counts while held.
  *   - The language pair is decided automatically: the first non-user
- *     language heard becomes "other" (`interpret.pair`).
+ *     language heard becomes "other" (`interpret.pair`). Before anyone else
+ *     has spoken, the user's language is assumed to pair with the other of
+ *     English/Korean (the ASR pair), so the very first line translates.
  *   - Unclear language → nothing is relayed and nothing is spoken (INT-6).
  *   - Speech never cancels a translation. Translations start the moment a
  *     turn ends (in parallel), audio goes out strictly in order. Only a tap
@@ -73,7 +77,7 @@ export type InterpretOptions = {
 
 type Lang = string;
 type Resolved =
-  | { ok: true; speaker: "them" | "me"; via: BubbleVia; from: Lang; to: Lang; setsOther: Lang | null }
+  | { ok: true; speaker: "them" | "me"; via: BubbleVia; from: Lang; to: Lang; setsOther: Lang | null; guessed?: boolean }
   | { ok: false; speaker: Speaker; via: BubbleVia; lang: Lang | null; status: "unknown" | "skipped"; reason: BubbleReason };
 
 type Bubble = {
@@ -111,6 +115,17 @@ const DEVICE_MS_PER_CHAR = 70;
 const ECHO_CONTAINMENT = 0.6;
 const ECHO_TAIL_MS = 4000;
 
+/**
+ * The face-to-face pair interpretation listens for (session INTERPRET_ASR_LANGUAGES, D110): before the other
+ * person has spoken, the user's language is assumed to pair with the other one of English/Korean.
+ */
+const ASSUMED_PAIR: readonly Lang[] = ["English", "Korean"];
+export function guessOther(user: Lang): Lang | null {
+  if (user === ASSUMED_PAIR[0]) return ASSUMED_PAIR[1];
+  if (user === ASSUMED_PAIR[1]) return ASSUMED_PAIR[0];
+  return ASSUMED_PAIR[0];
+}
+
 export function normTranscript(s: string): string {
   return s.toLowerCase().replace(/[^\p{L}\p{N}\s']/gu, " ").replace(/\s+/g, " ").trim();
 }
@@ -126,6 +141,8 @@ export class Interpreter {
   private readonly host: InterpretHost;
   private readonly user: Lang;
   private other: Lang | null;
+  /** `other` was assumed from the ASR pair (English↔Korean), not heard yet */
+  private otherGuessed = false;
   private readonly otherFixed: boolean;
   private readonly speculate: boolean;
   private readonly stableMs: number;
@@ -244,10 +261,11 @@ export class Interpreter {
     }
     if (r.setsOther) {
       this.other = r.setsOther;
+      this.otherGuessed = !!r.guessed;
       this.sendPair();
     }
     bubble.original = { lang: r.from, text: clean };
-    this.host.log("interpret.detected", { language: r.from, speaker: r.speaker, via: r.via });
+    this.host.log("interpret.detected", { language: r.from, to: r.to, speaker: r.speaker, via: r.via, ...(r.guessed ? { pair: "assumed" } : {}) });
     let speculative: Job["speculative"] = "none";
     let stream: AsyncIterable<SparkStreamEvent> | null = null;
     let abort = new AbortController();
@@ -315,17 +333,23 @@ export class Interpreter {
     if (!clean) return;
     const bubble = this.newBubble("text");
     bubble.speaker = "me";
-    if (!this.other) {
-      bubble.original = { lang: this.user, text: clean };
-      return this.closeBubble(bubble, "skipped", "no_other_language");
-    }
-    bubble.original = { lang: this.user, text: clean };
+    // typed text follows the same rule as speech: the script decides the language, the target is the other side
+    const from = detectLanguage(clean, this.user) ?? this.user;
+    const to = from === this.user ? (this.other ?? guessOther(this.user)) : this.user;
+    bubble.original = { lang: from, text: clean };
+    if (!to || to === from) return this.closeBubble(bubble, "skipped", "no_other_language");
     if (!this.host.admitTurn()) return this.closeBubble(bubble, "cancelled"); // refused by a daily cap: no open bubble
-    this.remember({ speaker: "me", lang: this.user, text: clean });
+    const learned = from === this.user ? (this.other ? null : to) : this.learnsOther(from);
+    if (learned) {
+      this.other = learned;
+      this.otherGuessed = from === this.user;
+      this.sendPair();
+    }
+    this.remember({ speaker: "me", lang: from, text: clean });
     const abort = new AbortController();
     const now = this.host.now();
-    const stream = new Eager(this.host.translate(this.request(clean, this.user, this.other), abort.signal));
-    this.enqueue(bubble, stream, abort, "none", { startAt: now }, this.other);
+    const stream = new Eager(this.host.translate(this.request(clean, from, to), abort.signal));
+    this.enqueue(bubble, stream, abort, "none", { startAt: now }, to);
   }
 
   /** A fixed line in Genita's voice (e.g. the voice-command confirmation); no bubble. */
@@ -377,25 +401,36 @@ export class Interpreter {
       const via: BubbleVia = "call";
       if (!lang) return { ok: false, speaker: "them", via, lang, status: "unknown", reason: "language_unclear" };
       if (lang === this.user) return { ok: false, speaker: "them", via, lang, status: "skipped", reason: "same_language" };
-      return { ok: true, speaker: "them", via, from: lang, to: this.user, setsOther: this.other ? null : lang };
+      return { ok: true, speaker: "them", via, from: lang, to: this.user, setsOther: this.learnsOther(lang) };
     }
     const forcedMe = held || this.holding || this.source === "call";
     const via: BubbleVia = held || this.holding ? "hold" : "voice";
-    if (forcedMe) {
-      if (!this.other) return { ok: false, speaker: "me", via, lang, status: "skipped", reason: "no_other_language" };
-      return { ok: true, speaker: "me", via, from: this.user, to: this.other, setsOther: null };
+    // Chelsea 11/4: the direction follows the language heard, never the label or the button held.
+    // Held speech with an unclear script is still the user's own language (as before).
+    const from = lang ?? (forcedMe ? this.user : null);
+    if (!from) return { ok: false, speaker: "unknown", via, lang, status: "unknown", reason: "language_unclear" };
+    const speaker: "me" | "them" = forcedMe || from === this.user ? "me" : "them";
+    if (from === this.user) {
+      // the user's language goes to the other side; before anyone else spoke, assume the pair (English↔Korean)
+      const to = this.other ?? guessOther(this.user);
+      if (!to || to === from) return { ok: false, speaker, via, lang: from, status: "skipped", reason: "no_other_language" };
+      return { ok: true, speaker, via, from, to, setsOther: this.other ? null : to, guessed: !this.other };
     }
-    if (!lang) return { ok: false, speaker: "unknown", via, lang, status: "unknown", reason: "language_unclear" };
-    if (lang === this.user) {
-      if (!this.other) return { ok: false, speaker: "me", via, lang, status: "skipped", reason: "no_other_language" };
-      return { ok: true, speaker: "me", via, from: lang, to: this.other, setsOther: null };
-    }
-    // another language: the person in front of the user. The pair is fixed by
-    // the first one heard; a third language is still passed on to the user.
-    return { ok: true, speaker: "them", via, from: lang, to: this.user, setsOther: this.other ? null : lang };
+    // another language (whoever holds the button) goes into the user's language. The pair is fixed by the
+    // first one heard (a guess is replaced by a real one); a third language is still passed on to the user.
+    return { ok: true, speaker, via, from, to: this.user, setsOther: this.learnsOther(from) };
+  }
+
+  /** the language heard becomes "other" when none is known yet or the current one was only a guess */
+  private learnsOther(lang: Lang): Lang | null {
+    if (lang === this.user) return null;
+    if (!this.other || (this.otherGuessed && this.other !== lang)) return lang;
+    return null;
   }
 
   private request(text: string, from: Lang, to: Lang): SparkRequest {
+    // never translate a language into itself: flip to the other side of the pair
+    if (to === from) to = from === this.user ? (this.other ?? guessOther(this.user) ?? to) : this.user;
     return { instructions: buildTranslateInstructions(from, to), input: text, maxOutputTokens: 300 };
   }
 

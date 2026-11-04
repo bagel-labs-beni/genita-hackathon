@@ -21,7 +21,7 @@ import { migrateUp } from "../src/db/migrate.ts";
 import { createPrep } from "../src/prep/index.ts";
 import { FileStore } from "../src/prep/store.ts";
 
-const config = (env: NodeJS.ProcessEnv = {}) => loadConfig({ MODEL_API_KEY: "synthetic", PORT: "0", GENITA_SPECULATE: "0", GENITA_SPARK_HEDGE: "1", ...env });
+const config = (env: NodeJS.ProcessEnv = {}) => loadConfig({ MODEL_API_KEY: "synthetic", PORT: "0", GENITA_SPECULATE: "0", GENITA_SPARK_HEDGE: "1", GENITA_INTERPRET_ASR_CORRECT: "0", ...env });
 const logs: Array<{ event: string; data: Record<string, unknown> }> = [];
 const log = (event: string, data: Record<string, unknown>) => logs.push({ event, data });
 const originalFetch = globalThis.fetch;
@@ -475,7 +475,7 @@ test("round 2: an interpretation echo does not spend the second real utterance's
   const s = fakeSession(config(), "interpreter", ops, "Hello there.");
   try {
     await s.session.onClientText(JSON.stringify({ type: "start", persona: { name: "Synthetic" }, mode: "interpret", greeting: false }));
-    await s.session.onClientText(JSON.stringify({ type: "text", text: "The other language is not known yet." }));
+    // (#750: a typed line before the pair is known is now translated at once, so it is not part of the skipped set)
     s.asr.emit("event", { type: "speechComplete", turnId: 0, text: "   " });
     s.asr.emit("event", { type: "speechComplete", turnId: 0, text: "…" });
     s.asr.emit("event", { type: "speechComplete", turnId: 1, text: "이거 얼마예요?" });
