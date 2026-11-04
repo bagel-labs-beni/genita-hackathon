@@ -65,12 +65,16 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     ///   proximity report is always followed by that ownership event.
     func liveMoveConfirmed(epoch:Int) {
         guard ownership.isOwner,resumeOffered,epoch==resumeEpoch else{return}
-        resumeHere(fromPhone:resumeFromPhoneCall)
+        resumeHere(fromPhone:resumeFromPhoneCall,phoneCamera:resumePhoneCamera)
     }
     private var resumeEpoch:Int?
     /// S4: the offered resume is a move from a call on the iPhone (read when the proximity move is confirmed).
     private var resumeFromPhoneCall=false
-    private func offerResume(fromPhoneCall:Bool=false) { resumeOffered=true;resumeEpoch=ownership.state.epoch;resumeFromPhoneCall=fromPhoneCall }
+    private var resumePhoneCamera:Bool?
+    private func offerResume(fromPhoneCall:Bool=false,phoneCamera:Bool?=nil) { resumeOffered=true;resumeEpoch=ownership.state.epoch;resumeFromPhoneCall=fromPhoneCall;resumePhoneCamera=phoneCamera }
+    /// b14: the paired iPhone's own call and camera state (local link `callState`, sent while it holds the conversation).
+    /// Read once as the conversation arrives here, so the camera follows a move even when the server says nothing.
+    private var phoneCall:(inCall:Bool,camera:Bool)?
     /// R2 says "Screen sharing stopped." only when sharing was on as the conversation left.
     @Published fileprivate(set) var sharingStopped = false
     @Published var motion: TransitionPayload?
@@ -140,7 +144,7 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
         guard accountScope.select(accountID) else{return}
         server.stop();link.useAccount(accountID)
         epoch+=1;pending=nil;motion=nil;renderedMotionID=nil;candidate=nil;last=nil;dock=nil
-        lastPong=0;lastAt=0;image="";profile=nil;returnOrigin=nil;armed=true
+        lastPong=0;lastAt=0;image="";profile=nil;returnOrigin=nil;armed=true;phoneCall=nil
         sharing.stop();sharing.permissionRequired=false;media.stopAll()
         companion?.orderOut(nil);companionVisible=false;sharingStopped=false;resumeOffered=false;closeRegistration()
         ownership.useAccount(accountID);phoneCallSeen.reset()
@@ -158,11 +162,11 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     /// MAC-4 "Continue here" after a cold launch: now the call window opens and the call starts.
     /// - Parameter fromPhone: the confirmed proximity move from the iPhone (S4: the camera may follow it); the
     ///   Continue here button after a cold launch is a call opened on this Mac (camera off).
-    func resumeHere(fromPhone:Bool=false) {
+    func resumeHere(fromPhone:Bool=false,phoneCamera:Bool?=nil) {
         resumeOffered=false
         guard ownership.isOwner else { continueHere(); return }  // the iPhone took it meanwhile: claim it back
         sharingStopped=false;showCompanion()
-        MacCall.shared.conversationArrived(fromPhone:fromPhone)
+        MacCall.shared.conversationArrived(fromPhone:fromPhone,phoneCamera:fromPhone ? phoneCamera : nil)
     }
     func showRegistration() {
         screen = screen ?? NSScreen.main
@@ -280,14 +284,17 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
         showMoveLine(nil)
         if new == .mac {
             // S4: read before the iPhone's call socket closes (its peer update comes after this move)
-            let fromPhoneCall=HandoffCameraPolicy.movedFromPhoneCall(previousOwner:old,peerInCall:server.peerInCall)
+            // b14: or the paired iPhone's own word over the local link (a move right after the pairing code)
+            let phone=phoneCall;phoneCall=nil
+            let fromPhoneCall=HandoffCameraPolicy.movedFromPhoneCall(previousOwner:old,peerInCall:server.peerInCall,linkInCall:phone?.inCall)
+            let phoneCamera=fromPhoneCall ? phone?.camera : nil
             // #118: the live call follows the conversation here — only on a live move (MC-01, ResumePolicy)
             if ResumePolicy.opensCall(ResumePolicy.arrival(localClaim:claimingLive,serverTrigger:applyingTrigger)) {
                 resumeOffered=false;sharingStopped=false;showCompanion()
-                MacCall.shared.conversationArrived(fromPhone:fromPhoneCall)
-            } else {offerResume(fromPhoneCall:fromPhoneCall)}
+                MacCall.shared.conversationArrived(fromPhone:fromPhoneCall,phoneCamera:phoneCamera)
+            } else {offerResume(fromPhoneCall:fromPhoneCall,phoneCamera:phoneCamera)}
         } else {
-            resumeOffered=false
+            resumeOffered=false;phoneCall=nil  // the iPhone sends its state again now that it holds the conversation
             if old == .mac {sharingStopped=sharing.isSharing}
             // The conversation left: sharing stops now and does not come back by itself.
             sharing.stop();sharing.permissionRequired=false;media.stopAll();CallController.shared.suspend()
@@ -321,6 +328,9 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
             link.send(["type":"welcome","identity":link.macID+"-"+(display?.stringValue ?? "main")])
         case "register": showRegistration()
         case "registerCancel": closeRegistration()
+        case "callState":
+            // b14: the iPhone's call and camera, sent over the paired link while the conversation is there
+            if !ownership.isOwner {phoneCall=(message["inCall"] as? Bool ?? false,message["camera"] as? Bool ?? false)}
         case "ownership":
             if let claim=OwnershipClaim(message) {ownership.receive(claim)}
         case "moveRequest":
@@ -361,7 +371,7 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
             }
         case "disconnected":
             // Losing the local link never ends the conversation on this Mac.
-            pending=nil;last=nil;candidate=nil;status="iPhone not connected";refreshSurface()
+            pending=nil;last=nil;candidate=nil;phoneCall=nil;status="iPhone not connected";refreshSurface()
             closeRegistration()  // AU-89: the iPhone that was reading MAC-REG is gone; never leave the screen covered
         case "inactive":
             last=nil;candidate=nil

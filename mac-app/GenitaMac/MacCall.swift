@@ -332,9 +332,11 @@ import AVFoundation
     /// The conversation is on this Mac now (ownership → mac).
     /// - Parameter fromPhone: a live move from the iPhone (S4: the camera may follow it, HandoffCameraPolicy);
     ///   false for a call opened on the Mac itself (cold launch Continue here), which starts with the camera off.
-    func conversationArrived(fromPhone: Bool = false) {
+    /// - Parameter phoneCamera: the paired iPhone's camera as its call left it (local link `callState`), nil if unknown.
+    func conversationArrived(fromPhone: Bool = false, phoneCamera: Bool? = nil) {
         wantsCall = true
         cameraFollowsArrival = fromPhone
+        phoneCameraOnArrival = fromPhone ? phoneCamera : nil
         switch account {
         case .ready: startCall()
         case .checking, .signingIn: break // refresh() starts it when the account is known
@@ -348,6 +350,7 @@ import AVFoundation
     func conversationLeft() {
         wantsCall = false
         cameraFollowsArrival = false
+        phoneCameraOnArrival = nil
         if !call.historySnapshot.isEmpty { history = call.historySnapshot }
         call.end()
     }
@@ -376,17 +379,24 @@ import AVFoundation
         call.begin(start)
         // B12: the mic comes back the way the user left it.
         if Self.micRemembered, !call.micOn { call.toggleMic() }
-        // Demo S4: a call moved here from the iPhone keeps the camera on (only if the user left it on here and the
-        // camera is already allowed: never a system dialog). Used once: a later restart of the call starts it off.
+        // Demo S4: a call moved here from the iPhone keeps the camera as it was there (the paired iPhone's word over
+        // the local link; else the user's last camera tap here, only with access already granted). b14: a Mac paired a
+        // moment ago has no remembered tap and no access yet, so with the iPhone's camera on toggleCamera asks once.
+        // Used once: a later restart of the call starts it off.
         let fromPhone = cameraFollowsArrival
+        let phoneCamera = phoneCameraOnArrival
         cameraFollowsArrival = false
-        if HandoffCameraPolicy.startsCamera(fromPhone: fromPhone, cameraRemembered: Self.cameraRemembered,
-                                            cameraAuthorized: AVCaptureDevice.authorizationStatus(for: .video) == .authorized),
+        phoneCameraOnArrival = nil
+        let access = AVCaptureDevice.authorizationStatus(for: .video)
+        if HandoffCameraPolicy.startsCamera(fromPhone: fromPhone, phoneCamera: phoneCamera, cameraRemembered: Self.cameraRemembered,
+                                            cameraAuthorized: access == .authorized, cameraUndetermined: access == .notDetermined),
            !call.cameraOn { call.toggleCamera() }
     }
 
     /// Set by a live move from the iPhone, read by the next call start (S4).
     private var cameraFollowsArrival = false
+    /// b14: the iPhone's own camera state for that move (local link), read with it.
+    private var phoneCameraOnArrival: Bool?
 
     /// S4: the user's last camera tap on this Mac (on/off). Only taps write it, so a hang-up, lock or move away
     /// (which turn the camera off without the user asking) don't change it.
