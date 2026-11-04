@@ -101,7 +101,8 @@ test("Codex P2: a live prefetch does not turn 'does this jacket match my style?'
   r.onTurn({ text: "Which one looks better on me, the white one or the black one?", frames: [FRAME, FRAME], utteranceId: 1, replyText: Promise.resolve(SAID) });
   await sleep(20);
   const started = r.onTurn({ text: "Does this jacket match my style?", frames: [FRAME], utteranceId: 2, replyText: Promise.resolve(null) });
-  assert.equal(started?.kind, "outfit");
+  // P0 11/4: a verdict on one garment is a spoken answer now (no card); never a product search either way
+  assert.notEqual(started?.kind, "product");
   await r.settle();
 });
 

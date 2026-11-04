@@ -38,7 +38,8 @@ test("general: chit-chat, feelings, things in view and crisis lines stay spoken"
 
 test("general (Codex r1): cooking with the camera stays a recipe even with 'near' / 'place' in it", () => {
   assert.deepEqual(classifyTurn("What can I make with ingredients near their expiration date?", true), { kind: "recipe" });
-  assert.deepEqual(classifyTurn("How should I place ingredients in a bowl for dinner?", true), { kind: "recipe" });
+  // (#738: a recipe card needs "what can I make / cook with these"; a plating how-to isn't one)
+  assert.deepEqual(classifyTurn("What could I cook with these for a dinner party?", true), { kind: "recipe" });
   assert.deepEqual(classifyTurn("How do I make restaurant-style pasta with these ingredients?", true), { kind: "recipe" });
 });
 

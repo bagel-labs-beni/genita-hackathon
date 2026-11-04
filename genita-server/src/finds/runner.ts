@@ -300,6 +300,7 @@ export class FindsRunner {
   onTurn(input: TurnInput): TurnStarted | null {
     if (this.closed || (this.owner && this.deps.store.work.isDeleted(this.owner))) return null;
     let t = input;
+    /** P0 11/4: a camera find that can't see clearly closes quietly — the spoken reply already answered */
     const afterProduct = this.afterProduct(t.recent);
     // demo S4→S5: a bare "send me the links" while the outfit's shoes are being searched already takes that search
     // (only a links ask: "does this jacket match my style?" stays an outfit question, Codex P2)
@@ -331,22 +332,17 @@ export class FindsRunner {
   }
 
   /** The keyword intent or the judge's pick, started the same way. `judged`: the turn already answered out loud. */
-  private start(intent: NonNullable<Intent>, t: TurnInput, followUp: boolean, judged: boolean): TurnStarted {
+  private start(intent: NonNullable<Intent>, t: TurnInput, followUp: boolean, judged: boolean): TurnStarted | null {
+    const silentFail = (e: ServerEvent): ServerEvent => (e.type === "find.failed" && e.reason !== "stopped" ? { ...e, reason: "stopped", message: "" } : e);
     // the share when there is no camera picture, or when the line points at it; otherwise the camera (Codex r1 P2)
     const useScreen = !!t.screen && !followUp && (
       !t.frames.length || SCREEN_WORDS.test(t.text) || (intent.kind === "product" && refersToScreen(t.text) && !CAMERA_WORDS.test(t.text))
     );
     if (useScreen) t = { ...t, frames: [t.screen!], unclear: false };
     const findId = randomUUID();
-    if (intent.kind === "identify") return this.startIdentify(findId, t, useScreen, judged);
-    if (intent.kind === "recipe" && t.unclear && !judged) {
-      // D59 · CW-01 DARK: the app saw nothing but dark / blur — no "let me see" that IC-4 then takes back: the honest
-      // line is the turn's whole answer, the IC-4 card shows at once, and nothing is guessed from the picture
-      this.onEvent({ type: "find.started", findId, utteranceId: t.utteranceId, kind: "recipe", title: "Looking at your ingredients", detail: "Checking what's there · recipes" });
-      this.onEvent({ type: "find.failed", findId, reason: "unclear", message: FRIDGE_UNCLEAR });
-      this.hooks.log("finds.unclear_frames", { findId });
-      return { findId, kind: "recipe", ack: FRIDGE_UNCLEAR };
-    }
+    if (intent.kind === "identify") return this.startIdentify(findId, t, useScreen);
+    // P0 11/4: a dark / blurry fridge is answered by the conversation itself (no find, no canned line)
+    if (intent.kind === "recipe" && t.unclear) return null;
     const abort = new AbortController();
     const ctx: PipelineCtx = {
       findId,
@@ -363,7 +359,7 @@ export class FindsRunner {
       timeZone: this.timeZone,
       vendors: this.deps.vendors,
       // a shared-screen frame: no boxes for the camera preview, and the card never claims (or shows) a camera picture
-      emit: (e) => this.onEvent(useScreen ? screenEvent(e) : e),
+      emit: (e) => { const s = useScreen ? screenEvent(e) : e; this.onEvent(s && (intent.kind === "recipe" || intent.kind === "outfit") ? silentFail(s) : s); },
       signal: abort.signal,
       now: this.hooks.now,
       log: this.hooks.log,
@@ -371,6 +367,8 @@ export class FindsRunner {
       speak: (text) => {
         const card = this.cards.get(findId);
         if (card) void this.persist(card);
+        // P0 11/4: never a canned "can't see it" line after the reply
+        if (!text.trim() || /^I can['’]t make out/i.test(text)) return;
         if (!this.closed) this.hooks.announce(text);
       },
       putImage: async (slot, bytes) => {
@@ -475,18 +473,17 @@ export class FindsRunner {
    * "What's this?" (CEO demo 11/4): outline the thing on the camera frame and name it once checked — no card, no
    * sheet. On a shared screen (the Mac draws no boxes over it) the answer lands in the sheet instead.
    */
-  private startIdentify(findId: string, t: TurnInput, screen: boolean, silent = false): TurnStarted {
-    if (t.unclear && !screen) return { findId, kind: "identify", ack: IDENTIFY_UNSURE };
+  private startIdentify(findId: string, t: TurnInput, screen: boolean): TurnStarted | null {
+    // P0 11/4: the turn's own reply names it from the frame; this only draws the outline (or the screen card)
+    if (t.unclear && !screen) return null;
     const abort = new AbortController();
     const ctx: PipelineCtx = {
       findId, utteranceId: t.utteranceId, kind: "answer", question: t.text, frames: t.frames, screen, memories: this.memories, profile: this.profile, userName: this.userName,
       replyText: t.replyText, timeZone: this.timeZone, vendors: this.deps.vendors, emit: (e) => this.onEvent(e), signal: abort.signal, now: this.hooks.now,
       log: this.hooks.log, images: false, putImage: async () => { throw new Error("no pictures"); },
-      // a judged turn already answered out loud: the outline only
-      speak: silent ? undefined : (text) => {
+      speak: () => {
         const card = this.cards.get(findId);
         if (card) void this.persist(card);
-        if (!this.closed) this.hooks.announce(text);
       },
     };
     const done = runIdentify(ctx).catch((err) => {
@@ -497,7 +494,7 @@ export class FindsRunner {
       return r;
     }).finally(() => this.running.delete(findId));
     this.running.set(findId, { abort, done });
-    return { findId, kind: "identify", ack: IDENTIFY_ACK };
+    return { findId, kind: "identify" };
   }
 
   /**
@@ -562,7 +559,7 @@ export class FindsRunner {
       const question = (intent.kind === "answer" || intent.kind === "product") && r.query ? r.query : t.text;
       // a judged turn already answered out loud: its fixed line (ack) is dropped, so a failure isn't said either
       const started = this.start(intent, { ...seen, text: question }, false, true);
-      this.acked.delete(started.findId);
+      if (started) this.acked.delete(started.findId);
     });
   }
 
