@@ -25,6 +25,8 @@ extension AppState {
     func routeOnLaunch(afterSignIn: Bool = false) async {
         let launchRequest = launchAuthSnapshot
         let request = onboardingSnapshot()
+        // what this phone knew when /me was asked: a companion made while it was on its way is not "missed" (Codex P2)
+        let companionWhenAsked = setup.companionCreated == true && !creatingCompanion
         // no session but the phone remembers a later screen (a cleared/expired token, a sign-out that didn't reach
         // here): A02 first, never A03 → N1–N3 and a bounce to A02 at the end (QA build 5; PRD A02 → CS01 → A03)
         if needsSignInFirst { signedOut(); return }
@@ -76,7 +78,7 @@ extension AppState {
                ownsOnboardingResponse(request, allowingClearedSession: true) { signedOut() }
             return
         }
-        apply(route, me: me, afterSignIn: afterSignIn)
+        apply(route, me: me, afterSignIn: afterSignIn, companionWhenAsked: companionWhenAsked)
     }
 
     /// CS01 "Agree and continue", after the server recorded the consent.
@@ -197,7 +199,7 @@ extension AppState {
         }
     }
 
-    func apply(_ route: StartRoute, me: GenitaMe? = nil, afterSignIn: Bool = false) {
+    func apply(_ route: StartRoute, me: GenitaMe? = nil, afterSignIn: Bool = false, companionWhenAsked: Bool = false) {
         let onboardingStages: Set<Stage> = [.prompt, .paste, .preparing, .preferences, .image, .imageCheck, .voice, .companionName,
                                             .depth, .help, .relationship, .challenge, .tempo, .initiative, .boundaries, .presence, .summary,
                                             .skipTopics, .skipReplies, .skipAvoid, .bringing]
@@ -209,6 +211,9 @@ extension AppState {
         case .consent: if stage != .consent { go(.consent) }
         case .name: if !onboardingStages.contains(stage) || stage == .conversation { returnTo(.name) }
         case .importPrompt:
+            // the server has no companion but this phone remembers one: a Start over finished while the app was gone
+            // (killed right after the reset, #514 Codex r3 P1). Drop it here too and pick a new photo (V01).
+            if companionWhenAsked, setup.companionCreated == true, !creatingCompanion { companionReset(); return }
             // a companion isn't made yet: resume where this phone left off, else I01
             // (A03 stays: right after CS01 the user still confirms their name, B8)
             if setup.hasOnboarded || !(onboardingStages.contains(stage) || stage == .name) { setup.hasOnboarded = false; returnTo(.prompt) }
