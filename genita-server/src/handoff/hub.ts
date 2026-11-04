@@ -5,6 +5,8 @@
  *   - Sound and lips go only to the owner: calls ask mayPlay() before every audio frame.
  *   - A claim that will change the owner closes the gate and stops the current device's reply
  *     *before* the store is written; the new owner may play only after the write.
+ *   - A call's start takes the conversation only when nobody holds it or the owner has no live connection
+ *     (no presence, no call); a connected owner keeps it.
  *   - Opening the app (connect / hello) never claims. hello carries the device's last known
  *     (owner, epoch); a newer one than the server's (a tap made while offline) is applied with
  *     the same rule as a claim, so devices and server converge.
@@ -15,7 +17,7 @@
  * Single process: the cache is the gate. With several server instances the store stays correct,
  * but the gate would need a shared channel (Postgres LISTEN/NOTIFY) — not needed for the demo.
  */
-import { claimWins, type HandoffDevice, type Ownership } from "./rules.ts";
+import { claimWins, MAX_EPOCH, type HandoffDevice, type Ownership } from "./rules.ts";
 import type { ClaimOutcome, OwnershipRecord, OwnershipStore } from "./store.ts";
 import { ProximityBook, isToken, type ProximityReason } from "./proximity.ts";
 
@@ -60,7 +62,7 @@ export type CallHandle = {
   mayPlay(): boolean;
   /** ms until this device may play when it already owns the conversation but the handover lease runs (else 0) */
   leaseLeftMs?(): number;
-  /** the call's `start` was handled: a conversation nobody holds goes to this device */
+  /** the call's `start` was handled: a conversation nobody holds — or whose owner has no live connection — goes to this device */
   started(): Promise<void>;
   close(): void;
 };
@@ -168,9 +170,21 @@ export class HandoffHub {
       mayPlay: () => u.switching === 0 && u.record?.owner === device && Date.now() >= u.leaseUntil,
       leaseLeftMs: () => (u.record?.owner === device ? Math.max(0, u.leaseUntil - Date.now()) : 0),
       started: async () => {
-        if (opts.known) await this.claimFor(userId, opts.known.owner, opts.known.epoch, "sync", null);
-        // Checked again inside the serial section: a claim that lands first wins, the start doesn't steal.
-        const out = await this.claimFor(userId, device, null, "start", null, true);
+        // The URL's own last known owner: applied only for this device, or for the other device while it is connected.
+        // A stale `owner=mac` from an app that quit must not re-assert an owner nobody can hear (11/4, TestFlight 331).
+        const k = opts.known;
+        const skipped = !!k && k.owner !== device && !this.connected(u, k.owner);
+        if (k && !skipped) await this.claimFor(userId, k.owner, k.epoch, "sync", null);
+        // A skipped claim's epoch is still outrun, so the app's own (owner=mac, epoch) never beats this start on the tie
+        // rule (equal epochs → the Mac) when it hears the new owner or says hello on presence.
+        let epoch: number | null = null;
+        if (skipped && k) {
+          const cur = await this.load(u);
+          if (k.epoch >= cur.epoch && k.epoch < MAX_EPOCH) epoch = k.epoch + 1;
+        }
+        // Checked again inside the serial section: a claim that lands first wins. The start doesn't steal from an owner
+        // that is connected (that is the "Continue on your Mac" case); an owner with no presence and no call is taken over.
+        const out = await this.claimFor(userId, device, epoch, "start", null, true);
         if (!out.changed) call.send(this.ownershipEvent(out.state, null, "current"));
       },
       close: () => void u.calls.delete(call),
@@ -299,6 +313,13 @@ export class HandoffHub {
 
   // ───────────────────────── internals ─────────────────────────
 
+  /** `device` has a live connection for this account: a presence socket (active or locked), a gated call, or a started call */
+  private connected(u: UserState, device: HandoffDevice): boolean {
+    for (const c of u.conns) if (c.device === device) return true;
+    for (const c of u.calls) if (c.device === device) return true;
+    return (u.live.get(device) ?? 0) > 0;
+  }
+
   private user(userId: string): UserState {
     let u = this.users.get(userId);
     if (!u) {
@@ -353,7 +374,7 @@ export class HandoffHub {
       try {
         const before = await this.load(u);
         const prev = before.owner;
-        if (onlyIfFree && prev !== null) return { accepted: prev === device, changed: false, state: { ...before } };
+        if (onlyIfFree && prev !== null && (prev === device || this.connected(u, prev))) return { accepted: prev === device, changed: false, state: { ...before } };
         if (check && !check(before)) return { accepted: false, changed: false, state: { ...before } };
         // A claim that was not predicted to change (e.g. cache cold) still stops the old device first.
         const late = !shut && (epoch === null ? before.owner !== device : claimWins(before, { owner: device, epoch })) && this.shutGate(u, device);
