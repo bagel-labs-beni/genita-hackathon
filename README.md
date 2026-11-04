@@ -161,7 +161,7 @@ Calling a model is easy. Making it feel like a person on a video call, on two de
 | F11 | Memory | Memory extraction, storage, recall, forgetting during a call | Nov 2 |
 | F12 | Coming back | Return greeting, same companion and context on both devices | Nov 2 |
 
-**About Beni.** Our team also runs Beni, a separate companion app; the demo video mentions its user numbers as background, because that is where we learned what people want from a companion. Genita shares no code, assets or infrastructure with Beni. Everything listed above was written from scratch for this hackathon.
+**About Beni.** Our team also runs Beni, a separate companion app; the demo video mentions its user numbers as background, because that is where we learned what people want from a companion. Genita shares no code or assets with Beni. Everything listed above was written from scratch for this hackathon.
 
 **About the move effect.** The iPhone → Mac transition uses EffectSource, an open-source blur shader and sampler (MIT, © 2026 Akash T, license kept next to the source). It is a dependency, not our work; the compositor around it and everything else in the handoff are new code.
 
