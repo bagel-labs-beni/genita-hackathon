@@ -311,6 +311,7 @@ enum CallStop: Equatable {
     private func flushPlayback() {
         voice.cancel()
         audio.flush()
+        faceWall = [:]; faceWallEnd = 0   // Codex r2 P2: the next reply's wall clock starts now, not after the flushed audio
     }
 
     // MARK: lifecycle
@@ -1004,13 +1005,13 @@ enum CallStop: Equatable {
             routeInterpretAudio(AudioFrameHeader.payload(of: data), route, utterance)
             return
         }
+        noteFaceWall(utterance, bytes: data.count - GenitaProtocol.frameHeaderBytes)
         // The face moves with what plays on this speaker; its clock is the same player's playhead.
         if let timing, timing.utteranceId == utterance {
             var e = timing; e.utteranceId = faceId(utterance)
             let pcm = AudioFrameHeader.payload(of: data)
             feedFace(utterance) { $0.handle(audio: e, pcm: pcm) }
         }
-        noteFaceWall(utterance, bytes: data.count - GenitaProtocol.frameHeaderBytes)
         #if DEBUG
         if let playbackSink { playbackSink(AudioFrameHeader.payload(of: data), utterance); return }
         #endif
@@ -1316,8 +1317,9 @@ enum CallStop: Equatable {
     /// hasn't started yet.
     private func stillHearing(before utterance: Int) -> Bool {
         guard let current = faceUtterance, utterance > current,
-              let heard = audio.playbackPositionMs(utteranceId: current), heard >= 0 else { return false }
-        if let next = audio.playbackPositionMs(utteranceId: utterance), next >= 0 { return false }
+              let heard = faceClockMs(utterance: current), heard >= 0 else { return false }
+        // Codex r2 P2: the same clock the face draws with (the wall clock when the player has no playhead)
+        if let next = faceClockMs(utterance: utterance), next >= 0 { return false }
         return true
     }
 
