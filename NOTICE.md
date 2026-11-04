@@ -57,7 +57,7 @@ CC-BY-NC-4.0: https://creativecommons.org/licenses/by-nc/4.0/. Attribution: Meta
 
 ## Operating-system features (not AI models)
 
-Sign in with Apple, ARKit, Apple Vision rectangle detection, Multipeer Connectivity, Core Bluetooth, ScreenCaptureKit and Apple's on-device dictation (`SFSpeechRecognizer`, in the hold-to-speak field when you correct a profile card) are Apple platform features. Genita does not ship or call any other AI model.
+Sign in with Apple, ARKit, Apple Vision rectangle detection, Multipeer Connectivity, Core Bluetooth, and ScreenCaptureKit are Apple platform features. Genita does not ship or call any other AI model.
 
 ## Services
 
