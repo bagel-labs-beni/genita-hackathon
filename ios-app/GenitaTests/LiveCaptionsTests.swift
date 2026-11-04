@@ -51,6 +51,7 @@ final class LiveCaptionsTests: XCTestCase {
 
     func testLocalMicShowsSoundAfter150msAndDropsNoiseAfter1200ms() {
         var c = LiveCaptions()
+        XCTAssertNil(c.frame(now: -50, level: 0.02, playheadMs: nil).you, "a quiet room sets the resting level")
         XCTAssertNil(c.frame(now: 0, level: 0.3, playheadMs: nil).you)
         XCTAssertNil(c.frame(now: 100, level: 0.3, playheadMs: nil).you, "not before 150 ms")
         XCTAssertEqual(c.frame(now: 160, level: 0.3, playheadMs: nil).you?.phase, .sound)
@@ -194,6 +195,35 @@ final class LiveCaptionsTests: XCTestCase {
         XCTAssertTrue(t.hasSuffix("newest"))
         XCTAssertLessThanOrEqual(t.count, LiveCaptions.youMaxChars)
         XCTAssertFalse(t.hasPrefix(" "))
+    }
+
+    // TF 341 (Chelsea, 18:30): on a real iPhone the mic level never rests under 0.08 (room, breath, AEC residue).
+    // The heard line must survive that noise until the reply, and the user's words must not depend on it.
+    func testNoisyMicNeverWipesTheUsersWords() {
+        var c = LiveCaptions()
+        var now: Double = 0
+        func tick(_ ms: Double, level: Float = 0.2) -> LiveCaptions.Frame { now += ms; return c.frame(now: now, level: level, playheadMs: nil) }
+        _ = tick(200)   // noise alone: "…"
+        c.apply(ev(speechStart), now: now)
+        c.apply(transcript("What should I eat", final: false), now: now)
+        XCTAssertEqual(tick(100).you?.text, "What should I eat")
+        c.apply(transcript("What should I eat tonight?", final: true), now: now)
+        // thinking: the mic keeps hearing the room
+        for _ in 0..<60 { XCTAssertEqual(tick(33).you?.phase, .heard, "the heard line stays through mic noise") }
+        c.apply(delta(9, "Wednesday night, you need food."), now: now)
+        c.apply(audio(9, sentence: 0, offset: 0, words: [("Wednesday", 0, 300), ("night,", 300, 600)]), now: now)
+        let f = c.frame(now: now + 10, level: 0.3, playheadMs: 100)
+        XCTAssertEqual(f.you?.text, "What should I eat tonight?")
+        XCTAssertEqual(f.you?.dim, true)
+        XCTAssertEqual(f.reply?.text, "Wednesday")
+    }
+
+    func testMicStateOnlyHidesTheSoundPlaceholder() {
+        let heard = LiveCaptions.Frame.YouRow(text: "hi", phase: .heard, dim: false, rolled: false)
+        let sound = LiveCaptions.Frame.YouRow(text: "…", phase: .sound, dim: false, rolled: false)
+        XCTAssertEqual(LiveCaptions.visibleYou(heard, micOn: false), heard, "words the server heard always show")
+        XCTAssertNil(LiveCaptions.visibleYou(sound, micOn: false))
+        XCTAssertEqual(LiveCaptions.visibleYou(sound, micOn: true), sound)
     }
 
     func testCaptionBottomSits16AboveTheCameraButton() {

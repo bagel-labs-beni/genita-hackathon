@@ -30,7 +30,7 @@ struct CallCaptionLayer: View {
         // keeps ticking while hidden: a reply that plays behind the Finds sheet still ends and clears on time
         TimelineView(.animation(minimumInterval: 1.0 / 30)) { _ in
             let f = frame()
-            let you = micOn && !hidden ? f.you : nil
+            let you = hidden ? nil : LiveCaptions.visibleYou(f.you, micOn: micOn)
             let reply = hidden ? nil : f.reply
             let shown = you != nil || reply != nil
             ZStack(alignment: .bottomLeading) {
