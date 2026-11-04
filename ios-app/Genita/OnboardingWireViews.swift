@@ -464,7 +464,8 @@ struct SkipImportView: View {
 
     // MARK: body
     var body: some View {
-        WirePage(title: title, pageID: step.rawValue, subtitle: nil, back: { model.back() },
+        // b14: N1 says this door needs no AI and how long it is (mock TbzFuosXMi9gsZ9GcJh7LQ); N2 / N3 as Figma
+        WirePage(title: title, pageID: step.rawValue, subtitle: step == .skipTopics ? "No AI needed. Just three quick picks." : nil, back: { model.back() },
                  primary: "Continue", primaryBusy: model.importing,
                  action: {
                      switch step {
