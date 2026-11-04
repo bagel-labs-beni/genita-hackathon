@@ -11,7 +11,7 @@ import { reasonChips, tasteLines, type TasteLine } from "../personalize/reasons.
 import { randomUUID } from "node:crypto";
 import type { FindCard, FindKind, ServerEvent } from "../protocol.ts";
 import { classifyTurn, isBareAccept, isGoesWithFollowUp, isLinksAsk, isProductAsk, refersToScreen } from "./intent.ts";
-import { PRODUCT_COUNT, SEARCH_TITLE, guessLabel, runProduct, shortLabel } from "./product.ts";
+import { PRODUCT_COUNT, SEARCH_TITLE, decidePick, guessLabel, runProduct, shortLabel, tasteLines as productTaste } from "./product.ts";
 import { confirmItem, FRIDGE_UNCLEAR, IDENTIFY_UNSURE, runIdentify, runLink, runOutfit, runRecipe, type PipelineCtx, type PipelineResult } from "./pipeline.ts";
 import { cacheGet, cacheKey, cachePut, cardFitsColors, cardIsKind, categoryOf, claimWarm, colorAsks, colorPhrases, colorsOf, plainAsk, releaseWarm, type CachedProducts } from "./productCache.ts";
 import { ownerKey, type FindsStore } from "./store.ts";
@@ -142,7 +142,8 @@ export type TurnInput = {
   screen?: string;
 };
 
-export type TurnStarted = { findId: string; kind: FindKind | "identify"; ack?: string };
+/** reaction: S5 — the spoken line made from the same pick the search shops (null = say the plain ack) */
+export type TurnStarted = { findId: string; kind: FindKind | "identify"; ack?: string; reaction?: Promise<string | null> };
 
 /** "What's this?": a reaction while it looks (the name comes after the checks, like the fridge) */
 export const IDENTIFY_ACK = "Ooh, let me look.";
@@ -360,6 +361,7 @@ export class FindsRunner {
       },
     };
     let run: (c: PipelineCtx) => Promise<PipelineResult>;
+    let pickP: ReturnType<typeof decidePick> | null = null;
     if (intent.kind === "product") {
       const now = this.hooks.now();
       const named = guessLabel(t.text, "") !== "";
@@ -377,11 +379,19 @@ export class FindsRunner {
       const camera = t.frames.length > 0;
       const cached = prev || camera || followUp || this.deps.productCache !== true ? null : this.cacheFor(t.text);
       // scene 5: a "yes" to the verdict's offer may take the search started with that verdict (same moment, same frames)
-      const pre = prev || cached || (camera && !followUp) ? null : this.takePrefetch(t.text, now);
+      // S5 (QA 11/4): a follow-up searches fresh from the one pick it says out loud (the prefetch never won anyway: 0/3)
+      const pre = prev || cached || camera || followUp ? null : this.takePrefetch(t.text, now);
       if (pre) this.lastProduct = { label: pre.label, question: `${pre.question} — ${t.text}`, at: now };
+      // S5: one decision — the item + colour said out loud is the item searched (started now, beside the sheet)
+      // (camera asks and the verdict's follow-up: the S5 paths, where she sees the outfit and hears the pick)
+      if (!cached && !pre && (camera || followUp)) {
+        pickP = decidePick(this.deps.vendors, { question: prev ? `${prev.question} — ${t.text}` : t.text, recent: t.recent ?? [], taste: productTaste(undefined, this.profile, this.memories), frames: t.frames, signal: abort.signal });
+        pickP.catch(() => {});
+      }
+      const pick = pickP;
       run = cached ? (c) => this.replayCache(cached, c, t) : pre ? (c) => this.replayPrefetch(pre, c, t) : async (c) => {
         // S5 latency: find.started goes out before the likes are awaited (the sheet shows in this tick)
-        const r = await runProduct({ ...c, likesLater: likes, recent: t.recent ?? [], previous: prev?.question, region: this.deps.shopRegion, hedge: this.deps.productHedge });
+        const r = await runProduct({ ...c, ...(pick ? { pick } : {}), likesLater: likes, recent: t.recent ?? [], previous: prev?.question, region: this.deps.shopRegion, hedge: this.deps.productHedge });
         if (r.label && this.lastProduct) this.lastProduct.label = r.label;
         return r;
       };
@@ -439,7 +449,7 @@ export class FindsRunner {
     if (ACK[intent.kind]) this.acked.add(findId);
     // an outfit pick is answered out loud by the turn itself: its card only shows it (demo S4, one verdict)
     else if (intent.kind === "outfit") this.answered.set(findId, t.replyText);
-    return { findId, kind: intent.kind, ...(ACK[intent.kind] ? { ack: ACK[intent.kind] } : {}) };
+    return { findId, kind: intent.kind, ...(ACK[intent.kind] ? { ack: ACK[intent.kind] } : {}), ...(pickP ? { reaction: pickP.then((p) => p?.say || null, () => null) } : {}) };
   }
 
   /**
