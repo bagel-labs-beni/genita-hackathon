@@ -299,10 +299,14 @@ export function offOccasion(product: string, asked: string): boolean {
  * account's own words when they say it; otherwise the person in the camera decides; never both in one card.
  */
 export type Department = "women" | "men";
-const WOMEN_CUE = /\b(she|her|hers|woman|women'?s|womenswear|female|girl|ladies)\b|\b(dress(?:es)?|skirts?|heels|blouses?|bras?)\b/i;
-const MEN_CUE = /\b(he|him|his|man|men'?s|menswear|male|guy)\b/i;
+// only what they say about themselves: pronouns and departments, never the things they like or avoid (Codex r1:
+// "Avoid dresses, skirts and heels" said nothing about who they are), and never a line that rules something out
+const WOMEN_CUE = /\b(she|her|hers|woman|women'?s|womenswear|female|ladies)\b/i;
+const MEN_CUE = /\b(he|him|his|man|men'?s|menswear|male)\b/i;
+const NEGATED = /\b(avoid|avoids|dislike|dislikes|no|not|never|hate|hates|don'?t|doesn'?t)\b/i;
 export function departmentOf(profileText: string): Department | undefined {
-  const w = WOMEN_CUE.test(profileText), m = MEN_CUE.test(profileText);
+  const lines = profileText.split(/\n+/).filter((l) => !NEGATED.test(l));
+  const w = lines.some((l) => WOMEN_CUE.test(l)), m = lines.some((l) => MEN_CUE.test(l));
   return w && !m ? "women" : m && !w ? "men" : undefined;
 }
 /** The department a product page names in its URL or name, if any ("/products/mens-captain-boot" → men). */
@@ -322,9 +326,14 @@ function departmentLine(d: Department | undefined, seeing: boolean): string {
 /** "Two for the trench" over one product (demo S5): the count in the title follows what is on the card. */
 export function cardTitle(model: string, n: number): string {
   if (!model) return n === 1 ? "One for you" : "Two for you";
-  if (n === 1 && /\b(two|2|both|pair of picks|couple)\b/i.test(model)) {
+  if (n === 1 && /\b(two|2|both|pair|couple)\b/i.test(model)) {
     const fixed = model.replace(/^(two|2)\b/i, "One");
-    return /\b(two|2|both|couple)\b/i.test(fixed) ? "One for you" : fixed;
+    return /\b(two|2|both|pair|couple)\b/i.test(fixed) ? "One for you" : fixed;
+  }
+  // both ways (Codex r1): two products under "One for you" / "A single pick"
+  if (n >= 2 && /\b(one|single|1)\b/i.test(model)) {
+    const fixed = model.replace(/^(one|1)\b/i, "Two");
+    return /\b(one|single|1)\b/i.test(fixed) ? "Two for you" : fixed;
   }
   return model;
 }
@@ -595,6 +604,11 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
       return;
     }
     if (!p.inTrace) serverOpened++;
+    // the page's own title can name the other department too (Codex r1)
+    if (dept && f?.title && productDepartment(f.title) && productDepartment(f.title) !== dept) {
+      dropped.otherDepartment = (dropped.otherDepartment ?? 0) + 1;
+      return;
+    }
     if (!isProductPage(p.url, f)) {
       dropped.notProduct++;
       ctx.log("product.not_product", { findId: ctx.findId, url: p.url.slice(0, 200), page: f?.kind ?? "unread" });

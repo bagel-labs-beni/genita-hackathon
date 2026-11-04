@@ -67,6 +67,8 @@ test("S5-1: the demo line with the camera on looks again (never the saved card);
 
 test("S5-2: one department per card — the account's own words, else the search's first pick; never mixed", async () => {
   assert.equal(departmentOf("- Taste: She loves wrap dresses and heels."), "women");
+  assert.equal(departmentOf("- Taste: Avoid dresses, skirts and heels."), undefined, "what they avoid says nothing about who they are (Codex r1)");
+  assert.equal(departmentOf("- Taste: Wears womenswear.\n- Taste: Never men's cuts."), "women");
   assert.equal(departmentOf("- Taste: His style is clean menswear."), "men");
   assert.equal(departmentOf(PROFILE), undefined, "nothing said: the camera decides");
   assert.equal(productDepartment("Captain Lace-Up Boot https://www.thursdayboots.com/products/mens-captain-boot-arizona-adobe"), "men");
@@ -94,6 +96,8 @@ test("S5-3: the card's words match the card — count, thing, color", () => {
   assert.equal(cardTitle("Both go with the trench", 1), "One for you");
   assert.equal(cardTitle("Two for the trench", 2), "Two for the trench");
   assert.equal(cardTitle("", 1), "One for you");
+  assert.equal(cardTitle("A pair of picks", 1), "One for you");
+  assert.equal(cardTitle("One for you", 2), "Two for you");
   // light-brown boots under "Dark brown, …" (b9 check): the plain line
   assert.equal(cardSubtitle("Dark brown, matched to your style.", "Shoes", ["Tan Chelsea Boot", "Light Brown Suede Boot"]), "Shoes, matched to your style.");
   assert.equal(cardSubtitle("Dark brown, matched to your style.", "Shoes", ["Espresso Chelsea Boot", "Dark Brown Loafer"]), "Dark brown, matched to your style.");
