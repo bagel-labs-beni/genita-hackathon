@@ -2481,6 +2481,7 @@ export class Session {
         if (spec && speculative === "hit") { spec.abort.abort(); pre = null; }
         req.instructions = `${req.instructions ?? ""}\n${GENERAL_REPLY_LINE}\n`;
         req.tools = undefined;
+        req.maxOutputTokens = Math.min(req.maxOutputTokens ?? 200, 200);
         this.log("finds.general_reply", { utteranceId });
       }
       if (started?.ack) {
