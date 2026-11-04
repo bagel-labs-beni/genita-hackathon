@@ -60,7 +60,7 @@ import { ASK_TURNS, replyAsks } from "../personalize/unknowns.ts";
 import { mightBeCorrection } from "../personalize/corrections.ts";
 import { taskHint } from "../convo/taskHints.ts";
 import { ageSays, foldAge, isMinor, MINOR_LINE, NO_AGE, type AgeSay } from "../convo/minorBoundary.ts";
-import { cameraOffHint } from "../convo/cameraAsk.ts";
+import { asksAboutView, cameraOffHint } from "../convo/cameraAsk.ts";
 import { unbackedPast } from "../convo/pastGuard.ts";
 import { unseenToHeard } from "../convo/unseenSight.ts";
 import { forgetInCall, forgetKeyText, isAnaphoricForget, isCorrection, isRememberRequest, pointedLine } from "../convo/forgetInCall.ts";
@@ -254,12 +254,20 @@ type Reply = {
 };
 
 /** server clock (ms) for the latency breakdown; logged with turn.answered as `stages` */
-type TurnMetrics = { speechEndAt?: number; completeAt?: number; lastPartialAt?: number; specStartAt?: number };
+/** textAt: a typed line arrived (its "speech end", as the app counts it) */
+type TurnMetrics = { speechEndAt?: number; completeAt?: number; lastPartialAt?: number; specStartAt?: number; textAt?: number };
 /** lang = the language the reply is written in (interpretation: the target) */
 type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null; images: string[]; lang: string; suggestMac?: boolean; /** the shared screen right now (watch together), for Finds (Chelsea 11/4 D) */ screen?: string; /** any camera or shared-screen frame went with this request */ seen?: boolean };
 /** firstTextAt: when the speculative stream's first text arrived (it is buffered until the final transcript) */
 /** ctx: what the request was built from besides the words (speculationContext); a hit needs both to match */
-type Speculation = { norm: string; ctx: string; abort: AbortController; built: Built; stream: Eager<SparkStreamEvent>; memoryRetry: MemoryRetryState; confirm: () => void; at: number; firstTextAt?: number };
+/** keepsFrames: the guess carries this question's first camera frame and is not about the view — newer frames keep it */
+type Speculation = { norm: string; ctx: string; abort: AbortController; built: Built; stream: Eager<SparkStreamEvent>; memoryRetry: MemoryRetryState; confirm: () => void; at: number; firstTextAt?: number; keepsFrames: boolean };
+
+/** turn.metrics `trigger`: what started a reply (perf(turn) 11/4) */
+export type TurnTrigger = "voice" | "text" | "greeting" | "initiative" | "card" | "watch";
+export function turnTrigger(t: { self?: "card" | "watch"; greeting: boolean; cue: boolean; typed: boolean }): TurnTrigger {
+  return t.self ?? (t.greeting ? "greeting" : t.cue ? "initiative" : t.typed ? "text" : "voice");
+}
 
 /** Transcript comparison for speculation: case and punctuation do not matter. */
 export function normTranscript(s: string): string {
@@ -904,6 +912,8 @@ export class Session {
         }
         this.client.sendJson({ type: "transcript", final: true, text, source: "text" });
         if (this.interp) return this.interp.typed(text);
+        // turn.metrics: a typed turn counts from here, as the app counts it (no speechEnd to measure from)
+        this.metrics = { textAt: this.now() };
         return this.dispatch({ type: "text", text });
       }
       case "barge_in":
@@ -1693,7 +1703,7 @@ export class Session {
     // the bubble keeps the whole turn (the final goes out on commit)
     this.client.sendJson({ type: "transcript", final: false, text });
     // Spark may start on it now (it is buffered until the commit; a resumed turn makes it a miss)
-    if (this.deps.config.speculate && !(this.frames && this.now() - this.frames.at <= FRAMES_TTL_MS)) {
+    if (this.deps.config.speculate && this.mayGuessWithFrames(text)) {
       if (this.specTimer) clearTimeout(this.specTimer);
       this.specTimer = null;
       void this.startSpeculation(text);
@@ -1929,7 +1939,9 @@ export class Session {
     }
     this.frames = urls.length ? { images: urls, at: this.now(), ...(unclear ? { unclear: true } : {}) } : null;
     // Codex review (coherence 11/4): a guess built before these frames has no images; the turn must see them (S4/S5)
-    if (urls.length && this.spec) this.dropSpeculation();
+    // perf(turn) 11/4: the speech-end frames keep a guess that already carries this question's first frame, unless
+    // the line is about what the camera shows (then the newest frames matter and the turn asks again)
+    if (urls.length && this.spec && !this.spec.keepsFrames) this.dropSpeculation();
     if (urls.length) this.initiative?.framesSent(this.now());
   }
 
@@ -1940,6 +1952,17 @@ export class Session {
     if (!f || this.now() - f.at > FRAMES_TTL_MS) return [];
     this.framesUnclear = f.unclear === true;
     return f.images;
+  }
+  /** perf(turn) 11/4: the current camera frames for a speculative guess, left in place for the turn itself */
+  private peekFrames(): string[] {
+    const f = this.frames;
+    return f && this.now() - f.at <= FRAMES_TTL_MS ? f.images : [];
+  }
+  /** a guess may start on this line now: no fresh frames, or the line is not about what the camera shows
+   * (GENITA_SPECULATE_CAMERA=0: never with fresh frames, as before 11/4) */
+  private mayGuessWithFrames(text: string): boolean {
+    if (!(this.frames && this.now() - this.frames.at <= FRAMES_TTL_MS)) return true;
+    return process.env.GENITA_SPECULATE_CAMERA !== "0" && !asksAboutView(text);
   }
   /** the frames the last request took were all too dark / blurry (D59) */
   private framesUnclear = false;
@@ -2233,7 +2256,7 @@ export class Session {
   }
 
   /** Pure apart from consuming pending camera frames. */
-  private buildRequest(text: string, renamedFrom?: string, turn: { greeting?: { item: Memory | null } | null; cue?: { block: string } | null } = {}): Built {
+  private buildRequest(text: string, renamedFrom?: string, turn: { greeting?: { item: Memory | null } | null; cue?: { block: string } | null; peek?: boolean } = {}): Built {
     const greeting = !!turn.greeting;
     const persona = this.persona!;
     const hangul = isMostlyHangul(text);
@@ -2251,7 +2274,8 @@ export class Session {
         images: [],
       };
     }
-    const camera = this.takeFrames();
+    // a speculative guess only looks at the frames: the turn (a miss) or the hit takes them
+    const camera = turn.peek ? this.peekFrames() : this.takeFrames();
     // camera frames in hand win over a watch without a clear picture (black, stopped): the camera is what is in
     // front of the user now, and a stale share must not tell the model the screen is black
     const watch = camera.length && !this.watch?.hasLivePicture ? null : (this.watch?.questionContext() ?? null);
@@ -2359,7 +2383,9 @@ export class Session {
 
   private considerSpeculation(text: string): void {
     if (!this.deps.config.speculate || this.turn.phase !== "listening") return;
-    if (this.frames && this.now() - this.frames.at <= FRAMES_TTL_MS) return; // frames are consumed per turn; don't guess
+    // perf(turn) 11/4: with the camera on (fresh frames at every speech start) a plain line is guessed too, with the
+    // question's first frame; only a line about what the camera shows waits for the newest frames
+    if (!this.mayGuessWithFrames(text)) return;
     if (this.specTimer) clearTimeout(this.specTimer);
     this.specTimer = null;
     if (LOOKS_FINAL.test(text.trim())) { void this.startSpeculation(text); return; }
@@ -2379,14 +2405,14 @@ export class Session {
     if (!norm || this.closed || this.spec?.norm === norm) return;
     if (this.focusLoads.size) return; // the card "Talk about this" named is still loading (Codex r2)
     this.dropSpeculation();
-    const built = this.buildRequest(text);
+    const built = this.buildRequest(text, undefined, { peek: true });
     const abort = new AbortController();
     let confirm!: () => void;
     const confirmed = new Promise<void>((resolve) => { confirm = resolve; });
     abort.signal.addEventListener("abort", confirm, { once: true });
     const memoryRetry: MemoryRetryState = {};
     const source = this.sparkSource(built.req, abort.signal, undefined, !built.interpret, confirmed, undefined, memoryRetry);
-    const spec: Speculation = { norm, ctx: this.speculationContext(), abort, built, memoryRetry, confirm, at: this.now(), stream: new Eager(this.stampFirstText(source, (t) => (spec.firstTextAt ??= t))) };
+    const spec: Speculation = { norm, ctx: this.speculationContext(), abort, built, memoryRetry, confirm, at: this.now(), stream: new Eager(this.stampFirstText(source, (t) => (spec.firstTextAt ??= t))), keepsFrames: built.images.length > 0 && !asksAboutView(text) };
     this.spec = spec;
   }
 
@@ -2515,6 +2541,10 @@ export class Session {
         m.specStartAt = spec.at;
         spec.confirm();
         built = spec.built;
+        // the guess only peeked at the camera: this turn takes the frames (never reused by the next turn), and the card
+        // pipeline gets the newest ones (the speech-end pair) — Spark already answered from the first
+        const fresh = this.takeFrames();
+        if (fresh.length && built.images.length) built = { ...built, images: fresh };
         pre = spec.stream;
         memoryRetry = spec.memoryRetry;
       } else {
@@ -3468,6 +3498,11 @@ export class Session {
     if (transcriptLogOn(this.deps.userId)) {
       this.log("turn.text", { utteranceId, user: synthetic || self ? null : clipTranscript(text), reply: clipTranscript(full), ...(self ? { self } : {}), ...(greeting ? { greeting: true } : {}), ...(interpret ? { interpret: true } : {}) });
     }
+    // what started this reply, and the moment the user finished it: a voice turn's speech end (its final if the ASR
+    // lost the speech end), a typed line's arrival; the greeting, an initiative cue and a card / watch line had no
+    // user line, so their speech-end numbers are null and `trigger` says why (the app logged a bare -1)
+    const trigger = turnTrigger({ self, greeting: !!greeting, cue: !!cue, typed: m.textAt !== undefined && m.speechEndAt === undefined });
+    const endAt = trigger === "voice" ? m.speechEndAt ?? m.completeAt : trigger === "text" ? m.textAt : undefined;
     const metrics = {
       utteranceId,
       model: SPARK_MODEL,
@@ -3476,17 +3511,19 @@ export class Session {
       replyStartToFirstTokenMs: m.firstTokenAt ? Math.round(m.firstTokenAt - m.replyStartAt) : null,
       replyStartToFirstSentenceMs: m.firstSentenceAt ? Math.round(m.firstSentenceAt - m.replyStartAt) : null,
       firstSentenceToFirstAudioMs: m.firstSentenceAt && m.firstAudioAt ? Math.round(m.firstAudioAt - m.firstSentenceAt) : null,
-      speechEndToFirstAudioMs: m.speechEndAt && m.firstAudioAt ? Math.round(m.firstAudioAt - m.speechEndAt) : null,
+      speechEndToFirstAudioMs: endAt !== undefined && m.firstAudioAt ? Math.round(m.firstAudioAt - endAt) : null,
+      replyStartToFirstAudioMs: m.firstAudioAt ? Math.round(m.firstAudioAt - m.replyStartAt) : null,
       stt_ms: m.speechEndAt && m.completeAt ? Math.round(m.completeAt - m.speechEndAt) : null,
       llm_ms: m.firstTokenAt ? Math.round(m.firstTokenAt - m.replyStartAt) : null,
       tts_ms: m.firstSentenceAt && m.firstAudioAt ? Math.round(m.firstAudioAt - m.firstSentenceAt) : null,
-      first_audio_ms: m.speechEndAt && m.firstAudioAt ? Math.round(m.firstAudioAt - m.speechEndAt) : null,
+      first_audio_ms: endAt !== undefined && m.firstAudioAt ? Math.round(m.firstAudioAt - endAt) : null,
       audioMs: Math.round(reply.audioMs),
       speculative,
+      trigger,
     };
     this.client.sendJson({ type: "turn.metrics", ...metrics });
     // stage timeline for the latency breakdown (ms from the ASR's speechEnd; server clock; log only)
-    const rel = (x?: number) => (x !== undefined && m.speechEndAt !== undefined ? Math.round(x - m.speechEndAt) : null);
+    const rel = (x?: number) => (x !== undefined && endAt !== undefined ? Math.round(x - endAt) : null);
     const stages = {
       lastPartial: rel(m.lastPartialAt),
       specStart: rel(m.specStartAt),

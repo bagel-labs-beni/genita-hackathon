@@ -25,3 +25,13 @@ export function cameraOffHint(userText: string, cameraOn: boolean, screenShown =
   if (screenShown && !SELF_LOOK.test(userText)) return null;
   return CAMERA_OFF_HINT;
 }
+
+/**
+ * perf(turn) 11/4: the line is about what the camera shows, so its answer needs the newest frames (the app sends one at
+ * speech start, two at speech end). Errs wide on purpose: a false "yes" only costs the speculation head start (the turn
+ * waits for the speech-end frames, as before); a false "no" would answer from the question's first frame only.
+ */
+const VIEW_WORDS = /\b(?:look\w*|see|seeing|seen|saw|show\w*|watch\w*|view|camera|cam|picture|photo|pic|screen|this|these|that one|those|here|there|wear\w*|wore|holding|hold(?:s|ing)? (?:up|this)|outfit|fit|clothes|shirt|top|dress|jacket|shoes|hair|makeup|face|colou?r|ripe|fridge|kitchen|cook\w*|recipe|ingredients?|read|says|written|label|room|behind me|in front of|background|which one|what is it|what'?s that|guess what)\b/i;
+export function asksAboutView(text: string): boolean {
+  return LOOK_ASK.test(text) || SELF_LOOK.test(text) || VIEW_WORDS.test(text);
+}

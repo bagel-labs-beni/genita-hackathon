@@ -263,6 +263,10 @@ export type ServerEvent =
       first_audio_ms?: number | null;
       audioMs: number;
       speculative?: "hit" | "miss" | "none";
+      /** 11/4: what started the reply; only voice / text have a user line to measure speechEndToFirstAudioMs from */
+      trigger?: "voice" | "text" | "greeting" | "initiative" | "card" | "watch";
+      /** 11/4: reply start → first sound, set for every reply that made a sound (the greeting too) */
+      replyStartToFirstAudioMs?: number | null;
     }
   | { type: "asr.status"; status: "connected" | "reconnecting" }
   | { type: "mode.changed"; mode: Mode; by: "client" | "model" }
@@ -335,7 +339,7 @@ export const SERVER_EVENT_FIELDS: Record<ServerEventType, { required: string[]; 
       "speechEndToFirstAudioMs",
       "audioMs",
     ],
-    optional: ["speculative", "stt_ms", "llm_ms", "tts_ms", "first_audio_ms"],
+    optional: ["speculative", "stt_ms", "llm_ms", "tts_ms", "first_audio_ms", "trigger", "replyStartToFirstAudioMs"],
   },
   "asr.status": { required: ["status"], optional: [] },
   "mode.changed": { required: ["mode", "by"], optional: [] },

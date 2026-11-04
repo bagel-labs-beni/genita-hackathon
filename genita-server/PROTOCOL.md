@@ -16,6 +16,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 
 | date | change |
 |---|---|
+| 11/4 | perf(turn), additive: `turn.metrics` gets optional `trigger` (`voice` \| `text` \| `greeting` \| `initiative` \| `card` \| `watch`) and `replyStartToFirstAudioMs`. `speechEndToFirstAudioMs` / `first_audio_ms` of a typed turn now count from the typed line's arrival (the app already did); the greeting, an initiative turn and a card / watch line keep them `null` (no user line) — `trigger` says why. Server only: a voice turn with fresh camera `frames` is now speculated too (the guess carries the speech-start frame; a line about what the camera shows still waits for the speech-end frames). No wire change for frames. |
 | 11/4 | Handoff: a call's `start` now takes the conversation when the recorded owner has no live connection (no presence, no call; e.g. the Mac app was quit), and the call URL's `owner=` for an offline other device is ignored. A connected owner still keeps it. Server-only, no message changes; fixes the iPhone call staying silent after the Mac app quit. Additive. |
 | 11/4 | `backchannel.kind: "inhale"` (watch together, lead's call): a big move on the shared screen → the companion's instant nonverbal reaction, a small inhale in `audio` (≤ 0.45 s, ~−30 dBFS), no words; the spoken reaction follows as before. Apps that know it also raise the face's brows for ≤ 0.5 s; older apps just play the audio (the field is a string; nothing else changes). ≥ 30 s apart, shares the reaction gap. `GENITA_WATCH_NONVERBAL=0` turns it off. Additive. |
 | 11/4 | Companion reset: `POST /v1/companion/reset` (PREP_API.md) closes the account's live calls with **`4410` `companion_reset`** (new, additive). Clients: stop reconnecting and route like `/me` with no companion (iPhone → V01, Mac → "Set up on iPhone"). Older clients treat it like any other close and reconnect; the next `/me` routes them. |
@@ -250,7 +251,7 @@ contracts and offline/live checks: [`src/memory/README.md`](src/memory/README.md
 | `expression` | `utteranceId`, `sentence`, `tag`, `intensity`, `startMs`, `endMs` | server voice: the face expression of one clause, after its audio (below) |
 | `reply` | `utteranceId`, `text`, `emotion`, `interpret`, `final:true` | full reply text (what was spoken) |
 | `utterance.cancelled` | `utteranceId`, `reason: barge_in \| text \| client` | **stop playback now and drop queued audio** |
-| `turn.metrics` | `model`, `ttsModel`, `speechEndToFirstAudioMs`, … | per-turn latency breakdown (server clock). Device mode: `ttsModel:"device"`, "first audio" = first `say` sent, `audioMs` = the speaking estimate below |
+| `turn.metrics` | `model`, `ttsModel`, `speechEndToFirstAudioMs`, … , `trigger`? | per-turn latency breakdown (server clock). `speechEndToFirstAudioMs` is from the user's speech end (a typed turn: its arrival); `null` when no user line started the reply (`trigger` greeting / initiative / card / watch), see `replyStartToFirstAudioMs`. Device mode: `ttsModel:"device"`, "first audio" = first `say` sent, `audioMs` = the speaking estimate below |
 | `asr.status` | `status: connected \| reconnecting` | speech recognition reconnecting (show a mic hint) |
 | `mode.changed` | `mode`, `by` | |
 | `lip.changed` | `lip {requested, active, reason}` | Updated playback lip plan (`atlas` or `none`) |
