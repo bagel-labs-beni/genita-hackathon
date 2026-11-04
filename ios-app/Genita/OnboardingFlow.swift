@@ -613,7 +613,8 @@ extension AppState {
             do {
                 let r = try await onboarding.insights(wait: 6)
                 guard ownsOnboardingResponse(request), !Task.isCancelled else { return }
-                if let report = r.report, insightVerdictTask == nil { insightReport = report }
+                // a report that arrives later (Settings) clears an earlier failure (AU-94)
+                if let report = r.report, insightVerdictTask == nil { insightReport = report; insightUnavailable = false }
                 if r.status == .ready { return }
                 if r.status == .none || r.status == .failed { break }
             } catch {
