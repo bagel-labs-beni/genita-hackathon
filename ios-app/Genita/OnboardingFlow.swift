@@ -258,11 +258,15 @@ extension AppState {
         // a failure never leaves (or brings back) what they asked to forget
         profileForgotten()
         setup.forgetPending = true
+        // the account this was asked for: an answer after a sign-out / another sign-in touches nothing (Codex #583 r21)
+        let asked = launchAuthSnapshot
         do {
             try await onboarding.forgetProfile()
+            guard asked.accepts(launchAuthSnapshot), !Task.isCancelled else { return nil }
             setup.forgetPending = nil
             return nil
         } catch {
+            guard asked.accepts(launchAuthSnapshot), !Task.isCancelled else { return nil }
             route(error)
             if case GenitaAuthError.server(status: 429, _, _) = error { return "Couldn’t finish forgetting — try again in a minute." }
             return "Couldn’t finish forgetting — try again."
@@ -272,7 +276,8 @@ extension AppState {
     /// A queued "Forget all of this" the server never confirmed: sent again (on launch, once signed in).
     func retryPendingForget() async {
         guard setup.forgetPending == true, serverWired, onboarding.auth.token != nil else { return }
-        if (try? await onboarding.forgetProfile()) != nil {
+        let asked = launchAuthSnapshot
+        if (try? await onboarding.forgetProfile()) != nil, asked.accepts(launchAuthSnapshot), !Task.isCancelled {
             setup.forgetPending = nil
             profileForgotten()   // anything restored meanwhile goes again (Codex #583 r19)
         }
