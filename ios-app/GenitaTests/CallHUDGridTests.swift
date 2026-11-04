@@ -50,6 +50,27 @@ final class CallHUDGridTests: XCTestCase {
         }
     }
 
+    /// Build 10 (Chelsea): the flip button sits one 44 + 12 step above the camera, clear of the companion window
+    /// (y 184 + top, 128 tall) and of the top row; captions and the label obstacle rail move up with it.
+    func testFlipSitsAboveCameraAndClearsTheWindow() {
+        let sizes: [(CGSize, CGFloat, CGFloat)] = [(CGSize(width: 375, height: 667), 20, 0), (CGSize(width: 390, height: 844), 47, 34), (CGSize(width: 440, height: 956), 62, 34)]
+        for (size, top, bottom) in sizes {
+            let g = CallHUDGrid(size: size, safeTop: top, safeBottom: bottom)
+            XCTAssertEqual(g.railY(.camera) - g.railY(.flip), CallHUDGrid.button + CallHUDGrid.gap)
+            XCTAssertEqual(g.captionBottom(flip: true), g.railY(.flip) - CallHUDGrid.button / 2 - 16)
+            XCTAssertEqual(g.captionBottom(flip: false), g.captionBottom())
+            for sheet in [SheetState.idle, .dismissed, .peek, .searching] where CallHUDGrid.showsFlip(cameraOn: true, canFlip: true, sheet: sheet) {
+                let flipTop = g.railY(.flip, sheetUp: CallHUDGrid.sheetUp(sheet)) + CameraBoxes.railShift(sheet) - CallHUDGrid.button / 2
+                XCTAssertGreaterThan(flipTop, 184 + top + 64, "below the companion window (\(size), \(sheet))")
+                XCTAssertEqual(CameraBoxes.railRect(grid: g, sheet: sheet, flip: true).minY, flipTop - 4)
+            }
+        }
+        XCTAssertFalse(CallHUDGrid.showsFlip(cameraOn: false, canFlip: true, sheet: .idle), "camera off: no flip")
+        XCTAssertFalse(CallHUDGrid.showsFlip(cameraOn: true, canFlip: false, sheet: .idle))
+        XCTAssertFalse(CallHUDGrid.showsFlip(cameraOn: true, canFlip: true, sheet: .half), "half sheet: More keeps Flip camera")
+        XCTAssertTrue(CallHUDGrid.showsFlip(cameraOn: true, canFlip: true, sheet: .peek))
+    }
+
     /// Codex P2: on SE (no home bar) the HUD baseline is 27 pt below the board's; with the sheet up the rail keeps the
     /// board's line, so More ends above the half sheet as before (old: 46 pt More centred at 783 + (H − 844) − 440).
     func testRailClearsTheHalfSheetOnSE() {

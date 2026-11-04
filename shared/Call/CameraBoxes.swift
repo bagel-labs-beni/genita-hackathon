@@ -82,11 +82,11 @@ struct LiveBox: Identifiable, Equatable {
         default: 0
         }
     }
-    /// The control rail: three 44 pt glass buttons (CallHUDGrid: x = width − 38, ending on the baseline, + the sheet
-    /// shift), padded 4 pt. A label under it can't be read ("Whole milk", UI sweep 11/3).
-    static func railRect(grid: CallHUDGrid, sheet: SheetState) -> CGRect {
+    /// The control rail: three 44 pt glass buttons, four with the flip button (CallHUDGrid: x = width − 38, ending on
+    /// the baseline, + the sheet shift), padded 4 pt. A label under it can't be read ("Whole milk", UI sweep 11/3).
+    static func railRect(grid: CallHUDGrid, sheet: SheetState, flip: Bool = false) -> CGRect {
         let up = CallHUDGrid.sheetUp(sheet), half = CallHUDGrid.button / 2
-        let top = grid.railY(.camera, sheetUp: up) - half + railShift(sheet), bottom = grid.railY(.more, sheetUp: up) + half + railShift(sheet)
+        let top = grid.railY(CallHUDGrid.railTop(flip: flip), sheetUp: up) - half + railShift(sheet), bottom = grid.railY(.more, sheetUp: up) + half + railShift(sheet)
         return CGRect(x: grid.railX - half - 4, y: top - 4, width: CallHUDGrid.button + 8, height: bottom - top + 8)
     }
     /// The self-view PiP (96 × 128 at y 184 + top; right edge 20 pt, or left while the sheet is half up), padded 6 pt.
