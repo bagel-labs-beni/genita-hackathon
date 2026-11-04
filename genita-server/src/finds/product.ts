@@ -461,6 +461,19 @@ function give(): void {
 /** For tests: slots in use right now. */
 export const searchSlotsUsed = () => slots.used;
 
+/** opened pages the answer lists that don't read as a list / category page (what the soft cap may show, Codex #722) */
+function showableCount(r: SearchResult): number {
+  const j = lastJsonObject<ProductJson>(r.text);
+  const opened = completedOpens(r.output);
+  const items = Array.isArray(j?.items) ? (j!.items as ItemJson[]) : [];
+  return items.filter((i) => {
+    const hit = matchOpened(str(i?.url, 600), opened);
+    const url = hit ? httpsOf(hit) : null;
+    // the same URL-only rule a page nobody could read gets in the card (category / collection slugs never count)
+    return !!url && isProductPage(url, null) && !looksLikeList(url, str(i?.name, 200));
+  }).length;
+}
+
 /**
  * Demo S5 latency (lead 11/4): after this long a lane that already proved one product page is shown instead of
  * waiting for slower lanes (a 2-pick lane still wins before it). GENITA_PRODUCT_SOFT_MS, default 10 s (+ pages ≈ 12 s).
@@ -498,7 +511,7 @@ export async function hedgedSearch(vendors: FindsVendors, prompt: string, n: num
         resolve(best());
       };
       // past the soft cap, the best lane with at least one proven page is enough
-      const enough = () => { const b = best(); if (b && provenCount(b) >= 1) resolve(b); };
+      const enough = () => { const b = done.filter((r) => showableCount(r) >= 1).sort((x, y) => showableCount(y) - showableCount(x))[0]; if (b) resolve(b); };
       if (opts.softMs && runs.length > 1) soft = setTimeout(() => { pastSoft = true; enough(); }, opts.softMs);
       for (const a of runs) {
         withTimeout(vendors.spark({ input: userMessage(prompt, images), tools: [{ type: "web_search" }], effort: "minimal", maxOutputTokens: 3000 }, AbortSignal.any([a.signal, signal])), SEARCH_TIMEOUT_MS, signal).then((r) => {

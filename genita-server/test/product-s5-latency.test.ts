@@ -76,3 +76,22 @@ test("S5 cap: nothing by ~12 s → one graceful line (default), the search keeps
   const src = await import("node:fs").then((fs) => fs.readFileSync(new URL("../src/finds/runner.ts", import.meta.url), "utf8"));
   assert.match(src, /stillSearchingMs \?\? 12_000/, "the default visible wait before the line is 12 s");
 });
+
+test("S5 cap (Codex #722): a category page alone never wins at the soft cap; the lane with real products still can", async () => {
+  let calls = 0;
+  const category: SparkResult = {
+    text: JSON.stringify({ items: [{ name: "Women's boots", url: "https://shop-c.example.com/collections/womens-boots", store: "S", price: "", image: "", taste: "", situation: "" }] }),
+    output: [{ type: "web_search_call", status: "completed", action: { type: "open_page", url: "https://shop-c.example.com/collections/womens-boots" } }],
+  };
+  const v: FindsVendors = {
+    async spark() {
+      calls++;
+      if (calls === 1) { await sleep(10); return category; }
+      await sleep(150);
+      return lane(2);
+    },
+    async *sparkStream() {}, sam: async () => [], image: async () => Buffer.from([]),
+  };
+  const r = await hedgedSearch(v, "p", 2, new AbortController().signal, [], { softMs: 40 });
+  assert.equal(JSON.parse(r!.text).items.length, 2, "waited for the lane with product pages");
+});
