@@ -53,6 +53,7 @@ import type { CallStart, VoiceUpdate } from "../personalize/service.ts";
 import type { CallTurn } from "../personalize/extract.ts";
 import { ASK_TURNS, replyAsks } from "../personalize/unknowns.ts";
 import { mightBeCorrection } from "../personalize/corrections.ts";
+import { ageSays, foldAge, isMinor, MINOR_LINE, NO_AGE, type AgeSay } from "../convo/minorBoundary.ts";
 import { avoidKeys, forgetTarget, isForgetRequest, mentionsAvoided, scrubHistory, type Removed } from "../personalize/forgotten.ts";
 import { isForgetRequest as isMemoryForgetRequest } from "../memory/extract.ts";
 import { localTimeLine } from "../personalize/knows.ts";
@@ -121,6 +122,9 @@ export type SessionDeps = {
    * (server.ts). With server memory on, `start.history` is otherwise ignored, so the Mac lost the iPhone's turns.
    */
   priorTurns?: (revision: number) => HistoryItem[] | null;
+  /** Codex #640 r13: what this account's other / just-ended calls said about their age, held by the server and handed
+   * over at start, independent of a slow memory read or history restore */
+  accountAge?: () => AgeSay;
   /** Session memory: the thread those turns belong to (same conversation on the next device), read right after priorTurns */
   priorThread?: (revision: number) => ThreadState | null;
   /** same-device return visit: the last lines of the call the user just hung up (server.ts), read right after priorTurns */
@@ -873,7 +877,9 @@ export class Session {
       this.recentReplies = this.history.filter((h) => h.role === "assistant").map((h) => h.text).slice(-3);
       // the whole claimed history, not just the kept 16 (Codex #502 P1 r5)
       if (claimedCrisis(msg.history)) this.crisisInCall = true;
+      this.ageSaid = foldAge(this.ageSaid, claimedAge(msg.history));
     }
+    this.ageSaid = foldAge(this.ageSaid, this.deps.accountAge?.() ?? NO_AGE);
     const startMode: Mode = msg.mode === "interpret" ? "interpret" : "chat";
     // the mic ASR opened during start listens in the start mode's languages (no English-only stream to replace)
     this.startingMode = startMode;
@@ -960,6 +966,8 @@ export class Session {
           // a crisis anywhere in the handed-over turns stays with the call: server turns carry the flag (server.ts);
           // a client-claimed history is read whole, not just the kept 16 (Codex #502 P1 r4/r5)
           if (server?.length ? seed.some((h) => h.role === "user" && realCrisisSignal(h.text)) : claimedCrisis(msg.history)) this.crisisInCall = true;
+          // Codex #640 r4: fold the flags (never a bare "minor" from a partial history; an adult age can still win)
+          this.ageSaid = foldAge(this.ageSaid, server?.length ? seed.filter((h) => h.role === "user").reduce((a, h) => foldAge(a, ageSays(h.text)), NO_AGE) : claimedAge(msg.history));
           // a handoff is the same conversation: one thread, one summary (iPhone and Mac write the same row)
           this.memoryCall?.continueThread(server?.length ? this.deps.priorThread?.(revision) ?? null : null, this.history);
           this.recentReplies = [...this.recentReplies, ...this.history.filter((h) => h.role === "assistant").map((h) => h.text)].slice(-3);
@@ -1869,6 +1877,13 @@ export class Session {
         crisisInCall: this.crisisInCall,
       }) ?? undefined;
     }
+    // safety gate 11/4: once they said they're a minor in this call, no romance at all (rides the This-turn line)
+    // Codex #640 r3: every chat request of a call known to be with a minor carries it (greeting and cues too)
+    {
+      const minor = isMinor([this.ageSaid, userText ? ageSays(userText) : NO_AGE]) ? MINOR_LINE : null;
+      // first in the line: the This-turn block is cut at 400 chars, the safety part must never be the cut part
+      if (minor) turnLine = turnLine ? turnLine.replace(/^This turn: /, `This turn: ${minor} `) : `This turn: ${minor}`;
+    }
     return { style: "v1", opener, initiative: turn.cue?.block, perception, perceptionHint, turn: turnLine };
   }
 
@@ -1958,6 +1973,12 @@ export class Session {
   /** a real crisis line came up anywhere in this call: sticky (the 16-line history trim never clears it) and handed to
    * the next device with the turns (server.ts), like forgetAsked. No take nudge after it (Codex #502 P1 r1–r3) */
   crisisInCall = false;
+  /** Codex #640: what they said about their own age in this call, kept past the 16-line trim (never stored) */
+  ageSaid: AgeSay = NO_AGE;
+  /** they're a minor by what this call said (server.ts carries ageSaid across a handoff, like crisisInCall) */
+  get minorInCall(): boolean { return isMinor([this.ageSaid]); }
+  /** a handed-over or claimed history said "minor" (explicitly) */
+  set minorInCall(v: boolean) { if (v) this.ageSaid = foldAge(this.ageSaid, { minor: true, adult: false, teen: false }); }
   /** set by the server when this call picked up a dropped one (same device, or > RECONNECT_GAP_MS later): RECONNECT_LINE */
   reconnected = false;
   /** the user hung up (`stop`), as opposed to a dropped socket or a move to the other device */
@@ -1968,6 +1989,8 @@ export class Session {
     // either detector: #442's (personalize, drives the do-not-mention scrub) or memory's broader one (#443)
     if (role === "user" && (isForgetRequest(text) || isMemoryForgetRequest(text))) this.forgetAsked = true;
     if (role === "user" && realCrisisSignal(text)) this.crisisInCall = true;
+    // Codex #640: kept for the whole call (the 16-line history trim would drop the "I'm 15" line)
+    if (role === "user") this.ageSaid = foldAge(this.ageSaid, ageSays(text));
     this.history.push({ role, text });
     if (this.history.length > MAX_HISTORY) this.history.splice(0, this.history.length - MAX_HISTORY);
     this.deps.onHistoryChange?.(role);
@@ -3161,6 +3184,12 @@ export class Session {
 
 /** `start.history` from the app: role + text only, capped. */
 /** a real crisis line anywhere in a claimed start.history (the whole list, before the 16-line trim; Codex #502 P1 r5) */
+/** Codex #640: what a handed-over history (up to 200 lines) said about their own age, as flags */
+function claimedAge(v: unknown): AgeSay {
+  if (!Array.isArray(v)) return NO_AGE;
+  return v.slice(-200).filter((h) => (h as Record<string, unknown>)?.role === "user" && typeof (h as Record<string, unknown>).text === "string")
+    .reduce((a: AgeSay, h) => foldAge(a, ageSays(String((h as Record<string, unknown>).text).slice(0, 1000))), NO_AGE);
+}
 function claimedCrisis(v: unknown): boolean {
   if (!Array.isArray(v)) return false;
   return v.slice(-200).some((h) => {

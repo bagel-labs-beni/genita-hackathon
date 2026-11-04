@@ -1642,3 +1642,62 @@ test("Codex #585 r2 P1: the last opener topic the user asked to forget is not na
   assert.doesNotMatch(s.v1Extras({ greeting: { item: null } }).opener ?? "", /pottery/);
   session.close();
 });
+
+test("safety gate 11/4: after 'I'm 15' every later turn carries the no-romance line", { skip: !v1 }, async () => {
+  const { client, session, calls } = setup(["<happy> Ha, okay."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
+  const say = async (text: string) => { const n = calls.length; await session.onClientText(JSON.stringify({ type: "text", text })); await client.waitFor((m) => m.type === "reply" && m.final === true && calls.length > n); return calls.at(-1)!.instructions ?? ""; };
+  assert.doesNotMatch(await say("hey"), /under 18/);
+  await say("i'm 15 btw");
+  assert.match(await say("do you have a crush on me lol"), /under 18: no flirting or romance at all/);
+  session.close();
+});
+
+test("Codex #640: the minor boundary stays after the 16-line history trim", { skip: !v1 }, async () => {
+  const { client, session, calls } = setup(["<happy> Ha, okay."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
+  const say = async (text: string) => { const n = calls.length; await session.onClientText(JSON.stringify({ type: "text", text })); await client.waitFor((m) => m.type === "reply" && m.final === true && calls.length > n); return calls.at(-1)!.instructions ?? ""; };
+  await say("i'm 15 btw");
+  for (let i = 0; i < 10; i++) await say("ok");
+  assert.match(await say("do you have a crush on me lol"), /under 18: no flirting or romance at all/);
+  session.close();
+});
+
+test("Codex #640 r3: a call known to be with a minor carries the line on the greeting too", { skip: !v1 }, async () => {
+  const { session } = setup(["<happy> Hey."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
+  (session as unknown as { minorInCall: boolean }).minorInCall = true;
+  const s = session as unknown as { v1Extras(t: unknown): { turn?: string } };
+  assert.match(s.v1Extras({ greeting: { item: null } }).turn ?? "", /under 18/);
+  session.close();
+});
+
+test("Codex #640 r5: 'I said \"I'm 15\"' after someone else's quote keeps the boundary past the trim", { skip: !v1 }, async () => {
+  const { client, session, calls } = setup(["<happy> Ha."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
+  const say = async (text: string) => { const n = calls.length; await session.onClientText(JSON.stringify({ type: "text", text })); await client.waitFor((m) => m.type === "reply" && m.final === true && calls.length > n); return calls.at(-1)!.instructions ?? ""; };
+  await say('My mom said "Be honest" and I said "I\'m 15".');
+  for (let i = 0; i < 10; i++) await say("ok");
+  assert.match(await say("do you have a crush on me?"), /under 18/);
+  session.close();
+});
+
+test("Codex #640 r8: 'I'm actually 15 years old.' keeps the boundary past the trim", { skip: !v1 }, async () => {
+  const { client, session, calls } = setup(["<happy> Ha."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
+  const say = async (text: string) => { const n = calls.length; await session.onClientText(JSON.stringify({ type: "text", text })); await client.waitFor((m) => m.type === "reply" && m.final === true && calls.length > n); return calls.at(-1)!.instructions ?? ""; };
+  await say("I'm actually 15 years old.");
+  for (let i = 0; i < 10; i++) await say("ok");
+  assert.match(await say("do you have a crush on me?"), /under 18/);
+  session.close();
+});
+
+test("Codex #640 r13: the account's age from the server reaches a new call with no memory / history restore", { skip: !v1 }, async () => {
+  const { client, session, calls } = setup(["<happy> Ha, okay."], { accountAge: () => ({ minor: true, adult: false, teen: false }) });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
+  const n = calls.length;
+  await session.onClientText(JSON.stringify({ type: "text", text: "do you have a crush on me lol" }));
+  await client.waitFor((m) => m.type === "reply" && m.final === true && calls.length > n);
+  assert.match(calls.at(-1)!.instructions ?? "", /under 18: no flirting or romance at all/);
+  session.close();
+});

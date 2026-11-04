@@ -46,6 +46,7 @@ import { createAccounts, type AccountsService, type Principal } from "./auth/ind
 import { looksLikeJwt } from "./auth/jwt.ts";
 import { createMemory, PgMemoryRepository } from "./memory/index.ts";
 import type { ThreadState } from "./memory/call.ts";
+import { foldAge, NO_AGE, type AgeSay } from "./convo/minorBoundary.ts";
 import { isMemoryRoute, memoryRoute } from "./memory/routes.ts";
 import { findsFromEnv } from "./finds/setup.ts";
 import { handleFindsHttp, isFindsRoute } from "./finds/http.ts";
@@ -371,7 +372,7 @@ export async function startServer(
   const zero: Progress = { turn: 0, update: 0 };
   const newer = (a: Progress, b: Progress) => a.turn > b.turn || (a.turn === b.turn && a.update > b.update);
   // device + hungUp (demo S5): the same device calling again after its user hung up is a return visit, not a move
-  const lastTurns = new Map<string, { turns: HistoryItem[]; thread: ThreadState | null; revision: number | null; progress: Progress; at: number; device: string; hungUp: boolean; gen: number; forgetAsked?: boolean; crisisInCall?: boolean; unsubscribe?: () => void }>();
+  const lastTurns = new Map<string, { turns: HistoryItem[]; thread: ThreadState | null; revision: number | null; progress: Progress; at: number; device: string; hungUp: boolean; gen: number; forgetAsked?: boolean; crisisInCall?: boolean; ageSaid?: AgeSay; unsubscribe?: () => void }>();
   function dropLastTurns(userId: string) {
     lastTurns.get(userId)?.unsubscribe?.();
     lastTurns.delete(userId);
@@ -411,6 +412,8 @@ export async function startServer(
     let hungUp = !!cached?.hungUp;
     let forgetAsked = !!cached?.forgetAsked;
     let crisisInCall = !!cached?.crisisInCall;
+    // Codex #640: a minor's boundary rides the same handoff as the crisis flag
+    let ageSaid: AgeSay = cached?.ageSaid ?? NO_AGE;
     let bestGen = cached?.gen ?? 0;
     for (const [sid, u] of sessionUsers) {
       if (u !== userId || sid === self) continue;
@@ -428,10 +431,13 @@ export async function startServer(
         fromDevice = sessionDevices.get(sid) ?? null; gapMs = 0; hungUp = session.isClosed && session.endedByUser;
         forgetAsked = session.forgetAsked;
         crisisInCall = session.crisisInCall;
+        ageSaid = session.ageSaid;
       }
     }
     // a crisis earlier in the conversation goes with it (next device or a quick call-back): no take nudge (Codex #502 P1 r3)
     if (best && crisisInCall) { const me = sessions.get(self); if (me) me.crisisInCall = true; }
+    // the three age flags as they were (Codex #640 r3: a teen phrase stays a teen phrase, an adult age can still win)
+    if (best && (ageSaid.minor || ageSaid.adult || ageSaid.teen)) { const me = sessions.get(self); if (me) me.ageSaid = foldAge(me.ageSaid, ageSaid); }
     // Hung up on this same device and called again: a return visit (greeting + the last call's notes). A call
     // on the OTHER device still continues it, whatever order its stop and the claim arrived in (Codex 11/3).
     if (best && hungUpHere) {
@@ -463,6 +469,17 @@ export async function startServer(
    * Personalize (P1 11/3, demo S4): this call continues the account's conversation from the OTHER device — a live
    * call there, or one that ended there < 10 min ago. Independent of memory (off or slow) and of `start.handoff`.
    */
+  /** Codex #640 r13: the account's age flags from its live calls and the < 10 min cached one (no memory read) */
+  function accountAge(userId: string, self: string): AgeSay {
+    const cached = lastTurns.get(userId);
+    let a: AgeSay = cached && Date.now() - cached.at < 10 * 60_000 && cached.ageSaid ? cached.ageSaid : NO_AGE;
+    for (const [sid, u] of sessionUsers) {
+      if (u !== userId || sid === self) continue;
+      const s = sessions.get(sid);
+      if (s) a = foldAge(a, s.ageSaid);
+    }
+    return a;
+  }
   function continuesOtherDevice(userId: string, self: string, device: string): boolean {
     for (const [sid, u] of sessionUsers) {
       if (u === userId && sid !== self && sessionDevices.get(sid) !== device) return true;
@@ -499,7 +516,7 @@ export async function startServer(
       const tags = keep ? { device: cached!.device, hungUp: cached!.hungUp, gen: cached!.gen } : { device, hungUp: session.endedByUser, gen };
       dropLastTurns(userId);
       const unsubscribe = deps.memory?.subscribe(userId, () => dropLastTurns(userId));
-      lastTurns.set(userId, { turns, thread, revision, progress: p, at: now, ...tags, forgetAsked: session.forgetAsked || (same && !!cached!.forgetAsked), crisisInCall: session.crisisInCall || (same && !!cached!.crisisInCall), unsubscribe });
+      lastTurns.set(userId, { turns, thread, revision, progress: p, at: now, ...tags, forgetAsked: session.forgetAsked || (same && !!cached!.forgetAsked), crisisInCall: session.crisisInCall || (same && !!cached!.crisisInCall), ageSaid: same && cached!.ageSaid ? foldAge(session.ageSaid, cached!.ageSaid) : session.ageSaid, unsubscribe });
       log("history.cached", { session: session.id, turns: turns.length });
     };
     if (!deps.memory) return save();
@@ -542,6 +559,7 @@ export async function startServer(
       priorTurns: (revision) => priorTurns(who.userId, id, revision, callDevice), priorThread: () => priorThread(id), lastCall: () => lastCall(id),
       personalize: deps.personalize ?? prep.deps.personalize, macNearby,
       continuesCall: () => continuesOtherDevice(who.userId, id, callDevice),
+      accountAge: () => accountAge(who.userId, id),
       // the reconnect line waits for the start claim and a switch's lease (src/handoff/hub.ts mayPlay), at most 2 s
       untilPlayable: gated ? () => new Promise<boolean>((resolve) => {
         const t0 = Date.now();
