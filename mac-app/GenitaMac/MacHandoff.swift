@@ -280,7 +280,7 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
         showMoveLine(nil)
         if new == .mac {
             // S4: read before the iPhone's call socket closes (its peer update comes after this move)
-            let fromPhoneCall=HandoffCameraPolicy.movedFromPhoneCall(previousOwner:old,peerInCall:server.peerInCall,peerActive:server.peerActive)
+            let fromPhoneCall=HandoffCameraPolicy.movedFromPhoneCall(previousOwner:old,peerInCall:server.peerInCall)
             // #118: the live call follows the conversation here — only on a live move (MC-01, ResumePolicy)
             if ResumePolicy.opensCall(ResumePolicy.arrival(localClaim:claimingLive,serverTrigger:applyingTrigger)) {
                 resumeOffered=false;sharingStopped=false;showCompanion()

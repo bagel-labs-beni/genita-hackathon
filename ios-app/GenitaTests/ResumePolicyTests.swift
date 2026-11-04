@@ -37,12 +37,11 @@ final class ResumePolicyTests: XCTestCase {
     }
     func testOnlyAMoveFromAnIPhoneCallCounts() {
         // the iPhone in a call: the move carries the call (and its camera)
-        XCTAssertTrue(HandoffCameraPolicy.movedFromPhoneCall(previousOwner: .phone, peerInCall: true, peerActive: true))
+        XCTAssertTrue(HandoffCameraPolicy.movedFromPhoneCall(previousOwner: .phone, peerInCall: true))
         // Codex P1: taking the conversation while the iPhone is on its home screen is a new call on the Mac
-        XCTAssertFalse(HandoffCameraPolicy.movedFromPhoneCall(previousOwner: .phone, peerInCall: false, peerActive: true))
-        XCTAssertFalse(HandoffCameraPolicy.movedFromPhoneCall(previousOwner: .mac, peerInCall: true, peerActive: true))
-        // older server (no inCall): the iPhone app in front stands in for it
-        XCTAssertTrue(HandoffCameraPolicy.movedFromPhoneCall(previousOwner: .phone, peerInCall: nil, peerActive: true))
-        XCTAssertFalse(HandoffCameraPolicy.movedFromPhoneCall(previousOwner: .phone, peerInCall: nil, peerActive: false))
+        XCTAssertFalse(HandoffCameraPolicy.movedFromPhoneCall(previousOwner: .phone, peerInCall: false))
+        XCTAssertFalse(HandoffCameraPolicy.movedFromPhoneCall(previousOwner: .mac, peerInCall: true))
+        // older server that doesn't report calls: unknown is off (privacy)
+        XCTAssertFalse(HandoffCameraPolicy.movedFromPhoneCall(previousOwner: .phone, peerInCall: nil))
     }
 }

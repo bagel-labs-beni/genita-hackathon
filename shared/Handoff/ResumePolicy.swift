@@ -37,8 +37,8 @@ enum HandoffCameraPolicy {
     }
     /// The conversation came here from a call running on the iPhone, not only its ownership: taking it while the
     /// iPhone sits on its home screen is a new call on the Mac (camera off, Codex P1). `peerInCall` is the server's
-    /// word (nil on an older server, which only says whether the iPhone app is in front).
-    static func movedFromPhoneCall(previousOwner: ConversationDevice, peerInCall: Bool?, peerActive: Bool) -> Bool {
-        previousOwner == .phone && (peerInCall ?? peerActive)
+    /// word; an older server that doesn't report calls (nil) never starts the camera (Codex P1 round 2).
+    static func movedFromPhoneCall(previousOwner: ConversationDevice, peerInCall: Bool?) -> Bool {
+        previousOwner == .phone && peerInCall == true
     }
 }
