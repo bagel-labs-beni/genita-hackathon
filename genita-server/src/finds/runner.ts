@@ -916,6 +916,7 @@ export class FindsRunner {
     // purge (account deleted): stop everything and never write again.
     this.closed = true;
     if (opts.purge) this.purged = true;
+    this.judgeAbort?.abort(); // a judge still thinking starts nothing after the call
     this.prefetched?.abort.abort();
     this.prefetched = null;
     for (const stop of this.backgroundStops) stop();
