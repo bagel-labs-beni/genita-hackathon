@@ -35,4 +35,14 @@ final class ResumePolicyTests: XCTestCase {
         // not granted (denied, restricted or never asked): no auto start, so no system dialog and no new sheet
         XCTAssertFalse(HandoffCameraPolicy.startsCamera(fromPhone: true, cameraRemembered: true, cameraAuthorized: false))
     }
+    func testOnlyAMoveFromAnIPhoneCallCounts() {
+        // the iPhone in a call: the move carries the call (and its camera)
+        XCTAssertTrue(HandoffCameraPolicy.movedFromPhoneCall(previousOwner: .phone, peerInCall: true, peerActive: true))
+        // Codex P1: taking the conversation while the iPhone is on its home screen is a new call on the Mac
+        XCTAssertFalse(HandoffCameraPolicy.movedFromPhoneCall(previousOwner: .phone, peerInCall: false, peerActive: true))
+        XCTAssertFalse(HandoffCameraPolicy.movedFromPhoneCall(previousOwner: .mac, peerInCall: true, peerActive: true))
+        // older server (no inCall): the iPhone app in front stands in for it
+        XCTAssertTrue(HandoffCameraPolicy.movedFromPhoneCall(previousOwner: .phone, peerInCall: nil, peerActive: true))
+        XCTAssertFalse(HandoffCameraPolicy.movedFromPhoneCall(previousOwner: .phone, peerInCall: nil, peerActive: false))
+    }
 }

@@ -65,10 +65,12 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     ///   proximity report is always followed by that ownership event.
     func liveMoveConfirmed(epoch:Int) {
         guard ownership.isOwner,resumeOffered,epoch==resumeEpoch else{return}
-        resumeHere(fromPhone:true)
+        resumeHere(fromPhone:resumeFromPhoneCall)
     }
     private var resumeEpoch:Int?
-    private func offerResume() { resumeOffered=true;resumeEpoch=ownership.state.epoch }
+    /// S4: the offered resume is a move from a call on the iPhone (read when the proximity move is confirmed).
+    private var resumeFromPhoneCall=false
+    private func offerResume(fromPhoneCall:Bool=false) { resumeOffered=true;resumeEpoch=ownership.state.epoch;resumeFromPhoneCall=fromPhoneCall }
     /// R2 says "Screen sharing stopped." only when sharing was on as the conversation left.
     @Published fileprivate(set) var sharingStopped = false
     @Published var motion: TransitionPayload?
@@ -277,11 +279,13 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
         phoneCallSeen.applied(owner:new,epoch:ownership.state.epoch,trigger:applyingTrigger)
         showMoveLine(nil)
         if new == .mac {
+            // S4: read before the iPhone's call socket closes (its peer update comes after this move)
+            let fromPhoneCall=HandoffCameraPolicy.movedFromPhoneCall(previousOwner:old,peerInCall:server.peerInCall,peerActive:server.peerActive)
             // #118: the live call follows the conversation here — only on a live move (MC-01, ResumePolicy)
             if ResumePolicy.opensCall(ResumePolicy.arrival(localClaim:claimingLive,serverTrigger:applyingTrigger)) {
                 resumeOffered=false;sharingStopped=false;showCompanion()
-                MacCall.shared.conversationArrived(fromPhone:true)
-            } else {offerResume()}
+                MacCall.shared.conversationArrived(fromPhone:fromPhoneCall)
+            } else {offerResume(fromPhoneCall:fromPhoneCall)}
         } else {
             resumeOffered=false
             if old == .mac {sharingStopped=sharing.isSharing}
