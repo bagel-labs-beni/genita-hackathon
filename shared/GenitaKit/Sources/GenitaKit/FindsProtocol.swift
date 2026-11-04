@@ -160,14 +160,27 @@ public struct FindCard: Codable, Equatable, Identifiable, Sendable {
         public var title: String
         public var url: String
         public var domain: String
-        /// r01: the reason line on its own (`title` still reads "Title — why" for older apps)
+        /// Finds r01: why this result (≤ 18 words). Older servers send none (the reason then rides on `title` as
+        /// "Title — why", or on the matching step).
         public var why: String?
-        /// the page's picture (find.image slot `source-N`, N 0-based); only ever `ready`
+        /// Finds r01: the page's og:image, slot `source-<i>` (0-based index into `sources`); only ever `ready`.
         public var image: FindImage?
+        /// Finds r01: the site's icon (server-relative or absolute). nil → the app draws a domain-initial tile.
         public var favicon: String?
+        /// layout `place`: rating, hours, address, maps link
         public var place: Place?
         public init(title: String, url: String, domain: String, why: String? = nil, image: FindImage? = nil, favicon: String? = nil, place: Place? = nil) {
             self.title = title; self.url = url; self.domain = domain; self.why = why; self.image = image; self.favicon = favicon; self.place = place
+        }
+
+        /// The title without the " — why" tail the server keeps on it for old apps (r01: the reason shows once).
+        public var displayTitle: String {
+            let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let w = why?.trimmingCharacters(in: .whitespacesAndNewlines), !w.isEmpty {
+                for sep in [" — ", " – ", " - "] where t.hasSuffix(sep + w) { return String(t.dropLast(sep.count + w.count)) }
+                if let r = t.range(of: " — ") { return String(t[..<r.lowerBound]) }
+            }
+            return t
         }
     }
     /// `from` profile = blue "Your style/taste: …" (import, HISY corrections) · call = grey "You said: …" (this call)

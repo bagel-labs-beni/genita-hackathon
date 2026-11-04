@@ -18,7 +18,7 @@ struct CameraStage: View {
     var body: some View {
         let lift = self.lift
         // the overlay moves with the picture: screen rects (floor, obstacles) are `lift` lower in its space
-        let obstacles = [CameraBoxes.menuRect(grid: grid), statusRect, CameraBoxes.railRect(grid: grid, sheet: call.finds.state),
+        let obstacles = [CameraBoxes.menuRect(grid: grid), statusRect, CameraBoxes.railRect(grid: grid, sheet: call.finds.state, flip: CallHUDGrid.showsFlip(cameraOn: call.cameraOn, canFlip: call.canFlipCamera, sheet: call.finds.state)),
                          CameraBoxes.pipRect(view: size, top: topInset, sheetHalf: call.finds.state == .half || call.finds.state == .rising)]
         ZStack {
             CallInk.ink

@@ -113,8 +113,15 @@ enum FaceCrop {
         let e = image.extent
         guard e.width >= 64, e.height >= 64 else { return nil }
         let cropped = image.cropped(to: region(in: e))
-        guard let jpeg = CallCamera.jpeg(cropped, maxSide: side, quality: 0.6), let thumb = thumbnail(cropped) else { return nil }
+        guard let thumb = thumbnail(cropped), !isBlack(thumb),
+              let jpeg = CallCamera.jpeg(cropped, maxSide: side, quality: 0.6) else { return nil }
         return Result(jpeg: jpeg, thumb: thumb)
+    }
+
+    /// b16: a black crop (camera not delivering) never goes to perception: mean gray under 8/255
+    nonisolated static func isBlack(_ thumb: [UInt8]) -> Bool {
+        guard !thumb.isEmpty else { return true }
+        return thumb.reduce(0) { $0 + Int($1) } < 8 * thumb.count
     }
 
     nonisolated static func thumbnail(_ image: CIImage, side: Int = 24) -> [UInt8]? {

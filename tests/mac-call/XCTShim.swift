@@ -15,6 +15,9 @@ func XCTAssertNil<T>(_ a: @autoclosure () throws -> T?, _ m: String = "", file: 
 func XCTAssertTrue(_ a: @autoclosure () throws -> Bool, _ m: String = "", file: StaticString = #filePath, line: UInt = #line) {
     if (try? a()) != true { XCTFail("not true \(m)", file: file, line: line) }
 }
+func XCTAssertFalse(_ a: @autoclosure () throws -> Bool, _ m: String = "", file: StaticString = #filePath, line: UInt = #line) {
+    if (try? a()) != false { XCTFail("not false \(m)", file: file, line: line) }
+}
 func XCTUnwrap<T>(_ a: @autoclosure () throws -> T?, file: StaticString = #filePath, line: UInt = #line) throws -> T {
     guard let v = try a() else { XCTFail("nil", file: file, line: line); throw ShimUnwrapError() }
     return v

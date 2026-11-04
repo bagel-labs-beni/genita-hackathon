@@ -28,22 +28,34 @@ struct CallHUDGrid: Equatable {
 
     var menuCenter: CGPoint { CGPoint(x: Self.margin + Self.button / 2, y: rowY) }
 
-    // MARK: control rail (camera, mic, more — top to bottom)
+    // MARK: control rail (flip, camera, mic, more — top to bottom)
 
-    enum RailButton: Int, CaseIterable { case camera = 2, mic = 1, more = 0 }
+    /// `flip` (build 10, Chelsea): a fourth glass button one step above the camera, only while the camera is on and can
+    /// flip (`showsFlip`). Same 44 pt, same 12 pt gap.
+    enum RailButton: Int, CaseIterable { case flip = 3, camera = 2, mic = 1, more = 0 }
+    /// The rail's flip button shows while the camera is on and can flip, and the Finds sheet is down (idle / dismissed).
+    /// With any sheet up the rail rises: half reaches the top row on small screens, and peek pushed SE captions over the
+    /// companion window (Codex P2). More keeps Flip camera there.
+    static func showsFlip(cameraOn: Bool, canFlip: Bool, sheet: SheetState) -> Bool {
+        cameraOn && canFlip && !sheetUp(sheet)
+    }
+    /// The rail's top button: flip when it shows, else camera.
+    static func railTop(flip: Bool) -> RailButton { flip ? .flip : .camera }
     var railX: CGFloat { size.width - Self.margin - Self.button / 2 }
     /// While the Finds sheet is up the rail and the self view keep the board's line (806 on 390 × 844, + the screen's
     /// extra height), so the sheet's shift clears them on every screen (SE has no home bar: the HUD baseline sits
     /// 27 pt lower than the board's there, and the half sheet covered More — Codex P2).
     var sheetBaseline: CGFloat { size.height - 844 + 806 }
-    /// Centre y of a rail button before the Finds sheet shift: more = baseline − 22, mic − 78, camera − 134.
+    /// Centre y of a rail button before the Finds sheet shift: more = baseline − 22, mic − 78, camera − 134, flip − 190.
     func railY(_ b: RailButton, sheetUp: Bool = false) -> CGFloat {
         (sheetUp ? sheetBaseline : baseline) - Self.button / 2 - CGFloat(b.rawValue) * (Self.button + Self.gap)
     }
 
-    /// Live captions r01: the caption block's bottom edge, 16 pt above the camera button's top (626 on 390 × 844).
-    /// The caller adds the Finds sheet's rail shift, like the rail.
-    func captionBottom(sheetUp: Bool = false) -> CGFloat { railY(.camera, sheetUp: sheetUp) - Self.button / 2 - 16 }
+    /// Live captions r01: the caption block's bottom edge, 16 pt above the rail's top button (camera: 626 on 390 × 844;
+    /// flip, when it shows: 570). The caller adds the Finds sheet's rail shift, like the rail.
+    func captionBottom(sheetUp: Bool = false, flip: Bool = false) -> CGFloat {
+        railY(Self.railTop(flip: flip), sheetUp: sheetUp) - Self.button / 2 - 16
+    }
 
     // MARK: status pill
 
@@ -96,6 +108,21 @@ struct CallHUDGrid: Equatable {
     }
     /// The sheet states that move the rail and the self view (CameraBoxes.railShift ≠ 0).
     static func sheetUp(_ s: SheetState) -> Bool { s != .idle && s != .dismissed }
+
+    // MARK: Finds undo toast (r03 #17, "In Finds · Undo")
+
+    /// The toast's height: the Undo button's 44 pt touch row.
+    static let toastHeight: CGFloat = 44
+    /// Centre line of the undo toast (centred across). `top` is ConversationView's board offset (safe top − 44).
+    /// Camera off: y 210 + top, over the face (r03). Camera on: 8 pt under the companion window (96 × 128, its centre
+    /// at 184 + top) and, while it is up, the FT-NOSEE card (124 + top, `noSeeHeight` tall), so the toast never
+    /// covers "I don’t see kimchi" or the face (UI QA CW-01, build 10: it sat on the card's third row).
+    static func toastCenterY(top: CGFloat, cameraOn: Bool, noSeeHeight: CGFloat?) -> CGFloat {
+        guard cameraOn else { return 210 + top }
+        let window = 184 + 64 + top
+        let card = noSeeHeight.map { 124 + top + $0 } ?? -.greatestFiniteMagnitude
+        return max(window, card) + 8 + toastHeight / 2
+    }
 }
 
 /// The status pill's box (HUD r01 A). Position comes from `CallHUDGrid`; how the pill moves (width spring, text

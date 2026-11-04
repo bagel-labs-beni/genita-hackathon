@@ -171,6 +171,9 @@ struct FindsSection: Identifiable, Equatable {
     var isEmpty: Bool { phase == .loaded && cards.isEmpty }
     var sections: [FindsSection] { Self.sections(cards, now: now(), calendar: calendar) }
     var count: Int { cards.count }
+    /// The one Finds number every surface shows (drawer badge, More sheet): what the list holds once it is loaded.
+    /// Before the first load only, the finds made on this call stand in so the number is not 0 for a moment.
+    func displayCount(thisCall: Int = 0) -> Int { phase == .loaded ? cards.count : max(cards.count, thisCall) }
     #if DEBUG
     func testSeed(_ list: [FindCard]) { cards = list; phase = .loaded }
     #endif

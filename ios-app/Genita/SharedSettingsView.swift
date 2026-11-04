@@ -50,6 +50,12 @@ struct SettingsView: View {
     private var voiceName: String {
         model.setup.voiceName ?? CuratedVoices.name(model.setup.voiceId) ?? "Default"
     }
+    /// "1.0 (14)": CFBundleShortVersionString and CFBundleVersion (build).
+    static func versionText(_ info: [String: Any]? = Bundle.main.infoDictionary) -> String {
+        let v = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let b = info?["CFBundleVersion"] as? String
+        return b.map { "\(v) (\($0))" } ?? v
+    }
     var body: some View {
         NavigationStack {
             SettingsPage {
@@ -89,6 +95,9 @@ struct SettingsView: View {
                         Button { confirmDelete = true } label: { SettingsRowLabel(title: working ? "Deleting…" : "Delete account", tint: SettingsInk.danger) }
                             .buttonStyle(SettingsRowStyle()).disabled(working || resetting).accessibilityIdentifier("deleteAccount")
                     }
+                }
+                SettingsGroup(header: "About") {
+                    SettingsRowLabel(title: "Version", value: Self.versionText()).accessibilityElement(children: .combine).accessibilityIdentifier("settingsVersion")
                 }
                 HStack(spacing: 6) {
                     Link("Privacy Policy", destination: URL(string: "https://bagel-labs-beni.github.io/genita-legal/privacy/")!)
@@ -143,8 +152,7 @@ struct SettingsView: View {
         #if os(iOS)
         if model.useInsightReport {
             InsightReportView(model: model, showsCTA: false)
-                .navigationTitle("About you")
-                .navigationBarTitleDisplayMode(.inline)
+                .settingsTitle("About you")
         } else {
             AboutYouPage(model: model)
         }
@@ -350,6 +358,25 @@ struct SettingsPage<Content: View>: View {
     }
 }
 
+/// A settings sub-page's inline title, pinned to SettingsInk.ink in Pretendard SemiBold 17 like the root "Settings" (the
+/// bar keeps the text as its name for VoiceOver and tests). The system title colour followed the colour scheme, so a dark
+/// scheme left on the sheet drew it white on #F2F2F7 (UI QA b10, CI `preview-10b-about-you` / `10c-shows-up`).
+extension View {
+    func settingsTitle(_ title: String) -> some View {
+        #if os(iOS)
+        navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Text(title).font(SettingsType.font(17, .semibold, relativeTo: .headline)).foregroundStyle(SettingsInk.ink).lineLimit(1).accessibilityAddTraits(.isHeader)
+                }
+            }
+        #else
+        navigationTitle(title)
+        #endif
+    }
+}
+
 /// TF 331 (Chelsea 15:39): the inline "Settings" bar was see-through, so the first group slid under the title and the
 /// Done pill as a blur once scrolled. The bar is the page colour, always shown, with a hard edge (iOS 26).
 private struct SettingsSolidBar: ViewModifier {
@@ -518,9 +545,8 @@ struct SettingsCompanionPage: View {
                 #endif
             }
         }
-        .navigationTitle("Your companion")
+        .settingsTitle("Your companion")
         #if os(iOS)
-        .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $voiceOpen) { VoiceSettingsSheet(model: model) }
         #endif
     }
@@ -539,10 +565,7 @@ struct SettingsShowsUpPage: View {
                 }
             }
         }
-        .navigationTitle("How \(model.companionDisplayName) shows up")
-        #if os(iOS)
-        .navigationBarTitleDisplayMode(.inline)
-        #endif
+        .settingsTitle("How \(model.companionDisplayName) shows up")
     }
     /// Help with first (it is what the first screen shows), then the onboarding order, then anything else.
     static func keys(_ answers: [String: String]) -> [String] {
@@ -585,6 +608,8 @@ struct AboutYouPage: View {
                 }
             }
             // C3: one Still learning block, r16, 14/16 — white on the #F2F2F7 page (lead 11/4: #F4F4F2 vanished on it)
+            // Chelsea 11/4: only while something is still missing; a full card shows only what it knows
+            if Self.hasGaps(styleText) {
             VStack(alignment: .leading, spacing: 0) {
                 Text("Still learning").font(SettingsType.font(13, .semibold, relativeTo: .footnote)).foregroundStyle(SettingsInk.header)
                     .accessibilityAddTraits(.isHeader).padding(.horizontal, 16).padding(.top, 22).padding(.bottom, 8)
@@ -593,6 +618,7 @@ struct AboutYouPage: View {
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.vertical, 14)
                     .background(SettingsInk.card, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             }.padding(.horizontal, 16)
+            }
             SettingsGroup(header: "Where this comes from") {
                 // the paste only: the skip path fills styleRows from the answers too (Codex P3)
                 if !model.setup.response.isEmpty {
@@ -602,12 +628,19 @@ struct AboutYouPage: View {
                 SettingsRowLabel(title: "Your answers", value: model.setup.depth.title)
             }
         }
-        .navigationTitle("About you")
-        #if os(iOS)
-        .navigationBarTitleDisplayMode(.inline)
-        #endif
+        .settingsTitle("About you")
     }
 
+    /// Still learning shows only while the card has a gap: nothing noticed yet, a heading with no claims, or a
+    /// "Not enough information yet." line.
+    static func hasGaps(_ text: String) -> Bool {
+        let groups = noticed(text)
+        if groups.isEmpty || groups.contains(where: { $0.claims.isEmpty }) { return true }
+        return SettingsView.styleLines(text).contains { line in
+            let t = line.text.hasPrefix("•") ? String(line.text.dropFirst()).trimmingCharacters(in: .whitespaces) : line.text
+            return t.lowercased().hasPrefix("not enough information")
+        }
+    }
     /// The style card's text as observation rows: a heading becomes the row's category, its bullets the claims.
     /// "Not enough information yet." lines are dropped (they belong to the one Still learning block).
     static func noticed(_ text: String) -> [(category: String?, claims: [String])] {

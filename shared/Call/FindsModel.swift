@@ -3,7 +3,8 @@ import Observation
 
 /// F10-U-SHEET · The result sheet's state during a call (r03 board, direction A, 19 states).
 /// Platform-neutral: the iPhone sheet draws it, the Mac can later. Rules from the r03 state map:
-///   searching 148 → rising (148→468, text first) → half 468 → full 728 · peek 148 · dismissed 0 (+Undo) · browser.
+///   searching 298 (Finds r01, tightened b16: question title + stage line + 2 skeleton rows) → rising 298 → half 468 → full 728
+///   · peek 148 · dismissed 0 (+Undo) · browser.
 ///   Face tap or the user starting to talk = collapse to peek (not while a finger is on the sheet or reading full).
 ///   X, or swiping down from peek = dismissed (it stays in Finds, Undo restores). A new result never takes the
 ///   card you're reading: a banner offers it instead.
@@ -14,8 +15,10 @@ enum SheetState: String, CaseIterable, Sendable {
     var height: CGFloat {
         switch self {
         case .idle, .dismissed: 0
-        case .searching, .peek: 148
-        case .rising: 328
+        // Finds r01: searching holds the question, the stage line and skeleton rows. Sized to that content (Chelsea 11/4
+        // 21:49, no empty band under the rows): 32 top + 52 header + 18 + 2 × 64 rows + 14 + 20 bottom + 34 home indicator
+        case .searching, .rising: 298
+        case .peek: 148
         case .half: 468
         case .full: 728
         }
@@ -78,6 +81,8 @@ struct FindEntry: Identifiable, Equatable {
     private(set) var savePulse = 0
     /// Step marked done, per find.
     var doneSteps: [String: Set<Int>] = [:]
+    /// P0 11/4: the recipe card being cooked step by step ("Walk me through it" → "Next step"), or nil.
+    var walking: String?
     /// r03 #11: a result arrived while the user reads another one.
     private(set) var newFind: String?
     /// Source opened inside the sheet (r03 #8).
@@ -156,7 +161,8 @@ struct FindEntry: Identifiable, Equatable {
             update(i.findId) { e in
                 e.checking = i.checking
                 guard var card = e.card else { e.card = nil; e.searchDetail = Self.detail(from: i.items, fallback: e.searchDetail); return }
-                card.items = i.items
+                // visual cards: an ingredient's photo lands by id; an update without it keeps the one we have (never cleared)
+                card.items = Self.keepingImages(i.items, from: card.items)
                 if let s = i.subtitle { card.subtitle = s }
                 if let s = i.status { card.status = s }
                 if let p = i.pill { card.pill = p } // later item updates without a pill keep it
@@ -205,6 +211,14 @@ struct FindEntry: Identifiable, Equatable {
                 if i.slot == "hero" { card.hero = image }
                 if i.slot.hasPrefix("step-"), let n = Int(i.slot.dropFirst(5)), card.steps.indices.contains(n - 1) { card.steps[n - 1].image = image }
                 if i.slot.hasPrefix("product-"), let n = Int(i.slot.dropFirst(8)), card.products?.indices.contains(n - 1) == true { card.products?[n - 1].image = image }
+                // Finds r01: each web result's og:image; `source-N` is 0-based (unlike step-/product-, which are 1-based)
+                if i.slot.hasPrefix("source-"), let n = Int(i.slot.dropFirst(7)), card.sources.indices.contains(n) { card.sources[n].image = image }
+                // visual cards: `ingredient-<item id>` (by id, not position: items re-sort by tier)
+                if let id = FindItem.itemId(forImageSlot: i.slot) {
+                    // by id; a bare number that names no id is read as the 1-based position (a server that keys by index)
+                    if let k = card.items.firstIndex(where: { $0.id == id }) { card.items[k].image = image }
+                    else if let n = Int(id), card.items.indices.contains(n - 1) { card.items[n - 1].image = image }
+                }
                 e.card = card
             }
         case let .findFailed(f):
@@ -431,15 +445,26 @@ struct FindEntry: Identifiable, Equatable {
 
     /// Reopening a card this call made: the live card (its confirmed ingredients and status are newer than any list),
     /// with a picture the list has ready where the live one is still pending or was cut off by a reconnect (Codex r3/r4).
+    /// find.items replaces the list; a photo an item already has stays when the update doesn't carry one (contract v1 §2).
+    static func keepingImages(_ incoming: [FindItem], from current: [FindItem]) -> [FindItem] {
+        incoming.map { item in
+            guard item.image == nil, let had = current.first(where: { $0.id == item.id })?.image else { return item }
+            var kept = item; kept.image = had; return kept
+        }
+    }
+
     static func merged(_ listed: FindCard, keeping live: FindCard?) -> FindCard {
         guard var c = live else { return listed }
         // ingredients still being checked when the call lost the server: the server finished them, the list has that (Codex r5)
         if live?.items.contains(where: { $0.tier == .checking }) == true {
-            c.items = listed.items; c.subtitle = listed.subtitle; c.status = listed.status
+            // the photos this call already got stay (Codex r1: they were dropped before the merge below could pick them)
+            c.items = keepingImages(listed.items, from: c.items); c.subtitle = listed.subtitle; c.status = listed.status
         }
         let pick = { (mine: FindImage?, theirs: FindImage?) -> FindImage? in mine?.status != .ready && theirs?.status == .ready ? theirs : mine }
         c.hero = pick(c.hero, listed.hero)
         for s in c.steps.indices where listed.steps.indices.contains(s) { c.steps[s].image = pick(c.steps[s].image, listed.steps[s].image) }
+        for s in c.sources.indices where listed.sources.indices.contains(s) { c.sources[s].image = pick(c.sources[s].image, listed.sources[s].image) }
+        for k in c.items.indices { c.items[k].image = pick(c.items[k].image, listed.items.first { $0.id == c.items[k].id }?.image) }
         if var products = c.products, let lp = listed.products {
             for p in products.indices where lp.indices.contains(p) { products[p].image = pick(products[p].image, lp[p].image) }
             c.products = products
@@ -494,6 +519,30 @@ struct FindEntry: Identifiable, Equatable {
         doneSteps[f.id] = set
     }
 
+    /// P0 11/4 "Walk me through it": the sheet goes full on the steps, the first step not done is the one lit
+    /// (FindCardPage.stepCard `now`), and the companion says it and checks one ingredient (server finds/walkthrough.ts).
+    func walkThrough() {
+        userActed()
+        guard canAsk, let f = current, f.card?.kind == .recipe, f.card?.steps.isEmpty == false else { return }
+        walking = f.id
+        state = .full
+        scrollTarget = nil
+        scrollTarget = "steps"
+        send(.text(.init(text: "Walk me through it", frames: nil, findId: f.id)))
+    }
+
+    /// "Next step": the lit step is marked done (the next one lights up) and the companion moves on with it.
+    /// After the last step the button goes back to "Walk me through it".
+    func nextStep() {
+        userActed()
+        guard canAsk, let f = current, walking == f.id, let count = f.card?.steps.count else { return }
+        var set = doneSteps[f.id] ?? []
+        if let i = (0..<count).first(where: { !set.contains($0) }) { set.insert(i) }
+        doneSteps[f.id] = set
+        if set.count >= count { walking = nil }
+        send(.text(.init(text: "Next step", frames: nil, findId: f.id)))
+    }
+
     /// "Ask about this": the question goes out as the user's words, about this card.
     func ask(_ text: String) {
         userActed()
@@ -514,6 +563,8 @@ struct FindEntry: Identifiable, Equatable {
             let stop = { (img: FindImage?) -> FindImage? in img?.status == .pending ? FindImage(slot: img!.slot, status: .failed, url: img!.url) : img }
             card.hero = stop(card.hero)
             for s in card.steps.indices { card.steps[s].image = stop(card.steps[s].image) }
+            for s in card.sources.indices { card.sources[s].image = stop(card.sources[s].image) }
+            for k in card.items.indices { card.items[k].image = stop(card.items[k].image) }
             if let products = card.products { card.products = products.map { var p = $0; p.image = stop(p.image); return p } }
             if card != entries[i].card { entries[i].card = card }
             entries[i].checking = false
@@ -552,6 +603,7 @@ struct FindEntry: Identifiable, Equatable {
         page = 0
         selectedItem = nil
         doneSteps = [:]
+        walking = nil
         addedItems = [:]
         pendingItems = [:]
         latestFrames = []

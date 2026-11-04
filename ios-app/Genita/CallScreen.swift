@@ -97,7 +97,7 @@ struct StillSpeech: ViewModifier {
     @ViewBuilder
     func body(content: Content) -> some View {
         if on {
-            TimelineView(.animation) { timeline in
+            TimelineView(.animation(minimumInterval: 1 / 30)) { timeline in
                 let t = timeline.date.timeIntervalSinceReferenceDate
                 let level = Self.level(at: t)
                 content
@@ -362,7 +362,7 @@ private struct CueDot: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         let live = MotionDetails.live(reduceMotion: reduceMotion)
-        TimelineView(.animation(paused: !live)) { ctx in
+        TimelineView(.animation(minimumInterval: 1 / 30, paused: !live)) { ctx in
             let s = !live ? 1 : (1 - cos(ctx.date.timeIntervalSinceReferenceDate / MotionCall.breathSeconds * 2 * .pi)) / 2
             Circle().fill(CallInk.blueOnInk).frame(width: 8, height: 8).scaleEffect(0.8 + 0.35 * s).opacity(0.55 + 0.45 * s)
         }
@@ -374,7 +374,7 @@ private struct CueThinkingDots: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         let live = MotionDetails.live(reduceMotion: reduceMotion)
-        TimelineView(.animation(paused: !live)) { ctx in
+        TimelineView(.animation(minimumInterval: 1 / 30, paused: !live)) { ctx in
             let t = ctx.date.timeIntervalSinceReferenceDate
             HStack(spacing: 3) {
                 ForEach(0..<3, id: \.self) { i in
@@ -411,7 +411,7 @@ struct CueSpinner: View {
 private struct CueWave: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
-        TimelineView(.animation(paused: reduceMotion || CallMotion.reviewStill)) { context in
+        TimelineView(.animation(minimumInterval: 1 / 30, paused: reduceMotion || CallMotion.reviewStill)) { context in
             let t = context.date.timeIntervalSinceReferenceDate
             HStack(spacing: 2) {
                 ForEach(0..<4, id: \.self) { i in
@@ -426,19 +426,36 @@ private struct CueWave: View {
 // MARK: - Rail toggle
 
 /// Camera and mic buttons: glass when off, white with a dark icon when on (board `.glass[aria-pressed=true]`).
+/// Build 11 (Chelsea, TF 341): the change is a clean swap, one glyph at a time. The white face stays in the tree and only
+/// its opacity flips, and nothing here animates on `on`: the glass's glass effect faded at partial opacity reads as a
+/// grey blurred disc, and a crossfade showed the slashed and the plain glyph on top of each other. The press scale
+/// (MotionPressStyle, 0.94) is the feedback.
 struct CallToggleGlass: View {
     let icon: String
     let on: Bool
     var body: some View {
         ZStack {
             CallGlassControl(icon: icon, size: CallHUDGrid.button, off: !on)
-            if on {
+            ZStack {
                 Circle().fill(CallInk.onInk)
                 if let url = Bundle.main.url(forResource: icon, withExtension: "png"), let image = UIImage(contentsOfFile: url.path) {
                     let g = GlassGlyph.size(pixels: CGSize(width: image.size.width * image.scale, height: image.size.height * image.scale), diameter: CallHUDGrid.button)
                     Image(uiImage: image).resizable().colorInvert().frame(width: g.width, height: g.height)
                 }
-            }
+            }.opacity(on ? 1 : 0)
+        }.frame(width: CallHUDGrid.button, height: CallHUDGrid.button).contentShape(Circle())
+            .animation(nil, value: on)
+    }
+}
+
+/// The rail's flip button (build 10): the on look of `CallToggleGlass` (white circle, dark glyph) with an SF Symbol glyph
+/// at the same 55 % as the bitmaps.
+struct CallRailWhiteSymbol: View {
+    let symbol: String
+    var body: some View {
+        ZStack {
+            Circle().fill(CallInk.onInk)
+            GlassOffSymbol(name: symbol, diameter: CallHUDGrid.button, color: CallInk.ink)
         }.frame(width: CallHUDGrid.button, height: CallHUDGrid.button).contentShape(Circle())
     }
 }
@@ -463,6 +480,8 @@ final class SelfCameraSurface: UIView {
 
 struct CallMoreSheet: View {
     let call: CallController
+    /// Same number as the drawer's Finds badge (FindsListModel.displayCount).
+    var findsTotal: Int
     var textChatEnabled: Bool
     var moveToMacSubtitle: String
     var moveToMac: () -> Void
@@ -483,7 +502,7 @@ struct CallMoreSheet: View {
                 call.setInterpreting(on)
                 if on { close() }
             }
-            let n = max(call.finds.cardCount, call.findsCount)
+            let n = findsTotal
             row("bookmark", "Finds", n == 0 ? "Nothing looked up yet" : n == 1 ? "1 thing I looked up" : "\(n) things I looked up", id: "moreFinds", enabled: openFinds != nil) { close(); openFinds?() }
             if pasteHasLink && call.mode != .interpret {
                 // no S08 text field yet: the system paste of a copied link is the way in (link card F10-13 / F10-14)

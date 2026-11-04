@@ -64,6 +64,9 @@ struct PhonePairingView: View {
     }
     private var codeBoxes: some View {
         let digits = Array(handoff.code)
+        // UI QA 11/4 (#679): the row spans the sheet's content width (38 → 364 on a 402 pt phone), centred like
+        // Cancel, instead of a fixed 304 from the left (38 / 60 insets). Each box grows to 47.6 at most; on a narrower
+        // phone they share the width that is there.
         return ZStack {
             HStack(spacing: 8) {
                 ForEach(0..<6, id: \.self) { i in
@@ -72,9 +75,10 @@ struct PhonePairingView: View {
                         RoundedRectangle(cornerRadius: 12).fill(active ? Color.white : boxFill)
                         if active { RoundedRectangle(cornerRadius: 12).strokeBorder(ink, lineWidth: 1.5) }
                         if i < digits.count { Text(String(digits[i])).font(.custom("PretendardVariable-Medium", fixedSize: 22)).foregroundStyle(ink) }
-                    }.frame(width: 44, height: 52)
+                    }.frame(maxWidth: 47.6).frame(height: 52)
                 }
             }
+            .frame(maxWidth: .infinity)
             // The real field sits over the boxes: nearly invisible, still tappable and focusable.
             TextField("", text: Binding(get: { handoff.code }, set: { entered in
                 let clean = String(entered.filter(\.isNumber).prefix(6))
@@ -83,12 +87,12 @@ struct PhonePairingView: View {
                 handoff.code = clean
                 if clean.count == 6 { handoff.connect() }
             })).keyboardType(.numberPad).focused($focused).textContentType(.oneTimeCode)
-                .foregroundStyle(.clear).tint(.clear).frame(width: 304, height: 52).opacity(0.02)
+                .foregroundStyle(.clear).tint(.clear).frame(maxWidth: .infinity).frame(height: 52).opacity(0.02)
                 // the sheet is white but the call behind it runs dark: the number pad follows the sheet, not the call
                 // (UI sweep 11/3: three of the four pairing shots had a dark keypad under the white sheet)
                 .environment(\.colorScheme, .light)
                 .accessibilityLabel("Pairing code").accessibilityIdentifier("pairingCode")
-        }.frame(width: 304, height: 52, alignment: .leading)
+        }.frame(maxWidth: .infinity).frame(height: 52)
     }
     @ViewBuilder private var statusLine: some View {
         if handoff.pairingFailed {

@@ -25,3 +25,29 @@ enum ResumePolicy {
         return .syncedClaim
     }
 }
+
+/// Demo S4: a call that moves to the Mac from a call on the iPhone (Move to Mac, touch, proximity, Continue on this
+/// Mac) keeps the camera the way it was on the iPhone, so an outfit shown on the iPhone stays in view without a click.
+/// b14 (Chelsea 11/4 "camera doesn't turn on after the pairing code"): the paired iPhone now tells the Mac over the
+/// local link whether its call and camera are on (`callState`). That word wins; without it (no local link) the Mac's
+/// own last camera tap stands in, as before. A first move to a Mac that was just paired had neither a remembered tap
+/// nor camera access, so the camera stayed off: with the iPhone's camera on, the Mac now asks for access once.
+/// A call opened on the Mac itself always starts with the camera off (privacy), and a camera the user turned off on
+/// the iPhone stays off.
+enum HandoffCameraPolicy {
+    /// - Parameters:
+    ///   - phoneCamera: the iPhone's camera as the call left it (local link); nil when the iPhone didn't say.
+    ///   - cameraUndetermined: camera access was never asked on this Mac (only the iPhone's camera-on may ask).
+    static func startsCamera(fromPhone: Bool, phoneCamera: Bool? = nil, cameraRemembered: Bool, cameraAuthorized: Bool,
+                             cameraUndetermined: Bool = false) -> Bool {
+        guard fromPhone else { return false }
+        if let phoneCamera { return phoneCamera && (cameraAuthorized || cameraUndetermined) }
+        return cameraRemembered && cameraAuthorized
+    }
+    /// The conversation came here from a call running on the iPhone, not only its ownership: taking it while the
+    /// iPhone sits on its home screen is a new call on the Mac (camera off, Codex P1). `peerInCall` is the server's
+    /// word, `linkInCall` the paired iPhone's own (local link); unknown on both never starts the camera (Codex P1 r2).
+    static func movedFromPhoneCall(previousOwner: ConversationDevice, peerInCall: Bool?, linkInCall: Bool? = nil) -> Bool {
+        previousOwner == .phone && (peerInCall == true || linkInCall == true)
+    }
+}

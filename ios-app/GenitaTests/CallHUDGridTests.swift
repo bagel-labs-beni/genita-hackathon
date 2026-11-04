@@ -50,6 +50,29 @@ final class CallHUDGridTests: XCTestCase {
         }
     }
 
+    /// Build 10 (Chelsea): the flip button sits one 44 + 12 step above the camera, clear of the companion window
+    /// (y 184 + top, 128 tall) and of the top row; captions and the label obstacle rail move up with it.
+    @MainActor func testFlipSitsAboveCameraAndClearsTheWindow() {
+        let sizes: [(CGSize, CGFloat, CGFloat)] = [(CGSize(width: 375, height: 667), 20, 0), (CGSize(width: 390, height: 844), 47, 34), (CGSize(width: 440, height: 956), 62, 34)]
+        for (size, top, bottom) in sizes {
+            let g = CallHUDGrid(size: size, safeTop: top, safeBottom: bottom)
+            XCTAssertEqual(g.railY(.camera) - g.railY(.flip), CallHUDGrid.button + CallHUDGrid.gap)
+            XCTAssertEqual(g.captionBottom(flip: true), g.railY(.flip) - CallHUDGrid.button / 2 - 16)
+            XCTAssertEqual(g.captionBottom(flip: false), g.captionBottom())
+            for sheet in [SheetState.idle, .dismissed, .peek, .searching] where CallHUDGrid.showsFlip(cameraOn: true, canFlip: true, sheet: sheet) {
+                let flipTop = g.railY(.flip, sheetUp: CallHUDGrid.sheetUp(sheet)) + CameraBoxes.railShift(sheet) - CallHUDGrid.button / 2
+                XCTAssertGreaterThan(flipTop, 184 + top + 64, "below the companion window (\(size), \(sheet))")
+                XCTAssertEqual(CameraBoxes.railRect(grid: g, sheet: sheet, flip: true).minY, flipTop - 4)
+            }
+        }
+        XCTAssertFalse(CallHUDGrid.showsFlip(cameraOn: false, canFlip: true, sheet: .idle), "camera off: no flip")
+        XCTAssertFalse(CallHUDGrid.showsFlip(cameraOn: true, canFlip: false, sheet: .idle))
+        XCTAssertFalse(CallHUDGrid.showsFlip(cameraOn: true, canFlip: true, sheet: .half), "half sheet: More keeps Flip camera")
+        XCTAssertFalse(CallHUDGrid.showsFlip(cameraOn: true, canFlip: true, sheet: .peek), "peek: SE captions would reach the window (Codex P2)")
+        XCTAssertTrue(CallHUDGrid.showsFlip(cameraOn: true, canFlip: true, sheet: .idle))
+        XCTAssertTrue(CallHUDGrid.showsFlip(cameraOn: true, canFlip: true, sheet: .dismissed))
+    }
+
     /// Codex P2: on SE (no home bar) the HUD baseline is 27 pt below the board's; with the sheet up the rail keeps the
     /// board's line, so More ends above the half sheet as before (old: 46 pt More centred at 783 + (H − 844) − 440).
     func testRailClearsTheHalfSheetOnSE() {
@@ -106,5 +129,39 @@ final class CallHUDGridTests: XCTestCase {
         for text in ["Listening", "Thinking", "Talking", "Stopped", "Stopped. Go ahead.", "Reconnecting…", "Moving to your Mac…"] {
             XCTAssertLessThanOrEqual(CallCueView.pillWidth(text: text), se.rowPillWidth, text)
         }
+    }
+
+    /// UI QA CW-01 (build 10, Appetize): after closing the Finds sheet, "In Finds · Undo" (y 210 + top) sat on the FT-NOSEE
+    /// card's third row ("I don't see kimchi"). Now it goes 8 pt under the card and the companion window, on every width,
+    /// for a card of 1–4 rows, and stays above the control rail; camera off keeps r03's 210 + top.
+    func testUndoToastClearsTheNoSeeCardAndTheWindow() {
+        let phones: [(CGSize, CGFloat, CGFloat)] = [(CGSize(width: 375, height: 667), 20, 0), (CGSize(width: 390, height: 844), 47, 34),
+                                                    (CGSize(width: 402, height: 874), 62, 34), (CGSize(width: 440, height: 956), 62, 34)]
+        for (size, safeTop, safeBottom) in phones {
+            let grid = CallHUDGrid(size: size, safeTop: safeTop, safeBottom: safeBottom)
+            let top = safeTop - 44   // ConversationView's board offset
+            // any toast width (it is centred): the gap has to be vertical
+            func toast(_ y: CGFloat) -> CGRect { CGRect(x: 16, y: y - CallHUDGrid.toastHeight / 2, width: size.width - 32, height: CallHUDGrid.toastHeight) }
+            let window = CGRect(x: size.width - 20 - 96, y: 120 + top, width: 96, height: 128)
+            let railTop = grid.railY(.flip) - CallHUDGrid.button / 2
+            for rows in [nil, 1, 2, 3, 4] as [Int?] {
+                let check = rows.map { n in NoSeeCheck(title: "For kimchi fried rice with tofu and egg", rows: (0..<n).map { NoSeeCheck.Row(name: "item \($0)", seen: $0 < 2) }) }
+                let card = check.map { CGRect(x: 24, y: 124 + top, width: 220, height: $0.cardHeight) }
+                let rect = toast(CallHUDGrid.toastCenterY(top: top, cameraOn: true, noSeeHeight: check?.cardHeight))
+                let label = "\(Int(size.width)) pt, \(rows.map { String($0) } ?? "no") card rows"
+                XCTAssertFalse(rect.intersects(window), "\(label): clear of the companion window")
+                XCTAssertEqual(rect.minY - max(window.maxY, card?.maxY ?? 0), 8, "\(label): 8 pt under the lower of the card and the window")
+                if let card {
+                    XCTAssertFalse(rect.intersects(card), "\(label): never on the card")
+                    XCTAssertTrue(toast(210 + top).intersects(card), "\(label): red — build 10's 210 + top sat on the card")
+                }
+                XCTAssertLessThan(rect.maxY, railTop, "\(label): above the rail (flip button up while the sheet is down)")
+            }
+            XCTAssertEqual(CallHUDGrid.toastCenterY(top: top, cameraOn: false, noSeeHeight: nil), 210 + top, "camera off: r03's place over the face")
+        }
+        // the four-row card from the QA shot (iPhone 16 Pro): 164 pt tall, so the toast's top is at 124 + 18 + 164 + 8
+        let four = NoSeeCheck(title: "For kimchi fried rice", rows: [.init(name: "Egg", seen: true), .init(name: "Tofu", seen: true), .init(name: "kimchi", seen: false), .init(name: "cooked rice", seen: false)])
+        XCTAssertEqual(four.cardHeight, 164)
+        XCTAssertEqual(CallHUDGrid.toastCenterY(top: 18, cameraOn: true, noSeeHeight: four.cardHeight), 124 + 18 + 164 + 8 + 22)
     }
 }

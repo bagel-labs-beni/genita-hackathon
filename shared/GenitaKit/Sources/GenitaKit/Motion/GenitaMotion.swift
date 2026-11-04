@@ -76,7 +76,7 @@ struct LightSweepModifier: ViewModifier {
         let paused = !active || reduceMotion || GenitaMotion.reviewStill
         content.overlay {
             if !paused {
-                TimelineView(.animation(minimumInterval: 1 / 60, paused: false)) { ctx in
+                TimelineView(.animation(minimumInterval: 1 / 30, paused: false)) { ctx in
                     let t = ctx.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: GenitaMotion.sweepEvery)
                     if t < GenitaMotion.sweepPass {
                         SweepBand(progress: t / GenitaMotion.sweepPass, angle: angle, intensity: intensity)

@@ -45,7 +45,7 @@ struct ReadingOrb: View {
         let sx = transform?[0][0] ?? 1, sy = transform?[1][1] ?? 1
         let tx = transform?[0][2] ?? 0, ty = transform?[1][2] ?? 0
         let w = node.w / sx, h = node.h / sy
-        TimelineView(.animation) { ctx in
+        TimelineView(.animation(minimumInterval: 1 / 30)) { ctx in
             let t = ctx.date.timeIntervalSinceReferenceDate
             let image = Image(resource: resource).resizable().frame(width: w, height: h)
             ZStack {

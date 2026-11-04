@@ -70,6 +70,9 @@ final class BrowserPreviewUITests: XCTestCase {
         jump(app, "fridge")
         XCTAssertTrue(any(app, "cameraStage").waitForExistence(timeout: 30), "fixture camera on, no permission prompt")
         Thread.sleep(forTimeInterval: 2); shot(app, "08-fridge-camera")
+        // build 10 (Chelsea): flip camera on the rail, above the camera button, while the camera is on and the sheet is
+        // down. Shot only (this preview may keep a Finds sheet up, which hides it); CallHUDGridTests holds the layout.
+        if app.buttons["railFlipCamera"].waitForExistence(timeout: 5) { shot(app, "08b-flip-rail") }
 
         // interpretation
         jump(app, "interpret")

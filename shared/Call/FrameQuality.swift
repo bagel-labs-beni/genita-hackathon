@@ -35,5 +35,9 @@ enum FrameQuality {
     }
 
     static func unclear(_ r: Reading) -> Bool { r.luma < darkLuma || r.detail < flatDetail }
+    /// b16 (TF 381 black camera): practically black — the camera is not delivering a picture (−4 EV real frames are
+    /// 0.12–0.14). Such a frame is never sent: not with a turn, not to perception.
+    static let blackLuma: Float = 0.03
+    static func isBlack(_ r: Reading) -> Bool { r.luma < blackLuma && r.detail < flatDetail }
     static func unclear(_ image: CIImage) -> Bool { read(image).map(unclear) ?? false }
 }

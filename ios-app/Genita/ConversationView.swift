@@ -118,7 +118,11 @@ struct ConversationView: View {
                             .onTapGesture(count: 2) { if call.canFlipCamera { call.flipCamera() } } }
                         // F10-U-SHEET r03: the face steps back as the sheet rises (half .814, rising .895) and
                         // becomes a 96 × 128 window when the sheet is full.
-                        CompanionFaceView(still: companionImage, loop: loopURL, face: connecting ? nil : call.face, faceStill: call.faceStill, poster: call.facePoster, framedStill: framedScene, speaking: call.companionSpeaking).frame(width: full.size.width, height: full.size.height).clipped()
+                        CompanionFaceView(still: companionImage, loop: loopURL, face: connecting ? nil : call.face, faceStill: call.faceStill, poster: call.facePoster, framedStill: framedScene, speaking: call.companionSpeaking).frame(width: full.size.width, height: full.size.height)
+                            // r03 `.stage` clip-path inset(-8 -60): the aspect-filled face keeps 60 pt each side past the
+                            // screen, so when it steps back (translate 43.1, scale .814) it still reaches the left edge.
+                            // `.clipped()` cut it at 390 first → a 43 pt black band on the left under the half sheet (b12).
+                            .clipShape(FaceOverscanClip())
                             // S07 veiled → S09 the veil lifts (motion lane); never in the handoff snapshot (ImageRenderer, no onAppear)
                             // motion details card 10: veiled until the generated face (poster or live) is there, then clears
                             // once (blur 14, 520 ms) with one medium tap; flag off → the catalog reveal as before
@@ -186,10 +190,19 @@ struct ConversationView: View {
                             }
                         }.frame(width: full.size.width, height: full.size.height)
                             .animation(reduceMotion || CallMotion.reviewStill ? .easeOut(duration: 0.2) : .spring(response: 0.4, dampingFraction: 0.85), value: call.cameraOn)
+                        if CallHUDGrid.showsFlip(cameraOn: call.cameraOn, canFlip: call.canFlipCamera, sheet: sheet) {
+                            // build 10 (Chelsea mock DHhhUPYs): flip camera one step above the camera button while the camera is on — white like camera / mic on
+                            Button { call.flipCamera() } label: { CallRailWhiteSymbol(symbol: "arrow.triangle.2.circlepath.camera") }
+                                .buttonStyle(MotionPressStyle()).disabled(connecting).modifier(CallControlEntrance(shown: !connecting, index: 1))
+                                .accessibilityLabel("Flip camera").accessibilityIdentifier("railFlipCamera")
+                                .position(x: grid.railX, y: grid.railY(.flip, sheetUp: CallHUDGrid.sheetUp(sheet)) + railShift(sheet))
+                                .animation(.drawer, value: sheet)
+                                .transition(reduceMotion ? .opacity : .scale(scale: 0.6).combined(with: .opacity))
+                        }
                         Button { cameraTapped() } label: { CallToggleGlass(icon: "glass-camera-icon", on: call.cameraOn) }
-                            .buttonStyle(PreviewControlStyle()).disabled(connecting).modifier(CallControlEntrance(shown: !connecting, index: 1)).accessibilityLabel(call.cameraOn ? "Turn camera off" : "Turn camera on").accessibilityIdentifier("cameraToggle").position(x: grid.railX, y: grid.railY(.camera, sheetUp: CallHUDGrid.sheetUp(sheet)) + railShift(sheet))
+                            .buttonStyle(MotionPressStyle()).disabled(connecting).modifier(CallControlEntrance(shown: !connecting, index: 1)).accessibilityLabel(call.cameraOn ? "Turn camera off" : "Turn camera on").accessibilityIdentifier("cameraToggle").position(x: grid.railX, y: grid.railY(.camera, sheetUp: CallHUDGrid.sheetUp(sheet)) + railShift(sheet))
                             .opacity(sheet == .full ? 0 : 1).accessibilityHidden(sheet == .full).animation(.drawer, value: sheet)
-                        // motion details card 2: pressed to 0.92, a light tap on toggle, a blue ring that follows the user's voice
+                        // motion details card 2: pressed to 0.94 (build 11), a light tap on toggle, a blue ring that follows the user's voice
                         Button { call.toggleMic() } label: {
                             CallToggleGlass(icon: "glass-mic-icon", on: call.micOn)
                                 .background { MotionVoiceRing(active: call.micOn && !connecting, diameter: CallHUDGrid.button, color: CallInk.blueOnInk, level: { call.inputLevel }) }
@@ -223,7 +236,10 @@ struct ConversationView: View {
                                 .accessibilityLabel("Back to half height").accessibilityIdentifier("findsPip").transition(.opacity)
                         }
                         if sheet == .dismissed {
-                            FindsToast(finds: call.finds).position(x: full.size.width / 2, y: 210 + top).genitaToastTransition()
+                            // CW-01 (build 11): with the camera on, under the companion window and the FT-NOSEE card, never on them
+                            FindsToast(finds: call.finds).position(x: full.size.width / 2, y: CallHUDGrid.toastCenterY(top: top, cameraOn: call.cameraOn,
+                                                                                                                       noSeeHeight: call.cameraOn && !connecting ? call.finds.noSee?.cardHeight : nil))
+                                .genitaToastTransition()
                         }
                         // The call cue belongs to S09. Keep it below the Finds tab so it cannot cover that
                         // screen's title or subtitle; closing Finds immediately resumes the current call cue.
@@ -281,13 +297,15 @@ struct ConversationView: View {
                             VStack(spacing: 0) {
                                 Spacer(minLength: 0)
                                 // #180: Move to Mac runs the move (unpaired → the P01 pairing sheet)
-                                CallMoreSheet(call: call, textChatEnabled: appConfig.config.flag("textChat", default: false), moveToMacSubtitle: handoff.link.connected ? "Connected to your Mac" : "Pair with your Mac", moveToMac: { handoff.moveToMac() },
+                                CallMoreSheet(call: call, findsTotal: findsList.displayCount(thisCall: call.findsCount), textChatEnabled: appConfig.config.flag("textChat", default: false), moveToMacSubtitle: handoff.link.connected ? "Connected to your Mac" : "Pair with your Mac", moveToMac: { handoff.moveToMac() },
                                               openFinds: { openFindsTab() }, report: { reportOpen = true }) {
                                     withAnimation(.easeOut(duration: 0.22)) { moreOpen = false }
                                 }
                             }.frame(width: full.size.width, height: full.size.height).transition(.move(edge: .bottom))
                         }
                     }.frame(width: full.size.width, height: full.size.height).offset(x: model.menuOpen ? panelWidth : 0)
+                    .onChange(of: model.menuOpen) { _, open in if open { Task { await findsList.load() } } }
+                    .onChange(of: moreOpen) { _, open in if open { Task { await findsList.load() } } }
                     if cameraGuide && !connecting {
                         CameraGuideSheet(bottomInset: max(0, bottom), turnOn: { CameraGuide.seen = true; withAnimation(.drawer) { cameraGuide = false }; call.toggleCamera() },
                                          notNow: { withAnimation(.drawer) { cameraGuide = false } })
@@ -298,7 +316,7 @@ struct ConversationView: View {
                         let title = DesignLibrary.nodes("menu").first { $0.characters == "Genita" }!
                         DesignText(node: title).frame(width: title.w, height: title.h).position(x: title.x + title.w / 2, y: title.y + top + title.h / 2)
                         menuRow("Chat", icon: "reference-menu-chat", y: 118, width: panelWidth, top: top) { withAnimation { model.menuOpen = false } }.accessibilityIdentifier("returnConversation")
-                        menuRow("Setting", text: "Finds", symbol: "bookmark", badge: findsList.count > 0 ? "\(findsList.count)" : nil, y: 165, width: panelWidth, top: top) { openFindsTab() }.accessibilityIdentifier("menuFinds")
+                        menuRow("Setting", text: "Finds", symbol: "bookmark", badge: findsList.displayCount(thisCall: call.findsCount) > 0 ? "\(findsList.displayCount(thisCall: call.findsCount))" : nil, y: 165, width: panelWidth, top: top) { openFindsTab() }.accessibilityIdentifier("menuFinds")
                         menuRow("Setting", text: "Settings", icon: "reference-menu-settings", y: 212, width: panelWidth, top: top) { model.menuOpen = false; model.settingsOpen = true }.accessibilityIdentifier("settings")
                         if waitingCopy == nil && handoffEnabled {
                             moveToMacRow(y: 259, width: panelWidth, top: top) { withAnimation { model.menuOpen = false }; handoff.moveToMac() }.accessibilityIdentifier("moveToMac")
@@ -419,7 +437,8 @@ struct ConversationView: View {
                 #endif
             }
         }
-        .onDisappear { if !connecting { call.end(); keepScreenAwake(false) } }
+        .onDisappear { if !connecting { call.end(); keepScreenAwake(false) }; model.callFindsListOpen = false }
+        .onChange(of: findsTabOpen, initial: true) { _, open in if !connecting { model.callFindsListOpen = open } }
         .onAppear { if !connecting { keepScreenAwake(scenePhase == .active) } }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
@@ -525,7 +544,7 @@ struct ConversationView: View {
     @ViewBuilder private func captionLayer(grid: CallHUDGrid, size: CGSize, sheet: SheetState, hidden: Bool) -> some View {
         if appConfig.config.flag("liveCaptions", default: true) {
             CallCaptionLayer(style: CaptionStyle(ink: CallInk.ink, onInk: CallInk.onInk, blue: CallInk.blueOnInk, font: { TypeStyle.body($0, $1) }),
-                             size: size, bottom: grid.captionBottom(sheetUp: CallHUDGrid.sheetUp(sheet)) + railShift(sheet),
+                             size: size, bottom: grid.captionBottom(sheetUp: CallHUDGrid.sheetUp(sheet), flip: CallHUDGrid.showsFlip(cameraOn: call.cameraOn, canFlip: call.canFlipCamera, sheet: sheet)) + railShift(sheet),
                              hidden: hidden || sheet == .half || sheet == .rising || sheet == .full,
                              micOn: call.micOn, frame: { call.captionFrame() }, level: { call.inputLevel }, still: CallMotion.reviewStill)
         }
@@ -607,31 +626,21 @@ struct ConversationView: View {
             }.frame(width: width - 48, height: 44).contentShape(Self.menuRowHitShape)
         }.buttonStyle(.plain).position(x: width / 2, y: y + 22 + top).accessibilityLabel("Move to Mac")
     }
-    /// Self view: the call's front camera when on (one owner: CallController), Dyno's flip button, the placeholder when off.
+    /// Self view, camera off: the glass tile. With the camera on the camera is the stage (CameraStage) and this tile is not
+    /// drawn, so its flip button never showed (build 11 cleanup); the rail's flip button (#717) and double-tap flip instead.
     @ViewBuilder var selfView: some View {
-        if call.cameraOn {
-            ZStack(alignment: .bottomLeading) {
-                SelfCameraView(session: call.cameraSession).frame(width: 113, height: 211).background(CallInk.ink)
-                if call.canFlipCamera {
-                    Button { call.flipCamera() } label: {
-                        Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 15)).foregroundStyle(.white).frame(width: 44, height: 44).contentShape(Rectangle())
-                    }.buttonStyle(.plain).accessibilityLabel("Flip camera").accessibilityIdentifier("flipCamera")
-                }
-            }.frame(width: 113, height: 211).clipShape(RoundedRectangle(cornerRadius: 16)).accessibilityElement(children: .contain).accessibilityLabel("Your camera")
-        } else {
-            // HUD r01 A: camera off = a small glass tile (72 × 96), not the old 113 × 211 dark box
-            let shape = RoundedRectangle(cornerRadius: 16)
-            ZStack {
-                shape.fill(.ultraThinMaterial).environment(\.colorScheme, .dark)
-                shape.fill(Color.black.opacity(0.28))
-                Image(systemName: "video.slash").font(.system(size: 18, weight: .regular)).foregroundStyle(Color.white.opacity(0.7))
-            }
-            .overlay(shape.strokeBorder(Color.white.opacity(0.35), lineWidth: 0.7))
-            .frame(width: CallHUDGrid.selfOff.width, height: CallHUDGrid.selfOff.height)
-            .accessibilityElement().accessibilityLabel("Your camera is off").accessibilityIdentifier("selfViewOff")
-            // D22: double-tap the self view → the camera on, facing back
-            .onTapGesture(count: 2) { call.useBackCamera() }.accessibilityAction(named: "Use back camera") { call.useBackCamera() }
+        // HUD r01 A: camera off = a small glass tile (72 × 96), not the old 113 × 211 dark box
+        let shape = RoundedRectangle(cornerRadius: 16)
+        ZStack {
+            shape.fill(.ultraThinMaterial).environment(\.colorScheme, .dark)
+            shape.fill(Color.black.opacity(0.28))
+            Image(systemName: "video.slash").font(.system(size: 18, weight: .regular)).foregroundStyle(Color.white.opacity(0.7))
         }
+        .overlay(shape.strokeBorder(Color.white.opacity(0.35), lineWidth: 0.7))
+        .frame(width: CallHUDGrid.selfOff.width, height: CallHUDGrid.selfOff.height)
+        .accessibilityElement().accessibilityLabel("Your camera is off").accessibilityIdentifier("selfViewOff")
+        // D22: double-tap the self view → the camera on, facing back
+        .onTapGesture(count: 2) { call.useBackCamera() }.accessibilityAction(named: "Use back camera") { call.useBackCamera() }
     }
     /// What the framed scene is drawn from: the scene bytes, the server's crop and the overscan (reduce motion).
     private var framedSceneID: String {
@@ -748,4 +757,9 @@ struct CallPrepLine: View {
         timer?.cancel(); timer = nil
         if task != .invalid { UIApplication.shared.endBackgroundTask(task); task = .invalid }
     }
+}
+
+/// r03 `.stage{clip-path:inset(-8px -60px -8px -60px)}`: the call face clips 60 pt outside its frame left / right, 8 pt above / below.
+struct FaceOverscanClip: Shape {
+    func path(in rect: CGRect) -> Path { Path(rect.insetBy(dx: -60, dy: -8)) }
 }

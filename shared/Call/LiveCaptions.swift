@@ -85,6 +85,8 @@ struct LiveCaptions: Equatable {
     private var loudSince: Double?
     private var lastLoud: Double?
     private var heardAt: Double?
+    /// the mic's resting level (room, breath, AEC residue): a real iPhone never sits under `levelOn` (TF 341)
+    private var noiseFloor: Float?
 
     // MARK: events
 
@@ -143,8 +145,8 @@ struct LiveCaptions: Equatable {
             reply?.ends[t.sentence] = t.words.map(\.e).max() ?? 0
         case let .say(s):
             if reply?.utteranceId != s.utteranceId { reply = Reply(utteranceId: s.utteranceId) }
+            // 11/4 (TF 341): `say` is never spoken (CaptionOnlyVoice), so it is no audio: the caption shows at once
             reply?.device = true
-            reply?.anyAudio = true
             reply?.says.append(s.text)
         case let .utteranceCancelled(c):
             guard reply?.utteranceId == c.utteranceId, reply?.endedAt == nil else { break }
@@ -201,13 +203,20 @@ struct LiveCaptions: Equatable {
     }
 
     private mutating func tickYou(now: Double, level: Float?) {
-        let loud = (level ?? 0) >= Self.levelOn
+        let l = level ?? 0
+        // sound = clearly above the resting level: follows quiet rooms down at once, noisy ones up slowly (~15 s)
+        // (the first sample may already be speech: the resting level starts no higher than 0.05)
+        let floor = min(noiseFloor ?? min(l, 0.05), l)
+        noiseFloor = level == nil ? noiseFloor : floor + (l - floor) * 0.003
+        let loud = l >= max(Self.levelOn, floor + Self.levelOn)
         if loud { lastLoud = now; if loudSince == nil { loudSince = now } } else { loudSince = nil }
         // CAP-1 from the local mic: sound held 150 ms shows bars + "…" before the server says anything
         if let since = loudSince, now - since >= Self.soundHoldMs {
-            let idle = you == nil || you?.phase == .heard || you?.phase == .missed
-            // the companion's own voice leaks into the mic while it talks: only a new turn the server confirms clears a reply
-            if idle && (reply == nil || reply?.endedAt != nil) {
+            // only on an empty stage: mic noise never replaces words the server heard (TF 341: the heard line was wiped
+            // during "thinking" and the reply came with no user line). A new turn the server confirms clears the rest.
+            // a finished reply (its voice ended) gives the stage back at once; while thinking, the heard line keeps it
+            let free = reply == nil ? (you == nil || you?.phase == .missed) : reply?.endedAt != nil
+            if free {
                 newTurn(now: now)
                 you = You(text: Self.youSound, phase: .sound, byLevel: true)
             }
@@ -226,7 +235,7 @@ struct LiveCaptions: Equatable {
         if let p = playheadMs, p >= 0 { r.heardMs = max(r.heardMs, p) }
         let all = words(of: r)
         var n = 0
-        if r.heardMs >= 0 || (!r.anyAudio && r.finalAt.map { now - $0 >= Self.noAudioMs } == true) {
+        if r.heardMs >= 0 || (r.device && !r.anyAudio) || (!r.anyAudio && r.finalAt.map { now - $0 >= Self.noAudioMs } == true) {
             n = revealed(r, total: all.count)
         }
         r.shown = max(r.shown, min(n, all.count))
@@ -279,6 +288,12 @@ struct LiveCaptions: Equatable {
             }
         }
         return shown
+    }
+
+    /// The user's row as shown: mic off hides only the level placeholder, never words the server heard.
+    static func visibleYou(_ row: Frame.YouRow?, micOn: Bool) -> Frame.YouRow? {
+        guard let row else { return nil }
+        return micOn || row.phase != .sound ? row : nil
     }
 
     static func norm(_ w: String) -> String { w.lowercased().filter { $0.isLetter || $0.isNumber } }

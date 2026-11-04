@@ -2,6 +2,9 @@ import AVFoundation
 import CoreImage
 import ImageIO
 import UniformTypeIdentifiers
+#if os(iOS)
+import UIKit
+#endif
 
 /// The user's camera during a call: a preview for the self view, and still JPEGs for camera questions
 /// (PROTOCOL `frames`: ≤2 JPEGs for the next user turn). Nothing is recorded or stored.
@@ -10,6 +13,31 @@ import UniformTypeIdentifiers
     private(set) var front = true
     let session = AVCaptureSession()
     private let worker = CameraWorker()
+    private var observers: [NSObjectProtocol] = []
+
+    init() {
+        // b16 (TF 381, Chelsea: black camera after moving from the Mac): a capture session started while the app was
+        // not active, or interrupted (another app, the system), never came back. It is started again when the
+        // interruption ends and whenever the app becomes active with the camera still on.
+        let center = NotificationCenter.default
+        let restart: @Sendable (Notification) -> Void = { [weak self] _ in
+            MainActor.assumeIsolated { self?.restartIfStalled() }
+        }
+        observers.append(center.addObserver(forName: AVCaptureSession.runtimeErrorNotification, object: session, queue: .main, using: restart))
+        #if os(iOS)
+        observers.append(center.addObserver(forName: AVCaptureSession.interruptionEndedNotification, object: session, queue: .main, using: restart))
+        observers.append(center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main, using: restart))
+        #endif
+    }
+
+    private func restartIfStalled() {
+        guard isOn else { return }
+        #if DEBUG
+        if fixture != nil { return }
+        #endif
+        guard !session.isRunning || !worker.hasFreshFrame() else { return }
+        worker.start(session: session, device: Self.device(front: front))
+    }
     #if DEBUG
     /// Review/e2e only: a still image that stands in for the camera (the simulator has none).
     var fixture: CGImage?
@@ -76,8 +104,12 @@ import UniformTypeIdentifiers
             return Self.jpeg(image).map { ($0.base64EncodedString(), FrameQuality.unclear(image)) }
         }
         #endif
-        guard let image = worker.latest(), let jpeg = Self.jpeg(image) else { return nil }
-        return (jpeg.base64EncodedString(), FrameQuality.unclear(image))
+        guard let image = worker.latest() else { return nil }
+        // b16: a black frame (camera not really delivering) is never sent: the turn goes on as without the camera
+        let reading = FrameQuality.read(image)
+        if let reading, FrameQuality.isBlack(reading) { restartIfStalled(); return nil }
+        guard let jpeg = Self.jpeg(image) else { return nil }
+        return (jpeg.base64EncodedString(), reading.map(FrameQuality.unclear) ?? false)
     }
 
     /// D63: the newest frame as it is (no JPEG), for the mask motion check.
@@ -126,6 +158,11 @@ private final class CameraWorker: NSObject, AVCaptureVideoDataOutputSampleBuffer
     private var frame: CIImage?
     /// which camera `frame` came from
     private var framePosition: AVCaptureDevice.Position = .unspecified
+    /// b16: when `frame` arrived (uptime); a frame older than `staleS` is not the camera now (interrupted / stopped)
+    private var frameAt: TimeInterval = 0
+    static let staleS: TimeInterval = 1.5
+
+    func hasFreshFrame() -> Bool { lock.withLock { frame != nil && ProcessInfo.processInfo.systemUptime - frameAt < Self.staleS } }
 
     func start(session: AVCaptureSession, device: AVCaptureDevice?) {
         queue.async {
@@ -162,10 +199,13 @@ private final class CameraWorker: NSObject, AVCaptureVideoDataOutputSampleBuffer
         }
     }
 
-    func latest() -> CIImage? { lock.withLock { frame } }
+    func latest() -> CIImage? {
+        lock.withLock { ProcessInfo.processInfo.systemUptime - frameAt < Self.staleS ? frame : nil }
+    }
 
     func latestFront() -> CIImage? {
         lock.withLock { () -> CIImage? in
+            guard ProcessInfo.processInfo.systemUptime - frameAt < Self.staleS else { return nil }
             #if os(iOS)
             guard framePosition == .front else { return nil }
             #endif
@@ -192,6 +232,7 @@ private final class CameraWorker: NSObject, AVCaptureVideoDataOutputSampleBuffer
         guard let pixels = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let image = CIImage(cvPixelBuffer: pixels)
         let position = (connection.inputPorts.first?.input as? AVCaptureDeviceInput)?.device.position ?? .unspecified
-        lock.withLock { frame = image; framePosition = position }
+        let now = ProcessInfo.processInfo.systemUptime
+        lock.withLock { frame = image; framePosition = position; frameAt = now }
     }
 }

@@ -132,16 +132,18 @@ final class LiveCaptionsTests: XCTestCase {
         XCTAssertEqual(g.you?.phase, .words)
     }
 
-    func testDeviceVoiceRevealsSentenceBySentence() {
+    /// 11/4 (TF 341): `say` is a caption only (never spoken): the text shows at once with no playhead, and a final
+    /// reply ends like a silent one (Codex #736 P1: it used to wait on a playhead that never comes).
+    func testSayIsCaptionOnlyShownAtOnceAndEnds() {
         var c = LiveCaptions()
         c.apply(delta(3, "Sure thing."), now: 0)
-        c.apply(delta(3, " Here it is."), now: 0)
         c.apply(ev(#"{"type":"say","utteranceId":3,"sentence":0,"text":"Sure thing.","emotion":"neutral","lang":"en-US"}"#), now: 0)
-        XCTAssertEqual(c.frame(now: 10, level: nil, playheadMs: 0).reply?.text, "Sure thing.")
-        // the second sentence hasn't been received for speaking yet: never shown ahead of it (Codex P2)
-        XCTAssertEqual(c.frame(now: 20, level: nil, playheadMs: 11 * 62 + 1).reply?.text, "Sure thing.")
-        c.apply(ev(#"{"type":"say","utteranceId":3,"sentence":1,"text":"Here it is.","emotion":"neutral","lang":"en-US"}"#), now: 30)
-        XCTAssertEqual(c.frame(now: 40, level: nil, playheadMs: 11 * 62 + 2).reply?.text, "Sure thing. Here it is.")
+        XCTAssertEqual(c.frame(now: 10, level: nil, playheadMs: nil).reply?.text, "Sure thing.")
+        c.apply(delta(3, " Here it is."), now: 20)
+        c.apply(ev(#"{"type":"say","utteranceId":3,"sentence":1,"text":"Here it is.","emotion":"neutral","lang":"en-US"}"#), now: 20)
+        XCTAssertEqual(c.frame(now: 30, level: nil, playheadMs: nil).reply?.text, "Sure thing. Here it is.")
+        c.apply(reply(3, "Sure thing. Here it is."), now: 40)
+        XCTAssertEqual(c.frame(now: 40 + LiveCaptions.noAudioMs + 1, level: nil, playheadMs: nil).reply?.text, "Sure thing. Here it is.")
     }
 
     func testHoldBeatAndSplitWordsMatchByText() {
@@ -194,6 +196,50 @@ final class LiveCaptionsTests: XCTestCase {
         XCTAssertTrue(t.hasSuffix("newest"))
         XCTAssertLessThanOrEqual(t.count, LiveCaptions.youMaxChars)
         XCTAssertFalse(t.hasPrefix(" "))
+    }
+
+    // TF 341 (Chelsea, 18:30): on a real iPhone the mic level never rests under 0.08 (room, breath, AEC residue).
+    // The heard line must survive that noise until the reply, and the user's words must not depend on it.
+    func testNoisyMicNeverWipesTheUsersWords() {
+        var c = LiveCaptions()
+        var now: Double = 0
+        func tick(_ ms: Double, level: Float = 0.2) -> LiveCaptions.Frame { now += ms; return c.frame(now: now, level: level, playheadMs: nil) }
+        _ = tick(200)   // noise alone: "…"
+        c.apply(ev(speechStart), now: now)
+        c.apply(transcript("What should I eat", final: false), now: now)
+        XCTAssertEqual(tick(100).you?.text, "What should I eat")
+        c.apply(transcript("What should I eat tonight?", final: true), now: now)
+        // thinking: the mic keeps hearing the room
+        for _ in 0..<60 { XCTAssertEqual(tick(33).you?.phase, .heard, "the heard line stays through mic noise") }
+        c.apply(delta(9, "Wednesday night, you need food."), now: now)
+        c.apply(audio(9, sentence: 0, offset: 0, words: [("Wednesday", 0, 300), ("night,", 300, 600)]), now: now)
+        let f = c.frame(now: now + 10, level: 0.3, playheadMs: 100)
+        XCTAssertEqual(f.you?.text, "What should I eat tonight?")
+        XCTAssertEqual(f.you?.dim, true)
+        XCTAssertEqual(f.reply?.text, "Wednesday")
+    }
+
+    func testSpeakingRightAfterAReplyStartsANewTurnAtOnce() {
+        var c = LiveCaptions()
+        c.apply(transcript("hi", final: true), now: 0)
+        c.apply(delta(1, "Hey you."), now: 10)
+        c.apply(audio(1, sentence: 0, offset: 0, words: [("Hey", 0, 200), ("you.", 200, 500)]), now: 20)
+        c.apply(reply(1, "Hey you."), now: 30)
+        _ = c.frame(now: 100, level: 0.02, playheadMs: 100)
+        _ = c.frame(now: 700, level: 0.02, playheadMs: nil)   // voice done
+        _ = c.frame(now: 1000, level: 0.4, playheadMs: nil)
+        let f = c.frame(now: 1200, level: 0.4, playheadMs: nil)
+        XCTAssertEqual(f.you?.phase, .sound, "the user talks again: bars at once, the finished turn goes")
+        XCTAssertNil(f.reply)
+        XCTAssertEqual(c.frame(now: 5800, level: 0.4, playheadMs: nil).you?.phase, .sound, "the old turn's 5 s clear no longer applies")
+    }
+
+    func testMicStateOnlyHidesTheSoundPlaceholder() {
+        let heard = LiveCaptions.Frame.YouRow(text: "hi", phase: .heard, dim: false, rolled: false)
+        let sound = LiveCaptions.Frame.YouRow(text: "…", phase: .sound, dim: false, rolled: false)
+        XCTAssertEqual(LiveCaptions.visibleYou(heard, micOn: false), heard, "words the server heard always show")
+        XCTAssertNil(LiveCaptions.visibleYou(sound, micOn: false))
+        XCTAssertEqual(LiveCaptions.visibleYou(sound, micOn: true), sound)
     }
 
     func testCaptionBottomSits16AboveTheCameraButton() {

@@ -17,10 +17,11 @@ public enum MotionCall {
     /// Card 1 / 2: level smoothing (s)
     public static let outputSmoothing = 0.06
     public static let inputSmoothing = 0.05
-    /// Card 2: press 0.92 in 100 ms, back on a spring
-    public static let pressScale: CGFloat = 0.92
+    /// Card 2: press 0.94 in 100 ms, back on a short spring with no bounce. Build 11 (Chelsea, TF 341): 0.92 back on a
+    /// 0.6-damped spring read as a wobble, and that spring leaked into the toggle's own on/off change (see MotionPressBody).
+    public static let pressScale: CGFloat = 0.94
     public static let pressDown = Animation.easeOut(duration: 0.1)
-    public static let pressUp = Animation.spring(response: 0.3, dampingFraction: 0.6)
+    public static let pressUp = Animation.spring(response: 0.25, dampingFraction: 0.9)
     /// Card 3: drops 8 pt in, check drawn 120 ms later in 220 ms, leaves 6 pt up in 200 ms after 2.4 s
     public static let chipIn = Animation.spring(response: 0.3, dampingFraction: 0.8)
     public static let chipCheck = Animation.easeOut(duration: 0.22).delay(0.12)
@@ -66,7 +67,7 @@ public struct MotionPillIcon: View {
         self.level = level
     }
     public var body: some View {
-        TimelineView(.animation) { ctx in
+        TimelineView(.animation(minimumInterval: 1 / 30)) { ctx in
             let t = ctx.date.timeIntervalSinceReferenceDate
             Group {
                 switch kind {
@@ -113,9 +114,11 @@ private struct MotionPressBody<Label: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         let live = MotionDetails.live(reduceMotion: reduceMotion)
+        // the press animation drives the scale only: `.animation(_:value:)` on the label also animated whatever the
+        // button's action changed in the same update (the mic toggle's white ⇄ glass swap), giving a blurred, doubled
+        // ghost for ~1 s on device (TF 341)
         label
-            .scaleEffect(live && pressed ? MotionCall.pressScale : 1)
-            .animation(live ? (pressed ? MotionCall.pressDown : MotionCall.pressUp) : nil, value: pressed)
+            .animation(live ? (pressed ? MotionCall.pressDown : MotionCall.pressUp) : nil) { $0.scaleEffect(live && pressed ? MotionCall.pressScale : 1) }
     }
 }
 
@@ -136,7 +139,7 @@ public struct MotionVoiceRing: View {
     }
     public var body: some View {
         if active && MotionDetails.live(reduceMotion: reduceMotion) {
-            TimelineView(.animation) { ctx in
+            TimelineView(.animation(minimumInterval: 1 / 30)) { ctx in
                 let v = CGFloat(smoother.next(level(), at: ctx.date.timeIntervalSinceReferenceDate))
                 Circle().strokeBorder(color, lineWidth: 2)
                     .frame(width: diameter, height: diameter)

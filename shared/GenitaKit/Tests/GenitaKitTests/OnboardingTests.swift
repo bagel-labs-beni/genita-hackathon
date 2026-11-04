@@ -201,4 +201,14 @@ struct SetupAnswersWireTests {
         let deep = SetupAnswersWire.answers(depth: "deep", help: "Think with me", relationship: "Close companion", presence: ["Witty"], sliders: ["initiative": 2], never: ["Mirror my mood", "x"])
         #expect(deep["reachOut"] as? Int == 3 && (deep["never"] as? [String]) == ["Mirror my mood"])
     }
+
+    /// POST /v1/companion/prefs: the six preference rows come back with the persona (Chelsea 11/4); an older server
+    /// without them still decodes.
+    @Test func prefsResultCarriesRows() throws {
+        let withRows = #"{"summary":null,"session":null,"rows":[{"key":"communication","title":"Communication style","items":[{"text":"A calm presence.","label":"explicit"}]},{"key":"interests","title":"Interests","items":[{"text":"Talking through ideas and decisions.","label":"explicit"}]}]}"#
+        let r = try JSONDecoder().decode(OnboardingClient.PrefsResult.self, from: Data(withRows.utf8))
+        #expect(r.rows?.count == 2 && r.rows?[1].items.first?.text == "Talking through ideas and decisions.")
+        let old = try JSONDecoder().decode(OnboardingClient.PrefsResult.self, from: Data(#"{"summary":null,"session":null}"#.utf8))
+        #expect(old.rows == nil)
+    }
 }

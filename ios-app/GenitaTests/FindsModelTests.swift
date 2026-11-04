@@ -14,6 +14,41 @@ import XCTest
     }
     private func created(_ id: String) -> ServerEvent { .findCreated(.init(findId: id, card: card(id))) }
 
+    /// b16 (Chelsea 11/4 21:49): the searching sheet is sized to its content, no empty band under the skeleton rows:
+    /// 32 top + 52 header + 18 + 2 × 64 rows + 14 between + 20 bottom + 34 home indicator.
+    func testSearchingSheetFitsItsContent() {
+        let content: CGFloat = 32 + 52 + 18 + 64 + 14 + 64
+        let bottom: CGFloat = 20 + 34
+        XCTAssertEqual(SheetState.searching.height, content + bottom)
+        XCTAssertEqual(SheetState.rising.height, SheetState.searching.height, "rising starts where searching was")
+        XCTAssertLessThan(SheetState.searching.height, SheetState.half.height)
+    }
+
+    /// b16: at the half sheet the product picture gives way so Open in browser sits above Save to Finds (364 pt page).
+    func testHalfProductPictureLeavesRoomForThePill() {
+        let titleRow: CGFloat = 54
+        let picture = FindCardPage.halfProductPicture(titleRow: titleRow)
+        let fixed: CGFloat = 40 + 44 + 8 + 8 + 8
+        let below: CGFloat = 8 + 20 + 4 + 20 + 8 + 44
+        XCTAssertLessThanOrEqual(fixed + titleRow + picture + below, 364, "pill above the CTA")
+        XCTAssertEqual(FindCardPage.halfProductPicture(titleRow: 300), 56, "never smaller than 56")
+        XCTAssertEqual(FindCardPage.halfProductPicture(titleRow: 0), 151, "never bigger than the square")
+    }
+
+    /// b16 "never show empty picture content": a picture that failed to load is dropped from the card, and the top
+    /// pick moves to the next row that has one (none → no hero).
+    func testBrokenPhotosAreDroppedAndTheTopPickMoves() throws {
+        let json = #"{"id":"c","kind":"unknown","layout":"general","createdAt":"","eyebrow":"","title":"t","subtitle":"","items":[],"steps":[],"options":[],"why":[],"ask":[],"sources":[{"title":"A","url":"https://a.com","domain":"a.com","image":{"slot":"source-0","status":"ready","url":"/a"}},{"title":"B","url":"https://b.com","domain":"b.com","image":{"slot":"source-1","status":"ready","url":"/b"}}],"how":[],"hero":{"slot":"hero","status":"ready","url":"/a"}}"#
+        let card = try JSONDecoder().decode(FindCard.self, from: Data(json.utf8))
+        XCTAssertEqual(card.topPick?.index, 0)
+        let hidden = card.hidingPhotos(["/a"])
+        XCTAssertNil(hidden.sources[0].image)
+        XCTAssertNil(hidden.hero, "the hero was the same broken picture")
+        XCTAssertEqual(hidden.topPick?.index, 1, "the next row with a picture leads")
+        XCTAssertEqual(card.topPick(usable: { $0.url != "/a" })?.index, 1)
+        XCTAssertNil(card.hidingPhotos(["/a", "/b"]).topPick, "no picture left: no hero, rows only")
+    }
+
     func testSearchingThenRisingThenHalf() async throws {
         let m = FindsModel()
         m.latestFrames = [Data([0xff, 0xd8]).base64EncodedString()]
@@ -406,13 +441,56 @@ import XCTest
         XCTAssertEqual(m.pillText, "Egg, tofu +2", "a later update without a pill keeps it")
     }
 
-    /// UI sweep 11/3: in the half sheet (scrolling off) a two-line recipe title cut the ingredient chips in half.
-    /// The picture gives way: title row + picture ≤ 192 pt, so the 44 pt chip row ends inside the 344 pt page.
-    func testHalfSheetPictureLeavesRoomForTheChips() {
-        XCTAssertEqual(FindCardPage.halfCameraHeight(titleRow: 53), 132, "one-line title: r03 picture, unchanged")
+    /// UI sweep 11/3 → r02: in the half sheet (scrolling off) the picture gives way so the 94 pt ingredient tile strip
+    /// (64 pt photo tile + one name line) ends inside the 344 pt page under any title.
+    func testHalfSheetPictureLeavesRoomForTheTiles() {
+        XCTAssertEqual(FindCardPage.halfCameraHeight(titleRow: 53), 89, "one-line title + subtitle: 89 pt picture")
         let twoLines: CGFloat = 87 // "Kimchi fried rice / with tofu and egg" + subtitle
-        XCTAssertLessThanOrEqual(40 + 44 + 3 * 8 + twoLines + FindCardPage.halfCameraHeight(titleRow: twoLines) + 44, 344, "chips whole")
-        XCTAssertEqual(FindCardPage.halfCameraHeight(titleRow: 104), 88, "88 while it fits")
-        XCTAssertEqual(FindCardPage.halfCameraHeight(titleRow: 200), 0, "big text: no picture in the half sheet, chips whole")
+        let fixed: CGFloat = 108 // 40 top + 44 header + 3 × 8 spacing
+        let used: CGFloat = fixed + twoLines + FindCardPage.halfCameraHeight(titleRow: twoLines) + FindCardPage.stripHeight
+        XCTAssertLessThanOrEqual(used, 344, "tiles whole")
+        XCTAssertEqual(FindCardPage.halfCameraHeight(titleRow: 70), 72, "72 while it fits")
+        XCTAssertEqual(FindCardPage.halfCameraHeight(titleRow: 200), 0, "big text: no picture in the half sheet, tiles whole")
+    }
+
+    /// Visual cards contract v1: `ingredient-<item id>` lands on that item whatever its position; a later find.items
+    /// without the photo keeps it; a bare number that names no id is the 1-based position.
+    func testIngredientPhotoLandsByIdAndIsKept() throws {
+        let m = FindsModel()
+        m.apply(try ServerEvent.decode(#"{"type":"find.started","findId":"v","utteranceId":1,"kind":"recipe","title":"Kimchi fried rice","detail":""}"#))
+        m.apply(try ServerEvent.decode(#"{"type":"find.created","findId":"v","card":{"id":"v","kind":"recipe","layout":"recipe","createdAt":"2026-11-04T12:00:00Z","eyebrow":"Recipe","title":"Kimchi fried rice","subtitle":"","items":[{"id":"ing-1","name":"cooked rice · 2 cups","tier":"buy","from":"recipe"},{"id":"ing-2","name":"kimchi · 1 cup","tier":"buy","from":"recipe"}],"steps":[{"text":"Fry the kimchi."}],"options":[],"why":[],"ask":[],"sources":[],"how":[]}}"#))
+        m.apply(try ServerEvent.decode(#"{"type":"find.image","findId":"v","slot":"ingredient-ing-2","status":"ready","url":"/v1/finds/v/images/ingredient-ing-2"}"#))
+        var card = try XCTUnwrap(m.entries.first?.card)
+        XCTAssertEqual(card.cardLayout, .recipe)
+        XCTAssertNil(card.items[0].image, "by id, not position")
+        XCTAssertEqual(card.items[1].image?.url, "/v1/finds/v/images/ingredient-ing-2")
+        XCTAssertEqual(card.items[1].tileName, "Kimchi")
+        XCTAssertEqual(card.items[1].tileAmount, "1 cup")
+        m.apply(try ServerEvent.decode(#"{"type":"find.items","findId":"v","items":[{"id":"ing-2","name":"kimchi · 1 cup","tier":"have","from":"both"},{"id":"ing-1","name":"cooked rice · 2 cups","tier":"buy","from":"recipe"}],"checking":false}"#))
+        card = try XCTUnwrap(m.entries.first?.card)
+        XCTAssertEqual(card.items.first { $0.id == "ing-2" }?.image?.status, .ready, "an update without the photo keeps it")
+        m.apply(try ServerEvent.decode(#"{"type":"find.image","findId":"v","slot":"ingredient-2","status":"ready","url":"/x"}"#))
+        card = try XCTUnwrap(m.entries.first?.card)
+        XCTAssertEqual(card.items[1].image?.url, "/x", "a bare number that names no id: 1-based position")
+    }
+
+    /// r02: the layout hint picks the card; an old card (no `layout`) lays out by `kind` as before.
+    func testCardLayoutFromHintOrKind() throws {
+        func card(_ kind: String, layout: String?, sources: Int = 1, steps: Int = 1) throws -> FindCard {
+            let src = (0..<sources).map { #"{"title":"T\#($0)","url":"https://a.com/\#($0)","domain":"a.com"}"# }.joined(separator: ",")
+            let st = (0..<steps).map { #"{"text":"Step \#($0)"}"# }.joined(separator: ",")
+            let l = layout.map { #","layout":"\#($0)""# } ?? ""
+            let json = #"{"id":"c","kind":"\#(kind)"\#(l),"createdAt":"","eyebrow":"","title":"t","subtitle":"","items":[],"steps":[\#(st)],"options":[],"why":[],"ask":[],"sources":[\#(src)],"how":[]}"#
+            return try JSONDecoder().decode(FindCard.self, from: Data(json.utf8))
+        }
+        XCTAssertEqual(try card("answer", layout: "place").cardLayout, .place)
+        XCTAssertEqual(try card("answer", layout: "how-to").cardLayout, .howTo)
+        XCTAssertEqual(try card("answer", layout: "general").cardLayout, .general)
+        XCTAssertEqual(try card("answer", layout: nil).cardLayout, .general, "old server: unknown kind → r01 rows")
+        XCTAssertEqual(try card("link", layout: "news").cardLayout, .general, "a layout this build doesn't know → by kind")
+        XCTAssertEqual(try card("answer", layout: "place", sources: 0).cardLayout, .general, "place with no places → rows")
+        XCTAssertEqual(try card("answer", layout: "how-to", steps: 0).cardLayout, .general, "how-to with no steps → rows")
+        XCTAssertEqual(try card("recipe", layout: nil).cardLayout, .recipe)
+        XCTAssertEqual(try card("outfit", layout: "general").cardLayout, .outfit, "outfit keeps its layout")
     }
 }

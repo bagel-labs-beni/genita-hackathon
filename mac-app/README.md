@@ -55,9 +55,13 @@ The native conversation stays visible until WebGL reports the first rendered fra
 
 The current checks cover builds, ownership logic, geometry and native WebGL rendering; they do not establish physical tracking accuracy, end-to-end hardware pairing reliability or live call continuity. Full profile/preferences/session synchronization remains separate from this local visual handoff.
 
+## Face-to-face interpretation (F10, INT-0~6) — on (11/4)
+
+⋮ (More) → menu → **Interpret a conversation** toggles the same face-to-face interpretation as the iPhone's More row: `call.setInterpreting(true)` with no call options, so the Mac mic is the source and translations play on the Mac like any reply. The shared `InterpretOverlay` (GenitaKit) draws the bar ("Detected automatically" → the language pair), the two-language bubbles and **Hold to talk** (press and hold with the mouse; or just talk — the server tells speakers apart by language). ✕ on the bar or the menu row again turns it off. The row is dim until a call is live. Kill switch: `MacInterpretController.enabled = false` hides the row and the overlay.
+
 ## Call interpretation (F8-L4, INT-M0~M2) — cut for the hackathon build (D40)
 
-`MacInterpretController.enabled = false`: the ⋮ control is the disabled "More" again and the sheet never opens. iPhone face-to-face interpretation is not affected. The code below stays for later.
+`MacInterpretController.callAppsEnabled = false`: ⋮ opens the menu, never the call-app sheet. Face-to-face interpretation above is not affected. The code below stays for later.
 
 ⋮ (More) → **Interpret a call** → pick FaceTime or Zoom → **Start interpreting**. Code: `GenitaMac/Interpret/`.
 

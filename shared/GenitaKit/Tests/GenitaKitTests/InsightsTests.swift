@@ -62,6 +62,9 @@ final class InsightsStub: URLProtocol, @unchecked Sendable {
         #expect(r.type?.signature == ["Options", "Light", "Final say"] && r.mix.first?.position == 1)
         #expect(r.watchouts.first?.fix == "I'll cap it at two and say my pick." && r.chain?.soIll == "So I'll bring two options and my pick.")
         #expect(r.share?.title(name: "Summer") == "Summer is The Playful Editor")
+        #expect(r.share?.title(name: "summer") == "Summer is The Playful Editor", "a lowercase name is capitalised on the card")
+        #expect(r.share?.title(name: "mary-jane") == "Mary-jane is The Playful Editor")
+        #expect(r.share?.title(name: "JJ") == "JJ is The Playful Editor", "nothing is lowercased")
         #expect(r.settings?.energy == "Warm, Witty" && r.learning.first?.label == "How long you like answers")
         #expect(taste.evidence[1].label(aiName: "ChatGPT") == "From your ChatGPT reply" && taste.evidence[0].label(aiName: "ChatGPT") == "You picked")
         // a report from an older server (r01: no type read) still decodes

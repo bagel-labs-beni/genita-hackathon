@@ -99,6 +99,8 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     var history: [Stage] = []
     var settingsOpen = false
     var menuOpen = false
+    /// The Finds list over a call (ConversationView): a light page, so the status bar text is dark there (Codex P2 on #693)
+    var callFindsListOpen = false
     // Onboarding on the server (OnboardingFlow.swift). Transient: not saved.
     var importing = false
     /// I03: the import answered while the reading screen is up: 100 % and the orb's pulse before I04 (Chelsea 11/4)

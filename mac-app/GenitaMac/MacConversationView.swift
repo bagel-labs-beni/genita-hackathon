@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct MacConversationView: View {
@@ -66,37 +67,42 @@ struct MacConversationView: View {
                 if waitingCopy != nil { handoffScrim.frame(width: 390, height: 844).allowsHitTesting(false) }
                 Button { withAnimation { menuOpen.toggle() } } label: { MacGlassControl(icon: "glass-menu-icon") }
                     .buttonStyle(.plain).position(x: 47.5, y: topRowY).opacity(sheetFull || linkOpened != nil || menuOpen ? 0 : 1).allowsHitTesting(!sheetFull && linkOpened == nil && !menuOpen).accessibilityIdentifier("macOpenMenu")
-                if interpret.isLive {
-                    InterpretOverlay(board: call.interpretBoard, level: { call.inputLevel }, onClose: { interpret.stop() }, onHold: { call.setHold($0) })
+                if interpreting && !findsUp {
+                    // F10 INT-1~6 on the Mac (as the iPhone): the face stays, the bar, bubbles and Hold to talk replace the rail
+                    InterpretOverlay(board: call.interpretBoard, level: { call.inputLevel }, onClose: { stopInterpreting() }, onHold: { call.setHold($0) })
                         .frame(width: 390, height: 844)
-                } else if waitingCopy == nil {
+                        .transition(.opacity)
+                } else if waitingCopy == nil && !interpreting {
                     // live captions r01: same layer as the iPhone, bottom edge 16 above the rail (626), under the self view and rail
                     captionLayer
                     if MacDesignV2.enabled {
                         // iPhone S09 HUD A (#530) on the Mac: a glass tile at the bottom left, 16 from the edge, its
                         // bottom on the control rail's bottom (724 + 82); camera on grows it 72×96 → 108×144
                         selfView.frame(width: selfSize.width, height: selfSize.height)
-                            .position(x: 16 + selfSize.width / 2, y: 806 - selfSize.height / 2 - railShift).opacity(sheetCovers ? 0 : 1)
+                            .position(x: 16 + selfSize.width / 2, y: selfBottom - selfSize.height / 2).opacity(selfCovered ? 0 : 1)
                             .animation(reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.85), value: call.cameraOn)
+                            // camera boxes: the tile grows 2.2× (bottom-left anchored) while the server's boxes show, back when they fade
+                            .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.86), value: boxesShown)
+                            .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.86), value: boxesOverSheet)
                     } else {
                         selfView.position(x: 87.5, y: 700.5 - railShift).opacity(sheetCovers ? 0 : 1)
                     }
                     VStack(spacing: 13) {
-                        Button { call.toggleCamera() } label: { MacGlassControl(icon: "glass-camera-icon", size: 46, slashed: !call.cameraOn) }.buttonStyle(MacUnchangedControlStyle())
+                        Button { MacCall.cameraRemembered = !call.cameraOn; call.toggleCamera() } label: { MacGlassControl(icon: "glass-camera-icon", size: 46, slashed: !call.cameraOn) }.buttonStyle(MacUnchangedControlStyle())
                             .modifier(MacControlEntrance(shown: call.link != .connecting, index: 0))
                             .accessibilityLabel(call.cameraOn ? "Turn camera off" : "Turn camera on").accessibilityIdentifier("macCameraToggle")
-                        // motion details card 2: pressed to 0.92, a blue ring that follows the user's voice while the mic is on
+                        // motion details card 2: pressed to 0.94 (build 11), a blue ring that follows the user's voice while the mic is on
                         Button { call.toggleMic() } label: {
                             MacGlassControl(icon: "glass-mic-icon", size: 46, slashed: !call.micOn)
                                 .background { MotionVoiceRing(active: call.micOn && call.link == .live, diameter: 46, color: Color(red: 84 / 255, green: 193 / 255, blue: 1), level: { call.inputLevel }) }
                         }.buttonStyle(MotionPressStyle())
                             .modifier(MacControlEntrance(shown: call.link != .connecting, index: 1))
                             .accessibilityLabel(call.micOn ? "Turn microphone off" : "Turn microphone on").accessibilityIdentifier("macMicToggle")
-                        if MacInterpretController.enabled {
+                        if MacInterpretController.callAppsEnabled {
                             Button { withAnimation(.easeOut(duration: 0.22)) { interpret.open() } } label: { MacGlassControl(icon: "glass-more-icon", size: 46) }
                                 .buttonStyle(.plain).modifier(MacControlEntrance(shown: call.link != .connecting, index: 2)).accessibilityLabel("More").accessibilityIdentifier("macMore")
                         } else {
-                            // ⋮ = the Mac menu (MC-M: Finds, Setting, Move to iPhone) while interpretation is cut — never a dead button
+                            // ⋮ = the Mac menu (MC-M: Interpret a conversation, Finds, Settings, Move to iPhone) — never a dead button
                             Button { withAnimation { menuOpen = true } } label: { MacGlassControl(icon: "glass-more-icon", size: 46) }
                                 .buttonStyle(.plain).modifier(MacControlEntrance(shown: call.link != .connecting, index: 2)).accessibilityLabel("More").accessibilityIdentifier("macMore")
                         }
@@ -116,7 +122,7 @@ struct MacConversationView: View {
                         MediaPermissionSheet(kind: denied, name: call.companionName, openSettings: { media.openSystemSettings(for: denied) }, dismiss: { call.dismissDenied() })
                     }.frame(width: 390, height: 844)
                 }
-                if waitingCopy == nil && !interpret.isLive {
+                if waitingCopy == nil && (!interpreting || findsUp) {
                     if linkOpened == nil {
                         MacResultSheet(finds: call.finds) { pick in withAnimation(.easeOut(duration: 0.22)) { linkOpened = pick } }
                             .frame(width: 390, height: 844, alignment: .topLeading)
@@ -134,11 +140,16 @@ struct MacConversationView: View {
                         MacLinkPrompt(share: { linkOpened = nil; sharing.requestSharing() }, notNow: { withAnimation(.easeOut(duration: 0.22)) { linkOpened = nil } })
                     }
                 }
+                // D73 (TR-01 NET) as the iPhone: interpreting hides the call cue, except S09-R — a dropped link must show
+                if waitingCopy == nil && interpreting && !findsUp && call.link == .reconnecting, let text = cueText {
+                    MacCallCue(text: text).frame(maxWidth: 342, alignment: .leading).fixedSize(horizontal: false, vertical: true)
+                        .position(x: 195, y: MacDesignV2.enabled && !displaySharing ? 103 : 142).frame(width: 390, height: 844, alignment: .topLeading).allowsHitTesting(false)
+                }
                 // A full result sheet owns the top of the window; the share chip and cards come back when it folds.
                 if !sheetFull { WatchOverlays(sharing: sharing, review: reviewState) }
             }.frame(width: 390, height: 844).offset(x: menuOpen ? 299 : 0)
             if menuOpen { menu }
-            if MacInterpretController.enabled && interpret.stage == .picking { interpretSheet }
+            if MacInterpretController.callAppsEnabled && interpret.stage == .picking { interpretSheet }
             if permissionVisible { permissionPanel }
             // QA #216 to-be: no fake 9:41 / battery bar on a real Mac (the island handle stays for moving the window)
             if !MacDesignV2.enabled { MacDemoSystemBar(onDark: waitingCopy != nil || sheetFull).allowsHitTesting(false).accessibilityHidden(true) }
@@ -177,13 +188,34 @@ struct MacConversationView: View {
             else if let id = call.sessionId { sharing.watchConfig = .init(server: call.currentEndpoint.url, token: call.currentEndpoint.token, sessionId: id) }
         }
         .onChange(of: macCall.isSignedIn) { _, signedIn in if !signedIn { sharing.stop(); sharing.watchConfig = nil } }
-        .onChange(of: call.micOn) { _, on in if handoff.ownership.isOwner { MacCall.micRemembered = on } }
+        // interpretation turns the mic on for itself only (TR-01): that is not the user's mic choice
+        .onChange(of: call.micOn) { _, on in if handoff.ownership.isOwner && !call.micOnForInterpret { MacCall.micRemembered = on } }
         .sheet(isPresented: $settingsOpen) { MacSettingsSheet(compact: true) }
         .alert("Couldn’t start interpreting", isPresented: Binding(get: { if case .failed = interpret.stage { return true } else { return false } }, set: { if !$0 { interpret.stage = .idle } })) {
             Button("OK") { interpret.stage = .idle }
         } message: { if case let .failed(message) = interpret.stage { Text(message) } }
         .onDisappear { if interpret.isLive { interpret.stop() } }
         .alert(sharing.errorTitle, isPresented: Binding(get: { sharing.error != nil }, set: { if !$0 { sharing.error = nil } })) { Button("OK") { sharing.error = nil } } message: { Text(sharing.error ?? "") }
+    }
+    /// F10 on the Mac: face-to-face interpretation (⋮ → Interpret a conversation, the iPhone's INT-0) or the call-app
+    /// path (INT-M0, `callAppsEnabled`). Both draw the shared InterpretOverlay; nothing shows once the call is idle.
+    private var interpreting: Bool {
+        interpret.isLive || (MacInterpretController.enabled && call.mode == .interpret && call.link != .connecting && call.link != .idle)
+    }
+    /// F10 sheet during interpretation (iPhone 11/2 decision): Finds can open; while it is up the bubbles and Hold to
+    /// talk are hidden, and they come back when it closes. The call-app path keeps its old rule (no sheet).
+    private var findsUp: Bool { !interpret.isLive && call.finds.state != .idle && call.finds.state != .dismissed }
+    /// INT-0 toggle, as the iPhone's More row: on closes the menu and shows INT-1; off returns to the call.
+    private func toggleInterpreting() {
+        let on = call.mode != .interpret
+        withAnimation(.easeOut(duration: 0.22)) {
+            menuOpen = false
+            call.setInterpreting(on)
+        }
+    }
+    /// ✕ Stop interpreting: the call-app path tears its capture down; face-to-face goes back to chat.
+    private func stopInterpreting() {
+        if interpret.isLive { interpret.stop() } else { withAnimation(.easeOut(duration: 0.22)) { call.setInterpreting(false) } }
     }
     /// INT-M0 · pick the call app, then Start interpreting.
     private var interpretSheet: some View {
@@ -265,11 +297,30 @@ struct MacConversationView: View {
     /// E01/E02 from the call's own permission checks (Dyno's sheet, the call's state).
     private var callDenied: LocalCallMedia.Kind? { call.micDenied ? .microphone : call.cameraDenied ? .camera : nil }
     /// Self view size on Mac v2 (iPhone HUD A): camera off 72×96, on 108×144.
-    private var selfSize: CGSize { call.cameraOn ? CGSize(width: 108, height: 144) : CGSize(width: 72, height: 96) }
+    /// Camera boxes (iPhone CAM-H on the Mac's self view): grown 2.2× (238×317) while they show, so the boxes read.
+    private var selfSize: CGSize {
+        guard call.cameraOn else { return CGSize(width: 72, height: 96) }
+        guard boxesShown else { return CGSize(width: 108, height: 144) }
+        guard boxesOverSheet else { return CGSize(width: 238, height: 317) }
+        // over a rising / half sheet: as big as fits between the top HUD row and the sheet top, 3:4 kept
+        let h = max(96, min(317, selfBottom - (topRowY + 23 + 12)))
+        return CGSize(width: (h * 3 / 4).rounded(), height: h.rounded())
+    }
+    /// The recipe sheet goes straight to half: while the boxes show, the grown tile sits 12 above the sheet's top
+    /// instead of hiding under it (full still hides it); back to the normal rule when they fade.
+    private var boxesOverSheet: Bool { MacDesignV2.enabled && boxesShown && linkOpened == nil && [.rising, .half].contains(call.finds.state) }
+    private var selfCovered: Bool { sheetCovers && !boxesOverSheet }
+    /// The self tile's bottom edge: the control rail's bottom (806, moved up over searching / peek), or above the sheet.
+    private var selfBottom: CGFloat { boxesOverSheet ? 844 - call.finds.state.macHeight - 12 : 806 - railShift }
+    /// The server found items in the camera picture and they are on screen (fade 4 s after, CameraBoxes).
+    private var boxesShown: Bool { call.cameraOn && call.finds.boxes.visible && !call.finds.boxes.boxes.isEmpty }
     @ViewBuilder private var selfView: some View {
         if call.cameraOn {
             if MacDesignV2.enabled {
-                SelfCameraPreview(session: call.cameraSession).clipShape(RoundedRectangle(cornerRadius: 16))
+                SelfCameraPreview(session: call.cameraSession)
+                    // the Mac preview is mirrored (LocalCallMedia: isVideoMirrored = true), so the boxes are too
+                    .overlay { MacCameraBoxOverlay(boxes: call.finds.boxes, mirrored: true) }
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
                     .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.white.opacity(0.35), lineWidth: 0.7))
             } else {
                 SelfCameraPreview(session: call.cameraSession).frame(width: 113, height: 211).clipShape(RoundedRectangle(cornerRadius: 16))
@@ -301,6 +352,14 @@ struct MacConversationView: View {
             VStack(alignment: .leading, spacing: 0) {
                 Text("Genita").font(MacSheetInk.serif(28)).tracking(-0.28).foregroundStyle(ink).frame(height: 34, alignment: .leading)
                     .padding(.leading, 33).padding(.bottom, 12).accessibilityAddTraits(.isHeader)
+                if MacInterpretController.enabled {
+                    // F10 INT-0 (the iPhone's first More row): toggles face-to-face interpretation; dim until a call is live
+                    let canInterpret = call.link == .live || call.link == .reconnecting || call.mode == .interpret
+                    menuLine("Interpret a conversation", icon: AnyView(Image(systemName: "globe").font(.system(size: 17, weight: .light))), dim: !canInterpret,
+                             trailing: call.mode == .interpret ? "On" : nil, id: "macMenuInterpret") { toggleInterpreting() }
+                        .disabled(!canInterpret)
+                        .accessibilityValue(call.mode == .interpret ? call.interpretBoard.moreSubtitle : "For talking across languages")
+                }
                 menuLine("Chat", icon: AnyView(resourceImage("reference-menu-chat").resizable().frame(width: 20, height: 20)), dim: true, trailing: MacDesignV2.enabled ? "Soon" : nil, id: "macMenuChat") {}.disabled(true)
                 menuLine("Finds", icon: AnyView(Image(systemName: "bookmark").font(.system(size: 17, weight: .light))), trailing: finds > 0 ? "\(finds)" : nil, id: "macMenuFinds") {
                     withAnimation { menuOpen = false }
@@ -407,5 +466,84 @@ private final class IslandDragView:NSView {
 struct MacFacePlaceholder: View {
     var body: some View {
         MacSheetInk.ink.accessibilityHidden(true)
+    }
+}
+
+/// iPhone CameraBoxOverlay (CAM-H, full-flow board r01 §6) on the Mac self view: same drawing, same CameraBoxes data.
+/// Edge #00A2FF 2.5 pt + glow (blur 6, 60 %), inside white 20 % (lit 35 %); label = pill 28 pt, 12/16 medium; items
+/// light up 150 ms apart (200 ms ease-out, label 100 ms later); all fade after 4 s (CameraBoxes.fadeAfter).
+struct MacCameraBoxOverlay: View {
+    let boxes: CameraBoxes
+    let mirrored: Bool
+
+    var body: some View {
+        GeometryReader { g in
+            ZStack(alignment: .topLeading) {
+                Color.black.opacity(boxes.highlighted != nil ? 0.4 : 0).allowsHitTesting(false)
+                let drawn = boxes.boxes.map { (item: $0, rect: CameraBoxes.rect($0.box, frame: boxes.frameSize, in: g.size, mirrored: mirrored)) }
+                    .filter { $0.rect.width > 0 && $0.rect.height > 0 }
+                let labeled = CameraBoxes.labelOwners(drawn)
+                let origins = CameraBoxes.labelOrigins(drawn.filter { labeled.contains($0.item.id) }.map { (id: $0.item.id, rect: $0.rect, label: Self.labelSize($0.item.label)) },
+                                                       view: g.size, topInset: 0, obstacles: [])
+                ForEach(drawn, id: \.item.id) { d in
+                    MacPopBox(item: d.item, rect: d.rect, lit: boxes.highlighted == d.item.key,
+                              dimmed: boxes.highlighted != nil && boxes.highlighted != d.item.key,
+                              showsLabel: labeled.contains(d.item.id), labelAt: origins[d.item.id])
+                }
+            }
+            .opacity(boxes.visible && !boxes.misaligned ? 1 : 0)
+            .animation(.easeOut(duration: 0.2), value: boxes.visible)
+            .animation(.easeOut(duration: 0.15), value: boxes.misaligned)
+            .animation(.easeOut(duration: 0.2), value: boxes.highlighted)
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+        .accessibilityIdentifier("macCameraBoxes")
+    }
+
+    /// The pill's size: 12 pt medium text + 8 pt sides, 28 pt tall.
+    static func labelSize(_ text: String) -> CGSize {
+        let font = NSFont(name: "PretendardVariable-Medium", size: 12) ?? .systemFont(ofSize: 12, weight: .medium)
+        return CGSize(width: ceil((text as NSString).size(withAttributes: [.font: font]).width) + 16, height: 28)
+    }
+}
+
+private struct MacPopBox: View {
+    let item: LiveBox
+    let rect: CGRect
+    let lit: Bool
+    let dimmed: Bool
+    var showsLabel = true
+    var labelAt: CGPoint? = nil
+    @State private var shown = false
+    @State private var labelShown = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    static let edgeBlue = Color(red: 0, green: 162 / 255, blue: 1)
+    static let stagger = 0.15, fadeIn = 0.2, labelDelay = 0.1
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(lit ? 0.35 : 0.20))
+            RoundedRectangle(cornerRadius: 12).strokeBorder(Self.edgeBlue, lineWidth: 2.5)
+                .shadow(color: Self.edgeBlue.opacity(0.6), radius: 6)
+            if showsLabel && labelShown {
+                Text(item.label).font(.custom("PretendardVariable-Medium", size: 12)).lineSpacing(4)
+                    .foregroundStyle(Color(red: 253 / 255, green: 253 / 255, blue: 253 / 255)).lineLimit(1).fixedSize()
+                    .padding(.horizontal, 8).frame(height: 28)
+                    .background(Color(red: 17 / 255, green: 17 / 255, blue: 17 / 255).opacity(0.84), in: RoundedRectangle(cornerRadius: 12))
+                    .offset(x: labelAt.map { $0.x - rect.minX } ?? max(-2, -rect.minX), y: labelAt.map { $0.y - rect.minY } ?? CameraBoxes.labelOffsetY(rect, topInset: 0))
+                    .accessibilityIdentifier("macBoxLabel-\(item.label)")
+            }
+        }
+        .frame(width: max(8, rect.width), height: max(8, rect.height), alignment: .topLeading)
+        .opacity((shown ? 1 : 0) * (dimmed ? 0 : 1))
+        .offset(x: rect.minX, y: rect.minY)
+        .task {
+            if reduceMotion { withAnimation(.easeOut(duration: Self.fadeIn)) { shown = true; labelShown = true }; return }
+            try? await Task.sleep(for: .milliseconds(Int(Self.stagger * 1000) * item.order))
+            withAnimation(.easeOut(duration: Self.fadeIn)) { shown = true }
+            try? await Task.sleep(for: .milliseconds(Int(Self.labelDelay * 1000)))
+            withAnimation(.easeOut(duration: Self.fadeIn)) { labelShown = true }
+        }
     }
 }

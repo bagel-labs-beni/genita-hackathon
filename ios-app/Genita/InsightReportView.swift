@@ -104,18 +104,21 @@ struct InsightReportView: View {
                 InsightInk.canvas.ignoresSafeArea()
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 0) {
-                        // the avatar row top at the safe area + 16 pt (no blank band above it, designer 11/4)
-                        header.padding(.top, 16)
+                        // the avatar row top at the safe area + 16 pt (no blank band above it, designer 11/4); with the back
+                        // arrow (R1) it starts under the arrow's row instead (UI QA b10: the "<" sat on the avatar's edge)
+                        header.padding(.top, Self.headerTop(showsBack: showsCTA))
                         if let report { content(report, width: w - 48) } else { loading }
                         Color.clear.frame(height: showsCTA ? 170 : 40)
                     }
                     .frame(width: w - 48, alignment: .leading)
                     .padding(.horizontal, 24)
                 }
-                .onScrollGeometryChange(for: Bool.self) { $0.contentOffset.y + $0.contentInsets.top > 90 } action: { _, now in
+                .onScrollGeometryChange(for: Bool.self) { $0.contentOffset.y + $0.contentInsets.top > 90 + Self.headerTop(showsBack: showsCTA) - 16 } action: { _, now in
                     withAnimation(.easeOut(duration: 0.2)) { scrolled = now }
                 }
-                if scrolled {
+                // b14 (doubled header): in Settings the page already sits under the "About you" bar, so its own
+                // scrolled title bar stacked a second header right below it; that bar is for the SUM screen only
+                if scrolled && showsCTA {
                     VStack(spacing: 0) {
                         Text("\(name)’s read on you").insightText(15, .semibold, line: 20).frame(maxWidth: .infinity).frame(height: 44)
                             .padding(.top, safe.safeAreaInsets.top)
@@ -132,7 +135,7 @@ struct InsightReportView: View {
                     }
                     .buttonStyle(.plain).accessibilityLabel("Back to questions").accessibilityIdentifier("insightBack")
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .padding(.leading, 6).padding(.top, 10)
+                    .padding(.leading, 6).padding(.top, Self.backTop)
                     // 150 pt fade to the screen's bottom edge (through the home-indicator inset), opaque from 45 %
                     LinearGradient(stops: [.init(color: InsightInk.canvas.opacity(0), location: 0), .init(color: InsightInk.canvas, location: 0.45)], startPoint: .top, endPoint: .bottom)
                         .frame(height: 150).offset(y: safe.safeAreaInsets.bottom).allowsHitTesting(false)
@@ -156,6 +159,13 @@ struct InsightReportView: View {
 
     // MARK: header
 
+    /// The back arrow's 44 pt touch row: top at the safe area + 10, x 6 (the chevron at x 24).
+    static let backTop: CGFloat = 10
+    /// Top of the avatar row in the safe area: 16 pt, or 8 pt under the back arrow's row when there is one (R1), so the
+    /// "<" never sits on the 44 pt avatar (#630 arrow vs #669 avatar, UI QA b10 R1-avatar-zoom). The row itself (avatar,
+    /// title, #669's balance) is unchanged; it only starts lower.
+    static func headerTop(showsBack: Bool) -> CGFloat { showsBack ? backTop + 44 + 8 : 16 }
+
     private var header: some View {
         HStack(spacing: 12) {
             Group {
@@ -165,11 +175,11 @@ struct InsightReportView: View {
                     Image(uiImage: img).resizable().scaledToFill()
                 } else {
                     // no face yet: the orb on the call stage's dark ground (a light orb on white read as a smudge,
-                    // designer 11/4); the art has a wide transparent margin, so a 30 pt frame drawn 1.5× is a ~30 pt globe
+                    // designer 11/4); the art has a wide transparent margin: drawn 3.2× the globe itself is ~30 pt (CI capture: 1.5× gave ~14 pt)
                     ZStack {
                         RadialGradient(colors: [Color(red: 0x1A / 255, green: 0x1C / 255, blue: 0x20 / 255), Color(red: 0x0B / 255, green: 0x0B / 255, blue: 0x0B / 255)],
                                        center: .center, startRadius: 0, endRadius: 22)
-                        Image(resource: "reference-orb-round").resizable().scaledToFit().frame(width: 30, height: 30).scaleEffect(1.5)
+                        Image(resource: "reference-orb-round").resizable().scaledToFit().frame(width: 30, height: 30).scaleEffect(3.2)
                     }
                     .accessibilityIdentifier("insightHeaderOrb")
                 }
@@ -526,22 +536,26 @@ struct InsightShareCard: View {
         }
     }
 
-    private var isPrefix: String { title.hasSuffix(type.name) ? String(title.dropLast(type.name.count)).trimmingCharacters(in: .whitespaces) : title }
+    private var isPrefix: String { (title.hasSuffix(type.name) ? String(title.dropLast(type.name.count)).trimmingCharacters(in: .whitespaces) : title).firstLetterUppercased }
 
     var card: some View {
         ZStack(alignment: .topLeading) {
             InsightInk.cardBg
-            Image(resource: "reference-orb-round").resizable().scaledToFit().frame(width: 130, height: 130).offset(x: 14, y: -14)
+            // orb.png's orb is 250 of its 674 pt (wide grain halo around it): scale so the orb itself is 56 pt and
+            // crop to it, like CallWaitStage / OnboardingWireViews, instead of shrinking the whole canvas.
+            Image(resource: "orb").resizable().scaledToFit().frame(width: 56 * 674 / 250, height: 56 * 674 / 250)
+                .frame(width: 56, height: 56).clipShape(Circle()).padding(.top, 18).padding(.trailing, 18)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing).accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 6) {
                 Text(isPrefix).insightText(13, .medium, line: 18, color: InsightInk.sub)
                 Text(type.name).font(TypeStyle.title(32)).foregroundStyle(InsightInk.ink).frame(maxWidth: 240, alignment: .leading).fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 6) {
+                // Chips wrap; the bottom inset keeps them ≥ 12 pt above the "genita" mark (18 pt line + 18 pt inset).
+                HISYFlow(spacing: 6) {
                     ForEach(signature, id: \.self) { s in Text(s).insightText(13, .medium, line: 18).padding(.horizontal, 10).frame(height: 26).background(.white, in: Capsule()) }
                 }
                 .padding(.top, 8)
             }
-            .padding(.horizontal, 22).padding(.top, 22).padding(.bottom, 20)
+            .padding(.horizontal, 22).padding(.top, 22).padding(.bottom, 48)
             Text("genita").insightText(13, .semibold, line: 18).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing).padding(.trailing, 20).padding(.bottom, 18)
         }
         .frame(minHeight: 170)
