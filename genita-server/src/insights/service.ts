@@ -21,24 +21,12 @@ import { avoidKeys, mentionsAvoided } from "../personalize/forgotten.ts";
 import { looksLikeInjection, redactSensitive, ruleLine, type StyleCard } from "../prep/importProfile.ts";
 import type { PrepStore } from "../prep/store.ts";
 import { LEARN_LABEL, OBS_MIN, OPERATIONAL, mixFrom, buildInsightRequest, editsBehind, editsFromSources, findingsBehind, linkSources, rulesBehind, picksFromAnswers, privateDetail, settingsFrom, similarClaim, scrubRemoved, toReport, withoutObservations, withoutRemoved, type InsightInputs } from "./report.ts";
-import type { InsightEvidence, InsightReport, StoredInsights } from "./profile.ts";
+import { evidenceWords, quoteWords, type InsightEvidence, type InsightReport, type StoredInsights } from "./profile.ts";
 export { insightProfileLines } from "./profile.ts";
 
 type JsonFn = <T>(req: Omit<SparkRequest, "text"> & { schemaName: string; schema: Record<string, unknown> }, signal?: AbortSignal) => Promise<T>;
 
-/** a paste quote as a short hash (the words themselves are never stored for a "not me") */
-export const quoteKey = (q: string) => createHash("sha256").update(q.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim()).digest("hex").slice(0, 16);   // punctuation-blind, like the quote check (Codex #581 r13)
-const QUOTE_STOP = new Set("i me my we you the a an to of and or but in on at for with is are was be it that this like really just so very".split(" "));
-/**
- * A quote as the hashes of its content words ("I like to cook spicy food." → cook, spicy, food). Two quotes are the
- * same evidence when one's words are all in the other's (≥ 2 words, or both a single word): "spicy food" inside
- * "I enjoy spicy food", "short, direct replies" inside a longer line — never two lines sharing "I like to"
- * (Codex #581 r15/r16). Hashes only, never the pasted words.
- */
-export function quoteWords(q: string): string[] {
-  const w = q.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim().split(" ").filter((x) => x && !QUOTE_STOP.has(x));
-  return [...new Set(w.map((x) => quoteKey(x)))];
-}
+export { quoteKey, quoteWords } from "./profile.ts";
 export function sameQuote(a: string[], b: string[]): boolean {
   if (!a.length || !b.length) return false;
   const [small, big] = a.length <= b.length ? [a, new Set(b)] : [b, new Set(a)];
@@ -47,12 +35,12 @@ export function sameQuote(a: string[], b: string[]): boolean {
 }
 
 /** an observation built on a pick / item they already said "not me" to (any claim wording) */
-export function standsOnDenied(o: { claim: string; use_in_call: string; evidence: Array<{ source: string; quote: string }> }, d: { picks?: string[]; items?: string[]; quotes?: string[][] }): boolean {
+export function standsOnDenied(o: { claim: string; use_in_call: string; evidence: Array<{ source: string; quote: string; words?: string[] }> }, d: { picks?: string[]; items?: string[]; quotes?: string[][] }): boolean {
   // the same pick / item whatever source it's cited as ("Minimal" as an answer or as an import quote, Codex #581 r21)
   const n = (t: string) => t.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
   const picks = new Set([...(d.picks ?? []), ...(d.items ?? [])].map(n));
   if (o.evidence.some((e) => picks.has(n(e.quote)))) return true;
-  if (o.evidence.some((e) => e.source !== "answer" && (d.quotes ?? []).some((q) => sameQuote(quoteWords(e.quote), q)))) return true;
+  if (o.evidence.some((e) => e.source !== "answer" && (d.quotes ?? []).some((q) => sameQuote(evidenceWords(e), q)))) return true;
   const items = (d.items ?? []).filter(Boolean);
   if (!items.length) return false;
   const re = new RegExp(`\\b(?:${items.map((x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`, "i");
@@ -514,14 +502,14 @@ export class Insights {
       // an item taken out of a list ("spicy"): another observation that says it goes too, one on what's left stays
       const itemRe = items.length ? new RegExp(`\\b(?:${items.map((x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`, "i") : null;
       // another observation that stands on a removed finding goes with it (its "I'll keep replies short" would stay)
-      const quotes = o.evidence.filter((e) => e.source !== "answer").map((e) => quoteWords(e.quote)).filter((w) => w.length).slice(0, 6);
+      const quotes = o.evidence.filter((e) => e.source !== "answer").map((e) => evidenceWords(e)).filter((w) => w.length).slice(0, 6);
       const alsoGone = gone.size || pickN.size || quotes.length ? ins.observations.filter((x) => {
         if (x.id === id) return false;
         const e = x.sources?.length ? editsFromSources(c, x) : editsBehind(c, x);
         // the same rule as the save path: anything standing on what they said "not me" to (Codex #581 r22)
         if (standsOnDenied(x, { picks, items, quotes })) return true;
         // the same paste quote (hash) as the one they said "not me" to, too (Codex #581 r13)
-        if (x.evidence.some((v) => v.source !== "answer" && quotes.some((d) => sameQuote(quoteWords(v.quote), d)))) return true;
+        if (x.evidence.some((v) => v.source !== "answer" && quotes.some((d) => sameQuote(evidenceWords(v), d)))) return true;
         return [...e.drop].some((t) => drop.has(t)) || e.picks.some((q) => pickN.has(q.trim().toLowerCase()))
           || (!!itemRe && [x.claim, x.use_in_call, ...x.evidence.map((v) => v.quote)].some((t) => itemRe.test(t)));
       }).map((x) => x.id) : [];

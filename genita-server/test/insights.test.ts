@@ -1244,3 +1244,21 @@ test("Codex #581 recut r3 P1: a one-item line named inside a paste quote is link
   const got = linkSources(card, { evidence: [{ source: "import", quote: "I like spicy food.", source_label: "x" }, { source: "answer", quote: "Minimal", source_label: "x" }], chips: [] } as never);
   assert.deepEqual(got, [{ section: "likes", text: "Food: spicy." }, { section: "likes", text: "Style: Minimal." }]);
 });
+
+test("D95 × AU-91: a stored import receipt keeps only its word hashes, so a 'Not me' on it still blocks a reworded trait", async () => {
+  const { storedInsights, evidenceWords } = await import("../src/insights/profile.ts");
+  const { quoteWords: qw, standsOnDenied: sod } = await import("../src/insights/service.ts");
+  const quote = "Prefers short, direct replies.";
+  const ev = { source: "import" as const, quote, source_label: "From the reply you pasted", highlight: "short, direct" };
+  const obs = { id: "o1", category: "talk" as const, claim: "You keep things brief", evidence: [ev], confidence: "high" as const, score: 0.9, surprise: 0.5, use_in_call: "" };
+  const stored = storedInsights({ observations: [obs], strengths: [], watchouts: [], mix: [], learning: [] } as never);
+  const e = stored.observations[0].evidence[0];
+  assert.equal(e.quote, "");
+  assert.equal(e.highlight, "");
+  assert.ok(!JSON.stringify(stored).includes("short"), "no pasted words stored");
+  assert.deepEqual(evidenceWords(e), qw(quote), "the hashes survive the strip");
+  // the verdict path records these hashes; a reworded trait on the same quote then stands on the denial
+  const again = storedInsights(stored);
+  assert.deepEqual(again.observations[0].evidence[0].words, qw(quote), "re-saving keeps the hashes");
+  assert.equal(sod({ claim: "You like it tight", use_in_call: "", evidence: [{ source: "import", quote: "short, direct replies" }] }, { quotes: [evidenceWords(e)] }), true);
+});

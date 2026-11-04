@@ -6,9 +6,10 @@
  * analysis); a "not me" goes in as not true, with their own correction when they gave one.
  * GENITA_INSIGHTS_PROFILE=0 leaves the block out (rollback without a deploy of the app).
  */
+import { createHash } from "node:crypto";
 export type InsightCategory = "talk" | "think" | "humor" | "taste" | "help" | "boundary" | "rhythm" | "interest";
 export type InsightSource = "import" | "answer" | "chat";
-export type InsightEvidence = { source: InsightSource; quote: string; source_label: string; /** the key phrase inside quote (drawn as a mark) */ highlight?: string };
+export type InsightEvidence = { source: InsightSource; quote: string; source_label: string; /** the key phrase inside quote (drawn as a mark) */ highlight?: string; /** D95: a stored import receipt keeps only quoteWords() hashes (never the words), so a "not me" still matches it */ words?: string[] };
 export type InsightChip = { label: string; polarity: "like" | "dislike" };
 export type Observation = {
   id: string;
@@ -74,13 +75,36 @@ export type DeniedInsight = { id: string; claim: string; category: InsightCatego
 /** stored in the style card (user_styles.style_json.insights) */
 export type StoredInsights = InsightReport & { denied?: DeniedInsight[] };
 
+/** a paste quote as a short hash (the words themselves are never stored for a "not me") */
+export const quoteKey = (q: string) => createHash("sha256").update(q.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim()).digest("hex").slice(0, 16);   // punctuation-blind, like the quote check (Codex #581 r13)
+const QUOTE_STOP = new Set("i me my we you the a an to of and or but in on at for with is are was be it that this like really just so very".split(" "));
+/**
+ * A quote as the hashes of its content words ("I like to cook spicy food." → cook, spicy, food). Two quotes are the
+ * same evidence when one's words are all in the other's (≥ 2 words, or both a single word): "spicy food" inside
+ * "I enjoy spicy food", "short, direct replies" inside a longer line — never two lines sharing "I like to"
+ * (Codex #581 r15/r16). Hashes only, never the pasted words.
+ */
+export function quoteWords(q: string): string[] {
+  const w = q.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim().split(" ").filter((x) => x && !QUOTE_STOP.has(x));
+  return [...new Set(w.map((x) => quoteKey(x)))];
+}
+/** the quote's word hashes: from the quote while it is in memory, else the hashes kept when it was stored (D95) */
+export function evidenceWords(e: { quote: string; words?: string[] }): string[] {
+  return e.quote ? quoteWords(e.quote) : e.words ?? [];
+}
+
 /**
  * Persistence boundary for a style card's insights. Import receipts prove that a
  * trait came from an import, but their copied words are response-only memory.
  * Keep this pure so every style-card write can use the same boundary.
  */
 export function storedInsights(insights: StoredInsights): StoredInsights {
-  const storedEvidence = (e: InsightEvidence): InsightEvidence => e.source === "import" ? { ...e, quote: "", highlight: "" } : e;
+  const storedEvidence = (e: InsightEvidence): InsightEvidence => {
+    if (e.source !== "import") return e;
+    // the hashes of its words stay so a "not me" on it still blocks a reworded trait (AU-91 r12); the words go
+    const words = evidenceWords(e);
+    return { ...e, quote: "", highlight: "", ...(words.length ? { words } : {}) };
+  };
   return {
     ...insights,
     observations: insights.observations.map((o) => ({ ...o, evidence: o.evidence.map(storedEvidence) })),
