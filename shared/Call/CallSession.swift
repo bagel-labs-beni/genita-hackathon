@@ -173,6 +173,7 @@ enum CallStop: Equatable {
     @ObservationIgnored private var speechEndAt: Date?
     @ObservationIgnored private var userAudioEndAt: Date?
     @ObservationIgnored private var firstFrame: String?
+    @ObservationIgnored private var firstFrameUnclear = false
     @ObservationIgnored private var reconnectSince: Date?
     @ObservationIgnored private var reconnectTask: Task<Void, Never>?
     @ObservationIgnored private var holdTask: Task<Void, Never>?
@@ -647,9 +648,9 @@ enum CallStop: Equatable {
     func lookAgain() {
         let question = finds.lookAgain() ?? lastUserText
         guard let text = question else { return }
-        if cameraOn, let frame = camera.snapshotBase64() {
-            finds.latestFrames = [frame]
-            socket?.send(.frames(.init(images: [frame])))
+        if cameraOn, let shot = camera.snapshot() {
+            finds.latestFrames = [shot.base64]
+            socket?.send(.frames(.init(images: [shot.base64], unclear: shot.unclear ? true : nil)))
         }
         socket?.send(.text(.init(text: text, frames: nil)))
     }
@@ -833,21 +834,24 @@ enum CallStop: Equatable {
         case .speechStart:
             answerFailed = false
             finds.userStartedTalking()
-            if cameraOn, let frame = camera.snapshotBase64() {
-                firstFrame = frame
-                finds.latestFrames = [frame]
-                socket?.send(.frames(.init(images: [frame])))
+            if cameraOn, let shot = camera.snapshot() {
+                firstFrame = shot.base64
+                firstFrameUnclear = shot.unclear
+                finds.latestFrames = [shot.base64]
+                socket?.send(.frames(.init(images: [shot.base64], unclear: shot.unclear ? true : nil)))
             } else {
                 // a question asked with the camera off has no frames: an earlier question's never ride along (AU-75)
                 finds.latestFrames = []
             }
         case .speechEnd:
             speechEndAt = Date()
-            if cameraOn, let frame = camera.snapshotBase64() {
+            if cameraOn, let shot = camera.snapshot() {
                 // Two frames, ~start and ~end of the question, replace the single one sent at speech start.
-                let images = [firstFrame, frame].compactMap { $0 }
+                let images = [firstFrame, shot.base64].compactMap { $0 }
+                // D59: unclear only when every frame of the question is (one good look is enough to try)
+                let unclear = shot.unclear && (firstFrame == nil || firstFrameUnclear)
                 finds.latestFrames = images
-                socket?.send(.frames(.init(images: images)))
+                socket?.send(.frames(.init(images: images, unclear: unclear ? true : nil)))
             }
             firstFrame = nil
         case let .transcript(t):

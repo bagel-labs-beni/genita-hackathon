@@ -201,7 +201,8 @@ const schedule = (fn: () => void, ms: number) => {
 
 type Mode = "chat" | "interpret";
 export type HistoryItem = { role: "user" | "assistant"; text: string };
-type Frames = { images: string[]; at: number };
+/** `unclear`: the app judged every frame too dark or too blurry to see anything (D59, `frames.unclear`) */
+type Frames = { images: string[]; at: number; unclear?: boolean };
 
 type Reply = {
   utteranceId: number;
@@ -818,7 +819,7 @@ export class Session {
         if (msg.mode === "chat" || msg.mode === "interpret") this.switchMode(msg.mode, "client", parseInterpretOptions(msg.interpret));
         return;
       case "frames":
-        this.setFrames(msg.images);
+        this.setFrames(msg.images, msg.unclear === true);
         return;
       case "perception.frame":
         // PERC-1: background face read (the controller skips it in interpretation / watch together)
@@ -1754,7 +1755,7 @@ export class Session {
 
   // ───────────────────────── reply pipeline ─────────────────────────
 
-  private setFrames(images: unknown): void {
+  private setFrames(images: unknown, unclear = false): void {
     if (!Array.isArray(images)) return;
     const urls: string[] = [];
     for (const img of images.slice(0, MAX_FRAMES)) {
@@ -1763,16 +1764,20 @@ export class Session {
       if (url.length > MAX_FRAME_BYTES * 1.4) return this.error("frame_too_large", "Each frame must be under 1.5 MB", false);
       urls.push(url);
     }
-    this.frames = urls.length ? { images: urls, at: this.now() } : null;
+    this.frames = urls.length ? { images: urls, at: this.now(), ...(unclear ? { unclear: true } : {}) } : null;
     if (urls.length) this.initiative?.framesSent(this.now());
   }
 
   private takeFrames(): string[] {
     const f = this.frames;
     this.frames = null;
+    this.framesUnclear = false;
     if (!f || this.now() - f.at > FRAMES_TTL_MS) return [];
+    this.framesUnclear = f.unclear === true;
     return f.images;
   }
+  /** the frames the last request took were all too dark / blurry (D59) */
+  private framesUnclear = false;
 
   /** Knows-Me S1: the second long reply cut off → "Updated: shorter replies" + one "I'll keep it short" line. */
   private noteLongCut(): void {
@@ -2359,7 +2364,7 @@ export class Session {
       const said = new Promise<string | null>((r) => (resolveSaid = r));
       // history already holds this turn (remember above): the lines before it
       const recent = this.history.slice(-7, -1).map((h) => `${h.role === "user" ? "User" : "You"}: ${h.text}`);
-      const started = this.finds.onTurn({ text, frames: built.images, utteranceId, replyText: said, recent });
+      const started = this.finds.onTurn({ text, frames: built.images, utteranceId, replyText: said, recent, unclear: built.images.length > 0 && this.framesUnclear });
       cardTurn = !!started;
       signal.addEventListener("abort", () => resolveSaid(null), { once: true });
       if (started?.ack) {

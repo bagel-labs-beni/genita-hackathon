@@ -88,7 +88,8 @@ export type ClientMessage =
   | { type: "audio_start" }
   | { type: "audio_stop" }
   | { type: "text"; text: string; frames?: string[]; findId?: string }
-  | { type: "frames"; images: string[] }
+  /** `unclear` (D59): the app judged every frame too dark or too blurry; a fridge question then gets the IC-4 line at once */
+  | { type: "frames"; images: string[]; unclear?: boolean }
   /** PERC-1: the selfie face region (fixed upper-centre crop, base64 JPEG 256–384 px); send only when `ready.perception` is true */
   | { type: "perception.frame"; image: string }
   | { type: "barge_in" }

@@ -1,4 +1,5 @@
 import XCTest
+import CoreImage
 @testable import Genita
 
 /// Finds audit 11/4 (AU-69, AU-70, AU-71, AU-72, AU-75): FD-01 / FD-02 paths the r03 tests didn't cover.
@@ -202,5 +203,20 @@ import XCTest
         listed.items = [FindItem(id: "i1", name: "kimchi", tier: .have, from: .camera)]
         m.openSaved(listed, frames: [])
         XCTAssertEqual(m.current?.card?.items.first?.tier, .have)
+    }
+
+    /// D59 · CW-01 DARK: the phone flags a frame too dark or too flat to see anything; a normal scene is not flagged.
+    func testFrameQualityFlagsDarkAndFlatFramesOnly() throws {
+        let rect = CGRect(x: 0, y: 0, width: 640, height: 360)
+        let scene = CIFilter(name: "CICheckerboardGenerator", parameters: ["inputWidth": 20, "inputColor0": CIColor(red: 0.85, green: 0.85, blue: 0.85), "inputColor1": CIColor(red: 0.25, green: 0.25, blue: 0.25)])!.outputImage!.cropped(to: rect)
+        XCTAssertFalse(FrameQuality.unclear(scene), "a busy, lit scene")
+        let dark = scene.applyingFilter("CIExposureAdjust", parameters: ["inputEV": -4])
+        XCTAssertTrue(FrameQuality.unclear(dark), "−4 EV")
+        let flat = CIImage(color: CIColor(red: 0.5, green: 0.5, blue: 0.5)).cropped(to: rect)
+        XCTAssertTrue(FrameQuality.unclear(flat), "nothing to make out")
+        let wire = try JSONSerialization.jsonObject(with: JSONEncoder().encode(ClientMessage.frames(.init(images: ["a"], unclear: true)))) as! [String: Any]
+        XCTAssertEqual(wire["unclear"] as? Bool, true)
+        let plain = try JSONSerialization.jsonObject(with: JSONEncoder().encode(ClientMessage.frames(.init(images: ["a"])))) as! [String: Any]
+        XCTAssertNil(plain["unclear"], "omitted when the frames are fine")
     }
 }
