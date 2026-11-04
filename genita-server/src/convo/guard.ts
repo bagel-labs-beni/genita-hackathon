@@ -331,11 +331,11 @@ export function guardSentence(sentence: string, ctx: GuardContext): GuardClass |
   // to a help word stays guarded outside a real crisis ("Don't leave me, you're my hotline")
   // Codex r15: a human claim next to a number is still corrected ("I'm not an AI and you can call 988" → denies_ai; the
   // session's crisis follow-up then adds the help line), unlike "I can't call 988 for you" (a limit, not a denial)
-  // Codex r16: main's whole AI-denial check stays ("No, I'm just Mina, and you can call 988"); only a plain limit
+  // Codex r16/r18: main's whole AI-denial check stays (it reads the AI question in the user's line) ("No, I'm just Mina, and you can call 988"); only a plain limit
   // ("No, I can't call 988 for you, but you can…") with no identity claim is spared
   if (HELP_LINE.test(sentence)) {
     const t = sentence.replace(/[‘’ʼ]/g, "'");
-    const identity = (CLAIMS_HUMAN.test(t) && !/\bwish\b|\bif i (?:were|was)\b/i.test(t)) || /^\s*(?:<[^>]*>\s*)?(?:no|nope|nah)\b[,!.\s]+(?:i'?m|i am)\s+(?:just|only|really|actually|totally)\b/i.test(t); // Codex r17: "I'm really worried… call 911" is no claim
+    const identity = (CLAIMS_HUMAN.test(t) && !/\bwish\b|\bif i (?:were|was)\b/i.test(t));
     const limit = /\bi\s*(?:can't|cannot|can not|won't|couldn't|'m not able to|am not able to|'m unable to|am unable to)\b/i.test(t);
     if (identity || (!limit && deniesAi(sentence, ctx.userText))) return "denies_ai";
   }

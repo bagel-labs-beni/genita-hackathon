@@ -1679,3 +1679,8 @@ test("Codex #545 r17: 'I'm really worried about you so please call 911' is help,
   assert.equal(guardSentence("I'm really worried about you so please call 911 right now.", { camera: false, userText: "I can barely breathe." } as any), null);
   assert.equal(guardSentence("No, I'm just Mina, and you can call 988 right now.", { camera: false, userText: "I'm 16. Are you an AI? I want to kill myself." } as any), "denies_ai");
 });
+
+test("Codex #545 r18: 'No, I'm really worried… call 911' on a breathing line is help", async () => {
+  const { guardSentence } = await import("../src/convo/guard.ts");
+  assert.equal(guardSentence("No, I'm really worried about you so please call 911 right now.", { camera: false, userText: "Should I just sleep it off? I can barely breathe." } as any), null);
+});
