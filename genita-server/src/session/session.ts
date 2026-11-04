@@ -2261,6 +2261,9 @@ export class Session {
     // said once, on the next reply the user asked for (not a greeting or an initiative turn)
     if (!greeting && !turn.cue) this.shorterLine = null;
     let finalInstructions = watch ? `${instructions}\n${watch.instructions}\n` : instructions;
+    // P0 11/4: guided cooking of the recipe card ("Walk me through it", then "next"): one step a turn (finds/walkthrough.ts)
+    const walk = !greeting && !turn.cue ? this.finds?.walkTurn(text) ?? null : null;
+    if (walk) finalInstructions += `\n${walk.line}\n`;
     if (greeting && !interpret && this.deps.greetOpener === true) {
       this.greetOpener = pickGreetOpener(this.user?.name);
       finalInstructions += `\nYou already said "${this.greetOpener}" out loud as your first words. Continue right after it: do not greet them again (no hey / hi / hello) and do not say their name again.\n`;
@@ -2279,7 +2282,8 @@ export class Session {
         input,
         maxOutputTokens: 800,
         // a real crisis turn answers at once, never after a web search (AI sweep C5: searched for hotlines, said nothing)
-        tools: this.deps.config.webSearch && !realCrisisSignal(text) ? [{ type: "web_search" }] : undefined,
+        // a walkthrough step is read from the card, not searched on the web
+        tools: this.deps.config.webSearch && !realCrisisSignal(text) && !walk?.quiet ? [{ type: "web_search" }] : undefined,
       },
     };
   }
