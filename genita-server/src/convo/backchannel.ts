@@ -13,13 +13,22 @@
  */
 export type BackchannelKind = "mm" | "yeah";
 
-export const BACKCHANNEL = { pauseMs: 1200, minWords: 12, gapMs: 20_000, maxPerTurn: 2, notBeforeMs: 3000 } as const;
+/**
+ * 11/4 18:5x (Chelsea, TF 341: beats at odd times): one per turn (never twice in a row); never within 1.5 s of the
+ * reply starting (a held turn's cue must leave replyClearMs before the hold ends); never while a find or a search is
+ * running (`blocked`); never within afterCompanionMs of the companion finishing a reply (`companionDoneAt`).
+ */
+export const BACKCHANNEL = { pauseMs: 1200, minWords: 12, gapMs: 20_000, maxPerTurn: 1, notBeforeMs: 3000, replyClearMs: 1500, afterCompanionMs: 3000 } as const;
 
 export type BackchannelDeps = {
   now: () => number;
   send: (kind: BackchannelKind) => void;
   /** the session's own check at fire time: chat mode, user still mid-turn, companion not speaking */
   stillListening: () => boolean;
+  /** a find or a search is running: no cue (the wait line covers that silence) */
+  blocked?: () => boolean;
+  /** when the companion's last reply finished playing (session clock), -Infinity if never */
+  companionDoneAt?: () => number;
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (t: unknown) => void;
 };
@@ -28,8 +37,12 @@ export class Backchannel {
   private timer: unknown = null;
   private turnStart = 0;
   private fired = 0;
+  /** cues this call: "mm" / "yeah" alternate across turns, never the same word twice in a row */
+  private total = 0;
   private lastFired = -Infinity;
   private words = 0;
+  /** when the end-of-turn hold of a held turn ends (the reply comes then); Infinity when no hold is running */
+  private holdEndsAt = Infinity;
   private readonly setT: (fn: () => void, ms: number) => unknown;
   private readonly clearT: (t: unknown) => void;
 
@@ -44,6 +57,7 @@ export class Backchannel {
   /** speech started: a new user turn, or (continuing) the user resumed a turn the end-of-turn hold kept open */
   start(continuing = false): void {
     this.stop();
+    this.holdEndsAt = Infinity;
     if (continuing) return;
     this.turnStart = this.d.now();
     this.fired = 0;
@@ -52,6 +66,7 @@ export class Backchannel {
 
   /** a cumulative partial transcript of the current turn */
   partial(text: string): void {
+    this.holdEndsAt = Infinity;
     this.words = text.trim() ? text.trim().split(/\s+/).length : 0;
     this.clear();
     const now = this.d.now();
@@ -65,17 +80,18 @@ export class Backchannel {
   private arm(due: number): void {
     this.timer = this.setT(() => {
       this.timer = null;
-      if (!this.d.stillListening()) return;
+      if (!this.d.stillListening() || this.d.blocked?.()) return;
+      if (this.d.now() - (this.d.companionDoneAt?.() ?? -Infinity) < BACKCHANNEL.afterCompanionMs) return;
       this.fired++;
       this.lastFired = this.d.now();
-      this.d.send(this.fired % 2 ? "mm" : "yeah");
+      this.d.send(this.total++ % 2 ? "yeah" : "mm");
     }, due);
   }
 
   /**
    * The end-of-turn hold kept this turn open after a Transcribe final that looks unfinished (the whole turn's text so
    * far). The punctuation rule does not apply: the ASR's "." on "…and then he started." is not the end of the turn.
-   * No cue if it would land within 300 ms of the hold's own end (the reply or the user would be next anyway).
+   * No cue if it would land within replyClearMs (1.5 s) of the hold's own end (the reply would follow it at once).
    */
   held(text: string, cueAfterMs: number, holdMs: number): void {
     this.words = text.trim() ? text.trim().split(/\s+/).length : 0;
@@ -83,8 +99,14 @@ export class Backchannel {
     const now = this.d.now();
     if (this.words < BACKCHANNEL.minWords || this.fired >= BACKCHANNEL.maxPerTurn) return;
     const due = Math.max(cueAfterMs, this.turnStart + BACKCHANNEL.notBeforeMs - now, this.lastFired + BACKCHANNEL.gapMs - now);
-    if (due > holdMs - 300) return;
+    this.holdEndsAt = now + holdMs;
+    if (due > holdMs - BACKCHANNEL.replyClearMs) return;
     this.arm(due);
+  }
+
+  /** still ≥ replyClearMs before a running hold ends (the session checks again right before the cue goes out) */
+  clearOfReply(): boolean {
+    return this.d.now() <= this.holdEndsAt - BACKCHANNEL.replyClearMs;
   }
 
   /** speech ended, the turn completed, or the session closed */

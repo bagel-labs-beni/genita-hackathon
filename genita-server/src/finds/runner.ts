@@ -273,6 +273,11 @@ export class FindsRunner {
   }
 
   /** A product search of this call is still open for refines ("another one in black"). `recent` as in TurnInput. */
+  /** a find is still being made (its card is not out yet): the call's backchannel cue stays quiet meanwhile */
+  busy(): boolean {
+    return this.running.size > 0;
+  }
+
   afterProduct(recent: string[] = []): boolean {
     return (
       (!!this.lastProduct && this.hooks.now() - this.lastProduct.at < REFINE_WINDOW_MS) ||
