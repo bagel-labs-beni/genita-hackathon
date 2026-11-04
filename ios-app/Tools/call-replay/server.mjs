@@ -18,6 +18,10 @@ const arg = (name, d) => { const i = process.argv.indexOf(name); return i > 0 ? 
 const port = Number(arg("--port", 8788));
 // --scale 3 stretches the recorded timeline (UI tests on slow CI simulators need time to look).
 const scale = Number(arg("--scale", arg("--pace", 1))) || 1; // --pace = same (interpret workflow)
+// --tail call (default): after the recorded timeline, the S09-F error (+2.5 s) and the S09-R drop (+6.5 s, then 8 s
+// refused) that CallScreenUITests walks through. --tail none: the session stays open and quiet after the last event,
+// so a test's last tap never races a scripted server change (interpret: INT-6 → ✕ landed in that window, #291).
+const tail = arg("--tail", "call");
 const file = arg("--file", join(dirname(fileURLToPath(import.meta.url)), "session-r1.json"));
 const rec = JSON.parse(readFileSync(file, "utf8"));
 let refuseUntil = 0;
@@ -54,6 +58,7 @@ function session(socket) {
         else { const head = Buffer.from(item.frame.header, "base64"); sendBin(Buffer.concat([head, tone(item.frame.pcmBytes, toneAt)])); toneAt += item.frame.pcmBytes / 2; }
       });
     }
+    if (tail === "none") return;
     at(end + 2500, () => sendJson({ type: "error", code: "spark_unavailable", message: "The companion could not answer. Try again.", retryable: true }));
     at(end + 6500, () => { log("dropping the connection (S09-R)"); refuseUntil = Date.now() + 8000; close(); });
   }
