@@ -33,3 +33,12 @@ test("Codex #640 r7: nested quote attribution, single-quoted others, height, min
   assert.ok(minorLine(['My mom said "Dad said hi", I\'m 15.']));
   for (const t of ["I'm 30. My daughter said 'I'm 15'.", "I'm 30 and I'm 5'7\" tall.", "I'm a minor league baseball fan.", "I'm a 30-year-old and a teenager at heart"]) assert.equal(minorLine([t]), null, t);
 });
+
+test("Codex #640 r8: adverbs and 'I just turned 15' count", () => {
+  for (const t of ["I'm actually 15 years old.", "I just turned 15 yesterday.", "I am literally only 14", "I turn 16 next week"]) assert.ok(minorLine([t]), t);
+  for (const t of ["I just turned 25", "I'm actually 30"]) assert.equal(minorLine([t]), null, t);
+});
+
+test("coordinator (d): numbers that aren't the user's own age never turn the line on", () => {
+  for (const t of ["I'm 15 minutes late", "my 16-year-old son is driving me crazy", "back when I was 14 I loved this song", "I'm 17 points behind in this game", "I'm 12 hours into this shift", "we're 15 minutes out", "I was 16 when I got my first job"]) assert.equal(minorLine([t]), null, t);
+});

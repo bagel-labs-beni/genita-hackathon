@@ -9,7 +9,8 @@ const AGE_WORD = "(?:[5-9]|1[0-7]|five|six|seven|eight|nine|ten|eleven|twelve|th
 const ADULT_WORD = "(?:1[89]|[2-9]\\d|eighteen|nineteen|twenty|thirty|forty|fifty|sixty)";
 // a quantity, not an age: "15 minutes away", "17 dollars short", "20 hours into", "18 months sober", "9 out of 10"
 const QUANTITY = String.raw`(?!['’]\s*\d|\s*(?:seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?|months?|dollars?|bucks|k\b|%|percent|pounds?|lbs?|kg|miles?|km|feet|ft|inches?|cm|times?|pages?|points?|steps?|blocks?|stops?|episodes?|chapters?|questions?|reps?|games?|levels?|out of|of\b|short|behind|ahead|away|late|early|deep|years? (?:into|in|at|of(?!\s+age)|younger|older|sober|clean|married)))`;
-const SELF = String.raw`\b(?:i'?m|i am|im)\s+(?:still\s+|only\s+|just\s+|now\s+)?`;
+// "I'm 15", "I'm actually 15", "I am literally only 15", "I just turned 15", "I turn 16 next week" (Codex #640 r8)
+const SELF = String.raw`\b(?:(?:i'?m|i am|im)\s+(?:(?:still|only|just|now|actually|literally|really|honestly|basically|technically|barely|like|almost|nearly|about)\s+){0,2}|i\s+(?:just\s+|recently\s+)?(?:turned|turn|will be|'ll be)\s+)`;
 const OWN_MINOR_AGE = new RegExp(`${SELF}(?:${AGE_WORD}\\b${QUANTITY}|an?\\s+${AGE_WORD}[- ]?(?:year|yr)s?[- ]?old\\b)`, "i");
 const OWN_ADULT_AGE = new RegExp(`${SELF}(?:${ADULT_WORD}\\b${QUANTITY}|an?\\s+${ADULT_WORD}[- ]?(?:year|yr)s?[- ]?old\\b)`, "i");
 const UNDER_18 = new RegExp(`${SELF}(?:under\\s+(?:18|eighteen)\\b${QUANTITY}|a\\s+minor\\b(?![\\s-]+(?:league|leaguer|key|chord|detail|thing|issue|injury|role|character|scale|change|setback|inconvenience|surgery|crash|fan))|not\\s+(?:18|eighteen)\\s+yet\\b|underage\\b)`, "i");

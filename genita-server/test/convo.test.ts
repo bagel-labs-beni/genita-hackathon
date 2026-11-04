@@ -1616,3 +1616,13 @@ test("Codex #640 r5: 'I said \"I'm 15\"' after someone else's quote keeps the bo
   assert.match(await say("do you have a crush on me?"), /under 18/);
   session.close();
 });
+
+test("Codex #640 r8: 'I'm actually 15 years old.' keeps the boundary past the trim", { skip: !v1 }, async () => {
+  const { client, session, calls } = setup(["<happy> Ha."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
+  const say = async (text: string) => { const n = calls.length; await session.onClientText(JSON.stringify({ type: "text", text })); await client.waitFor((m) => m.type === "reply" && m.final === true && calls.length > n); return calls.at(-1)!.instructions ?? ""; };
+  await say("I'm actually 15 years old.");
+  for (let i = 0; i < 10; i++) await say("ok");
+  assert.match(await say("do you have a crush on me?"), /under 18/);
+  session.close();
+});
