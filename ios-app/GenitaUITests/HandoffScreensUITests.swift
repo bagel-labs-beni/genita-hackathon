@@ -119,7 +119,7 @@ final class HandoffScreensUITests: XCTestCase {
             XCTAssertTrue(app.staticTexts["Pair with your Mac."].waitForExistence(timeout: 5))
         }
         func closed(_ how: String) {
-            XCTAssertFalse(app.staticTexts["Pair with your Mac."].waitForExistence(timeout: 2), "\(how) closes P01")
+            XCTAssertTrue(app.staticTexts["Pair with your Mac."].waitForNonExistence(timeout: 3), "\(how) closes P01")
             XCTAssertEqual(app.state, .runningForeground, "\(how): the app is still up")
             XCTAssertTrue(app.buttons["cameraToggle"].waitForExistence(timeout: 3), "\(how): the call is still there")
         }
@@ -133,9 +133,11 @@ final class HandoffScreensUITests: XCTestCase {
         let sheetTop = app.staticTexts["Pair with your Mac."].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
         sheetTop.press(forDuration: 0.05, thenDragTo: sheetTop.withOffset(CGVector(dx: 0, dy: 260)))
         closed("pull down")
-        // 2. a tap on the dimmed call above the sheet (where Interpret sits in ⋮)
+        // 2. a tap on the dimmed call above the sheet (the number pad lifts the sheet: aim above its title, Codex #679)
         openPairing()
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.23, dy: 0.35)).tap()
+        Thread.sleep(forTimeInterval: 1)
+        let title = app.staticTexts["Pair with your Mac."].frame
+        app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 90, dy: max(120, title.minY - 140))).tap()
         closed("tap outside")
         XCTAssertFalse(app.otherElements["moreSheet"].exists, "the outside tap only closed the sheet")
         // 3. Cancel, after a half-entered code
