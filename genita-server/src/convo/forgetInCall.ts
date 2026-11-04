@@ -14,8 +14,9 @@ type Item = { role: "user" | "assistant"; text: string };
 
 const POINT_BACK = /\b(?:forget|ignore|scratch|disregard|unhear) (?:all )?(?:about )?(?:that|this|it|what i (?:just )?(?:said|told you|mentioned)|i (?:just )?(?:said|told you|mentioned)(?: (?:that|this|it|anything))?)\b|\bpretend i (?:didn'?t|never) (?:say|said|mention(?:ed)?) (?:that|it|anything)\b|\b(?:don'?t|do not) remember (?:that|this|it)\b/i;
 // what may follow a point-back request without making it explicit ("forget that, i don't wanna get into it"); anything
-// else after it is a correction in the same breath ("scratch that, the red one" — Codex #547 r3), not a forget
-const REST_OK = /^(?:lol|lmao|please|pls|ok(?:ay)?|actually|for real|fr|thanks|thank you|nvm|never ?mind|whatever|it'?s (?:nothing|whatever|fine)|i (?:don'?t|do not) (?:wanna|want to)\b[^.!?]*|(?:it'?s )?not important|forget it)[\s.!?…]*$/i;
+// else after it is a correction in the same breath ("scratch that, the red one" — Codex #547 r3; "scratch that, I don't
+// want to wear black, I want the red one" — r4), not a forget
+const REST_OK = /^(?:lol|lmao|please|pls|ok(?:ay)?|actually|for real|fr|thanks|thank you|nvm|never ?mind|whatever|it'?s (?:nothing|whatever|fine)|i (?:don'?t|do not) (?:wanna|want to) (?:talk|get into|go into|think|deal|discuss|go there|get there)\b(?: (?:about|with))?(?: (?:it|that|this))?(?: (?:right now|now|rn|anymore|today|tonight))?|(?:it'?s )?not important|forget it)[\s.!?…]*$/i;
 function tailOk(tail: string): boolean {
   const rest = tail.replace(/^[\s,.!?…—-]+/, "").trim();
   return !rest || REST_OK.test(rest);

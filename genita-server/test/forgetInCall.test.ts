@@ -50,3 +50,9 @@ test("Codex #547 r3: 'Actually, scratch that, the red one.' is a correction, not
   assert.ok(isAnaphoricForget("actually forget I said that, i don't wanna get into it"));
   assert.ok(isAnaphoricForget("scratch that lol"));
 });
+
+test("Codex #547 r4: 'scratch that, I don't want to wear black, I want the red one' is a correction; 'forget that, I don't wanna talk about it' still a forget", () => {
+  assert.equal(isAnaphoricForget("Actually, scratch that, I don't want to wear black, I want the red one."), false);
+  assert.equal(isAnaphoricForget("forget that, i don't wanna talk about it"), true);
+  assert.equal(isAnaphoricForget("forget I said that, I don't want to get into it right now."), true);
+});

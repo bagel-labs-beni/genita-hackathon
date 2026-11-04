@@ -351,14 +351,15 @@ export async function startServer(
       dropLastTurns(userId);
       cached = undefined;
     }
-    let best: HistoryItem[] | null = cached?.turns ?? null;
+    let best: HistoryItem[] | null = cached?.turns.length ? cached.turns : null;
     let thread = cached?.thread ?? null;
     let bestProgress = cached?.progress ?? zero;
     // the winner was a call the user hung up on this same device (cached, or stopped with its socket still closing)
     let hungUpHere = !!(best && cached?.hungUp && cached.device === device);
     let forgetAsked = !!cached?.forgetAsked;
     let crisisInCall = !!cached?.crisisInCall;
-    let crisisAny = false;
+    // Codex #547 r4: a cached call with no turns left (all forgotten) still had its crisis
+    let crisisAny = !!cached && !cached.turns.length && !!cached.crisisInCall;
     let bestGen = cached?.gen ?? 0;
     for (const [sid, u] of sessionUsers) {
       if (u !== userId || sid === self) continue;
@@ -409,7 +410,7 @@ export async function startServer(
       if (u === userId && sid !== self && sessionDevices.get(sid) !== device) return true;
     }
     const cached = lastTurns.get(userId);
-    return !!cached && cached.device !== device && Date.now() - cached.at < 10 * 60_000;
+    return !!cached && cached.turns.length > 0 && cached.device !== device && Date.now() - cached.at < 10 * 60_000;
   }
   function priorThread(self: string): ThreadState | null {
     const t = handedThread.get(self) ?? null;
@@ -421,7 +422,8 @@ export async function startServer(
     const thread = session.threadInfo();
     const revision = session.historyForgetRevision;
     const p = progress.get(session.id) ?? zero;
-    if (!turns.length || deletedUsers.has(userId)) return;
+    // Codex #547 r4: a call whose forgets left no turns still carries its crisis to the next socket
+    if ((!turns.length && !session.crisisInCall) || deletedUsers.has(userId)) return;
     const save = () => {
       const cached = lastTurns.get(userId);
       const now = Date.now();
