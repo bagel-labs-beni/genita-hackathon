@@ -1535,7 +1535,10 @@ enum CallStop: Equatable {
     /// same hold-until-audible queue the live events use. Replies whose audio is over are not replayed.
     private func replayAudible(into driver: FaceDriver) {
         let now = ProcessInfo.processInfo.systemUptime
-        let audible = Self.audibleReplayUtterances(faceReplay.map(\.utterance), cancelled: cancelled, now: now) { [faceWall] u in
+        let ids = Set(faceReplay.map(\.utterance))
+        let inPlayer = ids.filter { audio.playbackPositionMs(utteranceId: $0) != nil }
+        let audible = Self.audibleReplayUtterances(Array(ids), cancelled: cancelled, now: now,
+                                                   playing: { inPlayer.contains($0) }) { [faceWall] u in
             faceWall[u].map { $0.start + $0.ms / 1000 }
         }
         guard !audible.isEmpty else { return }
@@ -1544,13 +1547,17 @@ enum CallStop: Equatable {
         flushFacePending()
     }
 
-    /// The replies a face that arrives now should still show: not cancelled, and their audio (wall clock end, 1 s of
-    /// output latency slack) not over yet. A reply with no audio yet (text first) counts as still to come.
+    /// The replies a face that arrives now should still show: not cancelled, and either the player still has them
+    /// (playing or queued: its own playhead wins, Codex r1 P2 — a stalled engine plays past the wall clock's end) or
+    /// their audio by the wall clock (1 s of output latency slack) is not over yet. A reply with no audio yet (text
+    /// first) counts as still to come.
     nonisolated static func audibleReplayUtterances(_ utterances: [Int], cancelled: Set<Int>, now: TimeInterval,
+                                                    playing: (Int) -> Bool = { _ in false },
                                                     wallEnd: (Int) -> TimeInterval?) -> Set<Int> {
         var out = Set<Int>()
         for u in Set(utterances) where !cancelled.contains(u) {
-            if let end = wallEnd(u) { if end + 1 > now { out.insert(u) } } else { out.insert(u) }
+            if playing(u) { out.insert(u) }
+            else if let end = wallEnd(u) { if end + 1 > now { out.insert(u) } } else { out.insert(u) }
         }
         return out
     }

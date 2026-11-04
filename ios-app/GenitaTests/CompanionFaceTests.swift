@@ -127,6 +127,9 @@ import XCTest
         let ends: [Int: TimeInterval] = [1: 90, 2: 99.5, 3: 104]
         let out = CallController.audibleReplayUtterances([1, 1, 2, 3, 4, 6], cancelled: [6], now: now) { ends[$0] }
         XCTAssertEqual(out, [2, 3, 4], "1 ended 10 s ago; 2 is inside the 1 s output slack; 3 is playing; 4 has no audio yet; 6 was cancelled")
+        // Codex r1 P2: the engine stalled, so the player is still on reply 1 although the wall clock says it ended
+        let stalled = CallController.audibleReplayUtterances([1, 6], cancelled: [6], now: now, playing: { $0 == 1 || $0 == 6 }) { ends[$0] }
+        XCTAssertEqual(stalled, [1], "the player's own playhead wins; a cancelled reply never comes back")
     }
 
     /// DEMO P0: the call screen moves the still while she speaks (no live face yet); a cancel stops it at once.
