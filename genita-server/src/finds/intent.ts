@@ -125,7 +125,8 @@ function cardIntent(text: string, hasFrames: boolean, afterProduct = false): Int
   const clothes = CLOTHES.test(text);
   // "what should I wear to dinner?" names a meal but asks about clothes (AU-60)
   if (clothes && (!cook || ON_ME.test(text))) return { kind: "outfit" };
-  if (cook) return { kind: "recipe" };
+  // "a dinner place near Gangnam" is a place to look up, not the fridge (P0 11/4)
+  if (cook && !/\b(?:place|places|restaurant|restaurants|spot|spots|near|nearby|around here)\b|\bin [A-Z]/.test(text)) return { kind: "recipe" };
   if (isIdentifyAsk(text)) return { kind: "identify" };
   return null;
 }
