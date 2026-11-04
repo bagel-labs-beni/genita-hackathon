@@ -109,6 +109,8 @@ public final class FaceSet: @unchecked Sendable {
     public let expressions: [FaceExpression: CGImage]
     /// Alignment of each expression still to the neutral one (pixels, y down).
     public let expressionShift: [FaceExpression: (dx: Int, dy: Int)]
+    /// Key-patch mouths. Empty when `flow` loaded: the flow morph draws the mouth, so the visemes aren't built
+    /// (forcing `FaceRenderer.useFlow = false` on such a face leaves only the jaw warp; nothing in the apps does).
     public let patches: [LipViseme: FaceMouthPatch]
     /// Flow-morph data when prep produced it (option B).
     public let flow: FaceFlowData?
