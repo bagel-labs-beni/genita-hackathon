@@ -103,6 +103,7 @@ struct SettingsView: View {
             // the About you row's preview and counts come from the insight report (GET /v1/profile/insights); read again
             // on every open — a call may have scrubbed it since ("forget that", That's not me: AU-94). The old one stays
             // on screen meanwhile.
+            .task { await model.loadCompanionSince() }
             .task { if model.insightsEnabled { await model.loadInsights() } }
             #endif
             .reportFlow(isPresented: $reportOpen, surface: "settings", auth: model.onboarding.auth) { CallController.shared.lastReplyText }
@@ -151,13 +152,13 @@ struct SettingsView: View {
         AboutYouPage(model: model)
         #endif
     }
-    /// C1 companion card: photo 56 (circle), name KMU80 22, "{voice} voice" 13 #6E6E73.
+    /// C1 companion card: photo 56 (circle), name KMU80 22, "{voice} voice" 13 #737373 (D99).
     private var companionCard: some View {
         HStack(spacing: 14) {
             SettingsAvatar(imageData: model.setup.imageData, name: companionName, size: 56)
             VStack(alignment: .leading, spacing: 2) {
                 Text(companionName).font(SettingsType.serif(22)).foregroundStyle(SettingsInk.ink).lineLimit(1)
-                Text(companionSubtitle).font(SettingsType.font(13, relativeTo: .footnote)).foregroundStyle(SettingsInk.header).lineLimit(2)
+                companionSubtitleView
             }
             Spacer(minLength: 8)
             SettingsChevron()
@@ -165,9 +166,31 @@ struct SettingsView: View {
         .padding(16).contentShape(Rectangle())
         .accessibilityElement(children: .combine)
     }
-    private var companionSubtitle: String {
+    /// "{voice} voice" and, when there is one, "Together N days" / "Met today" / "Demo companion" (D99). One line when both fit
+    /// ("{voice} voice · Together 12 days"); else two lines without the dot; a voice name that overflows alone is tail-truncated.
+    @ViewBuilder private var companionSubtitleView: some View {
         let voice = voiceName + " voice"
-        return model.setup.companionDemo == true ? voice + " · Demo companion" : voice
+        let extra = companionSubtitleExtra
+        let font = SettingsType.font(13, relativeTo: .footnote)
+        Group {
+            if let extra {
+                ViewThatFits(in: .horizontal) {
+                    Text(voice + " · " + extra).lineLimit(1)
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(voice).lineLimit(1).truncationMode(.tail)
+                        Text(extra).lineLimit(1).truncationMode(.tail)
+                    }
+                }
+            } else {
+                Text(voice).lineLimit(1).truncationMode(.tail)
+            }
+        }
+        .font(font).foregroundStyle(SettingsInk.secondary)
+    }
+    private var companionSubtitleExtra: String? {
+        if model.setup.companionDemo == true { return "Demo companion" }
+        // D99 "함께한 날": nothing when the date is unknown
+        return CompanionTogether.label(createdAt: model.setup.companionSince)
     }
     /// C1 About you row: "What {name} knows about you", the report's headline (2 lines max), "{n} things · {m} still learning".
     private var aboutYouRow: some View {
@@ -269,16 +292,14 @@ struct SettingsView: View {
                 dismiss()
                 model.accountDeleted()
             } catch GenitaAuthError.unauthorized {
-                // the session is gone: the account may have been deleted (an earlier try) or the session expired.
-                // Either way A02, and this phone keeps nothing of an account its owner asked to delete; no "deleted"
-                // notice, that needs the server's answer.
-                dismiss(); model.leftAfterDeleteRequest()
+                // the session expired (a 401 can't say the account went: only the server's 200 does). Sign in again,
+                // like any expired session; nothing is wiped and there is no "deleted" notice. Signed in again, the
+                // delete can be asked once more (Codex b10-3 P2).
+                dismiss(); model.signedOut()
             } catch {
-                // AU-06: a slow answer (or a step that failed after the files went) may still have deleted the
-                // account. A 401 on /me now means the session is gone (deleted or expired, the server can't say
-                // which): as above. Otherwise the account is still there.
-                if case .expired = await model.onboarding.auth.sessionState() { dismiss(); model.leftAfterDeleteRequest() }
-                else { accountError = "Try again in a moment." }
+                // a failure may have removed part of it (the server deletes files before rows): never "nothing was
+                // deleted", and never "deleted" without the server's answer
+                accountError = "Couldn’t finish deleting your account. Try again."
             }
         }
     }
@@ -295,6 +316,8 @@ enum SettingsInk {
     static let card = Color.white
     static let ink = Color(red: 17 / 255, green: 17 / 255, blue: 17 / 255)
     static let header = Color(red: 110 / 255, green: 110 / 255, blue: 115 / 255)
+    /// C1 companion card secondary line: spec #737373 (D99; header stays #6E6E73).
+    static let secondary = Color(red: 115 / 255, green: 115 / 255, blue: 115 / 255)
     static let value = Color(red: 138 / 255, green: 138 / 255, blue: 142 / 255)
     static let chevron = Color(red: 196 / 255, green: 196 / 255, blue: 199 / 255)
     static let line = Color(red: 217 / 255, green: 217 / 255, blue: 222 / 255)
@@ -323,6 +346,22 @@ struct SettingsPage<Content: View>: View {
                 .padding(.bottom, 32)
         }
         .background(SettingsInk.page.ignoresSafeArea())
+        .modifier(SettingsSolidBar())
+    }
+}
+
+/// TF 331 (Chelsea 15:39): the inline "Settings" bar was see-through, so the first group slid under the title and the
+/// Done pill as a blur once scrolled. The bar is the page colour, always shown, with a hard edge (iOS 26).
+private struct SettingsSolidBar: ViewModifier {
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        let solid = content
+            .toolbarBackground(SettingsInk.page, for: .navigationBar)
+            .toolbarBackgroundVisibility(.visible, for: .navigationBar)
+        if #available(iOS 26.0, *) { solid.scrollEdgeEffectStyle(.hard, for: .top) } else { solid }
+        #else
+        content
+        #endif
     }
 }
 
@@ -451,9 +490,10 @@ struct AboutYouSummary: Equatable {
     }
 }
 
-/// Name and voice of the companion (read-only today).
+/// Name and voice of the companion; Voice opens the V04 list (iPhone, 11/4).
 struct SettingsCompanionPage: View {
     @Bindable var model: AppState
+    @State private var voiceOpen = false
     var body: some View {
         SettingsPage {
             VStack(spacing: 10) {
@@ -468,12 +508,20 @@ struct SettingsCompanionPage: View {
             SettingsGroup {
                 SettingsRowLabel(title: "Name", value: model.companionDisplayName)
                 SettingsSeparator()
+                #if os(iOS)
+                // 11/4: the V04 list as a sheet, so the voice can change after onboarding (iPhone; the Mac reads the saved voice)
+                Button { voiceOpen = true } label: {
+                    SettingsRowLabel(title: "Voice", value: model.setup.voiceName ?? CuratedVoices.name(model.setup.voiceId) ?? "Default", chevron: true)
+                }.buttonStyle(SettingsRowStyle()).accessibilityIdentifier("settingsVoice")
+                #else
                 SettingsRowLabel(title: "Voice", value: model.setup.voiceName ?? CuratedVoices.name(model.setup.voiceId) ?? "Default")
+                #endif
             }
         }
         .navigationTitle("Your companion")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $voiceOpen) { VoiceSettingsSheet(model: model) }
         #endif
     }
 }

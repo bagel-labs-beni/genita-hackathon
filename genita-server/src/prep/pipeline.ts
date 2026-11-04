@@ -160,7 +160,9 @@ export async function checkImage(d: PrepDeps, userId: string, bytes: Buffer, rig
 
 // ---------- F3-L2: import ----------
 
-export async function importStyle(d: PrepDeps, userId: string, pasted: unknown, genAtRequest?: number): Promise<StyleCard> {
+/** `signal`: the request went away (I03 Cancel, app closed) — nothing is saved (AU-16: a cancelled import used to
+ * land after, and over, the next one). */
+export async function importStyle(d: PrepDeps, userId: string, pasted: unknown, genAtRequest?: number, signal?: AbortSignal): Promise<StyleCard> {
   // "Forget all of this" while this reads (AU-92): its result is not saved
   const gen = genAtRequest ?? d.personalize?.generation(userId);
   const p = checkPaste(pasted);
@@ -173,28 +175,37 @@ export async function importStyle(d: PrepDeps, userId: string, pasted: unknown, 
   // SUM insight report: also from the same text, now; saved once this import's card is (commit below)
   const insightJob = d.insights?.begin(userId, redacted);
   try {
-  const json = d.spark ?? (<T>(req: Parameters<NonNullable<PrepDeps["spark"]>>[0]) => sparkJson<T>(d.metaKey, req));
-  const raw = await json<ImportRaw>(buildImportRequest(redacted));
+  const json = d.spark ?? (<T>(req: Parameters<NonNullable<PrepDeps["spark"]>>[0], s?: AbortSignal) => sparkJson<T>(d.metaKey, req, s));
+  const raw = await json<ImportRaw>(buildImportRequest(redacted), signal);
+  if (signal?.aborted) throw new PrepError(499, "import_cancelled");
   let card = toStyleCard(raw, "import");
   // A reply in the prompt's format whose every section says "Not enough information" (a new Claude/ChatGPT user
   // with no memory) is not unreadable: it is an empty profile. Keep it; the story says "Most of you, I'll learn as
   // we talk" and the first calls ask (QA 11/3 P1: never "couldn't read" for it). Only text we can't place is 422.
   if (card.itemCount === 0 && (importFormat(p.text) === "unknown" || (p.text.match(/not enough information/gi) ?? []).length < 3)) throw new PrepError(422, "import_empty", "I couldn't read this one. Paste the whole reply, or try again.");
+  let lateStory: typeof storyJob = null;
   if (storyJob && d.personalize) {
     const grace = new Promise<"late">((r) => setTimeout(() => r("late"), STORY_GRACE_MS).unref?.());
     const s = await Promise.race([storyJob, grace]);
+    // cancelled while the story was written (Codex AU-16 P1): no card, and no late story for someone else's card
+    if (signal?.aborted) throw new PrepError(499, "import_cancelled");
     if (s && s !== "late") card = d.personalize.withStory(card, s);
-    // still writing: saved when it lands; GET /v1/profile/story waits for this same job (no second Spark call)
-    else if (s === "late") d.personalize.trackLate(userId, storyJob, gen);
+    // still writing: saved when it lands — tracked only once this import's card is saved (Codex: a cancelled
+    // import's late story landed on the next import's card)
+    else if (s === "late") lateStory = storyJob;
   }
+  if (signal?.aborted) throw new PrepError(499, "import_cancelled");
   // under the personalize lock: a call starting at the same moment can't write the old card back
   let importedAt: string | undefined;
   if (d.personalize) {
-    // "Forget all of this" while this read (AU-92): refused, and its insight report with it (the catch below cancels it)
-    try { importedAt = await d.personalize.replaceStyle(userId, card, gen); } catch (err) {
+    // "Forget all of this" while this read (AU-92), or the app cancelled (AU-16, checked inside the lock): refused,
+    // and its insight report with it (the catch below cancels it)
+    try { importedAt = await d.personalize.replaceStyle(userId, card, gen, signal); } catch (err) {
       if (err instanceof PersonalizeError) throw new PrepError(err.status, err.code, err.message);
       throw err;
     }
+    // GET /v1/profile/story waits for this same job (no second Spark call)
+    if (lateStory) d.personalize.trackLate(userId, lateStory, gen);
   }
   else await d.store.putStyle(userId, card);
   d.log("import.applied", { item_count: card.itemCount, latency_ms: since(t0), chars: p.chars, partial: card.partial, dropped: card.dropped });

@@ -164,6 +164,8 @@ public struct InsightReport: Codable, Hashable, Sendable {
     public var settings: InsightSettings?
     /// import · skip · answers · card
     public var from: String?
+    /// the setup answers are in and the traits are being rewritten with them (show "Adding your answers…")
+    public var refreshing: Bool = false
 
     public init(headline: String, observations: [InsightObservation], type: InsightType? = nil, mix: [InsightMix] = [], strengths: [InsightStrength] = [],
                 watchouts: [InsightWatchout] = [], chain: InsightChain? = nil, share: InsightShare? = nil, learning: [InsightLearning] = [],
@@ -186,8 +188,9 @@ public struct InsightReport: Codable, Hashable, Sendable {
         usage = (try? c.decodeIfPresent(String.self, forKey: .usage)) ?? ""
         settings = try? c.decodeIfPresent(InsightSettings.self, forKey: .settings)
         from = try? c.decodeIfPresent(String.self, forKey: .from)
+        refreshing = (try? c.decodeIfPresent(Bool.self, forKey: .refreshing)) ?? false
     }
-    enum CodingKeys: String, CodingKey { case headline, observations, type, mix, strengths, watchouts, chain, share, learning, usage, settings, from }
+    enum CodingKeys: String, CodingKey { case headline, observations, type, mix, strengths, watchouts, chain, share, learning, usage, settings, from, refreshing }
 }
 
 /// `GET /v1/profile/insights?wait=s`

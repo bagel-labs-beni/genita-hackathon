@@ -389,10 +389,10 @@ test("server (Codex 11/3): a Mac → iPhone move that ends the Mac call with sto
 });
 
 /** WT-06 follow-up (11/4): a dropped call that comes back is met with one short line, not silence */
-async function dropAndReturn(t: import("node:test").TestContext, o: { from: string; to: string; hangUp?: boolean; gapMs?: number }) {
+async function dropAndReturn(t: import("node:test").TestContext, o: { from: string; to: string; hangUp?: boolean; gapMs?: number; personalize?: unknown }) {
   const { memory, deps } = setup(fakeSummarizer().fn);
   const logs: string[] = [];
-  const server = await startServer({ ...config, sessionToken: "test-token" }, (e) => { logs.push(e); }, { ...deps, log: (e) => { logs.push(e); } }, {}, null);
+  const server = await startServer({ ...config, sessionToken: "test-token" }, (e) => { logs.push(e); }, { ...deps, ...(o.personalize ? { personalize: o.personalize } : {}), log: (e) => { logs.push(e); } } as typeof deps, {}, null);
   t.after(() => new Promise<void>((r) => server.close(() => r())));
   const addr = server.address(); assert.ok(addr && typeof addr === "object");
   const headers = { authorization: "Bearer test-token", "x-genita-user": "acct-a" };
@@ -440,14 +440,38 @@ test("reconnect: the other device more than 10 s after a drop says the short lin
   assert.deepEqual(lines, [RECONNECT_LINE]);
 });
 
-test("reconnect: the other device within 10 s of a drop, or after hanging up there, goes on silently (a move)", { timeout: 30_000 }, async (t) => {
+test("reconnect: the other device within 10 s of a drop, or right after hanging up there, goes on silently (a move)", { timeout: 30_000 }, async (t) => {
   const quick = await dropAndReturn(t, { from: "mac", to: "iphone" });
   assert.ok(quick.logs.includes("history.seeded"));
   assert.ok(!quick.logs.includes("call.reconnect_line"));
   assert.deepEqual(quick.lines, []);
-  const hungUp = await dropAndReturn(t, { from: "mac", to: "iphone", hangUp: true, gapMs: 11_000 });
-  assert.ok(hungUp.logs.includes("history.seeded"));
-  assert.ok(!hungUp.logs.includes("call.reconnect_line"));
+  // Move to iPhone: the Mac's call ends with stop and the iPhone's starts within seconds
+  const moved = await dropAndReturn(t, { from: "mac", to: "iphone", hangUp: true });
+  assert.ok(moved.logs.includes("history.seeded"));
+  assert.ok(!moved.logs.includes("call.reconnect_line"));
+  assert.deepEqual(moved.lines, []);
+});
+
+test("demo P0 (S1): a call on the other device more than 10 s after hanging up there is a new call — it greets (never silence)", { timeout: 30_000 }, async (t) => {
+  const later = await dropAndReturn(t, { from: "mac", to: "iphone", hangUp: true, gapMs: 11_000 });
+  assert.ok(!later.logs.includes("history.seeded"), "not a silent continuation");
+  assert.ok(later.logs.includes("history.not_seeded"));
+  assert.ok(!later.logs.includes("call.reconnect_line"));
+  assert.ok(later.lines.length >= 1, "the greeting arrives");
+  assert.notEqual(later.lines[0], RECONNECT_LINE);
+});
+
+test("demo P0 (S1, Codex #694 P2): that new call is also planned and counted as a call; a move right after hanging up is not", { timeout: 30_000 }, async (t) => {
+  const spy = () => {
+    const plans: boolean[] = [];
+    return { plans, personalize: { async startCall(_u: string, o: { plan: boolean }) { plans.push(o.plan); return null; }, async endCall() {} } };
+  };
+  const later = spy();
+  await dropAndReturn(t, { from: "mac", to: "iphone", hangUp: true, gapMs: 11_000, personalize: later.personalize });
+  assert.equal(later.plans.at(-1), true, `the iPhone call is planned like a new call (plans: ${JSON.stringify(later.plans)})`);
+  const moved = spy();
+  await dropAndReturn(t, { from: "mac", to: "iphone", hangUp: true, personalize: moved.personalize });
+  assert.equal(moved.plans.at(-1), false, `a move is the same call (plans: ${JSON.stringify(moved.plans)})`);
 });
 
 test("server (Codex 11/3): the Mac's stop arriving BEFORE the iPhone's claim still hands over; a stale iPhone copy never replaces the Mac's fuller one", { timeout: 20_000 }, async (t) => {

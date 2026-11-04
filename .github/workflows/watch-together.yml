@@ -52,6 +52,9 @@ jobs:
           exit "${PIPESTATUS[0]}"
       - name: Capture and uplink checks
         run: mac-app/Tools/watch-shots/check.sh
+      - name: Open at login policy + hidden launch live move
+        timeout-minutes: 10
+        run: mac-app/Tools/login-item/check.sh
       - name: Render watch-together screens
         # the harness builds MacHandoff, whose MCPeerID rejects some runner host names
         continue-on-error: true

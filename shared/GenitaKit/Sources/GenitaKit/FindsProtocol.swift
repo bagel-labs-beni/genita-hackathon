@@ -158,7 +158,8 @@ public struct FindCard: Codable, Equatable, Identifiable, Sendable {
     public var saved: Bool?
     /// kind `product` (PF-1 / MAC-RS): product detail pages the search really opened (≤ 2).
     public var products: [Product]?
-    /// kind `product`: the import line and the situation line this answer is based on.
+    /// kind `product`: the import line and the situation line this answer is based on; kind `outfit`: the taste line
+    /// and the occasion they named ("this weekend", CW-02).
     public var evidence: Evidence?
 
     public struct Product: Codable, Equatable, Identifiable, Sendable {
@@ -250,5 +251,26 @@ extension ClientMessage {
         public var itemId: String
         public var yes: Bool
         public init(findId: String, itemId: String, yes: Bool) { self.findId = findId; self.itemId = itemId; self.yes = yes }
+    }
+}
+
+extension FindCard {
+    /// The outfit card's occasion chip (춘식이 11/4, CW-02): the server's situation reason ("Easy to wear all weekend",
+    /// "Beige trench for dinner tonight.") as is; sentence case, no trailing period. nil when there is none (no row at all).
+    public var occasionChip: (text: String, accessibilityLabel: String)? {
+        guard kind == .outfit, let line = evidence.map({ Self.reasonLine($0.situation) }), !line.isEmpty else { return nil }
+        return (line.prefix(1).uppercased() + line.dropFirst(), "Occasion: " + line)
+    }
+
+    /// The "Why" lines to list: on an outfit card whose occasion is already the chip, its copy in `why` is left out.
+    public var whyLines: [String] {
+        guard occasionChip != nil, let situation = evidence.map({ Self.reasonLine($0.situation).lowercased() }) else { return why }
+        return why.filter { Self.reasonLine($0).lowercased() != situation }
+    }
+
+    private static func reasonLine(_ raw: String) -> String {
+        var line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        while line.hasSuffix(".") { line.removeLast() }
+        return line.trimmingCharacters(in: .whitespaces)
     }
 }

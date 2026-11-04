@@ -29,7 +29,7 @@ const A_PARTIAL = "So today at work my manager pulled me into this meeting and t
 const A_FINAL = "So today at work my manager pulled me into this meeting and then he started.";
 const B_FINAL = "yelling at me about the deck in front of everyone.";
 
-function setup(opts: { speculate?: boolean } = {}) {
+function setup(opts: { speculate?: boolean; sparkDelayMs?: number } = {}) {
   const asr = new FakeAsr();
   let clock = 10_000;
   const sent: { m: Record<string, unknown>; at: number }[] = [];
@@ -49,7 +49,7 @@ function setup(opts: { speculate?: boolean } = {}) {
     log: (event, data) => logs.push({ event, data }),
     async *spark(req): AsyncGenerator<SparkStreamEvent> {
       sparkCalls.push(req);
-      await sleep(20);
+      await sleep(opts.sparkDelayMs ?? 20);
       yield { type: "text", delta: "<warm> Oh no, that sounds rough." };
       yield { type: "done", responseId: null, text: "", status: "completed" };
     },
@@ -465,4 +465,27 @@ test("Codex b9-6 r2: a handoff ends the cue-echo filter — the user's 'Mm-hm.' 
   await sleep(100);
   const finals = h.sent.filter((x) => x.m.type === "transcript" && x.m.final === true).map((x) => x.m.text);
   assert.deepEqual(finals, ["Mm-hm."]);
+});
+
+test("hold cap B (11/4): no 'Mm.' beat while the user is talking again in the wait; a quiet slow wait gets one", async (t) => {
+  const prev = process.env.GENITA_HOLD_CAP_MS;
+  delete process.env.GENITA_HOLD_CAP_MS; // the 1400 ms default
+  t.after(() => { if (prev !== undefined) process.env.GENITA_HOLD_CAP_MS = prev; });
+  const h = setup({ sparkDelayMs: 2200 });
+  t.after(() => h.session.close());
+  await h.session.onClientText(JSON.stringify({ type: "start", persona: { name: "Mina" } }));
+  await sleep(30);
+  h.asr.fire({ type: "speechStart", turnId: 0 });
+  h.advance(1500);
+  h.asr.fire({ type: "speechEnd", turnId: 0 });
+  h.asr.fire({ type: "speechComplete", turnId: 0, text: "What should I make for dinner tonight?" });
+  await sleep(500);
+  h.asr.fire({ type: "speechStart", turnId: 1 }); // they keep talking through the cap
+  h.asr.fire({ type: "partial", text: "something with" });
+  await sleep(1300);
+  assert.equal(h.logs.filter((l) => l.event === "convo.hold_beat").length, 0, "no beat over their speech");
+  h.asr.fire({ type: "speechEnd", turnId: 1 });
+  h.asr.fire({ type: "speechComplete", turnId: 1, text: "something with eggs." });
+  await sleep(3200);
+  assert.ok(h.logs.filter((l) => l.event === "convo.hold_beat").length <= 1, "at most one beat in the next quiet wait");
 });

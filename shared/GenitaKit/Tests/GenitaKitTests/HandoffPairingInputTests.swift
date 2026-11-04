@@ -17,4 +17,23 @@ import Testing
         #expect(HandoffPairingInput.mayReconnectRemembered(sheetOpen: false, code: "", linkConnected: false), "no sheet: look for the remembered Mac")
         #expect(!HandoffPairingInput.mayReconnectRemembered(sheetOpen: false, code: "", linkConnected: true), "already connected")
     }
+
+    /// Chelsea 11/4: the Mac shows its code but the iPhone never offered the code entry. During a call, signed in and in
+    /// front, a same-account Mac that is online but not paired opens P01 once; Not now / outside tap keeps it closed.
+    @Test func p01OpensByItselfOnceForAnUnpairedMacOnline() {
+        func prompt(signedIn: Bool = true, foreground: Bool = true, inCall: Bool = true, macOnline: Bool = true, paired: Bool = false,
+                    linkConnected: Bool = false, sheetOpen: Bool = false, prompted: Bool = false) -> Bool {
+            HandoffPairingInput.autoPrompt(signedIn: signedIn, foreground: foreground, inCall: inCall, macOnline: macOnline, paired: paired,
+                                           linkConnected: linkConnected, sheetOpen: sheetOpen, prompted: prompted)
+        }
+        #expect(prompt(), "unpaired Mac online during the call: offer the code")
+        #expect(!prompt(prompted: true), "once per launch: Not now stays closed")
+        #expect(!prompt(paired: true), "a remembered Mac never needs the code")
+        #expect(!prompt(linkConnected: true))
+        #expect(!prompt(macOnline: false), "no Mac running Genita on this account")
+        #expect(!prompt(sheetOpen: true))
+        #expect(!prompt(inCall: false), "P01 lives in the call")
+        #expect(!prompt(foreground: false))
+        #expect(!prompt(signedIn: false))
+    }
 }

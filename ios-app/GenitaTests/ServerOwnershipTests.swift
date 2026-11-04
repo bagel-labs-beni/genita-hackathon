@@ -104,6 +104,18 @@ final class ServerOwnershipTests: XCTestCase {
         XCTAssertNotNil(PresenceEndpoint.current(device: .mac, environment: ["GENITA_SESSION_TOKEN": "dev"], defaults: defaults)?.token, "dev token fallback")
     }
 
+    /// TF 331 (Chelsea 11/4): the iPhone never sets `genita.server.url` (only the Mac registers it), so with nothing set the
+    /// presence socket went to ws://127.0.0.1:8787 while the call went to the deployed server: no proximity, no
+    /// "Continue here" when the Mac took the call, no server move. With nothing set it must follow the call's default.
+    func testPresenceEndpointDefaultsToTheDeployedCallServer() {
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let call = URL(string: CallEndpoint.defaultURL)!
+        let url = PresenceEndpoint.current(device: .phone, environment: [:], defaults: defaults)?.url
+        XCTAssertEqual(url?.host, call.host)
+        XCTAssertEqual(url?.scheme, "wss")
+        XCTAssertEqual(url?.absoluteString, call.absoluteString.replacingOccurrences(of: "/v1/session", with: "/v1/presence") + "?device=iphone")
+    }
+
     // MARK: two devices and a server
 
     /// The server's rule, as genita-server/src/handoff applies it.

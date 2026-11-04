@@ -41,7 +41,16 @@ import CoreText
 /// Closing the home window must not quit Genita (Codex P2 on #480): a single `Window` scene quits the app with its
 /// window, which closed the presence socket, so the iPhone's Move to Mac failed with `peer_offline`. The app keeps
 /// running with the window closed; the Dock icon and opening Genita again bring the home window back.
+///
+/// Opened at login (MacLoginItem, CEO 11/4): no window. The account check, the presence socket and the proximity
+/// scanner start without it, so bringing the iPhone close opens the call window by itself. ⌘Q still quits.
 @MainActor final class MacAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        guard MacLoginLaunch.wasLaunchedAtLogin(event: NSAppleEventManager.shared().currentAppleEvent) else { return }
+        MacHomeWindow.startHidden()
+        // /me → MacHandoff.setAccount → presence socket + MacProximity, the same path the home window's task takes
+        Task { await MacCall.shared.refreshAtLaunch() }
+    }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !MacHomeWindow.isVisible { MacHomeWindow.show() }
@@ -57,13 +66,33 @@ import CoreText
     static var window: NSWindow? { NSApp.windows.first { !($0 is NSPanel) && $0.identifier?.rawValue.hasPrefix(id) == true } }
     static var isVisible: Bool { window?.isVisible == true }
     static func show() {
+        hidingAtLogin = false // the user asked for it: never hide it again
         if let window { window.makeKeyAndOrderFront(nil) } else { open?(id: id) }
         NSApp.activate()
+    }
+    /// Opened at login: SwiftUI still creates the single `Window` at launch, so it is ordered out (not closed: its
+    /// view, task and `openWindow` stay, and the Dock icon or opening Genita brings it back through `show()`).
+    /// SwiftUI may put it up after `applicationDidFinishLaunching` (however late), so every appearance before the
+    /// user opens it is hidden too (Codex P2: no time limit).
+    private(set) static var hidingAtLogin = false
+    static func startHidden() {
+        hidingAtLogin = true
+        window?.orderOut(nil)
+        DispatchQueue.main.async { hideIfStarting() }
+    }
+    static func hideIfStarting() {
+        guard hidingAtLogin else { return }
+        window?.orderOut(nil)
     }
 }
 private struct MacHomeWindowOpener: ViewModifier {
     @Environment(\.openWindow) private var openWindow
-    func body(content: Content) -> some View { content.onAppear { MacHomeWindow.open = openWindow } }
+    func body(content: Content) -> some View {
+        content.onAppear {
+            MacHomeWindow.open = openWindow
+            if MacHomeWindow.hidingAtLogin { DispatchQueue.main.async { MacHomeWindow.hideIfStarting() } }
+        }
+    }
 }
 
 /// Genita ▸ Sign Out (the home windows carry no sign-out link, as in Figma MAC-2/3/4).

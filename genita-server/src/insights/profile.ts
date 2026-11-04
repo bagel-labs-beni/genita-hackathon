@@ -24,6 +24,14 @@ export type Observation = {
   chips?: InsightChip[];
   verdict: null | "right" | "not_me";
   correction?: string;
+  /**
+   * AU-91 (11/4): the profile lines this observation was built from, linked when the report was saved (section + the
+   * line's text then; `item` = one item of a list line). "That's not me" removes only these. Missing on reports saved
+   * before → the older text matching (findingsBehind).
+   */
+  sources?: Array<{ section: string; text: string; item?: string }>;
+  /** the profile lines Spark said it stood on (numbered input lines) — turned into `sources` when saved, not kept */
+  basis?: string[];
 };
 /** `basis` = ids of the observations it comes from */
 export type InsightType = { name: string; line: string; signature: string[]; basis: string[] };
@@ -55,8 +63,14 @@ export type InsightReport = {
   at: string;
   from: "import" | "skip" | "answers" | "card";
   ms?: number;
+  /** the setup answers are in (settings + mix) and Spark is rewriting the traits with them (the app shows "Adding your answers…") */
+  refreshing?: boolean;
 };
-export type DeniedInsight = { id: string; claim: string; category: InsightCategory; correction?: string; at: string };
+export type DeniedInsight = { id: string; claim: string; category: InsightCategory; correction?: string; at: string;
+  /** the picks / list items it stood on (AU-91): a later report can't build on them again */
+  picks?: string[]; items?: string[];
+  /** per paste quote it stood on: quoteWords() hashes of its content words (never the words) */
+  quotes?: string[][] };
 /** stored in the style card (user_styles.style_json.insights) */
 export type StoredInsights = InsightReport & { denied?: DeniedInsight[] };
 
@@ -84,6 +98,8 @@ export function insightProfileLines(card: { insights?: StoredInsights; removed?:
   // lines the user took out — saved or still being applied — take the traits built on them out of the call (design-lane Codex P2)
   const gone = [...(card.removed ?? []).map((r) => r.text), ...(card.pendingCorrections ?? []).flatMap((p) => p.items)].slice(-40);
   const kept = (card.insights.observations ?? []).filter((o) => !restsOn(o, gone)).slice(0, MAX_LINES).map((o) => `- ${safe(o.claim)} → ${safe(o.use_in_call)}`);
-  const no = (card.insights.denied ?? []).slice(-3).map((d) => `- Not true about them: "${safe(d.claim)}"${d.correction ? `. They said: "${safe(d.correction)}"` : ""}`);
-  return [...kept, ...no];
+  // what they took back is never quoted to the call (AU-91: "Not true about them: …" brought the topic back); their own
+  // words of what IS right still go in, without the claim
+  const said = (card.insights.denied ?? []).slice(-3).filter((d) => d.correction).map((d) => `- They told you: "${safe(d.correction!)}"`);
+  return [...kept, ...said];
 }

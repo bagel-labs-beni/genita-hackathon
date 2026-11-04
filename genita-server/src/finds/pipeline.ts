@@ -41,12 +41,16 @@ export type PipelineCtx = {
   putImage: (slot: string, bytes: Buffer) => Promise<string>;
   /** D23: the companion says this line now (after the boxes are up); the runner announces it */
   speak?: (text: string) => void;
+  /** D (Chelsea 11/4): the frame is the Mac's shared screen, not the camera (no boxes are drawn over a share) */
+  screen?: boolean;
 };
 
 export type PipelineResult = { card: FindCard | null; timings: Record<string, number> };
 
 const SEEN_PROMPT =
-  "List every food item you can clearly see in this photo, one per line as: name | count or - | where it is and what it looks like (a few words). Short lowercase common names. Nothing else. If you cannot see any food clearly, reply NONE.";
+  // demo S3 (b9 check P1): a small item at the edge or half behind another was left off 1/6 — list those too; each
+  // name is still checked (Spark YES + a SAM box) before it is said, so a wrong one ends as "not sure", never "have"
+  "List every food item you can see in this photo, including small ones and ones partly behind others, one per line as: name | count or - | where it is and what it looks like (a few words). Short lowercase common names. Nothing else. If you cannot see any food clearly, reply NONE.";
 
 const CHECK_TIMEOUT_MS = 7000;
 export const FRIDGE_PILL_MAX = 28;
@@ -506,6 +510,36 @@ export function outfitSituation(model: unknown, question: string, pick?: string)
   return capFirst(pick ? `${pick.toLowerCase()} for ${o}.` : `for ${o}.`);
 }
 
+/** words a taste line uses whatever it stands on ("…you love", "just your style") */
+const TASTE_FILLER = new Set(["your", "you", "you're", "love", "loves", "like", "likes", "just", "keep", "keeps", "vibe", "style", "which", "mentioned", "said", "told", "that", "this", "with", "from", "what", "look", "looks", "always", "perfect", "matches", "match", "fits", "goes", "very", "really", "into", "suits", "suit", "feel", "feels", "want", "wear", "the", "and", "for", "but", "are", "its", "all", "too", "one", "new", "out", "got", "get", "own", "way", "now", "how", "who", "far", "more", "most", "less", "prefers", "prefer", "favorite", "favourite", "dislikes", "dislike", "avoids", "avoid", "hates", "hate", "never", "not", "without", "skip", "free", "doesn", "does", "can't", "stand", "taste", "tastes"]);
+const tasteWords = (s: string) => (s.toLowerCase().match(/[a-z가-힣']{3,}/g) ?? []).filter((w) => !TASTE_FILLER.has(w)).map((w) => w.slice(0, 5));
+/** a clause that says what they don't want ("Dislikes loud logos", "no neon", "never wears prints") */
+const NEGATIVE = /\b(?:dislikes?|avoids?|hates?|not into|no|never|doesn't|does not|can't stand|without|skips?|free of)\b/i;
+/**
+ * P1-7: the outfit card's taste line, only when it stands on something Genita remembers (a memory or the
+ * imported profile) — a content word in common with a remembered clause of the same polarity ("You love loud
+ * logos" never stands on "Dislikes loud logos"). Nothing remembered, or nothing in common → "" (the card leaves
+ * the line out; the runner falls back to the imported preference when there is one). Never a made-up taste.
+ */
+export function outfitTaste(model: unknown, remembered: string[]): string {
+  const line = str(model, 90);
+  if (!line || !remembered.length) return "";
+  const negative = NEGATIVE.test(line);
+  const known = new Set<string>();
+  for (const text of remembered) {
+    // only what the user confirmed: a profile's forgotten ("Never bring these up…"), suggested and manner sections
+    // are not tastes to stand on (Codex r2)
+    const cut = text.search(/^(?:Never bring|Suggestions|Rules|Also|Leans|How they come across)\b/m);
+    const kept = cut >= 0 ? text.slice(0, cut) : text;
+    // clauses end at a sentence or "but"; "Dislikes loud logos, and neon colors" stays one dislike (Codex r2)
+    for (const raw of kept.split(/[\n.;]+|\s+but\s+/i)) {
+      const clause = raw.replace(/^\s*-?\s*[A-Za-z &]{1,24}:\s*/, "");
+      if (NEGATIVE.test(clause) === negative) for (const w of tasteWords(clause)) known.add(w);
+    }
+  }
+  return tasteWords(line).some((w) => known.has(w)) ? line : "";
+}
+
 const STOP = new Set(["the", "a", "one", "your", "my", "and", "with", "coat", "jacket", "top"]);
 const tokens = (s: string) => s.toLowerCase().match(/[a-z]+/g)?.filter((w) => w.length > 2 && !STOP.has(w)) ?? [];
 
@@ -590,7 +624,8 @@ export async function runOutfit(ctx: PipelineCtx): Promise<PipelineResult> {
   if (ctx.signal.aborted) return { card: null, timings };
   const label = clockLabel(at, ctx.timeZone);
   // CW-02: three reasons — taste (memory), what is seen (why, per option), and the occasion they asked about
-  const taste = str(j.taste, 90);
+  const taste = outfitTaste(j.taste, mem);
+  if (!taste && str(j.taste, 90)) ctx.log("find.outfit_taste_dropped", { findId: ctx.findId });
   const situation = outfitSituation(j.situation, ctx.question, options[pick].label);
   const card: FindCard = {
     id: ctx.findId,
@@ -613,7 +648,6 @@ export async function runOutfit(ctx: PipelineCtx): Promise<PipelineResult> {
     how: [`From ${ctx.frames.length} frame${ctx.frames.length > 1 ? "s" : ""} on your camera, ${label}.`, searched ? "Checked the weather on the web." : "No web search for this one.", MODEL_CREDIT],
   };
   if (!card.say) delete card.say;
-  if (!card.subtitle && said) card.subtitle = "";
   ctx.emit({ type: "find.created", findId: ctx.findId, card });
   for (const fi of new Set(card.options.map((o) => o.frame))) {
     const items = card.options.filter((o) => o.frame === fi && o.box).map((o) => ({ label: o.label, box: o.box! }));
@@ -621,6 +655,80 @@ export async function runOutfit(ctx: PipelineCtx): Promise<PipelineResult> {
   }
   timings.cardMs = Math.round(ctx.now() - t0);
   return { card, timings };
+}
+
+// ───────────────────────── identify ("what's this?") ─────────────────────────
+
+/** CEO demo 11/4: said when the name can't be checked (Spark NO, no SAM box, a person): never a guess. */
+export const IDENTIFY_UNSURE = "Hmm, I can't make it out clearly. Hold it a little closer?";
+/** never outlined or named as "the thing": the user (or anyone) on camera */
+const PERSON = /\b(?:faces?|person|people|man|woman|men|women|boy|girl|child|kid|baby|selfie|human|head|hair|you|yourself|me|user|someone|body|nose|noses|mouth|lips?|eyes?|eyebrows?|eyelash(?:es)?|ears?|cheeks?|chin|forehead|neck|skin|teeth|tooth|tongue|beard|mustache|moustache|hands?|fingers?|arms?|legs?|feet|foot|shoulders?|portrait)\b/i;
+const IDENTIFY_PROMPT = [
+  "The user holds something up to their camera (or points it at something) and asks what it is.",
+  "Name the one object they mean: the thing in their hand, or else the most central object in view.",
+  "Never a person, a face, a body part or the clothes they have on.",
+  'Reply with only JSON: {"name": "short lowercase common name, 1-3 words, e.g. coffee mug", "say": "one short warm spoken line, under 14 words, telling them what it is"}. If you can\'t tell, reply {"name": ""}.',
+].join("\n");
+
+/**
+ * "What's this?" with the camera on: Spark names the thing, then the same checks as the fridge (Spark YES + a SAM box)
+ * before it is outlined and said; the outline is the central match on the last frame. No card and no sheet: only
+ * observe.boxes and the spoken line (ctx.speak).
+ */
+export async function runIdentify(ctx: PipelineCtx): Promise<PipelineResult> {
+  const t0 = ctx.now();
+  const timings: Record<string, number> = {};
+  const frameIndex = ctx.frames.length - 1;
+  const frame = ctx.frames[frameIndex];
+  const unsure = () => { if (!ctx.signal.aborted) ctx.speak?.(IDENTIFY_UNSURE); return { card: null, timings }; };
+  if (!frame) return unsure();
+  const res = await withTimeout(ctx.vendors.spark({ input: userMessage(`${IDENTIFY_PROMPT}\nThey said: "${ctx.question.slice(0, 200)}"`, [frame]), effort: "minimal", maxOutputTokens: 200 }, ctx.signal), CHECK_TIMEOUT_MS, ctx.signal);
+  timings.nameMs = Math.round(ctx.now() - t0);
+  if (ctx.signal.aborted) return { card: null, timings };
+  const j = res ? lastJsonObject<{ name?: unknown; say?: unknown }>(res.text) : null;
+  const name = str(j?.name, 40).toLowerCase().replace(/[.!?]+$/, "");
+  if (!name || PERSON.test(name)) {
+    ctx.log("find.identify_none", { findId: ctx.findId, person: !!name });
+    return unsure();
+  }
+  const [yes, boxes] = await Promise.all([
+    withTimeout(ctx.vendors.spark({ input: userMessage(yesPrompt(name), [frame]), effort: "minimal", maxOutputTokens: 200 }, ctx.signal).then((r) => isYes(r.text)), CHECK_TIMEOUT_MS, ctx.signal),
+    withTimeout(ctx.vendors.sam(frame, name, ctx.signal), CHECK_TIMEOUT_MS, ctx.signal),
+  ]);
+  timings.checkMs = Math.round(ctx.now() - t0);
+  if (ctx.signal.aborted) return { card: null, timings };
+  const instances = instancesOf(boxes ?? []);
+  // the held / central thing: the match whose centre is nearest the middle of the frame
+  const dist = (b: NormBox) => Math.hypot((b.x1 + b.x2) / 2 - 0.5, (b.y1 + b.y2) / 2 - 0.5);
+  const best = [...instances].sort((a, b) => dist(a.box) - dist(b.box))[0];
+  if (yes !== true || !best) {
+    ctx.log("find.identify_unchecked", { findId: ctx.findId, yes: yes === true, box: !!best });
+    return unsure();
+  }
+  const label = capFirst(name);
+  const say0 = str(j?.say, 120);
+  // the line must name what was checked; a line about something else gets the plain one
+  const named = say0 && say0.toLowerCase().includes(name.split(" ").at(-1)!.replace(/s$/, ""));
+  const say = named ? say0 : `That's ${/^[aeiou]/.test(name) ? "an" : "a"} ${name}.`;
+  if (ctx.screen) {
+    // the Mac draws no boxes over a shared screen: the answer lands in the sheet instead (Chelsea 11/4: every ask a sheet)
+    const at = new Date();
+    const card: FindCard = {
+      id: ctx.findId, kind: "answer", createdAt: at.toISOString(), eyebrow: "From your screen", title: label, subtitle: "On your shared screen",
+      status: label, items: [], steps: [{ text: say }], options: [], why: [], ask: [], sources: [],
+      how: [`From your shared screen, ${clockLabel(at, ctx.timeZone)}.`, MODEL_CREDIT],
+    };
+    ctx.emit({ type: "find.started", findId: ctx.findId, utteranceId: ctx.utteranceId, kind: "answer", title: "Looking at your screen", detail: label });
+    ctx.emit({ type: "find.created", findId: ctx.findId, card });
+    ctx.speak?.(say);
+    timings.doneMs = Math.round(ctx.now() - t0);
+    return { card, timings };
+  }
+  const item = ctx.vendors.samMasks ? boxItems([{ label, instances: [best] }])[0] : { label, box: best.box };
+  ctx.emit({ type: "observe.boxes", findId: ctx.findId, frame: frameIndex, w: best.frame.w, h: best.frame.h, items: [item] });
+  ctx.speak?.(say);
+  timings.doneMs = Math.round(ctx.now() - t0);
+  return { card: null, timings };
 }
 
 // ───────────────────────── link ─────────────────────────

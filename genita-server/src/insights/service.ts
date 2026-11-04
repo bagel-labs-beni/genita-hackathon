@@ -13,16 +13,50 @@
  * kept in memory only (2 h, so the answers rewrite can still quote it) and never stored or logged.
  * GENITA_INSIGHTS=0: no Spark call, GET → none, the app keeps the old SUM.
  */
+import { createHash } from "node:crypto";
 import type { SparkRequest } from "../meta/spark.ts";
 import { museJson } from "../meta/spark.ts";
 import type { Personalize } from "../personalize/service.ts";
-import { looksLikeInjection, redactSensitive, type StyleCard } from "../prep/importProfile.ts";
+import { looksLikeInjection, redactSensitive, ruleLine, type StyleCard } from "../prep/importProfile.ts";
 import type { PrepStore } from "../prep/store.ts";
-import { LEARN_LABEL, OBS_MIN, buildInsightRequest, picksFromAnswers, privateDetail, settingsFrom, similarClaim, scrubRemoved, toReport, withoutObservations, withoutRemoved, type InsightInputs } from "./report.ts";
+import { LEARN_LABEL, OBS_MIN, OPERATIONAL, mixFrom, buildInsightRequest, editsBehind, editsFromSources, findingsBehind, linkSources, rulesBehind, picksFromAnswers, privateDetail, settingsFrom, similarClaim, scrubRemoved, toReport, withoutObservations, withoutRemoved, type InsightInputs } from "./report.ts";
 import type { InsightReport, StoredInsights } from "./profile.ts";
 export { insightProfileLines } from "./profile.ts";
 
 type JsonFn = <T>(req: Omit<SparkRequest, "text"> & { schemaName: string; schema: Record<string, unknown> }, signal?: AbortSignal) => Promise<T>;
+
+/** a paste quote as a short hash (the words themselves are never stored for a "not me") */
+export const quoteKey = (q: string) => createHash("sha256").update(q.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim()).digest("hex").slice(0, 16);   // punctuation-blind, like the quote check (Codex #581 r13)
+const QUOTE_STOP = new Set("i me my we you the a an to of and or but in on at for with is are was be it that this like really just so very".split(" "));
+/**
+ * A quote as the hashes of its content words ("I like to cook spicy food." → cook, spicy, food). Two quotes are the
+ * same evidence when one's words are all in the other's (≥ 2 words, or both a single word): "spicy food" inside
+ * "I enjoy spicy food", "short, direct replies" inside a longer line — never two lines sharing "I like to"
+ * (Codex #581 r15/r16). Hashes only, never the pasted words.
+ */
+export function quoteWords(q: string): string[] {
+  const w = q.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim().split(" ").filter((x) => x && !QUOTE_STOP.has(x));
+  return [...new Set(w.map((x) => quoteKey(x)))];
+}
+export function sameQuote(a: string[], b: string[]): boolean {
+  if (!a.length || !b.length) return false;
+  const [small, big] = a.length <= b.length ? [a, new Set(b)] : [b, new Set(a)];
+  if (small.length < 2 && big.size > 1) return false;
+  return small.every((h) => big.has(h));
+}
+
+/** an observation built on a pick / item they already said "not me" to (any claim wording) */
+export function standsOnDenied(o: { claim: string; use_in_call: string; evidence: Array<{ source: string; quote: string }> }, d: { picks?: string[]; items?: string[]; quotes?: string[][] }): boolean {
+  // the same pick / item whatever source it's cited as ("Minimal" as an answer or as an import quote, Codex #581 r21)
+  const n = (t: string) => t.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  const picks = new Set([...(d.picks ?? []), ...(d.items ?? [])].map(n));
+  if (o.evidence.some((e) => picks.has(n(e.quote)))) return true;
+  if (o.evidence.some((e) => e.source !== "answer" && (d.quotes ?? []).some((q) => sameQuote(quoteWords(e.quote), q)))) return true;
+  const items = (d.items ?? []).filter(Boolean);
+  if (!items.length) return false;
+  const re = new RegExp(`\\b(?:${items.map((x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`, "i");
+  return [o.claim, o.use_in_call, ...o.evidence.map((e) => e.quote)].some((t) => re.test(t));
+}
 
 export class InsightsError extends Error {
   readonly status: number;
@@ -44,7 +78,8 @@ type Job = { promise: Promise<void>; startedAt: number };
 export function publicReport(s: StoredInsights | undefined | null): InsightReport | null {
   if (!s) return null;
   const { denied: _denied, ...r } = s;
-  return r;
+  // the links are the server's bookkeeping (AU-91), not part of the report the app shows
+  return { ...r, observations: r.observations.map(({ sources: _s, basis: _b, ...o }) => o) };
 }
 
 function cardFindings(card: StyleCard): string[] {
@@ -108,7 +143,7 @@ export class Insights {
       this.log("insights.retry", { from, message: String(err).slice(0, 120) });
       return once();
     });
-    if (r.observations.length < OBS_MIN) {
+    if (r.observations.length < OBS_MIN && !inputs.quick) {
       const again = await once().catch(() => null);
       if (again && again.observations.length > r.observations.length) r = again;
     }
@@ -122,10 +157,15 @@ export class Insights {
    * stored and says which card (its importedAt). Saved only onto the card it was made from, only if no newer write
    * started for this user meanwhile (Codex P1/P2), and filtered again by the latest "not me" list; "right" carries over.
    */
-  private start(userId: string, from: InsightReport["from"], inputsOf: (card: StyleCard | null) => InsightInputs | null, opts: { gate?: Promise<string | null>; settings?: InsightReport["settings"] } = {}) {
-    if (!this.enabled) return;
+  private reserve(userId: string): number {
     const mine = ++this.seqNext;
     this.seq.set(userId, mine);
+    return mine;
+  }
+
+  private start(userId: string, from: InsightReport["from"], inputsOf: (card: StyleCard | null) => InsightInputs | null, opts: { gate?: Promise<string | null>; settings?: InsightReport["settings"]; seq?: number } = {}) {
+    if (!this.enabled) return;
+    const mine = opts.seq ?? this.reserve(userId);
     const promise = (async () => {
       // import: the card isn't there yet — the paste is the source
       const card = opts.gate ? null : await this.store.getStyle(userId);
@@ -149,11 +189,15 @@ export class Insights {
         if ((c.importedAt ?? null) !== basis) return null; // the card was replaced (another import / skip)
         const old = opts.gate ? undefined : c.insights;
         const denied = old?.denied ?? [];
-        const gone = report.observations.filter((o) => denied.some((d) => d.id === o.id || similarClaim(d.claim, o.claim))).map((o) => o.id);
+        const gone = report.observations.filter((o) => denied.some((d) => d.id === o.id || similarClaim(d.claim, o.claim) || standsOnDenied(o, d))).map((o) => o.id);
         const right = new Set((old?.observations ?? []).filter((o) => o.verdict === "right").map((o) => o.id));
         // and what the user asked to forget / corrected away since (card.removed)
         const kept = scrubRemoved(withoutObservations(report, gone), c.removed);
-        const observations = kept.observations.map((o) => (right.has(o.id) ? { ...o, verdict: "right" as const, confidence: "high" as const } : o));
+        // AU-91: each observation is linked to the profile lines it stands on, on the card it's saved onto (basis dropped)
+        const observations = kept.observations.map(({ basis: _basis, ...o }) => {
+          const linked = { ...o, sources: linkSources(c, { ...o, basis: _basis }) };
+          return right.has(o.id) ? { ...linked, verdict: "right" as const, confidence: "high" as const } : linked;
+        });
         return { ...c, insights: { ...kept, observations, ...(denied.length ? { denied } : {}) } };
       });
       this.failedAt.delete(userId);
@@ -162,7 +206,14 @@ export class Insights {
         this.failedAt.set(userId, Date.now());
         this.log("insights.failed", { from, message: String(err).slice(0, 160) });
       })
-      .finally(() => { if (this.jobs.get(userId)?.promise === promise) this.jobs.delete(userId); });
+      .finally(async () => {
+        if (this.jobs.get(userId)?.promise === promise) this.jobs.delete(userId);
+        // the last write is done (saved, failed or stale): the report is no longer "refreshing"
+        if (this.seq.get(userId) === mine) {
+          // checked again under the lock: newer answers may have reserved and set it meanwhile (Codex P2)
+          await this.personalize.patchStyle(userId, (c) => (c.insights?.refreshing && this.seq.get(userId) === mine ? { ...c, insights: { ...c.insights, refreshing: false } } : null)).catch(() => {});
+        }
+      });
     this.jobs.set(userId, { promise, startedAt: Date.now() });
   }
 
@@ -190,6 +241,14 @@ export class Insights {
     const a = answers as Record<string, unknown>;
     const settings = settingsFrom(a);
     const answerPicks = picksFromAnswers(a);
+    // demo P0 #1 (11/4): the rewrite took 27–51 s while the app waited ~18 s, so SUM sat on the import-only report.
+    // The answers' own parts (the four setup lines, "Your mix") go on the stored report now, marked refreshing (the
+    // app shows "Adding your answers…" and keeps asking ~60 s); the traits follow from ONE minimal-effort Spark write.
+    // The write's turn is reserved before the patch, so an older write ending meanwhile can't clear the new flag (Codex P2).
+    const mine = this.enabled ? this.reserve(userId) : 0;
+    if (this.enabled) {
+      await this.personalize.patchStyle(userId, (c) => (c.insights && this.seq.get(userId) === mine ? { ...c, insights: { ...c.insights, settings, mix: mixFrom([...cardPicks(c), ...answerPicks]), refreshing: true } } : null));
+    }
     this.start(userId, "answers", (card) => {
       if (!card) return null;
       return {
@@ -206,8 +265,9 @@ export class Insights {
           (card.removed ?? []).filter((r) => r.forget),
         ),
         unknowns: card.toConfirm,
+        quick: true,
       };
-    }, { settings });
+    }, { settings, seq: mine });
   }
 
   /** GET: the stored report, after waiting up to waitMs for one being written. No report and no write → one starts from the card. */
@@ -217,6 +277,11 @@ export class Insights {
     if (!job) {
       const card = await this.store.getStyle(userId);
       if (!card) return { status: "none", report: null };
+      if (card.insights?.refreshing) {
+        // nothing is writing it any more (a restart): the flag goes, so the app stops waiting (Codex P2)
+        const fixed = await this.personalize.patchStyle(userId, (c) => (c.insights?.refreshing && !this.jobs.has(userId) ? { ...c, insights: { ...c.insights, refreshing: false } } : null));
+        return { status: "ready", report: publicReport(fixed?.insights ?? { ...card.insights, refreshing: false }) };
+      }
       if (card.insights) return { status: "ready", report: publicReport(card.insights) };
       const failed = this.failedAt.get(userId);
       if (failed && Date.now() - failed < FAIL_BACKOFF_MS) return { status: "failed", report: null };
@@ -267,9 +332,69 @@ export class Insights {
         return { ...c, insights: { ...ins, observations: ins.observations.map((x) => (x.id === id ? { ...x, verdict: "right" as const, confidence: "high" as const } : x)) } };
       }
       const learning = ins.learning.some((l) => l.id === o.category) ? ins.learning : [...ins.learning, { id: o.category, label: LEARN_LABEL[o.category] }];
-      const denied = [...(ins.denied ?? []), { id, claim: o.claim, category: o.category, ...(correction ? { correction } : {}), at: this.now().toISOString() }].slice(-DENIED_MAX);
+
+      // AU-91: the findings it was built from leave the call profile too (and its rows). Recorded as removed lines
+      // (an older analysis can't bring them back) but not as "forget" tombstones: those block every later line that
+      // shares a word ("short" films after "short replies", Codex #581 r2)
+      // a list finding loses only the picked item ("Food: spicy, seafood." → "Food: seafood.", Codex #581 r3)
+      // linked report: exactly its linked lines; an older report (no links): the text matching it had (AU-91)
+      // a report saved with no links found (sources: []) falls back to the older matching too (Codex #581 recut P1)
+      const edits = o.sources?.length ? editsFromSources(c, o) : editsBehind(c, o);
+      const { drop, rewrite, picks, items, removedLines } = edits;
+      // a linked edit applies only in its own section (the same words elsewhere are another setting, Codex #581 link r1)
+      const sectionOf: Map<string, string> | null = "sectionOf" in edits ? (edits.sectionOf as Map<string, string>) : null;
+      const gone = new Set([...drop, ...rewrite.keys()]);
+      const at = this.now().toISOString();
+      const fix = <T extends { text: string }>(key: string, list: T[]) => list.flatMap((f) => {
+        // settings sections never change on a "not me", whatever path chose the line (Codex #581 link r3)
+        if (OPERATIONAL.has(key)) return [f];
+        if (sectionOf && sectionOf.has(f.text) && sectionOf.get(f.text) !== key) return [f];
+        return drop.has(f.text) ? [] : rewrite.has(f.text) ? [{ ...f, text: rewrite.get(f.text)! }] : [f];
+      });
+      const sections = Object.fromEntries(Object.entries(c.sections).map(([k, v]) => [k, Array.isArray(v) ? fix(k, v as Array<{ text: string }>) : v])) as StyleCard["sections"];
+      const display = (c.display ?? []).map((r) => ({ ...r, items: fix(r.key, r.items) }));
+      // the picks it stood on leave card.picks: a rewritten report can't build a new line on them (Codex #581 r3)
+      const pickN = new Set(picks.map((q) => q.trim().toLowerCase()));
+      const cardPicks = c.picks ? { picks: c.picks.filter((x) => !pickN.has(x.label.trim().toLowerCase())) } : {};
+      // each with its field: an older call analysis of that field can't add it back (merge.ts priorTombs, Codex #581 r5)
+      const fieldOf = (from: string) => Object.entries(c.sections).find(([, v]) => Array.isArray(v) && (v as Array<{ text: string }>).some((f) => f.text === from))?.[0];
+      const seen = new Set<string>();
+      // the section the edit really happened in (a linked edit carries it; an older one is looked up); a settings section
+      // never gets a removal record (Codex #581 link r4)
+      const sectionFor = (r: { from: string; section?: string }) => r.section ?? fieldOf(r.from);
+      const tomb = removedLines.filter((r) => !OPERATIONAL.has(sectionFor(r) ?? "") && !seen.has(r.text) && seen.add(r.text) && !(c.removed ?? []).some((x) => x.text === r.text))
+        .map((r) => { const field = sectionFor(r); return { text: r.text, at, ...(field ? { field } : {}) }; });
+      // an item taken out of a list ("spicy"): another observation that says it goes too, one on what's left stays
+      const itemRe = items.length ? new RegExp(`\\b(?:${items.map((x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`, "i") : null;
+      // another observation that stands on a removed finding goes with it (its "I'll keep replies short" would stay)
+      const quotes = o.evidence.filter((e) => e.source !== "answer").map((e) => quoteWords(e.quote)).filter((w) => w.length).slice(0, 6);
+      const alsoGone = gone.size || pickN.size || quotes.length ? ins.observations.filter((x) => {
+        if (x.id === id) return false;
+        const e = x.sources?.length ? editsFromSources(c, x) : editsBehind(c, x);
+        // the same rule as the save path: anything standing on what they said "not me" to (Codex #581 r22)
+        if (standsOnDenied(x, { picks, items, quotes })) return true;
+        // the same paste quote (hash) as the one they said "not me" to, too (Codex #581 r13)
+        if (x.evidence.some((v) => v.source !== "answer" && quotes.some((d) => sameQuote(quoteWords(v.quote), d)))) return true;
+        return [...e.drop].some((t) => drop.has(t)) || e.picks.some((q) => pickN.has(q.trim().toLowerCase()))
+          || (!!itemRe && [x.claim, x.use_in_call, ...x.evidence.map((v) => v.quote)].some((t) => itemRe.test(t)));
+      }).map((x) => x.id) : [];
+      // the paste quotes it stood on too: a reworded observation on the same quote can't come back (Codex #581 r12) —
+      // kept as hashes, never the pasted words themselves (the privacy notice: no pasted text stored, AU-95)
+      // the picks / items it stood on are kept with the "not me" record: a report already being written when they said
+      // it can't bring them back with another claim (checked when it is saved, Codex #581 r5)
+      const denied = [...(ins.denied ?? []), { id, claim: o.claim, category: o.category, ...(correction ? { correction } : {}), at: this.now().toISOString(), ...(picks.length ? { picks } : {}), ...(items.length ? { items } : {}), ...(quotes.length ? { quotes } : {}) }].slice(-DENIED_MAX);
       // the type / strengths / watch-outs / headline built on it go too (Codex P2)
-      return { ...c, insights: { ...withoutObservations(ins, [id]), learning: learning.slice(0, 5), denied } };
+      // the conditional rules saying the same go too ("When deciding, keep replies short and direct.")
+      const ruleGone = new Set(rulesBehind(c.rules ?? [], o, [...gone]));
+      const rules = (c.rules ?? []).filter((r) => !ruleGone.has(r));
+      const ruleTexts = new Set([...ruleGone].map((r) => ruleLine(r)));
+      const shown = ruleTexts.size ? display.map((r) => ({ ...r, items: r.items.filter((i) => !ruleTexts.has(i.text)) })) : display;
+      // the other observations' links follow a rewritten list line ("Food: spicy, seafood." → "Food: seafood."), so a
+      // later "not me" on Seafood still finds its line (Codex #581 link r1)
+      const relink = (x: typeof ins.observations[number]) => (x.sources ? { ...x, sources: x.sources.map((l) => (rewrite.has(l.text) && (!sectionOf || sectionOf.get(l.text) === l.section) ? { ...l, text: rewrite.get(l.text)! } : l)) } : x);
+      const kept = withoutObservations(ins, [id, ...alsoGone]);
+      const relinked = { ...kept, observations: kept.observations.map(relink) };
+      return { ...c, ...cardPicks, rules, sections, display: shown, removed: [...(c.removed ?? []), ...tomb].slice(-40), insights: { ...relinked, learning: learning.slice(0, 5), denied } };
     });
     if (!found || !next?.insights) throw new InsightsError(404, "not_found", "no such insight");
     this.log("insights.verdict", { verdict: b.verdict, corrected: !!correction });

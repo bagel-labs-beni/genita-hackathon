@@ -25,6 +25,8 @@ enum FindsInk {
 /// this call (`Reason.from`). VoiceOver reads them as one "Why this: …" line.
 struct FindReasonChips: View {
     let reasons: [FindCard.Reason]
+    /// CW-02 (춘식이 11/4): an outfit's occasion, last in the same flow — the grey "what you said" chip
+    var occasion: (text: String, accessibilityLabel: String)? = nil
     var body: some View {
         // wraps: each chip reads whole (two short chips usually share a line)
         ChipLayout(spacing: 6) {
@@ -34,8 +36,17 @@ struct FindReasonChips: View {
                 Text(r.text).font(TypeStyle.body(13, .medium)).foregroundStyle(call ? CallInk.mute : FindsInk.blueText).lineLimit(1).truncationMode(.tail).frame(maxWidth: 260)
                     .padding(.horizontal, 10).frame(height: 26).background(call ? FindsInk.skip : FindsInk.blueSoft, in: Capsule())
             }
+            if let occasion {
+                // capped at the content width (390 pt screen − 2 × 38 margin − 2 × 12 padding): ChipLayout proposes no width,
+                // so the cap is what makes a long occasion end in "…" on one line (Codex #625 r6)
+                Text(occasion.text).font(TypeStyle.body(12, .medium)).foregroundStyle(CallInk.ink).lineLimit(1).truncationMode(.tail)
+                    .frame(maxWidth: 290, alignment: .leading).fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 12).padding(.vertical, 4).background(FindsInk.skip, in: RoundedRectangle(cornerRadius: 12))
+                    .accessibilityIdentifier("outfitOccasion")
+            }
         }.frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityElement(children: .ignore).accessibilityLabel("Why this: " + reasons.map(\.text).joined(separator: ", "))
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel([reasons.isEmpty ? nil : "Why this: " + reasons.map(\.text).joined(separator: ", "), occasion?.accessibilityLabel].compactMap { $0 }.joined(separator: ". "))
             .accessibilityIdentifier("findReasons")
     }
 }
@@ -526,7 +537,9 @@ struct FindCardPage: View {
                         .findsRise(2)
                 }
                 // D48 ③: why this fits you — 1–2 chips from the user's own taste lines (not on link cards)
-                if card.kind != .link, let reasons = card.reasons, !reasons.isEmpty { FindReasonChips(reasons: Array(reasons.prefix(2))).padding(.top, 8).findsRise(2) }
+                // CW-02 (춘식이 11/4): an outfit's occasion goes last in the same chip flow (blue taste chips, then grey)
+                let reasons = card.kind == .link ? [] : Array((card.reasons ?? []).prefix(2))
+                if !reasons.isEmpty || card.occasionChip != nil { FindReasonChips(reasons: reasons, occasion: card.occasionChip).padding(.top, 8).findsRise(2) }
             }.frame(maxWidth: .infinity, alignment: .leading)
             if card.kind != .link, let hero = card.hero {
                 FindPicture(image: hero, resolve: call.findsURL, showFailText: false).frame(width: 56, height: 56).clipShape(RoundedRectangle(cornerRadius: 12))
@@ -713,10 +726,10 @@ struct FindCardPage: View {
                 .accessibilityLabel(option.label + (option.picked ? ", my pick" : ""))
             }
         }.padding(.top, 4)
-        if !card.why.isEmpty {
+        if !card.whyLines.isEmpty {
             Text("Why").font(TypeStyle.body(12, .medium)).foregroundStyle(CallInk.mute).padding(.top, 8)
             VStack(alignment: .leading, spacing: 8) {
-                ForEach(card.why, id: \.self) { line in
+                ForEach(card.whyLines, id: \.self) { line in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Circle().fill(CallInk.ink).frame(width: 4, height: 4).offset(y: -4)
                         Text(line).font(TypeStyle.body(16)).foregroundStyle(CallInk.ink).fixedSize(horizontal: false, vertical: true)

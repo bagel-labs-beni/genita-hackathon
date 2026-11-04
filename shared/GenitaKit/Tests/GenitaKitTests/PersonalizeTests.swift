@@ -166,6 +166,27 @@ struct PersonalizeProtocolTests {
         #expect(p.topic == "How chatty calls should be")
     }
 
+    /// CW-02 (춘식이 11/4): the outfit card's occasion chip copy.
+    @Test func outfitOccasionChipCopy() throws {
+        func card(_ situation: String?, kind: String = "outfit", why: [String] = []) throws -> FindCard {
+            let ev = situation.map { #","evidence":{"style":"camel, clean","situation":"\#($0)"}"# } ?? ""
+            let w = "[" + why.map { "\"\($0)\"" }.joined(separator: ",") + "]"
+            return try JSONDecoder().decode(FindCard.self, from: Data(#"{"id":"f1","kind":"\#(kind)","createdAt":"t","eyebrow":"From your camera","title":"Wear the trench.","subtitle":"camel, clean","items":[],"steps":[],"options":[],"why":\#(w),"ask":[],"sources":[],"how":[]\#(ev)}"#.utf8))
+        }
+        #expect(try card("Easy to wear all weekend.").occasionChip?.text == "Easy to wear all weekend", "the server's reason line, as is")
+        #expect(try card("Easy to wear all weekend").occasionChip?.accessibilityLabel == "Occasion: Easy to wear all weekend")
+        #expect(try card("beige trench for dinner tonight.").occasionChip?.text == "Beige trench for dinner tonight")
+        #expect(try card("   ").occasionChip == nil)
+        #expect(try card(" . ").occasionChip == nil)
+        #expect(try card(nil).occasionChip == nil)
+        #expect(try card("Light for a weekend", kind: "product").occasionChip == nil, "product cards keep their own chips")
+        // the train's server also appends the reason to `why`: listed once, as the chip
+        let both = try card("Easy to wear all weekend.", why: ["Clean camel, totally you.", "Casual blue, less you.", "Easy to wear all weekend."])
+        #expect(both.whyLines == ["Clean camel, totally you.", "Casual blue, less you."])
+        #expect(try card(nil, why: ["Clean camel."]).whyLines == ["Clean camel."])
+        #expect(try card("Easy to layer", kind: "product", why: ["Easy to layer"]).whyLines == ["Easy to layer"])
+    }
+
     @Test func findCardReadsReasonChipsWithTheirSourceAndOlderCardsWithout() throws {
         let card = #"{"id":"f1","kind":"recipe","createdAt":"t","eyebrow":"From your fridge","title":"Egg fried rice","subtitle":"","items":[],"steps":[],"options":[],"why":[],"ask":[],"sources":[],"how":[]"#
         let with = try JSONDecoder().decode(FindCard.self, from: Data((card + #","reasons":[{"text":"Your taste: quick weeknight food","source":"Quick meals.","from":"profile"},{"text":"You said: no cilantro","source":"no cilantro","from":"call"}]}"#).utf8))

@@ -11,4 +11,11 @@ enum HandoffPairingInput {
     static func mayReconnectRemembered(sheetOpen: Bool, code: String, linkConnected: Bool) -> Bool {
         !linkConnected && !(sheetOpen && code.count == 6)
     }
+
+    /// P01 opens by itself once per launch (Chelsea 11/4: the Mac showed its code and the iPhone offered nothing):
+    /// signed in, in front, in a call, a Mac on this account online on the server, and no paired or connected Mac.
+    static func autoPrompt(signedIn: Bool, foreground: Bool, inCall: Bool, macOnline: Bool, paired: Bool,
+                           linkConnected: Bool, sheetOpen: Bool, prompted: Bool) -> Bool {
+        signedIn && foreground && inCall && macOnline && !paired && !linkConnected && !sheetOpen && !prompted
+    }
 }

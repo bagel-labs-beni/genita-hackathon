@@ -60,8 +60,10 @@ test("S5 cache: warmed at call start (shoes in each liked color); 'dark brown sh
   const t0 = performance.now();
   const started = r.onTurn({ text: "Can you find me some dark brown shoes that go with this?", frames: [], utteranceId: 2, replyText: Promise.resolve(null) });
   assert.equal(started?.kind, "product");
-  await sleep(5);
-  const created = events.find((e) => e.type === "find.created" && e.findId === started!.findId) as Extract<ServerEvent, { type: "find.created" }> | undefined;
+  // QA 11/4: a fixed 5 ms sleep missed it 1/4 under load; poll (the replay needs no search, so it lands well inside 200 ms)
+  const findCreated = () => events.find((e) => e.type === "find.created" && e.findId === started!.findId) as Extract<ServerEvent, { type: "find.created" }> | undefined;
+  for (let i = 0; i < 40 && !findCreated(); i++) await sleep(5);
+  const created = findCreated();
   assert.ok(created && performance.now() - t0 < 200, "the card is there at once");
   assert.deepEqual(created!.card.products!.map((p) => p.name), ["Dark Brown Chelsea Boot", "Dark Brown Penny Loafer"]);
   assert.ok(created!.card.products!.every((p) => p.situation === ""), "another call's situation never travels");
@@ -263,6 +265,22 @@ test("AU-92: after 'Forget all of this' the card on screen no longer quotes the 
   r.close();
 });
 
+test("CW-02 / AU-92: an outfit card's occasion line is said to the call, never after 'Forget all of this'", async () => {
+  const { v } = vendors(10);
+  const { r } = runner(v, "acct-forget-outfit", "");
+  const card = { id: "o1", kind: "outfit", title: "Wear the trench.", subtitle: "", createdAt: new Date(Date.now() - 1000).toISOString(), items: [], steps: [], sources: [],
+    options: [{ label: "Beige trench", frame: 1, picked: true }, { label: "Denim jacket", frame: 0, picked: false }],
+    why: ["Clean camel, totally you."], evidence: { style: "camel, clean", situation: "Your favorite muted colors for this weekend." } } as unknown as FindCard;
+  (r as unknown as { cards: Map<string, FindCard> }).cards.set("o1", card);
+  r.focus("o1");
+  assert.match(r.onScreen() ?? "", /occasion: Your favorite muted colors for this weekend\./);
+  r.forgetTaste();
+  const after = r.onScreen() ?? "";
+  assert.doesNotMatch(after, /muted colors|occasion:|totally you/);
+  assert.match(after, /Beige trench/, "the options themselves stay");
+  r.close();
+});
+
 test("handover b9-6: one color rule — the cache takes what the search ranks as the asked color", async () => {
   const { cardFitsColors, colorAsks } = await import("../src/finds/productCache.ts");
   const card = (names: string[]) => ({ id: "c", kind: "product", createdAt: "", eyebrow: "", title: "", subtitle: "", items: [], steps: [], options: [], why: [], ask: [], sources: [], how: [], products: names.map((name, i) => ({ id: `p${i}`, name, url: "https://x.example.com/p/1", domain: "x.example.com", store: "X", taste: "", situation: "" })) }) as never;
@@ -271,4 +289,28 @@ test("handover b9-6: one color rule — the cache takes what the search ranks as
   assert.deepEqual(colorAsks("Find shoes, but no black ones"), [], "a color ruled out is not asked");
   assert.deepEqual(colorAsks("shoes in dark brown"), ["brown"]);
   assert.deepEqual(colorAsks("shoes that go with my brown trench"), []);
+});
+
+test("P1-9 (b9 S5): a refresh that comes back with one link never replaces the two-pick card; a one-link card is never cached", async () => {
+  const { cachePut, cacheGet, clearProductCache } = await import("../src/finds/productCache.ts");
+  clearProductCache();
+  const card = (n: number) => ({ id: "c", kind: "product", createdAt: "", eyebrow: "", title: "", subtitle: "", items: [], steps: [], options: [], why: [], ask: [], sources: [], how: [], products: Array.from({ length: n }, (_, i) => ({ id: `p${i}`, name: `Dark Brown Boot ${i}`, url: `https://x.example.com/p/${i}`, domain: "x.example.com", store: "X", taste: "", situation: "" })) }) as FindCard;
+  cachePut("k|account:a|", { at: Date.now(), card: card(1) });
+  assert.equal(cacheGet("k|account:a|", Date.now()), null, "one link is not an answer to cache");
+  cachePut("k|account:a|", { at: Date.now(), card: card(2) });
+  assert.equal(cacheGet("k|account:a|", Date.now())?.card.products?.length, 2);
+  cachePut("k|account:a|", { at: Date.now(), card: card(1) });
+  assert.equal(cacheGet("k|account:a|", Date.now())?.card.products?.length, 2, "the smaller refresh never wins");
+  clearProductCache();
+});
+
+test("P1-9 (Codex P2): a one-link warm-up that the cache turns down does not block the next call's warm-up", async () => {
+  const { cachePut, claimWarm, clearProductCache } = await import("../src/finds/productCache.ts");
+  clearProductCache();
+  const card = (n: number) => ({ id: "c", kind: "product", createdAt: "", eyebrow: "", title: "", subtitle: "", items: [], steps: [], options: [], why: [], ask: [], sources: [], how: [], products: Array.from({ length: n }, (_, i) => ({ id: `p${i}`, name: `Dark Brown Boot ${i}`, url: `https://x.example.com/p/${i}`, domain: "x.example.com", store: "X", taste: "", situation: "" })) }) as FindCard;
+  const now = Date.now();
+  assert.equal(claimWarm("w|account:a|", now), true);
+  cachePut("w|account:a|", { at: now, card: card(1) });
+  assert.equal(claimWarm("w|account:a|", now + 1000), true, "the next warm-up may run");
+  clearProductCache();
 });

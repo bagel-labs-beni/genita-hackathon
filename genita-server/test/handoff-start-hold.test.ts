@@ -62,3 +62,21 @@ test("start hold: a claim that never comes releases the held lines after the wai
   t.mock.timers.tick(1500);
   assert.deepEqual(c.out, ["ready", "reply.delta", "speaking", "audio.timing"]);
 });
+
+test("start hold (MV-01): a start that takes the conversation with a newer local claim plays its held opener after the handover lease", async () => {
+  const hub = new HandoffHub(new MemoryOwnershipStore(), () => {}, { handoverMs: 60 });
+  const mac = wire(hub, "mac");
+  mac.sink.sendJson({ type: "ready" } as never);
+  await mac.call.started(); // the Mac holds it (epoch 1)
+  const out: string[] = [];
+  const phone = gateCall(hub, "u1", "iphone", {
+    sendJson: (m) => out.push(String((m as { type: string }).type)),
+    sendBinary: () => out.push("bin"),
+    close() {},
+  }, () => {}, { owner: "iphone", epoch: 2 }); // Continue here made while presence was down
+  opener(phone.sink);
+  await phone.call.started();
+  assert.deepEqual(out.filter((t) => t !== "ownership"), ["ready", "reply.delta", "speaking", "audio", "bin", "audio.timing"], "the opener plays, after the lease");
+  assert.equal(phone.call.mayPlay(), true);
+  mac.call.close(); phone.call.close();
+});

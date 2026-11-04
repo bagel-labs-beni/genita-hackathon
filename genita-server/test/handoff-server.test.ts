@@ -281,3 +281,33 @@ test("proximity on the real server: an ungated iPhone call (today's apps) + pres
   assert.ok(!JSON.stringify(events).includes(token), "the token is never logged");
   for (const c of [phonePresence, macPresence, stranger, phoneCall, strangerCall]) c.ws.close();
 });
+
+test("MV-01 GATE-A: the apps' call URL (device + last known owner) opts into the gate; a claim made while presence was down wins at start", async (t) => {
+  const { base } = await boot(t);
+  // the Mac holds the conversation (epoch 1), as the apps' URL says
+  const macCall = await open(base, "/v1/session?device=mac&owner=mac&epoch=1", "gate");
+  macCall.send({ type: "start", persona: { name: "Jin" } });
+  await macCall.waitFor((m) => m.type === "ownership" && m.owner === "mac");
+  macCall.send({ type: "text", text: "hi" });
+  await macCall.waitFor((m) => m.type === "reply");
+  assert.ok(macCall.bin.length > 0, "the owner plays");
+
+  // the iPhone tapped Continue here with presence down (its own epoch 2): its call carries that claim
+  const phoneCall = await open(base, "/v1/session?device=iphone&owner=phone&epoch=2", "gate");
+  phoneCall.send({ type: "start", persona: { name: "Jin" } });
+  await phoneCall.waitFor((m) => m.type === "ownership" && m.owner === "iphone");
+  const moved = macCall.json.findIndex((m) => m.type === "ownership" && m.owner === "iphone");
+  assert.ok(moved >= 0, "the Mac's call hears the newer claim");
+  phoneCall.send({ type: "text", text: "back on the phone" });
+  await phoneCall.waitFor((m) => m.type === "reply" && m.text);
+  assert.ok(phoneCall.bin.length > 0, "the iPhone plays: not stranded behind a stale server owner");
+
+  // a stale claim (epoch 1) from a late Mac call changes nothing: that call stays silent
+  const lateMac = await open(base, "/v1/session?device=mac&owner=mac&epoch=1", "gate");
+  lateMac.send({ type: "start", persona: { name: "Jin" } });
+  await lateMac.waitFor((m) => m.type === "ownership" && m.owner === "iphone");
+  lateMac.send({ type: "text", text: "anyone?" });
+  await lateMac.waitFor((m) => m.type === "reply" && m.text);
+  assert.equal(lateMac.bin.length, 0, "a non-owner never gets audio frames (GATE-A)");
+  for (const c of [macCall, phoneCall, lateMac]) c.ws.close();
+});

@@ -1,4 +1,5 @@
 import Combine
+import ImageIO
 import SwiftUI
 
 struct ConversationView: View {
@@ -30,10 +31,23 @@ struct ConversationView: View {
     @State private var faceWaitOver = false
     /// the wait stage has been up: it stays in the tree through its 300 ms step back after the face arrived
     @State private var waitStageUp = false
+    /// Face plan item 1 (flag `CompanionFace.sceneFraming`): the call scene in the face set's crop (server `framing`),
+    /// drawn at once under the poster / live face; with it the veil doesn't wait for the face set.
+    @State private var framedScene: CGImage?
     @State private var faceArrivedTaps = 0
     #if DEBUG
     @State private var debugWaitHold = ProcessInfo.processInfo.environment["GENITA_WAIT_STAGE"] != nil
+    /// DEBUG `GENITA_WAIT_FREEZE=1`: the arrival holds at its midpoint (orb 1.06 half faded, face veil blur half way)
+    /// for the "arriving" review capture
+    private let debugWaitFreeze = ProcessInfo.processInfo.environment["GENITA_WAIT_FREEZE"] != nil
     #endif
+    private var waitFrozen: Bool {
+        #if DEBUG
+        return debugWaitFreeze
+        #else
+        return false
+        #endif
+    }
     /// S09: no picture of the generated face yet (the scene, or the face set's rendered poster / still; a driver
     /// whose first frame isn't drawn doesn't count — Codex P2), and one is still coming: not after the prep failed
     /// (S09-PF, the call goes on as usual), and at most 20 s when nothing is being made or downloaded. Upload photos never count.
@@ -87,8 +101,10 @@ struct ConversationView: View {
                 let waitingPill: String? = !connecting && waitingForFace && model.callPrepIndicator == nil ? CallCueView.waitingLine(name: call.companionName, rowWidth: grid.rowPillWidth) : nil
                 // HUD r01 A: which line the status pill is on, so the prep line, the chip and camera labels stack around it
                 let moveShown = moveLine && !findsTabOpen && !interpreting && !unclear
+                // D73 (TR-01 NET): interpreting hides the call cue, except S09-R — a blip must show while the bars wait
+                let cueShown = !findsTabOpen && !connecting && (!interpreting || call.link == .reconnecting) && !unclear
                 let statusWidth = moveShown ? CallCueView.pillWidth(text: HandoffMoveStatusLine.text(moving: handoff.moving))
-                    : !findsTabOpen && !connecting && !interpreting && !unclear ? CallCueView.width(cue: call.cue, name: call.companionName, findsText: findsPill, rowWidth: grid.rowPillWidth, waitingText: waitingPill) : nil
+                    : cueShown ? CallCueView.width(cue: call.cue, name: call.companionName, findsText: findsPill, rowWidth: grid.rowPillWidth, waitingText: waitingPill) : nil
                 let status = Self.statusLine(width: statusWidth, rowWidth: grid.rowPillWidth)
                 ZStack(alignment: .topLeading) {
                     ZStack(alignment: .topLeading) {
@@ -102,11 +118,13 @@ struct ConversationView: View {
                             .onTapGesture(count: 2) { if call.canFlipCamera { call.flipCamera() } } }
                         // F10-U-SHEET r03: the face steps back as the sheet rises (half .814, rising .895) and
                         // becomes a 96 × 128 window when the sheet is full.
-                        CompanionFaceView(still: companionImage, loop: loopURL, face: connecting ? nil : call.face, faceStill: call.faceStill, poster: call.facePoster).frame(width: full.size.width, height: full.size.height).clipped()
+                        CompanionFaceView(still: companionImage, loop: loopURL, face: connecting ? nil : call.face, faceStill: call.faceStill, poster: call.facePoster, framedStill: framedScene, speaking: call.companionSpeaking).frame(width: full.size.width, height: full.size.height).clipped()
                             // S07 veiled → S09 the veil lifts (motion lane); never in the handoff snapshot (ImageRenderer, no onAppear)
                             // motion details card 10: veiled until the generated face (poster or live) is there, then clears
                             // once (blur 14, 520 ms) with one medium tap; flag off → the catalog reveal as before
-                            .modifier(CallFaceVeil(connecting: connecting, faceReady: !waitingForFace && (call.facePoster != nil || call.face != nil || faceWaitOver), enabled: handoffEnabled))
+                            .modifier(CallFaceVeil(connecting: connecting, faceReady: !waitingForFace && (call.facePoster != nil || call.face != nil || framedScene != nil || faceWaitOver), enabled: handoffEnabled))
+                            // DEBUG arriving capture: the veil half way (blur 7 of 14)
+                            .blur(radius: waitFrozen && waitStageUp && !waitingForFace ? 7 : 0)
                             .grayscale(sheetOffline ? 1 : 0).brightness(sheetOffline ? -0.25 : 0).blur(radius: unclear ? 8 : 0)
                             .scaleEffect(faceScale(sheet), anchor: .topLeading).offset(faceOffset(sheet, top: top))
                             .opacity(sheet == .full || call.cameraOn ? 0 : 1)
@@ -121,7 +139,7 @@ struct ConversationView: View {
                         // out of the tree (not just transparent) while the face is the small window: the live orb
                         // would keep drawing at 60 fps unseen (Codex P3); the small windows carry their own orb
                         if !connecting && (waitingForFace || waitStageUp) && sheet != .full && !call.cameraOn {
-                            CallWaitStage(size: full.size, leaving: !waitingForFace)
+                            CallWaitStage(size: full.size, leaving: !waitingForFace, frozenMid: waitFrozen)
                                 .scaleEffect(faceScale(sheet), anchor: .topLeading).offset(faceOffset(sheet, top: top))
                                 .animation(.drawer, value: sheet)
                                 .transition(.opacity)
@@ -135,7 +153,7 @@ struct ConversationView: View {
                         if call.cameraOn && sheet != .full {
                             // r01 CAM-H `.pip`: right 20, top 120, 96 × 128, 2 px light border; moves left while the sheet is half up (the rail rises into its place)
                             // the camera's small window is the live, talking face too (Chelsea P1, build 7: a frozen upload photo)
-                            CompanionFaceView(still: companionImage, loop: loopURL, face: call.face, faceStill: call.faceStill, poster: call.facePoster).frame(width: 96, height: 128)
+                            CompanionFaceView(still: companionImage, loop: loopURL, face: call.face, faceStill: call.faceStill, poster: call.facePoster, framedStill: framedScene).frame(width: 96, height: 128)
                                 .overlay { if waitingForFace { CallWaitStage(size: CGSize(width: 96, height: 128)) } }.clipShape(RoundedRectangle(cornerRadius: 16))
                                 .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(CallInk.onInk, lineWidth: 2)).shadow(color: CallInk.ink.opacity(0.18), radius: 12, y: 8)
                                 .position(x: sheet == .half || sheet == .rising ? 68 : full.size.width - 68, y: 184 + top)
@@ -155,6 +173,8 @@ struct ConversationView: View {
                                     .transition(.opacity)
                             }
                         } else {
+                        // live captions r01: above the face / camera stage, under the self view, rail and pill
+                        captionLayer(grid: grid, size: full.size, sheet: sheet, hidden: connecting || findsTabOpen || unclear)
                         ZStack(alignment: .topLeading) {
                             if !call.cameraOn {
                                 let selfScale: CGFloat = sheet == .half || sheet == .rising ? 0.5 : 1
@@ -196,7 +216,7 @@ struct ConversationView: View {
                         if sheet == .full {
                             // r03 `.pip`: the face as a 96 × 128 window; tap → back to half
                             Button { withAnimation(.drawer) { call.finds.pipTapped() } } label: {
-                                CompanionFaceView(still: companionImage, loop: loopURL, face: call.face, faceStill: call.faceStill, poster: call.facePoster).frame(width: 96, height: 128)
+                                CompanionFaceView(still: companionImage, loop: loopURL, face: call.face, faceStill: call.faceStill, poster: call.facePoster, framedStill: framedScene).frame(width: 96, height: 128)
                                 .overlay { if waitingForFace { CallWaitStage(size: CGSize(width: 96, height: 128)) } }.clipShape(RoundedRectangle(cornerRadius: 16))
                                     .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(CallInk.onInk, lineWidth: 2)).shadow(color: CallInk.ink.opacity(0.18), radius: 12, y: 8)
                             }.buttonStyle(PressScale()).position(x: full.size.width - 64, y: 112 + top)
@@ -210,7 +230,7 @@ struct ConversationView: View {
                         if moveLine && !findsTabOpen && !interpreting && !unclear {
                             // MV-1 / MV-E take the call's status line slot
                             HandoffMoveStatusLine().position(x: grid.pillCenter.x, y: grid.statusY(status))
-                        } else if !findsTabOpen && !connecting && !interpreting && !unclear {
+                        } else if cueShown {
                             CallCueView(cue: call.cue, name: call.companionName, findsText: findsPill, waitingText: waitingPill, retry: call.retryAnswer, openSettings: openAppSettings, rowWidth: grid.rowPillWidth, level: { call.outputLevel })
                                 .frame(width: sheet == .full ? 250 : full.size.width - 2 * CallHUDGrid.margin, alignment: sheet == .full ? .leading : .center)
                                 // HUD r01 A: on the menu row (same centre line) when it fits between the menu button and its
@@ -289,6 +309,9 @@ struct ConversationView: View {
                 }.frame(width: full.size.width, height: full.size.height).clipped()
             }.ignoresSafeArea()
         }.opacity(handoffEnabled && handoff.motionVisible ? 0 : 1)
+        // CRASH-1: while the pairing sheet is up, the call under it (⋮, Interpret, the rail) takes no touches
+        .allowsHitTesting(!(handoffEnabled && handoff.settings))
+        .accessibilityHidden(handoffEnabled && handoff.settings)
         .overlay { if handoffEnabled && !connecting { PhoneHandoffOverlay(model:model) } }
         #if DEBUG
         // face pipeline probe for UI tests (why S09 shows the still): shows / attempts / loading / face / poster / error
@@ -327,10 +350,22 @@ struct ConversationView: View {
             // still over after the step back (not a blink while prep turns ready and the idle cap restarts): it gave up
             Task {
                 try? await Task.sleep(for: .milliseconds(320))
-                guard !waitingForFace else { return }
+                guard !waitingForFace, !waitFrozen else { return }
                 waitStageUp = false
                 if !hasFacePicture { waitGaveUp = true }
             }
+        }
+        // face plan item 1: draw the scene in the poster's crop (off the main thread) as soon as scene + framing are here
+        .task(id: framedSceneID) {
+            guard CompanionFace.sceneFraming, let data = model.sceneImageData, let framing = model.prep?.framing else { framedScene = nil; return }
+            let rm = reduceMotion || CallMotion.reviewStill
+            let image = await Task.detached(priority: .userInitiated) { () -> CGImage? in
+                guard let src = CGImageSourceCreateWithData(data as CFData, nil),
+                      let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
+                      let w = props[kCGImagePropertyPixelWidth] as? CGFloat, let h = props[kCGImagePropertyPixelHeight] as? CGFloat else { return nil }
+                return FaceRenderer.framedScene(data: data, outputSize: CompanionFace.outputSize(still: CGSize(width: w, height: h)), framing: framing, reduceMotion: rm)
+            }.value
+            if !Task.isCancelled { framedScene = image }
         }
         #if DEBUG
         .task(id: connecting) {
@@ -486,6 +521,16 @@ struct ConversationView: View {
     /// r03 `.rail`: half → up 440, peek/searching → up 122, full → hidden behind the sheet.
     private func railShift(_ s: SheetState) -> CGFloat { CameraBoxes.railShift(s) }
 
+    /// Live captions r01 (LiveCaptions.swift). Kill switch: app config flag `liveCaptions` (default on).
+    @ViewBuilder private func captionLayer(grid: CallHUDGrid, size: CGSize, sheet: SheetState, hidden: Bool) -> some View {
+        if appConfig.config.flag("liveCaptions", default: true) {
+            CallCaptionLayer(style: CaptionStyle(ink: CallInk.ink, onInk: CallInk.onInk, blue: CallInk.blueOnInk, font: { TypeStyle.body($0, $1) }),
+                             size: size, bottom: grid.captionBottom(sheetUp: CallHUDGrid.sheetUp(sheet)) + railShift(sheet),
+                             hidden: hidden || sheet == .half || sheet == .rising || sheet == .full,
+                             micOn: call.micOn, frame: { call.captionFrame() }, level: { call.inputLevel }, still: CallMotion.reviewStill)
+        }
+    }
+
     func dismissDenied() { media.denied = nil; call.dismissDenied() }
     func openAppSettings() {
         call.dismissMicBlocked()
@@ -498,6 +543,10 @@ struct ConversationView: View {
             RoundedRectangle(cornerRadius: 16).fill(.ultraThinMaterial).overlay(RoundedRectangle(cornerRadius: 16).fill(.black.opacity(0.05))).environment(\.colorScheme, .dark)
         }
     }
+    /// Drawer rows sit on a 47 pt pitch (y 118 / 165 / 212 / 259) and are 44 pt tall: each row's hit area takes half
+    /// the 3 pt gap on both sides, so the rows tile the column with no dead strip and no overlap (MOVE-2).
+    static let menuRowPitch: CGFloat = 47
+    static var menuRowHitShape: some Shape { Rectangle().inset(by: -(menuRowPitch - 44) / 2) }
     func menuRow(_ title: String, text: String? = nil, icon: String = "", symbol: String? = nil, badge: String? = nil, y: CGFloat, width: CGFloat, top: CGFloat, action: @escaping () -> Void) -> some View {
         let label = DesignLibrary.nodes("menu").first { $0.characters == title }!
         return Button(action: action) {
@@ -509,7 +558,7 @@ struct ConversationView: View {
                 let w = max(label.w, 140)
                 DesignText(node: label, text: text ?? label.characters).frame(width: w, height: label.h).position(x: label.x - 24 + w / 2, y: 22)
                 if let badge { Text(badge).font(TypeStyle.body(14)).foregroundStyle(CallInk.mute).position(x: width - 48 - 12, y: 22) }
-            }.frame(width: width - 48, height: 44).contentShape(Rectangle())
+            }.frame(width: width - 48, height: 44).contentShape(Self.menuRowHitShape)
         }.buttonStyle(.plain).position(x: width / 2, y: y + 22 + top).accessibilityLabel(text ?? title)
     }
 
@@ -555,7 +604,7 @@ struct ConversationView: View {
                 Color.clear
                 Image(systemName: "laptopcomputer").symbolRenderingMode(.monochrome).font(.system(size: 16)).foregroundStyle(Color(white: 17.0 / 255)).frame(width: 24, height: 21).position(x: 20, y: 22)
                 DesignText(node: label, text: "Move to Mac").frame(width: 140, height: label.h).position(x: label.x - 24 + 70, y: 22)
-            }.frame(width: width - 48, height: 44).contentShape(Rectangle())
+            }.frame(width: width - 48, height: 44).contentShape(Self.menuRowHitShape)
         }.buttonStyle(.plain).position(x: width / 2, y: y + 22 + top).accessibilityLabel("Move to Mac")
     }
     /// Self view: the call's front camera when on (one owner: CallController), Dyno's flip button, the placeholder when off.
@@ -583,6 +632,11 @@ struct ConversationView: View {
             // D22: double-tap the self view → the camera on, facing back
             .onTapGesture(count: 2) { call.useBackCamera() }.accessibilityAction(named: "Use back camera") { call.useBackCamera() }
         }
+    }
+    /// What the framed scene is drawn from: the scene bytes, the server's crop and the overscan (reduce motion).
+    private var framedSceneID: String {
+        let d = model.sceneImageData
+        return "\(model.sceneKey ?? "-")|\(d?.count ?? -1)|\(d?.hashValue ?? 0)|\(String(describing: model.prep?.framing))|\(reduceMotion || CallMotion.reviewStill)"
     }
     /// The still under the face: the prep call scene (the generated face, same framing as the face set). The upload
     /// photo never shows on a call (Chelsea P1, build 7); until the scene or the face set lands it's the dark ground.

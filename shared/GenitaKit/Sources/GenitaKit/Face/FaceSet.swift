@@ -31,6 +31,19 @@ public struct FaceManifest: Codable, Equatable, Sendable {
     public var rejected: [Rejected]?
     /// Option B flow morph data (absent → the key-patch engine).
     public var flow: FaceFlowManifest?
+    /// The dropped flow's kind and `map.framing` (`dropFlow()`): the call-screen crop never depends on whether the flow
+    /// files arrived (face plan item 1, Codex P2: the server's `framing` uses them). Not encoded.
+    public private(set) var framingHint: FramingHint?
+    public struct FramingHint: Equatable, Sendable {
+        public var kind: String?
+        public var framing: FlowMap.Framing?
+    }
+
+    /// Drops the flow (a file of it is missing) but keeps what the crop is made from.
+    public mutating func dropFlow() {
+        if let f = flow { framingHint = FramingHint(kind: f.kind, framing: f.map?.framing) }
+        flow = nil
+    }
 
     public init(version: Int?, size: [Int]?, faceBox: [Double], mouthBox: [Double], images: [String: String], visemes: [String: String],
                 boxes: [String: Boxes]?, rejected: [Rejected]?, flow: FaceFlowManifest? = nil) {
@@ -114,6 +127,10 @@ public final class FaceSet: @unchecked Sendable {
     public let patches: [LipViseme: FaceMouthPatch]
     /// Flow-morph data when prep produced it (option B).
     public let flow: FaceFlowData?
+    /// What the call-screen crop is made from (`FaceRenderer.framing`): the manifest flow's kind and `map.framing`, also
+    /// when the flow itself didn't load (face plan item 1: the crop matches the server's `framing`).
+    public let framingKind: String?
+    public let mapFraming: FlowMap.Framing?
     /// Person (subject) mask from prep (`images.person`, SAM 3.1): head / body motion stays inside it so
     /// the background never moves. Absent → a fixed head-and-shoulders ellipse lock (no on-device ML:
     /// runtime AI is Meta-only).
@@ -193,6 +210,8 @@ public final class FaceSet: @unchecked Sendable {
             do { flowData = try FaceFlowData(manifest: fm, stillSize: pixelSize, load: load) } catch { flowNote = "flow: \(error) → key patches" }
         }
         self.flow = flowData
+        framingKind = manifest.flow?.kind ?? manifest.framingHint?.kind
+        mapFraming = manifest.flow?.map?.framing ?? manifest.framingHint?.framing
 
         let base = PixelBuffer(neutral, width: w, height: h)
         let baseGray = base.analysis()

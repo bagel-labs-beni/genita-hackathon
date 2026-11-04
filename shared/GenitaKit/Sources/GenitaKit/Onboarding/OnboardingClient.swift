@@ -106,12 +106,32 @@ public struct CompanionInfo: Decodable, Equatable, Sendable {
     public var prep: PrepProgress?
     /// the ready-made judge companion (PR #178 seeds it on first judge sign-in); the app labels it "Demo companion"
     public var demo: Bool?
+    /// when the companion was made (ISO-8601, server `companionView.createdAt`); Settings shows "Together N days" (D99)
+    public var createdAt: String?
     /// ready-made realtime `start` fields (persona card, imported profile) once the setup answers are saved
     public var session: Session?
     public struct Session: Decodable, Equatable, Sendable {
         public struct User: Decodable, Equatable, Sendable { public var profile: String? }
         public var persona: ClientMessage.Persona?
         public var user: User?
+    }
+}
+
+/// D99: Settings C1 "Together 12 days". Calendar days since the companion was made; day 0 and 1 read "Met today".
+/// nil (no date, unparseable, or a clock set before it) shows nothing rather than a made-up number.
+public enum CompanionTogether {
+    public static func label(createdAt: String?, now: Date = Date(), calendar: Calendar = .current) -> String? {
+        guard let createdAt, let made = parse(createdAt) else { return nil }
+        let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: made), to: calendar.startOfDay(for: now)).day ?? -1
+        if days < 0 { return nil }
+        return days <= 1 ? "Met today" : "Together \(days) days"
+    }
+    private static func parse(_ s: String) -> Date? {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let d = f.date(from: s) { return d }
+        f.formatOptions = [.withInternetDateTime]
+        return f.date(from: s)
     }
 }
 
@@ -128,6 +148,8 @@ public struct PrepProgress: Decodable, Equatable, Sendable {
     public var total: Int?
     public var stages: [Stage: Status]
     public var sceneURL: URL?
+    /// Face plan item 1: the scene's call-screen crop (`framing`), once the server knows the face box; nil on older servers.
+    public var framing: SceneFraming?
 
     public var isReady: Bool { status == "ready" }
     public var isFailed: Bool { status == "failed" }
@@ -138,8 +160,8 @@ public struct PrepProgress: Decodable, Equatable, Sendable {
     /// Continue on PREP-1: the call can start once the scene exists (photo face + device voice until the rest lands).
     public var canStartCall: Bool { isReady || isFailed || stages[.scene] == .done }
 
-    public init(status: String, stages: [Stage: Status], done: Int? = nil, total: Int? = nil, sceneURL: URL? = nil) {
-        self.status = status; self.stages = stages; self.done = done; self.total = total; self.sceneURL = sceneURL
+    public init(status: String, stages: [Stage: Status], done: Int? = nil, total: Int? = nil, sceneURL: URL? = nil, framing: SceneFraming? = nil) {
+        self.status = status; self.stages = stages; self.done = done; self.total = total; self.sceneURL = sceneURL; self.framing = framing
     }
 
     private struct Step: Decodable { var status: String? }
@@ -148,7 +170,7 @@ public struct PrepProgress: Decodable, Equatable, Sendable {
     /// is only trusted once this many keys settled
     static let faceExpressionCount = 5
     private struct Progress: Decodable { var done: Int?; var total: Int? }
-    private enum Keys: String, CodingKey { case status, progress, steps, lips, face, sceneUrl }
+    private enum Keys: String, CodingKey { case status, progress, steps, lips, face, sceneUrl, framing }
 
     static func stepStatus(_ raw: String?) -> Status? {
         switch raw {
@@ -168,6 +190,7 @@ public struct PrepProgress: Decodable, Equatable, Sendable {
         let p = try? c.decode(Progress.self, forKey: .progress)
         done = p?.done; total = p?.total
         sceneURL = (try? c.decode(String.self, forKey: .sceneUrl)).flatMap(URL.init(string:))
+        framing = (try? c.decodeIfPresent(SceneFraming.self, forKey: .framing))?.sanitized
         // steps: {scene:{status}, face|expressions:{status}, mouth:{status}} or {scene, videos:{neutral:{status},…}}
         var steps: [String: Status] = [:]
         if let raw = try? c.decode([String: AnyStep].self, forKey: .steps) {

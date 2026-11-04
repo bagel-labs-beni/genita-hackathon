@@ -345,3 +345,24 @@ test("AU-07 SE-03: deleting an email account leaves no row with its address in e
   const left = await s.accounts.db.query("SELECT email FROM email_codes");
   assert.deepEqual(left.rows.map((r: any) => r.email), ["other@example.com"], "the deleted account's address is gone; others stay");
 });
+
+test("AU-07: the delete locks the user row, then each address under the code-issue lock, before any row goes", async (t) => {
+  const s = await boot(t);
+  await s.start("lock@example.com");
+  const v = await s.verify("lock@example.com", s.sent[0].code);
+  assert.equal(v.status, 200);
+  const db = s.accounts.db;
+  const seen: string[] = [];
+  const tx = db.tx.bind(db);
+  db.tx = ((fn: (q: { query: typeof db.query }) => Promise<unknown>) => tx((q) => fn({ query: (sql: string, p?: unknown[]) => { seen.push(`${sql.split(/\s+/).slice(0, 3).join(" ")} ${JSON.stringify(p ?? [])}`); return q.query(sql, p); } }))) as typeof db.tx;
+  const del = await s.call("DELETE", "/me", undefined, { authorization: `Bearer ${v.json.token}` });
+  db.tx = tx;
+  assert.equal(del.status, 200);
+  const i = seen.findIndex((x) => x.startsWith("SELECT email, provider"));
+  assert.ok(i >= 0, seen.join("\n"));
+  assert.match(seen[i + 1], /^SELECT pg_advisory_xact_lock\(hashtext\(\$1\)\) \["genita-email:lock@example.com"\]/);
+  assert.match(seen[i + 2], /^DELETE FROM email_codes/);
+  assert.match(seen[i + 3], /^DELETE FROM users/);
+  // a code asked for again after the delete starts a fresh address, nothing of the old account's left
+  assert.equal((await db.query("SELECT count(*)::int AS n FROM users WHERE email = 'lock@example.com'")).rows[0].n, 0);
+});
