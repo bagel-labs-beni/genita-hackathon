@@ -151,13 +151,13 @@ struct SettingsView: View {
         AboutYouPage(model: model)
         #endif
     }
-    /// C1 companion card: photo 56 (circle), name KMU80 22, "{voice} voice" 13 #6E6E73.
+    /// C1 companion card: photo 56 (circle), name KMU80 22, "{voice} voice" 13 #737373 (D99).
     private var companionCard: some View {
         HStack(spacing: 14) {
             SettingsAvatar(imageData: model.setup.imageData, name: companionName, size: 56)
             VStack(alignment: .leading, spacing: 2) {
                 Text(companionName).font(SettingsType.serif(22)).foregroundStyle(SettingsInk.ink).lineLimit(1)
-                Text(companionSubtitle).font(SettingsType.font(13, relativeTo: .footnote)).foregroundStyle(SettingsInk.header).lineLimit(2)
+                Text(companionSubtitle).font(SettingsType.font(13, relativeTo: .footnote)).foregroundStyle(SettingsInk.secondary).lineLimit(2)
             }
             Spacer(minLength: 8)
             SettingsChevron()
@@ -295,6 +295,8 @@ enum SettingsInk {
     static let card = Color.white
     static let ink = Color(red: 17 / 255, green: 17 / 255, blue: 17 / 255)
     static let header = Color(red: 110 / 255, green: 110 / 255, blue: 115 / 255)
+    /// C1 companion card secondary line: spec #737373 (D99; header stays #6E6E73).
+    static let secondary = Color(red: 115 / 255, green: 115 / 255, blue: 115 / 255)
     static let value = Color(red: 138 / 255, green: 138 / 255, blue: 142 / 255)
     static let chevron = Color(red: 196 / 255, green: 196 / 255, blue: 199 / 255)
     static let line = Color(red: 217 / 255, green: 217 / 255, blue: 222 / 255)
