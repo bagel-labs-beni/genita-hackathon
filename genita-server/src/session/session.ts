@@ -54,6 +54,7 @@ import type { CallStart, VoiceUpdate } from "../personalize/service.ts";
 import type { CallTurn } from "../personalize/extract.ts";
 import { ASK_TURNS, replyAsks } from "../personalize/unknowns.ts";
 import { mightBeCorrection } from "../personalize/corrections.ts";
+import { taskHint } from "../convo/taskHints.ts";
 import { ageSays, foldAge, isMinor, MINOR_LINE, NO_AGE, type AgeSay } from "../convo/minorBoundary.ts";
 import { cameraOffHint } from "../convo/cameraAsk.ts";
 import { unbackedPast } from "../convo/pastGuard.ts";
@@ -1998,7 +1999,9 @@ export class Session {
       // first in the line: the This-turn block is cut at 400 chars, the safety part must never be the cut part
       if (minor) turnLine = turnLine ? turnLine.replace(/^This turn: /, `This turn: ${minor} `) : `This turn: ${minor}`;
     }
-    return { style: "v1", opener, initiative: turn.cue?.block, perception, perceptionHint, turn: turnLine };
+    // intel eval 11/4: plan / math / how-to asks get the real work, an unknown "him" gets a question, a reused word is named
+    const task = !turn.greeting && !turn.cue && userText ? taskHint(userText, this.history, this.crisisInCall, this.persona?.kind) ?? undefined : undefined;
+    return { style: "v1", opener, initiative: turn.cue?.block, perception, perceptionHint, turn: turnLine, task };
   }
 
   private stopInitiative(): void {
