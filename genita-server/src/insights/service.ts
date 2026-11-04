@@ -9,8 +9,8 @@
  *   verdict(user, id, …) "That's right" (kept, high) / "Not me" (removed → still learning; told to the next write
  *                       and to the call profile as not true)
  *
- * Stored in the style card (user_styles.style_json.insights) under Personalize's lock. The pasted reply itself is
- * kept in memory only (2 h, so the answers rewrite can still quote it) and never stored or logged.
+ * Stored in the style card (user_styles.style_json.insights) under Personalize's lock. Import receipts are kept in
+ * memory only (2 h, for the current-process response); the DB keeps their source labels but never pasted text.
  * GENITA_INSIGHTS=0: no Spark call, GET → none, the app keeps the old SUM.
  */
 import type { SparkRequest } from "../meta/spark.ts";
@@ -19,7 +19,7 @@ import type { Personalize } from "../personalize/service.ts";
 import { looksLikeInjection, redactSensitive, type StyleCard } from "../prep/importProfile.ts";
 import type { PrepStore } from "../prep/store.ts";
 import { LEARN_LABEL, OBS_MIN, buildInsightRequest, picksFromAnswers, privateDetail, settingsFrom, similarClaim, scrubRemoved, toReport, withoutObservations, withoutRemoved, type InsightInputs } from "./report.ts";
-import type { InsightReport, StoredInsights } from "./profile.ts";
+import type { InsightEvidence, InsightReport, StoredInsights } from "./profile.ts";
 export { insightProfileLines } from "./profile.ts";
 
 type JsonFn = <T>(req: Omit<SparkRequest, "text"> & { schemaName: string; schema: Record<string, unknown> }, signal?: AbortSignal) => Promise<T>;
@@ -39,12 +39,67 @@ const FAIL_BACKOFF_MS = 60_000;
 const DENIED_MAX = 20;
 
 type Job = { promise: Promise<void>; startedAt: number };
+type ImportQuote = Pick<InsightEvidence, "quote" | "highlight">;
+type ImportQuotes = { quotes: Map<string, ImportQuote>; at: number };
+
+function importEvidenceKey(scope: string, index: number): string {
+  return `${scope}:${index}`;
+}
+
+function importQuotesOf(report: InsightReport): Map<string, ImportQuote> {
+  const quotes = new Map<string, ImportQuote>();
+  report.observations.forEach((o) => o.evidence.forEach((e, i) => {
+    if (e.source === "import" && e.quote) quotes.set(importEvidenceKey(`observation:${o.id}`, i), { quote: e.quote, ...(e.highlight ? { highlight: e.highlight } : {}) });
+  }));
+  report.strengths.forEach((x, i) => {
+    if (x.evidence.source === "import" && x.evidence.quote) quotes.set(importEvidenceKey("strength", i), { quote: x.evidence.quote, ...(x.evidence.highlight ? { highlight: x.evidence.highlight } : {}) });
+  });
+  report.watchouts.forEach((x, i) => {
+    if (x.evidence.source === "import" && x.evidence.quote) quotes.set(importEvidenceKey("watchout", i), { quote: x.evidence.quote, ...(x.evidence.highlight ? { highlight: x.evidence.highlight } : {}) });
+  });
+  return quotes;
+}
+
+/** The DB records that an import supported a trait, never the copied words themselves. */
+function storeReport(report: InsightReport): InsightReport {
+  const storeEvidence = (e: InsightEvidence): InsightEvidence => e.source === "import" ? { ...e, quote: "", highlight: "" } : e;
+  return {
+    ...report,
+    observations: report.observations.map((o) => ({ ...o, evidence: o.evidence.map(storeEvidence) })),
+    strengths: report.strengths.map((x) => ({ ...x, evidence: storeEvidence(x.evidence) })),
+    watchouts: report.watchouts.map((x) => ({ ...x, evidence: storeEvidence(x.evidence) })),
+  };
+}
+
+/** Restore only this process's import receipts; without them, omit the receipt rather than render an empty quote. */
+function responseReport(report: InsightReport, saved?: ImportQuotes): InsightReport {
+  const restore = (e: InsightEvidence, key: string): InsightEvidence | null => {
+    if (e.source !== "import") return e;
+    const quote = saved?.quotes.get(key);
+    return quote ? { ...e, ...quote } : null;
+  };
+  return {
+    ...report,
+    observations: report.observations.map((o) => ({ ...o, evidence: o.evidence.flatMap((e, i) => {
+      const next = restore(e, importEvidenceKey(`observation:${o.id}`, i));
+      return next ? [next] : [];
+    }) })),
+    strengths: report.strengths.flatMap((x, i) => {
+      const evidence = restore(x.evidence, importEvidenceKey("strength", i));
+      return evidence ? [{ ...x, evidence }] : [];
+    }),
+    watchouts: report.watchouts.flatMap((x, i) => {
+      const evidence = restore(x.evidence, importEvidenceKey("watchout", i));
+      return evidence ? [{ ...x, evidence }] : [];
+    }),
+  };
+}
 
 /** what the app gets: no denied list, no internals */
-export function publicReport(s: StoredInsights | undefined | null): InsightReport | null {
+export function publicReport(s: StoredInsights | undefined | null, importQuotes?: ImportQuotes): InsightReport | null {
   if (!s) return null;
   const { denied: _denied, ...r } = s;
-  return r;
+  return responseReport(r, importQuotes);
 }
 
 function cardFindings(card: StyleCard): string[] {
@@ -63,6 +118,7 @@ export class Insights {
   readonly enabled: boolean;
   private readonly jobs = new Map<string, Job>();
   private readonly texts = new Map<string, { text: string; at: number }>();
+  private readonly importQuotes = new Map<string, ImportQuotes>();
   private readonly failedAt = new Map<string, number>();
   /** the newest write per user (a slower older one never lands over it) */
   private readonly seq = new Map<string, number>();
@@ -79,18 +135,44 @@ export class Insights {
     this.enabled = o.enabled ?? process.env.GENITA_INSIGHTS !== "0";
   }
 
+  private nowMs(): number { return this.now().getTime(); }
+
+  private clearImportMemory(userId: string) {
+    this.texts.delete(userId);
+    this.importQuotes.delete(userId);
+  }
+
+  private pruneImportMemory() {
+    const now = this.nowMs();
+    for (const [userId, value] of this.texts) if (now - value.at > TEXT_TTL_MS) this.clearImportMemory(userId);
+    for (const [userId, value] of this.importQuotes) if (now - value.at > TEXT_TTL_MS) this.clearImportMemory(userId);
+  }
+
   private rememberText(userId: string, text: string) {
-    const now = Date.now();
-    for (const [k, v] of this.texts) if (now - v.at > TEXT_TTL_MS) this.texts.delete(k);
-    if (this.texts.size >= TEXT_MAX_USERS) this.texts.delete(this.texts.keys().next().value!);
+    this.pruneImportMemory();
+    if (this.texts.size >= TEXT_MAX_USERS) this.clearImportMemory(this.texts.keys().next().value!);
+    const now = this.nowMs();
     this.texts.set(userId, { text, at: now });
+  }
+
+  private rememberImportQuotes(userId: string, report: InsightReport) {
+    this.pruneImportMemory();
+    const quotes = importQuotesOf(report);
+    if (!quotes.size) { this.importQuotes.delete(userId); return; }
+    this.importQuotes.set(userId, { quotes, at: this.texts.get(userId)?.at ?? this.nowMs() });
+  }
+
+  private reportFor(userId: string, report: StoredInsights | undefined | null): InsightReport | null {
+    this.pruneImportMemory();
+    return publicReport(report, this.importQuotes.get(userId));
   }
 
   /** the kept paste, unless the user has since asked to forget something (Codex r7: it would be sent again) */
   private textOf(userId: string, card?: StyleCard | null): string | undefined {
+    this.pruneImportMemory();
     const t = this.texts.get(userId);
-    if (!t || Date.now() - t.at > TEXT_TTL_MS) return undefined;
-    if ((card?.removed ?? []).some((r) => r.forget && Date.parse(r.at) >= t.at - 1000)) { this.texts.delete(userId); return undefined; }
+    if (!t) return undefined;
+    if ((card?.removed ?? []).some((r) => r.forget && Date.parse(r.at) >= t.at - 1000)) { this.clearImportMemory(userId); return undefined; }
     return t.text;
   }
 
@@ -144,7 +226,7 @@ export class Insights {
       const report = await this.write(inputs, from, opts.settings ?? card?.insights?.settings ?? null, stillOk);
       const basis = opts.gate ? await opts.gate : card?.importedAt ?? null;
       if (opts.gate && !basis) return;
-      await this.personalize.patchStyle(userId, (c) => {
+      const next = await this.personalize.patchStyle(userId, (c) => {
         if (this.seq.get(userId) !== mine) return null; // a newer write started
         if ((c.importedAt ?? null) !== basis) return null; // the card was replaced (another import / skip)
         const old = opts.gate ? undefined : c.insights;
@@ -154,8 +236,9 @@ export class Insights {
         // and what the user asked to forget / corrected away since (card.removed)
         const kept = scrubRemoved(withoutObservations(report, gone), c.removed);
         const observations = kept.observations.map((o) => (right.has(o.id) ? { ...o, verdict: "right" as const, confidence: "high" as const } : o));
-        return { ...c, insights: { ...kept, observations, ...(denied.length ? { denied } : {}) } };
+        return { ...c, insights: { ...storeReport({ ...kept, observations }), ...(denied.length ? { denied } : {}) } };
       });
+      if (next?.insights) this.rememberImportQuotes(userId, report);
       this.failedAt.delete(userId);
     })()
       .catch((err) => {
@@ -174,13 +257,13 @@ export class Insights {
     return {
       // the paste is kept (memory only) for the answers rewrite only once its card is the user's card
       commit: (at) => { if (this.enabled) this.rememberText(userId, redactedText); settle(at); },
-      cancel: () => settle(null),
+      cancel: () => { this.clearImportMemory(userId); settle(null); },
     };
   }
 
   /** N1–N3: the skip card is saved; the report comes from the picks. */
   fromSkip(userId: string): void {
-    this.texts.delete(userId);
+    this.clearImportMemory(userId);
     this.start(userId, "skip", (card) => (card ? { findings: cardFindings(card), picks: cardPicks(card), source: "skip", unknowns: card.toConfirm } : null));
   }
 
@@ -217,7 +300,7 @@ export class Insights {
     if (!job) {
       const card = await this.store.getStyle(userId);
       if (!card) return { status: "none", report: null };
-      if (card.insights) return { status: "ready", report: publicReport(card.insights) };
+      if (card.insights) return { status: "ready", report: this.reportFor(userId, card.insights) };
       const failed = this.failedAt.get(userId);
       if (failed && Date.now() - failed < FAIL_BACKOFF_MS) return { status: "failed", report: null };
       this.start(userId, "card", (c) => (c ? { text: c.source === "import" ? this.textOf(userId, c) : undefined, findings: cardFindings(c), picks: cardPicks(c), source: c.source, unknowns: c.toConfirm } : null));
@@ -229,7 +312,7 @@ export class Insights {
       clearTimeout(timer);
     }
     const card = await this.store.getStyle(userId);
-    const report = publicReport(card?.insights);
+    const report = this.reportFor(userId, card?.insights);
     if (this.jobs.has(userId)) return { status: "pending", report };
     if (report) return { status: "ready", report };
     return { status: this.failedAt.has(userId) ? "failed" : "none", report: null };
@@ -241,7 +324,7 @@ export class Insights {
    * backoff — and makes any write still running land nowhere (a newer write number, and no card to land on).
    */
   forget(userId: string): void {
-    this.texts.delete(userId);
+    this.clearImportMemory(userId);
     this.failedAt.delete(userId);
     this.seq.set(userId, ++this.seqNext);
   }
@@ -264,15 +347,15 @@ export class Insights {
       if (!ins || !o) return null;
       found = true;
       if (b.verdict === "right") {
-        return { ...c, insights: { ...ins, observations: ins.observations.map((x) => (x.id === id ? { ...x, verdict: "right" as const, confidence: "high" as const } : x)) } };
+        return { ...c, insights: storeReport({ ...ins, observations: ins.observations.map((x) => (x.id === id ? { ...x, verdict: "right" as const, confidence: "high" as const } : x)) }) };
       }
       const learning = ins.learning.some((l) => l.id === o.category) ? ins.learning : [...ins.learning, { id: o.category, label: LEARN_LABEL[o.category] }];
       const denied = [...(ins.denied ?? []), { id, claim: o.claim, category: o.category, ...(correction ? { correction } : {}), at: this.now().toISOString() }].slice(-DENIED_MAX);
       // the type / strengths / watch-outs / headline built on it go too (Codex P2)
-      return { ...c, insights: { ...withoutObservations(ins, [id]), learning: learning.slice(0, 5), denied } };
+      return { ...c, insights: { ...storeReport({ ...withoutObservations(ins, [id]), learning: learning.slice(0, 5) }), denied } };
     });
     if (!found || !next?.insights) throw new InsightsError(404, "not_found", "no such insight");
     this.log("insights.verdict", { verdict: b.verdict, corrected: !!correction });
-    return publicReport(next.insights)!;
+    return this.reportFor(userId, next.insights)!;
   }
 }

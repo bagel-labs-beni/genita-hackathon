@@ -152,13 +152,13 @@ test("settings: the old SUM four lines come from the answers; picks read the ser
 
 type Req = { schemaName: string; input: unknown; instructions?: string };
 
-function harness(handler: (req: Req) => unknown | Promise<unknown>) {
+function harness(handler: (req: Req) => unknown | Promise<unknown>, now?: () => Date) {
   const dir = mkdtempSync(join(tmpdir(), "insights-"));
   const store = new FileStore(dir);
   const calls: Req[] = [];
   const json = (async (req: Req) => { calls.push(req); return handler(req); }) as unknown as PrepDeps["spark"];
   const p = new Personalize({ store, json: json! });
-  const ins = new Insights({ json: json!, personalize: p, store });
+  const ins = new Insights({ json: json!, personalize: p, store, now });
   return { dir, store, p, ins, calls, json, cleanup: () => rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }) };
 }
 
@@ -186,6 +186,31 @@ test("service: the import's report is written in the background and saved only a
   h2.ins.begin("u1", PASTE).cancel();
   await new Promise((r) => setTimeout(r, 20));
   assert.equal((await h2.store.getStyle("u1"))!.insights, undefined);
+});
+
+test("D95: import receipts remain response-only, then disappear when their memory TTL expires", async (t) => {
+  let ms = Date.parse("2026-11-04T00:00:00Z");
+  const h = harness((req) => (req.schemaName === "insight_report" ? RAW : null), () => new Date(ms));
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  const immediate = await h.ins.get("u1", 3000);
+  assert.equal(immediate.status, "ready");
+  assert.ok(immediate.report!.observations.some((o) => o.evidence.some((e) => e.source === "import" && e.quote.includes("usually asks for two or three options"))), "the current process still receives the receipt");
+
+  const stored = JSON.stringify((await h.store.getStyle("u1"))!.insights);
+  for (const pastedSpan of ["usually asks for two or three options", "ok but which one is cheaper lol"]) {
+    assert.ok(!stored.includes(pastedSpan), `stored style leaked pasted text: ${pastedSpan}`);
+  }
+  const storedInsights = (await h.store.getStyle("u1"))!.insights!;
+  for (const o of storedInsights.observations) for (const e of o.evidence) {
+    if (e.source === "import") assert.deepEqual([e.quote, e.highlight ?? ""], ["", ""]);
+  }
+
+  ms += 2 * 60 * 60_000 + 1;
+  const afterExpiry = await h.ins.get("u1", 0);
+  assert.equal(afterExpiry.status, "ready");
+  assert.ok(afterExpiry.report!.observations.every((o) => o.evidence.every((e) => e.source !== "import" || e.quote.length > 0)), "an expired receipt is omitted rather than sent as an empty quote");
 });
 
 test("service: setup answers re-write the report (import text kept in memory only) with settings; verdicts stick", async (t) => {
