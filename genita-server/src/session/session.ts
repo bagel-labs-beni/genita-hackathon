@@ -2131,7 +2131,8 @@ export class Session {
       gov.markFired(this.now());
       const input = initiativeInput(again.source);
       // prompt-100 r4: never the same topic or opening word twice in a call; the camera now beats an old thread
-      const said = this.history.filter((h) => h.role === "assistant").map((h) => h.text).slice(-6);
+      // what was asked to be forgotten in this call is not sent back as "already said" (Codex r5 P1)
+      const said = forgetInCall(this.history, this.removedLines).filter((h) => h.role === "assistant").map((h) => h.text).slice(-6);
       const camera = !!(this.frames && this.now() - this.frames.at <= FRAMES_TTL_MS);
       this.cueTurn = { source: again.source, block: cueRhythm(initiativeBlock(again.source, threads, { said, camera }), again.source, this.recentReplies), input };
       this.log("convo.initiative", { source: again.source, threads: threads.length, n: gov.count });

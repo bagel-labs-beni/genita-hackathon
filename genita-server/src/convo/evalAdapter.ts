@@ -91,7 +91,7 @@ export const adapter = {
       // the governor's budget is unit-tested; here every scripted cue is one allowed initiative
       const source: InitiativeSource = t.kind === "perception" && t.trigger ? (t.trigger as PerceptionTriggerKind) : "silence";
       const replies = ctx.history.filter((h) => h.role === "assistant").slice(-3).map((h) => h.text);
-      const said = ctx.history.filter((h) => h.role === "assistant").map((h) => h.text).slice(-6);
+      const said = forgetInCall(ctx.history).filter((h) => h.role === "assistant").map((h) => h.text).slice(-6);
       const instructions = buildInstructions({ ...base, initiative: cueRhythm(initiativeBlock(source, threads(s), { said, camera: !!ctx.camera }), source, replies) });
       return { instructions, input: [...msgs(ctx.history), { role: "user", content: initiativeInput(source) }], maxOutputTokens: 800, effort: "minimal" };
     }

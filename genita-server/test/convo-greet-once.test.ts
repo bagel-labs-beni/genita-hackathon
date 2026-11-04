@@ -17,7 +17,8 @@ test("a second hello after the opener goes; the rest of the sentence stays", () 
   assert.equal(noRepeatGreeting("Hey, look who finally showed up.", "ok I'm on the Mac now"), "");
   assert.equal(noRepeatGreeting("<happy> Hey you, finally decided to show up.", "hey"), "<happy> Hey you.");
   assert.equal(noRepeatGreeting("Hey, look who finally showed up.", "hey"), "Hey.");
-  assert.equal(noRepeatGreeting("There you are, so what's the verdict on the fit?", "ok I'm on the Mac now"), "So what's the verdict on the fit?");
+  // "there you are" to a non-hello line stays (Codex r5: arrival reactions)
+  assert.equal(noRepeatGreeting("There you are, so what's the verdict on the fit?", "ok I'm on the Mac now"), "There you are, so what's the verdict on the fit?");
   assert.equal(noRepeatGreeting("Oh hey, you're back!", "hi"), "Oh hey!");
   assert.equal(noRepeatGreeting("Oh hey, you're back!", "can I throw in the rice?"), "");
   assert.equal(noRepeatGreeting("Well hey, Tuesday night troublemaker, you made it.", "hey"), "Tuesday night troublemaker.");
@@ -160,4 +161,13 @@ test("r4 (prod 22:04): opener stands alone, initiatives never repeat a topic or 
   assert.match(p, /The user's name is Summer;/);
   assert.match(p, /never say you can't or name a rule/);
   assert.match(p, /Never talk about anyone else's clothes, sleepwear or body/);
+});
+
+test("r5 (Codex): help after a refusal clause stays, 'figure out' is not a body word, an arrival reaction is not a hello", async () => {
+  const { noPolicyTalk } = await import("../src/convo/faceTalk.ts");
+  assert.equal(noPolicyTalk("Call emergency services now so they can figure out what's happening.", "My face suddenly feels numb. What should I do?"), "Call emergency services now so they can figure out what's happening.");
+  assert.equal(noPolicyTalk("I can't judge facial burns here but call emergency services now.", "My face is badly burned. What should I do?"), "Call emergency services now.");
+  assert.equal(noRepeatGreeting("You made it just in time.", "I got on the last train just before the doors shut."), "You made it just in time.");
+  assert.equal(noRepeatGreeting("Hey, you made it just in time.", "hey"), "Hey.");
+  assert.equal(noRepeatGreeting("There you are, so what's the verdict on the fit?", "hi"), "So what's the verdict on the fit?");
 });
