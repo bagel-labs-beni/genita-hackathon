@@ -43,7 +43,7 @@ struct ConversationView: View {
         #if DEBUG
         if debugWaitHold { return true }
         #endif
-        guard !hasFacePicture, model.prep?.isFailed != true else { return false }
+        guard !hasFacePicture, !waitGaveUp, model.prep?.isFailed != true else { return false }
         let prepRunning = model.prep.map { !$0.isReady } ?? false
         // a face set request on the wire (17–48 s seen on CI), or a loaded set whose first picture is being drawn (Codex P2);
         // the pauses between failed retries are idle (the 20 s cap applies)
@@ -58,6 +58,8 @@ struct ConversationView: View {
     @State private var liveFrameDrawn = false
     /// the wait stage gives up after this long when nothing is being made (a scene or face set that never loads)
     @State private var waitCapOver = false
+    /// the wait ended with no picture: it stays ended (the 5 s face retries don't bring the orb back each time; Codex P2)
+    @State private var waitGaveUp = false
     @State private var connectedTaps = 0
     @State private var appConfig = GenitaAppConfigStore.shared
     @Environment(\.scenePhase) private var scenePhase
@@ -319,7 +321,7 @@ struct ConversationView: View {
             guard was, !connecting else { waitStageUp = false; return }
             // the arrival is card 10's moment: its one tap moves here when the face came after the call went live
             // (the wait gave up with no picture: only the live tap it held back)
-            if !hasFacePicture { if connectedTaps == 0, call.link == .live { connectedTaps = 1 } }
+            if !hasFacePicture { waitGaveUp = true; if connectedTaps == 0, call.link == .live { connectedTaps = 1 } }
             // before the link is live the arrival taps on its own and card 10's live tap stays for the link (Codex P3)
             else if connectedTaps == 0, call.link == .live { connectedTaps = 1 } else { faceArrivedTaps += 1 }
             Task { try? await Task.sleep(for: .milliseconds(320)); if !waitingForFace { waitStageUp = false } }
