@@ -350,7 +350,9 @@ struct ConversationView: View {
             if !Task.isCancelled { faceWaitOver = true }
         }
         // the prep call scene is the still under the face (also after a relaunch, when PREP-1 didn't load it)
-        .task(id: model.prep?.sceneURL) { await model.loadScene() }
+        // keyed on ready too: followPrep no longer waits on the scene in the call, so a scene that failed while prep
+        // ran is tried again when it turns ready; a view task, so it ends with the screen (Start over; Codex P2 x2)
+        .task(id: "\(model.prep?.sceneURL?.absoluteString ?? "") \(model.prep?.isReady == true)") { await model.loadScene() }
         // S09-P (D28): the face is still being made while the call runs; keep `model.prep` fresh so the in-call
         // indicator (`model.callPrepIndicator`, S09-PREP 228:543) follows scene → expressions → mouth.
         // keyed on the status too: a PREP-1e Try again answered after the call started (failed → running) polls again
@@ -359,9 +361,6 @@ struct ConversationView: View {
         .onChange(of: model.prep?.isReady == true) { _, ready in
             // face plan item 3: a load waiting out its 5 s retry asks again now
             if ready { call.faceSetReady() }
-            // the scene is fetched beside it (followPrep no longer waits on it in the call); one that failed while
-            // prep ran is tried again now, the same URL wouldn't restart the scene task (Codex P2)
-            if ready && model.sceneImageData == nil { Task { await model.loadScene() } }
             if ready && !connecting && scenePhase == .active { showFace() }
         }
         .onAppear {
