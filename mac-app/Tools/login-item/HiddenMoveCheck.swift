@@ -33,10 +33,7 @@ import Foundation
         home.orderFrontRegardless() // SwiftUI putting it up after didFinishLaunching
         MacHomeWindow.hideIfStarting()
         check(!MacHomeWindow.isVisible, "login launch: a late first appearance is hidden too")
-        home.orderFrontRegardless()
-        MacHomeWindow.hideIfStarting(now: Date().addingTimeInterval(6))
-        check(MacHomeWindow.isVisible, "the hide only covers the launch (a later open stays open)")
-        home.orderOut(nil)
+        check(MacHomeWindow.hidingAtLogin, "the login hide holds until the user opens the window (no time limit)")
 
         // 2. Signed in (the /me path calls setAccount), conversation on the iPhone.
         let handoff = MacHandoff.shared
@@ -64,6 +61,13 @@ import Foundation
         check(handoff.companionVisible, "proximity move: the call is shown")
         check(handoff.reviewCallWindow?.isVisible == true, "proximity move: the call window is on screen")
         check(!MacHomeWindow.isVisible, "proximity move: the home window stays hidden (the call window opens on its own)")
+
+        // 5. The user opens Genita (Dock icon / reopen): the home window comes back and is never hidden again.
+        MacHomeWindow.show()
+        pump(0.2)
+        check(MacHomeWindow.isVisible && !MacHomeWindow.hidingAtLogin, "opening Genita brings the home window back")
+        MacHomeWindow.hideIfStarting()
+        check(MacHomeWindow.isVisible, "after the user opened it, it is never hidden again")
 
         print(failures == 0 ? "hidden launch live move: all passed" : "hidden launch live move: \(failures) failed")
         exit(failures == 0 ? 0 : 1)

@@ -66,22 +66,22 @@ import CoreText
     static var window: NSWindow? { NSApp.windows.first { !($0 is NSPanel) && $0.identifier?.rawValue.hasPrefix(id) == true } }
     static var isVisible: Bool { window?.isVisible == true }
     static func show() {
-        hideUntil = nil // the user asked for it: never hide it again
+        hidingAtLogin = false // the user asked for it: never hide it again
         if let window { window.makeKeyAndOrderFront(nil) } else { open?(id: id) }
         NSApp.activate()
     }
     /// Opened at login: SwiftUI still creates the single `Window` at launch, so it is ordered out (not closed: its
     /// view, task and `openWindow` stay, and the Dock icon or opening Genita brings it back through `show()`).
-    /// SwiftUI may put it up after `applicationDidFinishLaunching`, so its first appearance in the next few seconds
-    /// is hidden too.
-    private(set) static var hideUntil: Date?
-    static func startHidden(now: Date = Date()) {
-        hideUntil = now.addingTimeInterval(5)
+    /// SwiftUI may put it up after `applicationDidFinishLaunching` (however late), so every appearance before the
+    /// user opens it is hidden too (Codex P2: no time limit).
+    private(set) static var hidingAtLogin = false
+    static func startHidden() {
+        hidingAtLogin = true
         window?.orderOut(nil)
         DispatchQueue.main.async { hideIfStarting() }
     }
-    static func hideIfStarting(now: Date = Date()) {
-        guard let hideUntil, now < hideUntil else { return }
+    static func hideIfStarting() {
+        guard hidingAtLogin else { return }
         window?.orderOut(nil)
     }
 }
@@ -90,7 +90,7 @@ private struct MacHomeWindowOpener: ViewModifier {
     func body(content: Content) -> some View {
         content.onAppear {
             MacHomeWindow.open = openWindow
-            if MacHomeWindow.hideUntil != nil { DispatchQueue.main.async { MacHomeWindow.hideIfStarting() } }
+            if MacHomeWindow.hidingAtLogin { DispatchQueue.main.async { MacHomeWindow.hideIfStarting() } }
         }
     }
 }
