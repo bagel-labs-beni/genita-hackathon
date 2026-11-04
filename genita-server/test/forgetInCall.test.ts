@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { forgetInCall, isAnaphoricForget, pointedLine } from "../src/convo/forgetInCall.ts";
+import { forgetInCall, isAnaphoricForget, isCorrection, pointedLine } from "../src/convo/forgetInCall.ts";
 
 const u = (text: string) => ({ role: "user" as const, text });
 const a = (text: string) => ({ role: "assistant" as const, text });
@@ -68,4 +68,19 @@ test("Codex #547 r5: a real crisis line is never forgotten mid-call", () => {
   const out = forgetInCall(h).map((x) => x.text);
   assert.ok(out.includes("I swallowed all my sleeping pills"));
   assert.ok(out.includes("Call 911 right now."));
+});
+
+test("Codex #547 r6: 'Actually, forget that, I want the red one.' is a correction: both lines stay for Spark", () => {
+  const h = [
+    { role: "user" as const, text: "I want the black jacket" },
+    { role: "assistant" as const, text: "Black is sharp." },
+    { role: "user" as const, text: "Actually, forget that, I want the red one." },
+    { role: "assistant" as const, text: "Red it is." },
+    { role: "user" as const, text: "Which one did I choose?" },
+  ];
+  assert.ok(isCorrection("Actually, forget that, I want the red one."));
+  assert.ok(!isCorrection("forget I said that"));
+  const out = forgetInCall(h).map((x) => x.text);
+  assert.ok(out.includes("Actually, forget that, I want the red one."));
+  assert.ok(out.includes("Red it is."));
 });

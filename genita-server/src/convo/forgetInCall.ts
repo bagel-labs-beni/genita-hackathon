@@ -27,6 +27,14 @@ function tailOk(tail: string): boolean {
 // Codex #547 P2: "I can't ignore that", "I can't forget what I just said", "she said forget it" are not requests
 const NOT_A_REQUEST = /\b(?:can'?t|cannot|couldn'?t|won'?t|don'?t|never|didn'?t|hard to|trying to|try to|wish i could|how (?:do|can) i|(?:he|she|they|you) (?:said|says|told))\s+(?:\w+\s+){0,2}$/i;
 const NEGATED_OR_QUOTED = /\b(?:can'?t|cannot|couldn'?t|won'?t|never|hard to|wish i could|(?:he|she|they|you|mom|dad) (?:said|says|told me))\b[^.!?]{0,15}\b(?:forget|ignore|remember|scratch|disregard)\b/i;
+/** Codex #547 r6: "Actually, forget that, I want the red one." points back AND says something new: a correction */
+export function isCorrection(text: string): boolean {
+  const t = text.replace(/[’‘]/g, "'");
+  const m = POINT_BACK.exec(t);
+  // a break after the point-back ("forget that, I want…"); "forget that I like leather jackets" names its target
+  const tail = m ? t.slice(m.index + m[0].length) : "";
+  return !!m && /^\s*[,.;!—–-]/.test(tail) && !tailOk(tail) && !NOT_A_REQUEST.test(t.slice(0, m.index));
+}
 export function isAnaphoricForget(text: string): boolean {
   const t = text.replace(/[’‘]/g, "'");
   const m = POINT_BACK.exec(t);
@@ -56,7 +64,7 @@ export function forgetInCall<T extends Item>(history: T[], removed: Removed[] = 
   for (let i = 0; i < history.length; i++) {
     const h = history[i];
     // Codex #547 r2: "she said forget it", "I can't forget what I said" are not requests (either detector)
-    if (h.role !== "user" || !(isForgetRequest(h.text) || isAnaphoricForget(h.text)) || NEGATED_OR_QUOTED.test(h.text)) continue;
+    if (h.role !== "user" || !(isForgetRequest(h.text) || isAnaphoricForget(h.text)) || NEGATED_OR_QUOTED.test(h.text) || isCorrection(h.text)) continue;
     drop.add(i);
     if (history[i + 1]?.role === "assistant") drop.add(i + 1);
     if (isAnaphoricForget(h.text)) {

@@ -8,6 +8,7 @@ import { pinnedPrompt } from "./rerank.ts";
 import { avoidKeys, mentionsAvoided, scrubPairs, type AvoidKey, type Removed } from "../personalize/forgotten.ts";
 import { isForgetRequest } from "./extract.ts";
 import { isAnaphoricForget } from "../convo/forgetInCall.ts";
+import { realCrisisSignal } from "../convo/guard.ts";
 import { SUMMARY_EVERY, SUMMARY_INJECT, SUMMARY_LOAD_MS, SUMMARY_MAX_PAIRS, summaryPrompt, type CallSummary } from "./summaries.ts";
 
 export const MEMORY_TOOLS: Tool[] = [
@@ -114,8 +115,10 @@ export class MemoryCall {
   /** For the next device (server.ts handoff): this thread, how many pairs it covers, and its kept pairs. */
   /** this thread minus forget turns, the line an anaphoric forget pointed at, and anything about a removed line */
   private keptPairs(): Turn[] {
-    const pairs = this.thread.filter((t, i, all) => !isAnaphoricForget(t.user) && !(i + 1 < all.length && isAnaphoricForget(all[i + 1].user)));
-    return scrubPairs(pairs, this.avoid);
+    // Codex #547 r6: a real crisis line (and its reply) is never forgotten; it goes with the call (safety first)
+    const pairs = this.thread.filter((t, i, all) => realCrisisSignal(t.user) || (!isAnaphoricForget(t.user) && !(i + 1 < all.length && isAnaphoricForget(all[i + 1].user))));
+    const kept = new Set(scrubPairs(pairs.filter((t) => !realCrisisSignal(t.user)), this.avoid));
+    return pairs.filter((t) => realCrisisSignal(t.user) || kept.has(t));
   }
   threadState(): ThreadState {
     // Codex #547 P1: the next device never gets what was forgotten in this call (forget turns, their targets)
