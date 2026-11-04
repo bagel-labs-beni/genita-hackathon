@@ -21,7 +21,7 @@ struct MacStartView: View {
         }
         .task {
             _ = MacHandoff.shared // Connections start after /me verifies the signed-in account.
-            if call.account == .checking { await call.refresh() }
+            await call.refreshAtLaunch()
         }
     }
     @ViewBuilder private var screen: some View {
@@ -451,6 +451,7 @@ struct MacConsentView: View {
 struct MacSettingsSheet: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var call = MacCall.shared
+    @ObservedObject private var loginItem = MacLoginItem.shared
     /// The call window is the phone's physical size (~330–360 pt on a MacBook), narrower than the 420 home window:
     /// a 420-wide sheet there was cut off on both sides (Mac QA 11/3). The call passes `compact`.
     var compact = false
@@ -480,6 +481,8 @@ struct MacSettingsSheet: View {
                 Divider().overlay(Color(white: 232.0 / 255))
                 row("Version", value: Self.version, id: "macSettingsVersion")
                 Divider().overlay(Color(white: 232.0 / 255))
+                loginRow
+                Divider().overlay(Color(white: 232.0 / 255))
                 link("Terms", MacDesignV2.terms)
                 Divider().overlay(Color(white: 232.0 / 255))
                 link("Privacy Policy", MacDesignV2.privacy)
@@ -495,6 +498,30 @@ struct MacSettingsSheet: View {
         }
         .padding(.horizontal, compact ? 20 : 32).padding(.top, 28).padding(.bottom, 24).frame(width: compact ? 320 : 420, alignment: .topLeading)
         .background(MacSheetInk.sheet)
+    }
+
+    /// Open at login (MacLoginItem): on by default, so bringing the iPhone close moves the call without opening
+    /// Genita first. When macOS wants approval, one line under it opens System Settings ▸ Login Items.
+    private var loginRow: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Toggle(isOn: Binding(get: { loginItem.isOn }, set: { loginItem.setOn($0) })) {
+                Text("Open at login").font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink)
+            }
+            .toggleStyle(MacInkSwitchStyle())
+            .padding(.horizontal, 16).frame(height: 44)
+            .accessibilityIdentifier("macSettingsOpenAtLogin")
+            if loginItem.needsApproval {
+                Button { loginItem.openLoginItemsSettings() } label: {
+                    HStack(spacing: 4) {
+                        Text("Approve in System Settings > Login Items").lineLimit(1).minimumScaleFactor(0.85)
+                        Image(systemName: "arrow.up.right").font(.system(size: 10, weight: .medium))
+                    }.font(MacSheetInk.sans(12)).foregroundStyle(MacSheetInk.mute)
+                        .padding(.horizontal, 16).padding(.bottom, 12).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                }.buttonStyle(.plain).accessibilityAddTraits(.isLink).accessibilityIdentifier("macSettingsLoginApproval")
+                    .padding(.top, -4)
+            }
+        }
+        .onAppear { loginItem.refresh() }
     }
 
     static var version: String {
@@ -542,6 +569,29 @@ struct MacSettingsSheet: View {
         }
         .padding(.horizontal, 32).padding(.top, 32).padding(.bottom, 28).frame(width: 420, alignment: .topLeading)
         .background(MacSheetInk.sheet)
+    }
+}
+
+/// The Settings switch in the sheet's ink: drawn in SwiftUI (the system switch is an AppKit control the review
+/// renders can't draw). 36×20 capsule, ink when on, the line grey when off.
+struct MacInkSwitchStyle: ToggleStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Button { configuration.isOn.toggle() } label: {
+            HStack {
+                configuration.label
+                Spacer(minLength: 12)
+                ZStack(alignment: configuration.isOn ? .trailing : .leading) {
+                    Capsule().fill(configuration.isOn ? MacSheetInk.ink : Color(white: 219.0 / 255))
+                    Circle().fill(Color.white).padding(2).shadow(color: .black.opacity(0.12), radius: 1, y: 0.5)
+                }
+                .frame(width: 36, height: 20)
+                .animation(.easeOut(duration: 0.15), value: configuration.isOn)
+            }.contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isToggle)
+        .accessibilityValue(configuration.isOn ? "On" : "Off")
     }
 }
 

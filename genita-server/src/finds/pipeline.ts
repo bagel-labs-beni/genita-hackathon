@@ -46,7 +46,9 @@ export type PipelineCtx = {
 export type PipelineResult = { card: FindCard | null; timings: Record<string, number> };
 
 const SEEN_PROMPT =
-  "List every food item you can clearly see in this photo, one per line as: name | count or - | where it is and what it looks like (a few words). Short lowercase common names. Nothing else. If you cannot see any food clearly, reply NONE.";
+  // demo S3 (b9 check P1): a small item at the edge or half behind another was left off 1/6 — list those too; each
+  // name is still checked (Spark YES + a SAM box) before it is said, so a wrong one ends as "not sure", never "have"
+  "List every food item you can see in this photo, including small ones and ones partly behind others, one per line as: name | count or - | where it is and what it looks like (a few words). Short lowercase common names. Nothing else. If you cannot see any food clearly, reply NONE.";
 
 const CHECK_TIMEOUT_MS = 7000;
 export const FRIDGE_PILL_MAX = 28;
@@ -506,6 +508,36 @@ export function outfitSituation(model: unknown, question: string, pick?: string)
   return capFirst(pick ? `${pick.toLowerCase()} for ${o}.` : `for ${o}.`);
 }
 
+/** words a taste line uses whatever it stands on ("…you love", "just your style") */
+const TASTE_FILLER = new Set(["your", "you", "you're", "love", "loves", "like", "likes", "just", "keep", "keeps", "vibe", "style", "which", "mentioned", "said", "told", "that", "this", "with", "from", "what", "look", "looks", "always", "perfect", "matches", "match", "fits", "goes", "very", "really", "into", "suits", "suit", "feel", "feels", "want", "wear", "the", "and", "for", "but", "are", "its", "all", "too", "one", "new", "out", "got", "get", "own", "way", "now", "how", "who", "far", "more", "most", "less", "prefers", "prefer", "favorite", "favourite", "dislikes", "dislike", "avoids", "avoid", "hates", "hate", "never", "not", "without", "skip", "free", "doesn", "does", "can't", "stand", "taste", "tastes"]);
+const tasteWords = (s: string) => (s.toLowerCase().match(/[a-z가-힣']{3,}/g) ?? []).filter((w) => !TASTE_FILLER.has(w)).map((w) => w.slice(0, 5));
+/** a clause that says what they don't want ("Dislikes loud logos", "no neon", "never wears prints") */
+const NEGATIVE = /\b(?:dislikes?|avoids?|hates?|not into|no|never|doesn't|does not|can't stand|without|skips?|free of)\b/i;
+/**
+ * P1-7: the outfit card's taste line, only when it stands on something Genita remembers (a memory or the
+ * imported profile) — a content word in common with a remembered clause of the same polarity ("You love loud
+ * logos" never stands on "Dislikes loud logos"). Nothing remembered, or nothing in common → "" (the card leaves
+ * the line out; the runner falls back to the imported preference when there is one). Never a made-up taste.
+ */
+export function outfitTaste(model: unknown, remembered: string[]): string {
+  const line = str(model, 90);
+  if (!line || !remembered.length) return "";
+  const negative = NEGATIVE.test(line);
+  const known = new Set<string>();
+  for (const text of remembered) {
+    // only what the user confirmed: a profile's forgotten ("Never bring these up…"), suggested and manner sections
+    // are not tastes to stand on (Codex r2)
+    const cut = text.search(/^(?:Never bring|Suggestions|Rules|Also|Leans|How they come across)\b/m);
+    const kept = cut >= 0 ? text.slice(0, cut) : text;
+    // clauses end at a sentence or "but"; "Dislikes loud logos, and neon colors" stays one dislike (Codex r2)
+    for (const raw of kept.split(/[\n.;]+|\s+but\s+/i)) {
+      const clause = raw.replace(/^\s*-?\s*[A-Za-z &]{1,24}:\s*/, "");
+      if (NEGATIVE.test(clause) === negative) for (const w of tasteWords(clause)) known.add(w);
+    }
+  }
+  return tasteWords(line).some((w) => known.has(w)) ? line : "";
+}
+
 const STOP = new Set(["the", "a", "one", "your", "my", "and", "with", "coat", "jacket", "top"]);
 const tokens = (s: string) => s.toLowerCase().match(/[a-z]+/g)?.filter((w) => w.length > 2 && !STOP.has(w)) ?? [];
 
@@ -590,7 +622,8 @@ export async function runOutfit(ctx: PipelineCtx): Promise<PipelineResult> {
   if (ctx.signal.aborted) return { card: null, timings };
   const label = clockLabel(at, ctx.timeZone);
   // CW-02: three reasons — taste (memory), what is seen (why, per option), and the occasion they asked about
-  const taste = str(j.taste, 90);
+  const taste = outfitTaste(j.taste, mem);
+  if (!taste && str(j.taste, 90)) ctx.log("find.outfit_taste_dropped", { findId: ctx.findId });
   const situation = outfitSituation(j.situation, ctx.question, options[pick].label);
   const card: FindCard = {
     id: ctx.findId,
@@ -613,7 +646,6 @@ export async function runOutfit(ctx: PipelineCtx): Promise<PipelineResult> {
     how: [`From ${ctx.frames.length} frame${ctx.frames.length > 1 ? "s" : ""} on your camera, ${label}.`, searched ? "Checked the weather on the web." : "No web search for this one.", MODEL_CREDIT],
   };
   if (!card.say) delete card.say;
-  if (!card.subtitle && said) card.subtitle = "";
   ctx.emit({ type: "find.created", findId: ctx.findId, card });
   for (const fi of new Set(card.options.map((o) => o.frame))) {
     const items = card.options.filter((o) => o.frame === fi && o.box).map((o) => ({ label: o.label, box: o.box! }));

@@ -72,3 +72,25 @@ final class InsightReportBackUITests: XCTestCase {
         XCTAssertFalse(app.descendants(matching: .any)["insightType"].waitForExistence(timeout: 2), "left SUM")
     }
 }
+
+/// Chelsea 11/4: the R1 header — no orb, the type name on one line at full width (long and short), no blank band.
+final class InsightHeaderUITests: XCTestCase {
+    private func shot(_ app: XCUIApplication, _ name: String) {
+        let a = XCTAttachment(screenshot: app.screenshot())
+        a.name = "onb-insight-header-" + name; a.lifetime = .keepAlways; add(a)
+    }
+    func testShortAndLongTypeNames() throws {
+        // short / long (one line, shrunk) / long2 (past the 26 pt floor: two balanced lines) / scene and polished (the
+        // header face: scene → V02 polished → orb; "short" has neither, so it shows the orb)
+        for (variant, name) in [("insight", "short"), ("insight-long", "long"), ("insight-long2", "long2"), ("insight-scene", "scene"), ("insight-polished", "polished")] {
+            let app = XCUIApplication()
+            app.launchArguments = ["--uitesting"]
+            app.launchEnvironment = ["GENITA_REVIEW_STAGE": "summary", "GENITA_REVIEW_VARIANT": variant, "GENITA_REVIEW_NAME": "Lou"]
+            app.launch()
+            XCTAssertTrue(app.descendants(matching: .any)["insightType"].waitForExistence(timeout: 10))
+            Thread.sleep(forTimeInterval: 0.2)   // no delayed reveal: the name is there at once
+            shot(app, name)
+            app.terminate()
+        }
+    }
+}

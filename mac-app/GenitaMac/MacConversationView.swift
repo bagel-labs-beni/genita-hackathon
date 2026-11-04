@@ -16,7 +16,6 @@ struct MacConversationView: View {
     @State private var linkOpened: ProductPick?
     @State private var menuOpen = false
     @State private var settingsOpen = false
-    @State private var hoverShare = false
     /// Debug review renders one state per screenshot without the env (MacHandoff.renderReviewScreens).
     var reviewOverride: String? = nil
     private var reviewState: String {
@@ -30,6 +29,12 @@ struct MacConversationView: View {
     private var waitingCopy: HandoffCopy? { handoff.motion == nil ? HandoffCopy.mac(handoff.surface, sharingStopped: handoff.sharingStopped) : nil }
     private var displaySharing: Bool { sharing.isSharing || ["sharing", "reacting", "black", "speaker"].contains(reviewState) }
     private var permissionVisible: Bool { sharing.permissionRequired }
+    /// The Share screen pill: sharing, starting (the permission sheet or the macOS picker is open), or idle.
+    private var sharePhase: MacSharePill.Phase {
+        if displaySharing { return .sharing }
+        if permissionVisible || sharing.choosing || reviewState == "share-starting" { return .starting }
+        return .idle
+    }
     private let blue = Color(red: 0, green: 162.0 / 255, blue: 1)
     /// The menu / share row: under the fake status bar before, at the window's top in Mac v2 (#216).
     private var topRowY: CGFloat { MacDesignV2.enabled ? 47.5 : 86.5 }
@@ -65,6 +70,8 @@ struct MacConversationView: View {
                     InterpretOverlay(board: call.interpretBoard, level: { call.inputLevel }, onClose: { interpret.stop() }, onHold: { call.setHold($0) })
                         .frame(width: 390, height: 844)
                 } else if waitingCopy == nil {
+                    // live captions r01: same layer as the iPhone, bottom edge 16 above the rail (626), under the self view and rail
+                    captionLayer
                     if MacDesignV2.enabled {
                         // iPhone S09 HUD A (#530) on the Mac: a glass tile at the bottom left, 16 from the edge, its
                         // bottom on the control rail's bottom (724 + 82); camera on grows it 72×96 → 108×144
@@ -96,17 +103,9 @@ struct MacConversationView: View {
                     }.position(x: 334, y: 724 - railShift).opacity(sheetCovers ? 0 : 1).allowsHitTesting(!sheetCovers)
                 }
                 if waitingCopy == nil && handoff.motion == nil && !sheetFull && linkOpened == nil {
-                Button { sharing.requestSharing() } label: {
-                    MacGlassControl(icon: "glass-share-icon", tint: displaySharing || permissionVisible ? Color(red: 231.0 / 255, green: 32.0 / 255, blue: 12.0 / 255) : nil)
-                }.buttonStyle(.plain).position(x: 342.5, y: topRowY).onHover { hoverShare = $0 }
-                    .accessibilityLabel(displaySharing ? "Stop screen sharing" : "Share screen").accessibilityIdentifier("macShareScreen")
-                }
-                if waitingCopy == nil && !permissionVisible && (hoverShare || reviewState == "hint") {
-                    // the hover label: a padded capsule (it was a fixed 76 pt box, the text touched both sides)
-                    Text(displaySharing ? "Stop sharing" : "Share screen").font(.custom("PretendardVariable-SemiBold", size: 12)).foregroundStyle(.white).lineLimit(1)
-                        .padding(.horizontal, 10).frame(height: 24).fixedSize().macDarkGlass(in: Capsule())
-                        // right edge on the share button's right edge (366), not hanging past it
-                        .frame(width: 160, alignment: .trailing).position(x: 366 - 80, y: MacDesignV2.enabled ? 92 : 43.5).allowsHitTesting(false)
+                    // Share screen r01 (Chelsea OK 11/4): one labelled glass pill, right edge at 366, centred on the top row
+                    MacSharePill(phase: sharePhase, action: { sharing.requestSharing() }, reviewHover: reviewState == "share-hover")
+                        .frame(width: 342, alignment: .trailing).position(x: 195, y: topRowY)
                 }
                 if let waitingCopy {
                     VStack(spacing: 0) { Spacer(minLength: 0); HandoffWaitingSheet(copy: waitingCopy) { handoff.continueHere() } }.frame(width: 390, height: 844)
@@ -227,6 +226,17 @@ struct MacConversationView: View {
         }
     }
     // MARK: #118 / #121 call + sheet layout
+    /// Live captions r01 (LiveCaptions.swift): the iPhone's layer, bottom edge 16 above the rail VStack's top (724 − 82 → 626).
+    @ViewBuilder private var captionLayer: some View {
+        // kill switch: app config flag `liveCaptions` (default on), as on the iPhone
+        if GenitaAppConfigStore.shared.config.flag("liveCaptions", default: true) {
+        CallCaptionLayer(style: CaptionStyle(ink: MacSheetInk.ink, onInk: MacSheetInk.onInk, blue: Color(red: 84 / 255, green: 193 / 255, blue: 1),
+                                             font: { size, weight in .custom(weight == .medium ? "PretendardVariable-Medium" : "PretendardVariable-Regular", fixedSize: size) }),
+                         size: CGSize(width: 390, height: 844), bottom: 724 - 82 - 16 - railShift,
+                         hidden: call.link == .connecting || sheetCovers || menuOpen,
+                         micOn: call.micOn || reviewState == "caption", frame: { call.captionFrame() }, level: { call.inputLevel }, still: reviewState == "caption")
+        }
+    }
     private var sheetFull: Bool { call.finds.state == .full && linkOpened == nil && waitingCopy == nil }
     /// half / full: the sheet covers the self view and the controls (r03).
     /// half / full cover the self view and controls; MAC-LINK shows only the face, the line and its two buttons.
@@ -237,6 +247,7 @@ struct MacConversationView: View {
         // MC-M (90:2): the face beside the open menu carries nothing
         if linkOpened != nil || menuOpen { return nil }
         if let line = handoff.moveLine { return line }   // AU-88: Move to iPhone waiting / failed
+        if sharing.stoppedCue || reviewState == "share-stopped" { return "Stopped sharing" }
         if sharing.isSharing, let message = sharing.connectionMessage { return message }
         // MS-2 "Reacting" and MS-3 black-screen card own that spot while a share is live
         if sharing.isSharing && (sharing.reacting || sharing.blank) { return nil }

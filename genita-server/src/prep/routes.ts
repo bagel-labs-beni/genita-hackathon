@@ -174,7 +174,11 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
     if (m === "POST" && p === "/v1/import") {
       const gen = d.personalize?.generation(user);   // before the body arrives (Codex #583 r17)
       const body = await readJson(req);
-      const job = importStyle(d, user, body.text, gen);
+      // AU-16: the app cancelled (I03 Cancel) or went away: the import stops and nothing is saved. A background
+      // import (202) is meant to outlive the request.
+      const ac = new AbortController();
+      if (body.background !== true) res.on("close", () => { if (!res.writableFinished) ac.abort(); });
+      const job = importStyle(d, user, body.text, gen, body.background === true ? undefined : ac.signal);
       if (body.background === true) {
         const state = { status: "processing" as const };
         importJobs.set(user, state);

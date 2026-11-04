@@ -200,8 +200,9 @@ public struct FlowMap: Codable, Equatable, Sendable {
         public var camera = 0.0
         /// 11/3 pm: the person never moves vertically against the locked still (false = the old nod / drift / breathing)
         public var lockY = true
-        /// 11/4: speech-coupled rigid head sway gain (AliveMotion.swayGain); 0 = the still head
-        public var sway = 1.0
+        /// 11/4: speech-coupled rigid head sway gain (AliveMotion.swayGain); 0 = the still head. Build 10 (Chelsea: the
+        /// side-to-side move is distracting): a map without `sway` is still — only a served `sway` > 0 turns it on.
+        public var sway = 0.0
         public init() {}
         enum CodingKeys: String, CodingKey { case headGain, nodGain, cheekGain, lipLifePx, rollGain, nodWidth, headX, headRoll, nodPx, camera, lockY, sway }
         public init(from decoder: Decoder) throws {

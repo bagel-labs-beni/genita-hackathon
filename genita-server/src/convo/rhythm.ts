@@ -71,6 +71,8 @@ export function moodLine(m: Mood, o: { steady?: boolean } = {}): string | null {
 }
 
 export type TurnHintInput = {
+  /** the user's line before this one (a "one more" is a new bit only right after a joke ask) */
+  prevUser?: string;
   /** this call's number for the account (1 = first call); undefined = unknown */
   callNumber?: number;
   /** the last reply as stored (tags included) */
@@ -115,6 +117,14 @@ export function cueRhythm(block: string, source: InitiativeSource, recentReplies
   return `${block} Your last question is still open: don't ask another; end on a statement.`;
 }
 
+// #509 humor quirk (b10 intel humor-ask 1/5: "Sir Beeps-a-lot", fridge and phone-battery bits): an asked-for laugh is
+// about them, from their profile, with a punchline — and "one more" is a new bit, not the same lane again
+const JOKE_ASK = /(?<!\b(?:don'?t|do not|dont|never|no need to|stop)\s+(?:try to\s+)?)\b(?:make me laugh|tell me (?:a |something )?(?:joke|funny)|say something funny|something (?:that'?ll|to) make me laugh|cheer me up|roast me|one more joke|another joke)\b/i;
+// "lmao ok one more" (they laughed and want another), never "one more question"
+// Codex #660 r1: only right after a joke ask ("lol explain that again", "lol I got fired again" are not)
+const AGAIN = /\b(?:one more|another one)\b(?!\s+(?:question|thing|sec|second|minute|time|step|try))/i;
+export const JOKE_LINE = "They want a laugh: one short bit with a real punchline about their own world (a taste or habit from their profile), not a nickname for an object.";
+export const JOKE_AGAIN_LINE = "They want another: a new bit on a different thing of theirs, with a punchline.";
 export function turnHints(t: TurnHintInput): string | null {
   const out: string[] = [];
   const user = t.userText.trim();
@@ -128,14 +138,17 @@ export function turnHints(t: TurnHintInput): string | null {
   // #342: three replies with no take of its own → ask for one (ownTakes.ts)
   const take = ownTakeLine(t.recentReplies, user, t.crisisInCall);
   if (take) out.push(take);
-  if (last && !crisis && laughed(user) && !said(BAD_NEWS, user)) out.push("Your last line landed (they laughed): stay in that lane.");
+  const again = !crisis && !!last && laughed(user) && AGAIN.test(user) && !said(BAD_NEWS, user) && !!t.prevUser && JOKE_ASK.test(t.prevUser);
+  const jokeAsk = !crisis && (JOKE_ASK.test(user) || again);
+  if (jokeAsk) out.push(again ? JOKE_AGAIN_LINE : JOKE_LINE);
+  else if (last && !crisis && laughed(user) && !said(BAD_NEWS, user)) out.push("Your last line landed (they laughed): stay in that lane.");
   // #345: what landed, read from their face — the same lane, never a word about their face or the camera
   else if (last && !crisis && t.faceLanded && !said(BAD_NEWS, user)) out.push(`Your last line landed (they ${t.faceLanded} at it): stay in that lane, and don't mention their face.`);
   else if (user.split(/\s+/).length >= 30) out.push("They're opening up: stay on what they said.");
   if (t.remembers && (said(GOOD_NEWS, user) || said(BAD_NEWS, user))) out.push("If this connects to something you remember, name that thing specifically.");
   const replies = t.recentReplies?.length ? t.recentReplies : t.lastReply ? [t.lastReply] : [];
   if (replies.slice(-questionRest(t.callNumber)).some(endsAsking)) out.push("End on a statement this time.");
-  if (t.mentionSpent) out.push("Don't bring up their tastes or personal details on your own; only if they do.");
+  if (t.mentionSpent && !jokeAsk) out.push("Don't bring up their tastes or personal details on your own; only if they do.");
   return out.length ? `This turn: ${out.join(" ")}` : null;
 }
 

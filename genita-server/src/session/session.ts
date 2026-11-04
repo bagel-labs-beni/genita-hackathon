@@ -58,6 +58,7 @@ import { taskHint } from "../convo/taskHints.ts";
 import { ageSays, foldAge, isMinor, MINOR_LINE, NO_AGE, type AgeSay } from "../convo/minorBoundary.ts";
 import { cameraOffHint } from "../convo/cameraAsk.ts";
 import { unbackedPast } from "../convo/pastGuard.ts";
+import { unseenToHeard } from "../convo/unseenSight.ts";
 import { forgetInCall, forgetKeyText, isAnaphoricForget, isCorrection, isRememberRequest, pointedLine } from "../convo/forgetInCall.ts";
 import { avoidKeys, forgetTarget, isForgetRequest, mentionsAvoided, scrubHistory, type Removed } from "../personalize/forgotten.ts";
 import { isForgetRequest as isMemoryForgetRequest } from "../memory/extract.ts";
@@ -235,7 +236,7 @@ type Reply = {
 /** server clock (ms) for the latency breakdown; logged with turn.answered as `stages` */
 type TurnMetrics = { speechEndAt?: number; completeAt?: number; lastPartialAt?: number; specStartAt?: number };
 /** lang = the language the reply is written in (interpretation: the target) */
-type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null; images: string[]; lang: string; suggestMac?: boolean };
+type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null; images: string[]; lang: string; suggestMac?: boolean; /** any camera or shared-screen frame went with this request */ seen?: boolean };
 /** firstTextAt: when the speculative stream's first text arrived (it is buffered until the final transcript) */
 type Speculation = { norm: string; abort: AbortController; built: Built; stream: Eager<SparkStreamEvent>; memoryRetry: MemoryRetryState; confirm: () => void; at: number; firstTextAt?: number };
 
@@ -302,16 +303,27 @@ const NOTES_OPENER_GAP_MS = 6 * 3_600_000;
 const NOTES_CALLBACK_MS = 10 * 60_000;
 /** hold cap: the longest the first sound waits on a held line (a pre-tool preamble) before a short beat */
 const HOLD_BEAT_MS = 1500;
-/** speech end → first sound cap (GENITA_HOLD_CAP_MS, 0 = off) */
+/** speech end → first sound cap (GENITA_HOLD_CAP_MS, 0 = off). Chelsea 11/4 picked B of the hold-cap A/B: 1.4 s, a short
+ * "mm" beat (was 2.2 s of silence) */
+export const HOLD_CAP_DEFAULT_MS = 1400;
+/** the least time a reply gets after its turn commits before the first-sound beat */
+const CAP_FLOOR_MS = 700;
+/** Codex #664 r2: medical or danger lines that get no hold beat ahead of the help */
+// Codex #664 r3 P1: variants ("My baby has stopped breathing.", "Someone is breaking into my house.") — a beat costs
+// nothing to skip, so this errs wide
+export const NO_BEAT_EMERGENCY = /\b(?:(?:can'?t|cannot|can barely|can hardly|isn'?t|is not|aren'?t|not|wasn'?t|stopped|stop|quit|no longer|trouble|struggling to|hard to|having trouble) breath\w*|chest (?:pain|hurts|feels tight|is tight)|heart attack|stroke|seizure|choking|unconscious|unresponsive|not responding|won'?t wake up|not waking up|collapsed|passed out|overdos\w*|poison\w*|swallowed|bleeding|allergic reaction|anaphyla\w*|throat (?:is )?closing|fainted|drown\w*|hit by a car|car (?:crash|accident)|(?:someone|somebody|a man|a guy|a woman|people|they)(?: is| are|'s|'re| was| were)? (?:following|attacking|hurting|chasing|stalking|trying to (?:get|break) in)|(?:someone|somebody|a man|a guy|a stranger)(?: is|'s|s)? in (?:my|the|our) (?:house|home|room|apartment|flat|yard|garage)|being (?:attacked|followed|chased|stalked)|attacked me|kidnap\w*|br(?:eak|eaking|oke|oken) (?:in|into)|break-?in|intruder|fire\b|gas leak|knife|gun|911|emergency)\b/i;
 export function holdCapMs(env: NodeJS.ProcessEnv = process.env): number {
-  const n = Number(env.GENITA_HOLD_CAP_MS ?? 2200);
-  return Number.isFinite(n) && n >= 0 && n <= 10_000 ? n : 2200;
+  const n = Number(env.GENITA_HOLD_CAP_MS ?? HOLD_CAP_DEFAULT_MS);
+  return Number.isFinite(n) && n >= 0 && n <= 10_000 ? n : HOLD_CAP_DEFAULT_MS;
 }
 /**
  * Hold beats: audio only (never in captions, the reply text or history), short, and never the same one twice in a
  * row in a call — "Hmm" is 1 of 6 (QA item 16: replies opening with "Hmm" ≤ 1/6; Chelsea: no Hmm/Oh repeats).
  */
-export const HOLD_BEATS = ["<warm> Mm.", "<curious> Ooh.", "<warm> Yeah.", "<warm> Okay, so.", "<curious> Hmm.", "<warm> Mm-hm."];
+// Chelsea 11/4 (hold-cap B): the short "Mm. / Yeah. / Ooh." set only — no "Okay, so.", "Hmm.", "Mm-hm." (or "Aw")
+export const HOLD_BEATS = ["<warm> Mm.", "<curious> Ooh.", "<warm> Yeah."];
+/** a hold beat's word ("<warm> Mm." / "Mm." → "mm"), what the call remembers as the last beat played */
+const playedBeat = (b: string) => b.replace(/<[^>]*>/g, "").trim().split(/[\s,.]/)[0].toLowerCase();
 /** a greeting / initiative sentence that is plainly a question (QA P3: it ended with "." 1/2) */
 const EXPLICIT_REMEMBER = /\b(?:remember|don'?t forget|keep in mind|note) (?:that|this|i|my|me)\b/i;
 /** the backchannel cue's echo in a transcript ("mm-hm", "mhm", "mm"), never a real word */
@@ -358,6 +370,13 @@ export const SUGGEST_MAC_REPLIES = [
  * of text) go by without it, or the reply ends without it, say the fixed line instead and stop reading Spark.
  * Upstream errors still throw (a failed reply keeps the suggestion for the retry).
  */
+/** demo S4 rehearsal (1/6): "…move this call to your Mac. Pretty sure that black top is still the move" — on the
+ * suggest turn a pick before seeing the outfit is never said (sentences after the Mac one are checked for one) */
+/** Codex #675 r2: emergency help and a move ask in other words ("move the call over there") are never an early pick */
+const EARLY_PICK_KEEP = /\b(?:911|988|112|999|nine one one|nine eight eight|emergency|police|ambulance|call for help|somewhere safe|safe place|get out|(?:move|moving|switch|hop|transfer|transferring|take|bring) (?:the |this |our |your |my |it |us |over|to|there)|(?:your|the|our|this) call|over there|bigger screen|big screen|so i can see|let me see|show me|camera|button|icon|tap|click|press|settings|screen)\b/i;
+/** Codex #675 r4 P1: only a real clothing pick is dropped (it names a piece, a colour or "the … one") — never help or a move ask */
+const EARLY_PICK_OUTFIT = /\b(?:outfit|top|coat|trench|jacket|dress|shirt|blouse|sweater|cardigan|hoodie|skirt|pants|jeans|trousers|shorts|shoes|boots|sneakers|heels|loafers|scarf|blazer|suit|tee|tank|(?:the|that|this) (?:\w+ )?ones?|black|white|red|blue|green|cream|beige|camel|brown|grey|gray|navy|pink|purple|yellow|olive)\b/i;
+export const EARLY_PICK = /\b(?:go with|i'?d (?:go|pick|choose|wear|say)|wins?\b|(?:is|'s) (?:still )?(?:the move|my pick|it)|my (?:pick|vote)|no contest|for sure|definitely (?:the|wear)|(?:wear|pick|choose|grab) the|(?:black|white|red|blue|green|cream|beige|camel|brown|grey|gray|navy) (?:one|top|coat|trench|jacket|dress|shirt)\b[^.!?]{0,40}\b(?:is|wins|works|hits|pops))/i;
 export async function* mustNameMac(src: AsyncIterable<SparkStreamEvent>, line: string, now: () => number = Date.now, waitMs = 2500): AsyncGenerator<SparkStreamEvent> {
   let buf = "";
   let passing = false;
@@ -609,8 +628,9 @@ export class Session {
   private bargeTimer: NodeJS.Timeout | null = null;
   private seq = 0;
   private lastWarmAt = -Infinity;
-  /** next hold beat (rotates through HOLD_BEATS, so two in a row are never the same) */
+  /** next hold beat (rotates through HOLD_BEATS) and the last one played, never played twice in a row */
   private beatIx = 0;
+  private lastBeat: string | null = null;
   /** replies whose first sound waits for the user to stop talking */
   private quietWaiters: (() => void)[] = [];
   private metrics: TurnMetrics = {};
@@ -1986,12 +2006,13 @@ export class Session {
     // Codex #541 r2: only this turn's camera frames say the camera is on (a cached face line can outlive it); a shared
     // screen counts for "look at this", never for "do I look ok?"
     // Codex #541 r3: never on a crisis line or in a call that had one (no "playful" nudge there)
-    if (!turn.greeting && !turn.cue && userText && !realCrisisSignal(userText) && !this.crisisInCall) { const off = cameraOffHint(userText, cameraFrames > 0, screenFrames > 0); if (off) perceptionHint = off; }
+    if (!turn.greeting && !turn.cue && userText && !realCrisisSignal(userText) && !this.crisisInCall) { const users = this.history.filter((h) => h.role === "user").map((h) => h.text); if (users.at(-1) === userText) users.pop(); const off = cameraOffHint(userText, cameraFrames > 0, screenFrames > 0, users.at(-1)); if (off) perceptionHint = off; }
     // P1: closeness, question rhythm, mood, what landed, recall — one "This turn:" line on a user turn (never a greeting / cue)
     let turnLine: string | undefined;
     this.subscribePerception();
     if (!turn.greeting && !turn.cue && userText) {
       turnLine = turnHints({
+        prevUser: (() => { const u = this.history.filter((h) => h.role === "user").map((h) => h.text); if (u.at(-1) === userText) u.pop(); return u.at(-1); })(),
         callNumber: this.callNumber,
         lastReply: this.recentReplies.at(-1),
         userText,
@@ -2173,6 +2194,7 @@ export class Session {
       language: this.language,
       cameraAttached: camera.length > 0,
       onScreen: this.finds?.onScreen(),
+      foundBefore: this.finds?.foundBefore(text),
       renamedFrom,
       // this call's one question rides the first user turns (the turn being built is userTurns + 1)
       // never while watching together (the question would land on top of the show)
@@ -2201,6 +2223,7 @@ export class Session {
       detected: null,
       // Finds get the camera frames only, never the shared screen
       images: camera,
+      seen: images.length > 0,
       lang: this.language,
       suggestMac,
       req: {
@@ -2576,10 +2599,22 @@ export class Session {
           const named = dropRepeatedName(tts, this.user?.name, [...this.recentReplies.slice(-2), ...sentences.map((x) => x.display)]);
           if (named !== tts) { tts = named; this.log("convo.name_dropped", { utteranceId }); }
         }
+        // demo S4 rehearsal (1/6): after the "move to your Mac" sentence, no outfit pick before the Mac camera sees it
+        // Codex #675 r1: a sentence that itself asks to move to the Mac is the ask, never dropped
+        if (built.suggestMac && tts && !interpret && !self && sentences.some((x) => /\bMac\b/i.test(x.display)) && !/\bMac\b/i.test(tts) && !EARLY_PICK_KEEP.test(tts) && !HELP_POINTER.test(tts) && EARLY_PICK.test(tts) && EARLY_PICK_OUTFIT.test(tts)) {
+          this.log("handoff.early_pick_dropped", { utteranceId });
+          tts = "";
+        }
         // v1 (AI sweep 11/3): "Summer should know that by now" — the user's name as a sentence subject → "You …"
         if (this.v1 && tts && !interpret && !self) {
           const you = nameAsYou(tts, this.user?.name);
           if (you !== tts) { tts = you; this.log("convo.name_to_you", { utteranceId }); }
+        }
+        // b10 gate 11/4: nothing seen this turn → "That looks good" is said as "That sounds good" (convo/unseenSight.ts)
+        if (this.v1 && tts && !interpret && !self) {
+          // Codex #660 r1: a shared screen counts as seen ("That looks bright red." about the car on screen)
+          const heard = unseenToHeard(tts, guardCtx.camera || !!built?.seen);
+          if (heard !== tts) { tts = heard; this.log("convo.unseen_to_heard", { utteranceId }); }
         }
         // CV-01 (eval v2 11/4): no past in this call → no habit "again" / "like usual", no claimed earlier talk (convo/pastGuard.ts)
         if (this.v1 && tts && !interpret && !self) {
@@ -2731,22 +2766,29 @@ export class Session {
     let beatTimer: NodeJS.Timeout | null = null;
     let capTimer: NodeJS.Timeout | null = null;
     const beat = () => {
-        if (signal.aborted || this.reply !== reply || sentences.length) return;
+        // hold cap B (11/4): never a beat while they're talking again (a pause the ASR took for the end of the turn)
+        if (signal.aborted || this.reply !== reply || sentences.length || this.userTurnOpen()) return;
+        // Codex #664 r1: a real crisis line never gets a beat ahead of the help (no "Mm." before 988)
+        // Codex #664 r2: a medical / danger emergency too ("I can't breathe. My chest feels tight.")
+        if (realCrisisSignal(text) || mayBeSelfHarm(text) || NO_BEAT_EMERGENCY.test(text.replace(/[‘’]/g, "'"))) return;
         const before = sentences.length;
         beating = true;
         // rotate (never the same twice in a row), and never the opening word of the last replies (QA P3, #423)
+        // Codex #664 r3 P2: the last beat is ruled out first (it is remembered), the replies' opening words after that
         const used = recentOpeningWords(this.recentReplies);
         const firstWord = (b: string) => b.replace(/<[^>]*>/g, "").trim().split(/[\s,.]/)[0].toLowerCase();
-        let k = 0;
-        while (k < HOLD_BEATS.length - 1 && used.includes(firstWord(HOLD_BEATS[(this.beatIx + k) % HOLD_BEATS.length]))) k++;
-        const beat = HOLD_BEATS[(this.beatIx + k) % HOLD_BEATS.length];
-        this.beatIx += k + 1;
+        // Codex #664 r4 P2: lastBeat is the beat actually played (set when it is said or voiced, not when queued)
+        const order = HOLD_BEATS.map((_, i) => (this.beatIx + i) % HOLD_BEATS.length).filter((i) => firstWord(HOLD_BEATS[i]) !== this.lastBeat);
+        const pick = order.find((i) => !used.includes(firstWord(HOLD_BEATS[i]))) ?? order[0];
+        const beat = HOLD_BEATS[pick];
+        this.beatIx = pick + 1;
         try { enqueueSentences([beat], true); } finally { beating = false; }
         for (let i = before; i < sentences.length; i++) sentences[i].beat = true;
         this.log("convo.hold_beat", { utteranceId });
     };
     const armBeat = () => {
-      if (beatTimer || !this.v1 || interpret || self) return;
+      // P0-3 (11/4): never on a greeting — nobody is waiting yet, and a "Mm." would be the first thing they hear
+      if (beatTimer || !this.v1 || interpret || self || greeting) return;
       beatTimer = setTimeout(beat, HOLD_BEAT_MS);
       beatTimer.unref?.();
     };
@@ -2756,7 +2798,9 @@ export class Session {
     const capMs = holdCapMs();
     if (capMs > 0 && this.v1 && !interpret && !self && !greeting && !cue && !ackTurn) {
       const since = m.speechEndAt !== undefined ? this.now() - m.speechEndAt : 0;
-      capTimer = setTimeout(() => { this.log("convo.first_sound_cap", { utteranceId, capMs }); beat(); }, Math.max(0, capMs - since));
+      // hold cap B (11/4): a turn the end-of-turn hold kept open past the cap still gives Spark CAP_FLOOR_MS before a
+      // beat — a short complete line ("I got the job") answered right after the hold gets no "Mm." on top
+      capTimer = setTimeout(() => { this.log("convo.first_sound_cap", { utteranceId, capMs }); beat(); }, Math.max(Math.min(CAP_FLOOR_MS, capMs), capMs - since));
       capTimer.unref?.();
     }
     const producer = (async () => {
@@ -2955,6 +2999,7 @@ export class Session {
     const sayOnDevice = (i: number, s: { display: string; emotion: string | null; beat?: true }, record = true) => {
       if (record && !s.beat) reply.spoken.push(s.display);
       if (!s.display) return;
+      if (s.beat) this.lastBeat = playedBeat(s.display);
       if (reply.firstAudioAt === null) {
         reply.firstAudioAt = this.now();
         m.firstAudioAt = reply.firstAudioAt;
@@ -3064,6 +3109,8 @@ export class Session {
             ...chunkTiming(this.lip.active, chunk.alignment, sentenceOffset),
           });
           sentAudio = true;
+          // Codex #664 r5 P2: a beat counts as played at its first PCM (a stream error after it still remembers it)
+          if (s.beat) this.lastBeat = playedBeat(s.display);
           heard = true;
           if (chunk.alignment) sentChars += chunk.alignment.chars.join("");
           if (chunk.audio.length) {

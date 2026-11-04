@@ -85,6 +85,9 @@ test("prep routes: prompt, validation, one companion per user, prefs → persona
   const prep = await call("GET", "/v1/companion/prep");
   assert.equal(prep.json.status, "failed");
   assert.equal(prep.json.progress.total, 21);
+  // face plan item 1: the route carries the scene crop (null: no scene / face box here)
+  assert.ok("framing" in prep.json);
+  assert.equal(prep.json.framing, null);
 
   assert.equal((await call("POST", "/v1/companion/prefs", { depth: "quick", answers: { help: "Be there" } })).json.error, "bad_prefs");
   // no Meta key → Spark fails → deterministic persona fallback still answers
@@ -107,6 +110,9 @@ test("prep routes: prompt, validation, one companion per user, prefs → persona
   // persona survives a later prep write
   const after = await call("GET", "/v1/companion");
   assert.equal(after.json.persona.card.name, "Leah");
+  // D99: Settings "Together N days" reads the companion's creation time from here
+  assert.equal(after.json.createdAt, (await store.getCompanion("u1"))!.createdAt);
+  assert.ok(!Number.isNaN(Date.parse(after.json.createdAt)));
   assert.equal(after.json.prep.status, "failed");
 });
 

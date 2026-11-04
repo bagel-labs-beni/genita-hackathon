@@ -9,6 +9,8 @@ enum CallInk {
     static let ink = Color(red: 17 / 255, green: 17 / 255, blue: 17 / 255)
     static let onInk = Color(red: 253 / 255, green: 253 / 255, blue: 253 / 255)
     static let pill = Color(red: 17 / 255, green: 17 / 255, blue: 17 / 255).opacity(0.84)
+    /// S09 wait pill (춘식이 11/4 re-check): rgba(30,30,32,.82) — #111 at .84 vanished on the #0E0F11 wait ground
+    static let waitPill = Color(red: 30 / 255, green: 30 / 255, blue: 32 / 255).opacity(0.82)
     static let blueOnInk = Color(red: 84 / 255, green: 193 / 255, blue: 1)
     static let mute = Color(red: 115 / 255, green: 115 / 255, blue: 115 / 255)
     static let handle = Color(red: 219 / 255, green: 219 / 255, blue: 219 / 255)
@@ -49,12 +51,21 @@ struct CompanionFaceView: View {
     /// The face set's rest frame (CallController.facePoster): the generated face in the call's crop, drawn over the
     /// upload still as soon as it exists, so the call never opens on the original photo and then jumps.
     var poster: CGImage? = nil
+    /// Face plan item 1: the call scene drawn in the face set's crop (`FaceRenderer.framedScene`), in place of `still`:
+    /// the poster and the live face that follow land on its pixels. Never the upload photo.
+    var framedStill: CGImage? = nil
     var lip: LipSource = .none
+    /// The companion is speaking (CallController.companionSpeaking): with no live face, the still moves a little.
+    var speaking: Bool = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         ZStack {
-            if let still { still.resizable().scaledToFill() } else { CallInk.ink }
-            if let poster { Image(decorative: poster, scale: 1).resizable().scaledToFill() }
+            ZStack {
+                if let framedStill { Image(decorative: framedStill, scale: 1).resizable().scaledToFill() }
+                else if let still { still.resizable().scaledToFill() } else { CallInk.ink }
+                if let poster { Image(decorative: poster, scale: 1).resizable().scaledToFill() }
+            }
+            .modifier(StillSpeech(on: speaking && face == nil && !CallMotion.reviewStill, reduceMotion: reduceMotion))
             if let face {
                 // S09-P (D28, AU-25): a face set that lands mid-call fades in over the still once (the reveal)
                 FaceFrameView(driver: face, still: faceStill).transition(.opacity)
@@ -68,10 +79,47 @@ struct CompanionFaceView: View {
         // layers as separate elements the identifier matched several of them, and UI tests read the still's value
         // even after the face had landed ("still" on b9-3…b9-6; probe run 41745964955: "multiple matching elements")
         .accessibilityElement(children: .ignore)
-        .accessibilityValue(Self.layer(face: face != nil, poster: poster != nil, still: still != nil))
+        .accessibilityValue(Self.layer(face: face != nil, poster: poster != nil, still: still != nil || framedStill != nil))
     }
     /// What's on top, for UI tests: live (the talking face) > poster (its rest frame) > still (scene / fixture) > ground.
     static func layer(face: Bool, poster: Bool, still: Bool) -> String { face ? "live" : poster ? "poster" : still ? "still" : "ground" }
+}
+
+/// DEMO P0 (11/4, Chelsea: "when she speaks the face moves, in every case"): while there is no live face yet (face set
+/// missing or still loading) and the companion speaks, the still breathes (scale 1.00 → 1.015 about the bottom) and
+/// bobs up to 1.5 pt with a syllable-like level, and a soft glow low in the frame follows that level. It stops with the
+/// speech. Reduce Motion: the glow's opacity only. The level is synthetic (3.7 Hz, uneven): the player's own level is
+/// unreadable in the same broken-engine state that left the face without a clock.
+struct StillSpeech: ViewModifier {
+    let on: Bool
+    let reduceMotion: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if on {
+            TimelineView(.animation) { timeline in
+                let t = timeline.date.timeIntervalSinceReferenceDate
+                let level = Self.level(at: t)
+                content
+                    .scaleEffect(reduceMotion ? 1 : CGFloat(1 + 0.0075 * (1 - cos(t * 2 * .pi * 0.5))), anchor: .bottom)
+                    .offset(y: reduceMotion ? 0 : CGFloat(-1.5 * level))
+                    .overlay {
+                        RadialGradient(colors: [Color.white.opacity(0.16 * level), Color.white.opacity(0)],
+                                       center: UnitPoint(x: 0.5, y: 0.7), startRadius: 0, endRadius: 140)
+                            .allowsHitTesting(false)
+                    }
+            }
+        } else {
+            content
+        }
+    }
+
+    /// Syllable-like loudness 0…1.
+    static func level(at t: Double) -> Double {
+        let syllable = 0.5 + 0.5 * sin(t * 2 * .pi * 3.7)
+        let phrase = 0.5 + 0.5 * sin(t * 2 * .pi * 1.3 + 1.1)
+        return min(1, max(0, syllable * (0.4 + 0.6 * phrase)))
+    }
 }
 
 struct LipLayer: View {
@@ -156,7 +204,9 @@ struct CallCueView: View {
             .padding(.leading, CallPillMetrics.leading).padding(.trailing, content.action == nil ? CallPillMetrics.trailing : CallPillMetrics.trailingWithAction)
             .padding(.vertical, CallPillMetrics.vertical)
             .frame(minHeight: CallPillMetrics.height)
-            .background(CallInk.pill, in: RoundedRectangle(cornerRadius: CallPillMetrics.radius))
+            .background(waiting ? CallInk.waitPill : CallInk.pill, in: RoundedRectangle(cornerRadius: CallPillMetrics.radius))
+            // 춘식이 11/4: a hairline so the pill keeps its shape on the dark wait stage (barely there over a face)
+            .overlay(RoundedRectangle(cornerRadius: CallPillMetrics.radius).strokeBorder(.white.opacity(0.12), lineWidth: 0.5).allowsHitTesting(false))
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.updatesFrequently)
             .accessibilityIdentifier("callCue")
@@ -166,6 +216,7 @@ struct CallCueView: View {
     }
 
     private struct Content { let icon: AnyView; let text: String; let action: (title: String, run: () -> Void)? }
+    private var waiting: Bool { Self.showsWaiting(cue: cue, findsText: findsText, waitingText: waitingText) }
 
     /// Card 1's live icon for the three conversation states; reconnecting, alerts and the Finds line keep theirs.
     private var motionIcon: MotionPillIconKind? {
@@ -189,15 +240,15 @@ struct CallCueView: View {
     /// off the screen; Codex P3)
     static func waitingLine(name: String, rowWidth: CGFloat) -> String {
         let full = "Getting \(name) ready"
-        return pillWidth(text: full) <= rowWidth ? full : "Getting ready"
+        return pillWidth(text: full, icon: CueSpinner.waitSize) <= rowWidth ? full : "Getting ready"
     }
     private static func textWidth(_ text: String) -> CGFloat {
         let font = UIFont(name: "PretendardVariable-Medium", size: 14) ?? .systemFont(ofSize: 14, weight: .medium)
         return ceil((text as NSString).size(withAttributes: [.font: font]).width)
     }
-    /// The pill's width for a line (icon counted at its widest, the 20 pt alert). With a button: + 7 + 8 + title + 8.
-    static func pillWidth(text: String, action: String? = nil) -> CGFloat {
-        let base = CallPillMetrics.leading + 20 + CallPillMetrics.iconSpacing + textWidth(text)
+    /// The pill's width for a line (icon counted at its widest, the 20 pt alert; the wait line's spinner is 13). With a button: + 7 + 8 + title + 8.
+    static func pillWidth(text: String, action: String? = nil, icon: CGFloat = 20) -> CGFloat {
+        let base = CallPillMetrics.leading + icon + CallPillMetrics.iconSpacing + textWidth(text)
         guard let action else { return base + CallPillMetrics.trailing }
         return base + CallPillMetrics.iconSpacing + 16 + textWidth(action)
     }
@@ -224,11 +275,12 @@ struct CallCueView: View {
     }
     /// The measured pill width of what it shows now; nil = nothing to show.
     static func width(cue: CallCue, name: String, findsText: String?, rowWidth: CGFloat?, waitingText: String? = nil) -> CGFloat? {
-        line(cue: cue, name: name, findsText: findsText, rowWidth: rowWidth, waitingText: waitingText).map { pillWidth(text: $0.text, action: $0.action) }
+        let icon = showsWaiting(cue: cue, findsText: findsText, waitingText: waitingText) ? CueSpinner.waitSize : 20
+        return line(cue: cue, name: name, findsText: findsText, rowWidth: rowWidth, waitingText: waitingText).map { pillWidth(text: $0.text, action: $0.action, icon: icon) }
     }
     private var content: Content? {
         if Self.showsWaiting(cue: cue, findsText: findsText, waitingText: waitingText), let waitingText {
-            return Content(icon: AnyView(CueSpinner()), text: waitingText, action: nil)
+            return Content(icon: AnyView(CueSpinner(size: CueSpinner.waitSize, line: 1.6, track: 0.30, head: .white)), text: waitingText, action: nil)
         }
         guard let line = Self.line(cue: cue, name: name, findsText: findsText, rowWidth: rowWidth) else { return nil }
         let showingFinds = findsText != nil && cue != .reconnecting && cue != .answerFailed
@@ -339,12 +391,18 @@ struct CueAlert: View {
 }
 
 struct CueSpinner: View {
+    /// S09 wait pill (춘식이 11/4 re-check): 13 pt, 1.6 pt stroke, white 30 % track, #FFF head
+    static let waitSize: CGFloat = 13
+    var size: CGFloat = 16
+    var line: CGFloat = 2
+    var track: Double = 0.32
+    var head = CallInk.onInk
     @State private var turn = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
-        Circle().stroke(CallInk.onInk.opacity(0.32), lineWidth: 2)
-            .overlay(Circle().trim(from: 0, to: 0.25).stroke(CallInk.onInk, style: StrokeStyle(lineWidth: 2, lineCap: .round)).rotationEffect(.degrees(turn ? 360 : 0)))
-            .frame(width: 16, height: 16)
+        Circle().stroke(Color.white.opacity(track), lineWidth: line)
+            .overlay(Circle().trim(from: 0, to: 0.25).stroke(head, style: StrokeStyle(lineWidth: line, lineCap: .round)).rotationEffect(.degrees(turn ? 360 : 0)))
+            .frame(width: size, height: size)
             .onAppear { if !reduceMotion && !CallMotion.reviewStill { withAnimation(.linear(duration: 0.9).repeatForever(autoreverses: false)) { turn = true } } }
     }
 }

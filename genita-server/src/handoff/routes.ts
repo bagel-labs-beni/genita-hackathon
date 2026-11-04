@@ -44,6 +44,17 @@ export function gatedCallDevice(principalDevice: string, url: URL): HandoffDevic
   return asked ? (asDevice(principalDevice) ?? asked) : null;
 }
 
+/**
+ * MV-01 (GATE-A): the apps' call URL carries `?device=…&owner=…&epoch=…` — the device and its own last known owner.
+ * Returns that claim, or null when it is missing or malformed (then only the start claim runs, as before).
+ */
+export function callClaim(url: URL): { owner: HandoffDevice; epoch: number } | null {
+  const owner = asDevice(url.searchParams.get("owner"));
+  const raw = url.searchParams.get("epoch");
+  const epoch = raw !== null && /^\d{1,10}$/.test(raw) ? validEpoch(Number(raw)) : null;
+  return owner && epoch !== null && epoch > 0 ? { owner, epoch } : null;
+}
+
 async function readBody(req: IncomingMessage): Promise<Record<string, unknown> | null> {
   let size = 0;
   const chunks: Buffer[] = [];
@@ -157,8 +168,8 @@ export const START_CLAIM_WAIT_MS = 1500;
  * judged when the claim lands: the greeting's opener comes from a cache in ~5 ms, before the claim, and was
  * dropped as "not the owner" (prod a5e2c4c 11/4: "Hey, Q!" shown, first sound only ~3 s later).
  */
-export function gateCall(hub: HandoffHub, userId: string, device: HandoffDevice, sink: ClientSink, stop: () => void): { sink: ClientSink; call: CallHandle } {
-  const call = hub.attachCall(userId, device, { stop, send: (m) => sink.sendJson(m as never) });
+export function gateCall(hub: HandoffHub, userId: string, device: HandoffDevice, sink: ClientSink, stop: () => void, known: { owner: HandoffDevice; epoch: number } | null = null): { sink: ClientSink; call: CallHandle } {
+  const call = hub.attachCall(userId, device, { stop, send: (m) => sink.sendJson(m as never), known });
   type Held = { json: Parameters<ClientSink["sendJson"]>[0] } | { bin: Buffer };
   let held: Held[] | null = null; // non-null: waiting for the start claim
   let readySeen = false;
@@ -181,7 +192,13 @@ export function gateCall(hub: HandoffHub, userId: string, device: HandoffDevice,
       ...call,
       mayPlay: () => call.mayPlay(),
       started: async () => {
-        try { await call.started(); } finally { release(); }
+        try {
+          await call.started();
+          // a start that just took the conversation (a newer local claim) waits out the handover lease, so its held
+          // opener plays instead of being judged "not yet" and dropped (Codex P2)
+          const wait = Math.min(1000, call.leaseLeftMs?.() ?? 0);
+          if (wait > 0) await new Promise((r) => setTimeout(r, wait + 5));
+        } finally { release(); }
       },
       close: () => { release(); call.close(); },
     },

@@ -207,11 +207,21 @@ test("service: setup answers re-write the report (import text kept in memory onl
   const [a, b] = r.report!.observations;
   const right = await h.ins.verdict("u1", a.id, { verdict: "right" });
   assert.equal(right.observations.find((o) => o.id === a.id)!.verdict, "right");
+  // the lines it was linked to when the report was saved (AU-91)
+  const behind = ((await h.store.getStyle("u1"))!.insights!.observations.find((o) => o.id === b.id)!.sources ?? []).map((x) => x.text);
   const no = await h.ins.verdict("u1", b.id, { verdict: "not_me", correction: "I just like choices, I still decide fast." });
   assert.ok(!no.observations.some((o) => o.id === b.id), "not me → removed");
   assert.ok(no.learning.length >= 2, "→ something I'm still learning");
   const card = (await h.store.getStyle("u1"))!;
   assert.equal(card.insights!.denied![0].claim, b.claim);
+  // AU-91: the findings it was built from leave the call profile too; the call is told never to bring them up
+  assert.ok(behind.length >= 1, `the observation stands on a finding: ${JSON.stringify(b.evidence)}`);
+  const left = Object.values(card.sections).flat().map((x) => (x as { text: string }).text);
+  for (const t of behind) assert.ok(!left.includes(t), `"${t}" is out of the profile`);
+  for (const t of behind) assert.ok(card.removed!.some((r) => r.text === t && !r.forget), `"${t}" is a removed line (not a forget tombstone)`);
+  assert.ok(!card.removed!.some((r) => r.text === b.claim), "the claim itself is not (it would block any line sharing a word)");
+  assert.ok(!insightProfileLines(card).some((l) => /Not true about them/.test(l)), "never quoted back as 'not true'");
+  assert.ok(insightProfileLines(card).some((l) => /I just like choices/.test(l)), "their own words of what is right stay");
   // the next write is told what was wrong
   await h.ins.fromAnswers("u1", { help: "Think with me", relationship: "Trusted partner", presence: ["Warm"] });
   await h.ins.get("u1", 3000);
@@ -472,6 +482,215 @@ test("codex r4: a fact only in a not-me correction is forgotten too (off the lis
   assert.ok((card.removed ?? []).some((r) => r.forget && /fountain/.test(r.text)), JSON.stringify(card.removed));
 });
 
+test("Codex #581 r7: 'forget …' finds a fact that only the report holds (an observation's own words)", async (t) => {
+  const h = harness(() => RAW);
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  await h.ins.get("u1", 3000);
+  // the report alone says it (no profile line about leather)
+  const c0 = (await h.store.getStyle("u1"))!;
+  const o = c0.insights!.observations[0];
+  await h.store.putStyle("u1", { ...c0, insights: { ...c0.insights!, observations: [{ ...o, claim: "You carry leather accessories everywhere" }, ...c0.insights!.observations.slice(1)] } });
+  assert.ok(!JSON.stringify(c0.sections).toLowerCase().includes("leather"));
+  await h.p.voiceCorrection("u1", "Forget about leather accessories.");
+  const card = (await h.store.getStyle("u1"))!;
+  assert.ok((card.removed ?? []).some((r) => r.forget && /leather/.test(r.text)), JSON.stringify(card.removed));
+  assert.ok(!card.insights!.observations.some((x) => x.id === o.id), "the observation is gone");
+});
+
+test("Codex #581 r10: 'not me' on one observation built on a setup pick takes the others built on it", async (t) => {
+  const h = harness(() => RAW);
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  await h.ins.get("u1", 3000);
+  const c0 = (await h.store.getStyle("u1"))!;
+  const [a, b, ...rest] = c0.insights!.observations;
+  const pick = [{ source: "answer" as const, quote: "Think with me", source_label: "Your setup" }];
+  await h.store.putStyle("u1", { ...c0, insights: { ...c0.insights!, observations: [{ ...a, evidence: pick }, { ...b, evidence: pick }, ...rest] } });
+  const after = await h.ins.verdict("u1", a.id, { verdict: "not_me" });
+  assert.ok(!after.observations.some((o) => o.id === b.id), "the other one on the same pick goes too");
+});
+
+test("Codex #581 r8: a fact only in the report's headline is forgettable too", async (t) => {
+  const h = harness(() => RAW);
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  await h.ins.get("u1", 3000);
+  const c0 = (await h.store.getStyle("u1"))!;
+  await h.store.putStyle("u1", { ...c0, insights: { ...c0.insights!, headline: "You and your fountain pens, always." } });
+  await h.p.voiceCorrection("u1", "Forget about fountain pens.");
+  const card = (await h.store.getStyle("u1"))!;
+  assert.ok((card.removed ?? []).some((r) => r.forget && /fountain/.test(r.text)), JSON.stringify(card.removed));
+  assert.doesNotMatch(card.insights!.headline, /fountain/i);
+});
+
+test("AU-91: findingsBehind — a pick takes its labeled finding, a quote its finding; unrelated findings stay", async () => {
+  const { findingsBehind } = await import("../src/insights/report.ts");
+  const card = { sections: { likes: [{ text: "Food: spicy." }, { text: "Style: Clean, minimal clothes." }], communication: [{ text: "Jokes even in work threads." }] } } as never;
+  assert.deepEqual(findingsBehind(card, { claim: "You love spicy food", evidence: [{ source: "answer", quote: "Spicy", source_label: "Your picks" }], chips: [] } as never), ["Food: spicy."]);
+  assert.deepEqual(findingsBehind(card, { claim: "You joke around even at work", evidence: [{ source: "import", quote: "jokes even in work threads", source_label: "From the reply you pasted" }], chips: [] } as never), ["Jokes even in work threads."]);
+  // Codex #581: a one-word highlight never takes an unrelated finding; an N1 pick takes the line it was written as
+  // (communication, not response: the response section is how Genita answers — a setting since link r2)
+  const c2 = { sections: { communication: [{ text: "Short, direct replies." }, { text: "Talk it through with me." }], interests: [{ text: "Short films." }] } } as never;
+  assert.deepEqual(findingsBehind(c2, { claim: "You like short, direct replies", evidence: [{ source: "import", quote: "short, direct replies", source_label: "x", highlight: "short" }], chips: [] } as never), ["Short, direct replies."]);
+  assert.deepEqual(findingsBehind(c2, { claim: "You think out loud", evidence: [{ source: "answer", quote: "Talk it out", source_label: "Your picks" }], chips: [] } as never), ["Talk it through with me."]);
+  // Codex #581 r2: N3 "no" picks, chat picks; "short … shorter" is one shared word
+  const c3 = { sections: { likes: [{ text: "Dislikes seafood." }, { text: "Dislikes colorful, formal clothes." }], communication: [{ text: "Likes jokes in our chats." }], interests: [{ text: "Short films." }] } } as never;
+  assert.deepEqual(findingsBehind(c3, { claim: "You skip seafood", evidence: [{ source: "answer", quote: "Seafood", source_label: "x" }], chips: [] } as never), ["Dislikes seafood."]);
+  assert.deepEqual(findingsBehind(c3, { claim: "You keep it light", evidence: [{ source: "answer", quote: "Jokes", source_label: "x" }], chips: [] } as never), ["Likes jokes in our chats."]);
+  assert.deepEqual(findingsBehind(c3, { claim: "You want it brief", evidence: [{ source: "import", quote: "I like short replies, the shorter the better.", source_label: "x" }], chips: [] } as never), []);
+});
+
+test("AU-91 r3: a list finding loses only the picked item; a single-item finding goes whole", async () => {
+  const { editsBehind } = await import("../src/insights/report.ts");
+  const card = { sections: { likes: [{ text: "Food: spicy, seafood." }, { text: "Dislikes colorful, formal clothes." }, { text: "Dislikes cilantro." }] } } as never;
+  const a = editsBehind(card, { claim: "You love heat", evidence: [{ source: "answer", quote: "Spicy", source_label: "x" }], chips: [] } as never);
+  assert.deepEqual([...a.rewrite], [["Food: spicy, seafood.", "Food: seafood."]]);
+  assert.deepEqual([...a.drop], []);
+  assert.deepEqual(a.picks, ["Spicy"]);
+  assert.deepEqual(a.items, ["spicy"]);
+  assert.deepEqual(a.removedLines.map((x) => x.text), ["Food: spicy, seafood.", "Food: spicy."], "the original line and the item are removed lines");
+  const long = editsBehind({ sections: { interests: [{ text: "Long walks in the mountains." }] } } as never, { claim: "You love long hikes", evidence: [{ source: "answer", quote: "Long walks in the mountains", source_label: "x" }], chips: [] } as never);
+  assert.deepEqual(long.picks, ["Long walks in the mountains"], "a long pick leaves card.picks too (Codex #581 r4)");
+  assert.deepEqual([...long.drop], ["Long walks in the mountains."], "and its own finding goes (Codex #581 r9)");
+  const b = editsBehind(card, { claim: "You keep it casual", evidence: [{ source: "answer", quote: "Formal", source_label: "x" }], chips: [] } as never);
+  assert.deepEqual([...b.rewrite], [["Dislikes colorful, formal clothes.", "Dislikes colorful clothes."]]);
+  const m = editsBehind({ sections: { likes: [{ text: "Style: Minimal." }] } } as never, { claim: "You keep it simple", evidence: [{ source: "import", quote: "Minimal", source_label: "x" }], chips: [] } as never);
+  assert.deepEqual([...m.drop], ["Style: Minimal."], "a paste quote that is exactly the item (Codex #581 r17)");
+  const q = editsBehind({ sections: { likes: [{ text: "Food: spicy, seafood." }, { text: "Food: spicy." }] } } as never, { claim: "You like heat", evidence: [{ source: "import", quote: "I like spicy food.", source_label: "x" }], chips: [] } as never);
+  assert.deepEqual([...q.rewrite], [["Food: spicy, seafood.", "Food: seafood."]], "an item named inside a paste quote (Codex #581 r23)");
+  assert.deepEqual([...q.drop], ["Food: spicy."]);
+  assert.ok(q.items.includes("spicy"), "a whole-finding drop records its item too (Codex #581 r24)");
+  const c = editsBehind(card, { claim: "You skip cilantro", evidence: [{ source: "answer", quote: "Cilantro", source_label: "x" }], chips: [] } as never);
+  assert.deepEqual([...c.drop], ["Dislikes cilantro."]);
+});
+
+test("AU-91 r5: a report already being written can't bring a 'not me' pick or item back under another claim", async () => {
+  const { standsOnDenied, quoteKey, quoteWords } = await import("../src/insights/service.ts");
+  const d = { picks: ["Spicy"], items: ["spicy"] };
+  assert.equal(standsOnDenied({ claim: "You like heat in dinner", use_in_call: "I'll pick hot dishes", evidence: [{ source: "answer", quote: "Spicy" }] }, d), true, "the same pick");
+  assert.equal(standsOnDenied({ claim: "You want spicy dishes with seafood", use_in_call: "", evidence: [{ source: "import", quote: "seafood" }] }, d), true, "the item named");
+  assert.equal(standsOnDenied({ claim: "You love seafood", use_in_call: "I'll suggest fish", evidence: [{ source: "answer", quote: "Seafood" }] }, d), false, "what's left stays");
+  assert.equal(standsOnDenied({ claim: "You go clean", use_in_call: "", evidence: [{ source: "import", quote: "Minimal" }] }, { picks: ["Minimal"] }), true, "the same pick cited as an import quote (Codex #581 r21)");
+  assert.equal(standsOnDenied({ claim: "You keep things brief", use_in_call: "", evidence: [{ source: "import", quote: "Prefers short, direct replies." }] }, { quotes: [quoteWords("Prefers short, direct replies.")] }), true, "the same paste quote, reworded claim (Codex #581 r12)");
+  assert.equal(standsOnDenied({ claim: "You keep it tight", use_in_call: "", evidence: [{ source: "import", quote: "short, direct replies" }] }, { quotes: [quoteWords("Prefers short, direct replies when deciding.")] }), true, "a narrower quote of the same words (Codex #581 r15)");
+  assert.equal(standsOnDenied({ claim: "You enjoy heat", use_in_call: "", evidence: [{ source: "import", quote: "I enjoy spicy food." }] }, { quotes: [quoteWords("spicy food")] }), true, "a wider quote of a short denied one (Codex #581 r16)");
+  assert.equal(standsOnDenied({ claim: "You love nature films", use_in_call: "", evidence: [{ source: "import", quote: "I like to watch nature documentaries." }] }, { quotes: [quoteWords("I like to cook spicy food.")] }), false, "sharing 'I like to' is not the same evidence (Codex #581 r16)");
+  assert.equal(quoteKey("Prefers short, direct answers."), quoteKey("Prefers short direct answers"), "punctuation-blind (Codex #581 r13)");
+});
+
+test("AU-91 r6: a removed line (not a forget) never takes the 'not me' record or its correction", () => {
+  const r = toReport(RAW, INPUTS, { at: "", from: "import" });
+  const stored = { ...r, denied: [{ id: "x", claim: "You want the answer first.", category: "talk" as const, at: "t", correction: "I prefer a detailed explanation first.", picks: ["Start with the answer"] }] };
+  const kept = scrubRemoved(stored, [{ text: "Start with the answer, then explain." }]);
+  assert.equal(kept.denied?.length, 1);
+  assert.equal(kept.denied?.[0].correction, "I prefer a detailed explanation first.");
+  const forgot = scrubRemoved(stored, [{ text: "detailed explanation", forget: true }]);
+  assert.equal(forgot.denied?.length, 0, "an explicit forget still clears it");
+  const byPick = scrubRemoved({ ...r, denied: [{ id: "y", claim: "You love heat", category: "taste" as const, at: "t", picks: ["Spicy"], items: ["spicy"] }] }, [{ text: "spicy", forget: true }]);
+  assert.equal(byPick.denied?.length, 0, "a forget of the pick clears the record that only held it (Codex #581 r14)");
+});
+
+test("Codex #581 r11: rulesBehind takes the 'When …' rule that says the same, not others", async () => {
+  const { rulesBehind } = await import("../src/insights/report.ts");
+  const rules = [{ when: "When deciding", then: "keep replies short and direct", label: "explicit" }, { when: "When they're stressed", then: "slow down and check in", label: "explicit" }];
+  const o = { claim: "You want short, direct replies", evidence: [{ source: "import", quote: "Prefers short, direct replies.", source_label: "x" }] } as never;
+  assert.deepEqual(rulesBehind(rules, o, ["Prefers short, direct replies."]).map((r) => r.then), ["keep replies short and direct"]);
+});
+
+test("Codex #581 r18: a word overlap never takes an approval boundary or rule", async () => {
+  const { findingsBehind, rulesBehind } = await import("../src/insights/report.ts");
+  const card = { sections: { help: [{ text: "Likes help drafting messages and emails." }], boundaries: [{ text: "Never send messages or emails without my approval." }] } } as never;
+  const o = { claim: "You like help drafting messages", evidence: [{ source: "import", quote: "Likes help drafting messages and emails.", source_label: "x" }], chips: [] } as never;
+  assert.deepEqual(findingsBehind(card, o), [], "the help section is a setting: never removed by a 'not me', even quoted whole (link r1)");
+  assert.deepEqual(rulesBehind([{ when: "When messages or emails are ready", then: "never send without my approval", label: "explicit" }], o, ["Likes help drafting messages and emails."]), []);
+  const o2 = { claim: "You draft emails with help", evidence: [{ source: "import", quote: "Draft emails with me before sending them.", source_label: "x" }], chips: [] } as never;
+  assert.deepEqual(rulesBehind([{ when: "When drafting messages", then: "never include private screen contents", label: "explicit" }], { claim: "You draft messages", evidence: [{ source: "import", quote: "Likes help to draft messages.", source_label: "x" }] } as never, []), [], "a protective rule stays (Codex #581 r20)");
+  assert.deepEqual(rulesBehind([{ when: "When answering clients", then: "redact screen contents from outgoing messages", label: "explicit" }], { claim: "You answer clients", evidence: [{ source: "import", quote: "answering clients", source_label: "x" }] } as never, []), [], "a specific When, a privacy rule (Codex #581 r34)");
+  assert.deepEqual(rulesBehind([{ when: "When I say yes", then: "send drafted messages", label: "explicit" }], { claim: "You send drafts", evidence: [{ source: "import", quote: "send drafted messages", source_label: "x" }] } as never, []), [], "a rule on what they do stays (Codex #581 r33)");
+  assert.deepEqual(rulesBehind([{ when: "When I give the go-ahead", then: "send drafted messages", label: "explicit" }], { claim: "You send drafts", evidence: [{ source: "import", quote: "send drafted messages", source_label: "x" }] } as never, []), [], "a gate in the When part (Codex #581 r32)");
+  assert.deepEqual(rulesBehind([{ when: "When drafting", then: "keep drafted messages confidential", label: "explicit" }], { claim: "You keep drafts", evidence: [{ source: "import", quote: "I keep drafted messages.", source_label: "x" }] } as never, []), [], "confidential (Codex #581 r31)");
+  assert.deepEqual(rulesBehind([{ when: "When drafting messages", then: "require clearance to send", label: "explicit" }], { claim: "You like help drafting", evidence: [{ source: "import", quote: "Help drafting messages.", source_label: "x" }] } as never, ["Help drafting messages."]), [], "a separate condition on the same topic stays (Codex #581 r25)");
+  for (const then of ["get my consent before sending", "confirm with me before sending", "check with me first", "get authorization first"]) assert.deepEqual(rulesBehind([{ when: "When drafting emails", then, label: "explicit" }], o2, []), [], then);
+});
+
+test("Codex #581 r26: an approval line in any section never goes on a word overlap", async () => {
+  const { findingsBehind } = await import("../src/insights/report.ts");
+  const card = { sections: { help: [{ text: "Never send messages or emails without my approval." }], boundaries: [{ text: "Never send messages or emails without my approval." }] } } as never;
+  assert.deepEqual(findingsBehind(card, { claim: "You live in your inbox", evidence: [{ source: "import", quote: "messages or emails", source_label: "x" }], chips: [] } as never), []);
+  const c2 = { sections: { help: [{ text: "Ask for approval before sending messages and emails." }] } } as never;
+  assert.deepEqual(findingsBehind(c2, { claim: "You like drafting help", evidence: [{ source: "import", quote: "I like help drafting emails.", source_label: "x" }], chips: [] } as never), [], "not via an item inside a quote either (Codex #581 r27)");
+  assert.deepEqual(findingsBehind({ sections: { help: [{ text: "Likes help drafting messages." }, { text: "Only send drafted messages with my go-ahead." }] } } as never, { claim: "You like drafting help", evidence: [{ source: "import", quote: "help drafting messages", source_label: "x" }], chips: [] } as never), [], "the help section only changes on an exact link (Codex #581 r29)");
+  assert.deepEqual(findingsBehind({ sections: { response: [{ text: "Keep screen contents out of replies." }] } } as never, { claim: "You share your screen a lot", evidence: [{ source: "import", quote: "screen contents", source_label: "x" }], chips: [] } as never), [], "a partial quote never takes a longer line (Codex #581 r35)");
+  assert.deepEqual(findingsBehind({ sections: { response: [{ text: "Keep screen contents out of replies." }] } } as never, { claim: "You share your screen a lot", evidence: [{ source: "import", quote: "screen contents out of replies", source_label: "x" }], chips: [] } as never), [], "an 'out of' line is a gate (Codex #581 r36)");
+  assert.deepEqual(findingsBehind({ sections: { response: [{ text: "Keep replies free of screen contents." }] } } as never, { claim: "You explain screen contents through your replies.", evidence: [{ source: "import", quote: "screen contents", source_label: "x" }], chips: [] } as never), [], "the model's claim never decides (Codex #581 r37)");
+  assert.deepEqual(findingsBehind({ sections: { response: [{ text: "Keep replies free of screen contents." }] } } as never, { claim: "You narrate your screen", evidence: [{ source: "import", quote: "I describe screen contents in replies.", source_label: "x" }], chips: [] } as never), [], "no partial match removes a line (Codex #581 r38)");
+  assert.deepEqual(findingsBehind({ sections: { response: [{ text: "No private details in drafted messages." }] } } as never, { claim: "You draft a lot", evidence: [{ source: "import", quote: "drafted messages", source_label: "x" }], chips: [] } as never), [], "'No …' and privacy lines (Codex #581 r30)");
+  assert.deepEqual(findingsBehind({ sections: { help: [{ text: "Send messages only after I authorize them." }] } } as never, { claim: "You send lots", evidence: [{ source: "import", quote: "sending messages", source_label: "x" }], chips: [] } as never), [], "authorize / only after (Codex #581 r28)");
+});
+
+test("AU-91 link model: a saved observation links its lines; 'not me' removes exactly those; settings are never linked", async () => {
+  const { linkSources, editsFromSources } = await import("../src/insights/report.ts");
+  const card = { sections: {
+    likes: [{ text: "Food: spicy, seafood." }, { text: "Style: Minimal." }],
+    response: [{ text: "Keep replies free of screen contents." }],
+    communication: [{ text: "Short, direct replies." }],
+    help: [{ text: "Help drafting messages." }],
+  } } as never;
+  const o = (evidence: Array<{ source: string; quote: string }>, basis?: string[]) => ({ evidence: evidence.map((e) => ({ ...e, source_label: "x" })), chips: [], ...(basis ? { basis } : {}) }) as never;
+  // cited by Spark (skip / card path), said whole, a list item by its pick
+  assert.deepEqual(linkSources(card, o([{ source: "import", quote: "screen contents" }], ["Short, direct replies."])), [{ section: "communication", text: "Short, direct replies." }]);
+  assert.deepEqual(linkSources({ sections: { response: [{ text: "Anonymize names in replies." }] } } as never, o([{ source: "import", quote: "Anonymize names in replies." }])), [], "how Genita answers is a setting (Codex link r2)");
+  assert.deepEqual(linkSources(card, o([{ source: "answer", quote: "Spicy" }])), [{ section: "likes", text: "Food: spicy, seafood.", item: "spicy" }]);
+  // a gate / privacy line or an operational section is never linked, even when cited or quoted whole
+  assert.deepEqual(linkSources(card, o([{ source: "import", quote: "Keep replies free of screen contents." }], ["Keep replies free of screen contents.", "Help drafting messages."])), []);
+  // a partial quote links nothing
+  assert.deepEqual(linkSources(card, o([{ source: "import", quote: "screen contents" }])), []);
+  // removal by the link
+  const e = editsFromSources(card, { evidence: [], chips: [], sources: [{ section: "likes", text: "Food: spicy, seafood.", item: "spicy" }] } as never);
+  assert.deepEqual([...e.rewrite], [["Food: spicy, seafood.", "Food: seafood."]]);
+  assert.deepEqual(e.items, ["spicy"]);
+  // a line changed since (a correction) is left alone
+  assert.equal(editsFromSources(card, { evidence: [], chips: [], sources: [{ section: "likes", text: "Food: spicy." }] } as never).drop.size, 0);
+});
+
+test("AU-91 link model: Spark's based_on numbers map to the profile lines it was shown (skip path only)", async () => {
+  const { toReport, buildInsightRequest } = await import("../src/insights/report.ts");
+  const inputs = { findings: ["Prefers short, direct replies.", "Food: spicy."], picks: [], source: "skip" as const };
+  assert.match(String(buildInsightRequest(inputs).input), /1\. Prefers short, direct replies\.\n2\. Food: spicy\./);
+  const raw = { ...RAW, observations: (RAW as { observations: Array<Record<string, unknown>> }).observations.map((x) => ({ ...x, based_on: [1, 9] })) };
+  const r = toReport(raw, { ...INPUTS, findings: inputs.findings, text: undefined }, { at: "", from: "skip" });
+  for (const ob of r.observations) assert.ok(!ob.basis || ob.basis.every((b) => inputs.findings.includes(b)), JSON.stringify(ob.basis));
+});
+
+test("AU-91 link model r1: a cited list links only named items; links follow a rewrite; an edit stays in its section", async (t) => {
+  const { linkSources } = await import("../src/insights/report.ts");
+  const card = { sections: { likes: [{ text: "Food: spicy, seafood." }] } } as never;
+  assert.deepEqual(linkSources(card, { evidence: [{ source: "answer", quote: "Spicy", source_label: "x" }], chips: [], basis: ["Food: spicy, seafood."] } as never), [{ section: "likes", text: "Food: spicy, seafood.", item: "spicy" }], "the cited list: only the named item");
+  // two observations on one list, denied one after the other
+  const h = harness(() => RAW);
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  await h.ins.get("u1", 3000);
+  const c0 = (await h.store.getStyle("u1"))!;
+  const [a, b, ...rest] = c0.insights!.observations;
+  const likes = [{ text: "Food: spicy, seafood.", label: "explicit", scope: "any" }];
+  await h.store.putStyle("u1", { ...c0, sections: { ...c0.sections, likes, response: [...c0.sections.response, { text: "Food: spicy, seafood.", label: "explicit", scope: "any" }] } as never,
+    insights: { ...c0.insights!, observations: [{ ...a, sources: [{ section: "likes", text: "Food: spicy, seafood.", item: "spicy" }] }, { ...b, sources: [{ section: "likes", text: "Food: spicy, seafood.", item: "seafood" }] }, ...rest] } });
+  await h.ins.verdict("u1", a.id, { verdict: "not_me" });
+  let card1 = (await h.store.getStyle("u1"))!;
+  assert.deepEqual(card1.sections.likes.map((f) => f.text), ["Food: seafood."]);
+  assert.ok(card1.sections.response.some((f) => f.text === "Food: spicy, seafood."), "the same words in another section stay");
+  assert.equal(card1.insights!.observations.find((o) => o.id === b.id)?.sources?.[0].text, "Food: seafood.", "b's link follows the rewrite");
+  await h.ins.verdict("u1", b.id, { verdict: "not_me" });
+  card1 = (await h.store.getStyle("u1"))!;
+  assert.deepEqual(card1.sections.likes.map((f) => f.text), [], "the second 'not me' still finds its line");
+});
+
 test("codex r6: forgetting a fact only the report holds removes it from the report and the call profile", async (t) => {
   const FP = "Collects fountain pens and inks every letter by hand.";
   const raw = { ...RAW, observations: [...RAW.observations, obs({ category: "interest", claim: "You write slow on purpose, ink and all.", evidence: [ev("import", FP)], surprise: 1, use_in_call: "I'll ask about your fountain pens." })] };
@@ -646,4 +865,145 @@ test("design-lane Codex: a trait resting on a line the user marked wrong leaves 
   const saved = { ...CARD, insights: r, removed: [{ text: "Jokes even in work threads.", at: "t" }] };
   assert.ok(!insightProfileLines(saved).some((l) => l.includes(humor.use_in_call)));
   assert.ok(insightProfileLines(saved).some((l) => l.includes(r.observations.find((o) => o.category === "think")!.use_in_call)), "the others stay");
+});
+
+test("demo P0: setup answers land on the stored report at once (settings, mix, refreshing); the slow rewrite is quick-mode and clears it", async (t) => {
+  let release!: () => void;
+  let gated = false;
+  const gate = new Promise<void>((r) => (release = r));
+  const h = harness(async (req) => { if (gated) await gate; return req.schemaName === "insight_report" ? RAW : null; });
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  await h.ins.get("u1", 3000);
+  gated = true;
+  const t0 = Date.now();
+  await h.ins.fromAnswers("u1", { help: "Be there", relationship: "Close companion", presence: ["Warm"], challenge: 2, pace: 4 });
+  const now = await h.ins.get("u1", 0);
+  assert.ok(Date.now() - t0 < 500, "no wait for Spark");
+  assert.equal(now.report!.settings!.why, "Be there");
+  assert.ok(now.report!.mix.some((m) => m.id === "pace"), "Your mix from the answers");
+  assert.equal(now.report!.refreshing, true);
+  await new Promise((r) => setTimeout(r, 30)); // the rewrite reads the card, then sends
+  const sent = h.calls.filter((c) => c.schemaName === "insight_report").at(-1)!;
+  assert.equal((sent as unknown as { effort?: string }).effort, "minimal", "quick rewrite");
+  release();
+  const done = await h.ins.get("u1", 3000);
+  assert.equal(done.status, "ready");
+  assert.ok(!done.report!.refreshing);
+
+  // a failed rewrite also clears "refreshing" (the app stops waiting)
+  const h2 = harness(async (req) => { if (req.schemaName === "insight_report" && h2calls++ > 0) throw new Error("504"); return RAW; });
+  let h2calls = 0;
+  t.after(h2.cleanup);
+  const j2 = h2.ins.begin("u1", PASTE);
+  j2.commit(await h2.p.replaceStyle("u1", CARD));
+  await h2.ins.get("u1", 3000);
+  await h2.ins.fromAnswers("u1", { help: "Be there" });
+  await h2.ins.get("u1", 3000);
+  await new Promise((r) => setTimeout(r, 30));
+  assert.ok(!(await h2.store.getStyle("u1"))!.insights!.refreshing);
+});
+
+test("demo P0 #1 (Codex P2): an older write failing while new answers land doesn't clear their 'refreshing'", async (t) => {
+  let failOld!: () => void;
+  const oldGate = new Promise<void>((r) => (failOld = r));
+  let n = 0;
+  let releaseNew!: () => void;
+  const newGate = new Promise<void>((r) => (releaseNew = r));
+  const h = harness(async (req) => {
+    if (req.schemaName !== "insight_report") return null;
+    const k = n++;
+    if (k === 0) return RAW; // the import's report
+    if (k === 1) { await oldGate; throw new Error("504"); } // the first answers' rewrite: fails late
+    await newGate; return RAW; // the second answers' rewrite
+  });
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  await h.ins.get("u1", 3000);
+  await h.ins.fromAnswers("u1", { help: "Be there" });
+  await new Promise((r) => setTimeout(r, 30));
+  // the old write fails while the new answers are being saved
+  const second = h.ins.fromAnswers("u1", { help: "Be there", pace: 4 });
+  failOld();
+  await second;
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal((await h.ins.get("u1", 0)).report!.refreshing, true, "still adding the newer answers");
+  releaseNew();
+  const done = await h.ins.get("u1", 3000);
+  assert.ok(!done.report!.refreshing);
+  assert.equal(h.calls.filter((c) => c.schemaName === "insight_report").length, 3, "one rewrite per answers POST, no second try");
+});
+
+test("demo P0 #2: 'Not quite' / Remove takes the profile lines the trait rests on out of the call profile", async (t) => {
+  const SOUP = "Loves tomato soup on rainy days.";
+  const card = toStyleCard({ sections: { tendencies: [f("Asks for two or three options before deciding.")], communication: [f("Jokes even in work threads.")], response: [], help: [], support: [], interests: [], likes: [f(SOUP), f("Style: Clean, minimal clothes.")], boundaries: [], approach: [] }, rules: [], to_confirm: [] }, "import");
+  const raw = { ...RAW, observations: [...RAW.observations, obs({ category: "taste", claim: "You make rain an excuse for soup.", evidence: [ev("import", "tomato soup on rainy days")], surprise: 1, use_in_call: "I'll bring up soup when it rains." })] };
+  const h = harness(() => raw);
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", `${PASTE}\n- ${SOUP}`);
+  job.commit(await h.p.replaceStyle("u1", card));
+  const r = (await h.ins.get("u1", 3000)).report!;
+  const soup = r.observations.find((o) => /soup/.test(o.claim))!;
+  assert.match(styleProfileText((await h.store.getStyle("u1"))!), /tomato soup/);
+  await h.ins.verdict("u1", soup.id, { verdict: "not_me" });
+  const after = (await h.store.getStyle("u1"))!;
+  assert.ok(!after.sections.likes.some((x) => /tomato/.test(x.text)), "the source line left the profile");
+  assert.ok(!/tomato soup on rainy/i.test(styleProfileText(after).split("Never bring")[0]), "not a fact in the call profile");
+  assert.ok(after.sections.likes.some((x) => /Clean, minimal/.test(x.text)), "other lines stay");
+  assert.ok(after.sections.tendencies.length === 1, "an unrelated section stays");
+});
+
+test("demo P0 #1 (Codex P2): a 'refreshing' flag left by a restart (no write running) is cleared on read", async (t) => {
+  const h = harness(() => RAW);
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  await h.ins.get("u1", 3000);
+  // a restart: the flag is stored, no write runs
+  await h.p.patchStyle("u1", (c) => ({ ...c, insights: { ...c.insights!, refreshing: true } }));
+  const fresh = new Insights({ json: h.json!, personalize: h.p, store: h.store });
+  const r = await fresh.get("u1", 0);
+  assert.equal(r.report!.refreshing, false);
+  assert.ok(!(await h.store.getStyle("u1"))!.insights!.refreshing);
+});
+
+test("demo P0 #2 (Codex r3): a quoted phrase two profile lines share links neither", async () => {
+  const { linkSources } = await import("../src/insights/report.ts");
+  const card = toStyleCard({ sections: { tendencies: [], communication: [], response: [], help: [], support: [], interests: [], likes: [f("Loves tomato soup on rainy days."), f("Reads science fiction on rainy days.")], boundaries: [], approach: [] }, rules: [], to_confirm: [] }, "import");
+  const links = linkSources(card, { evidence: [ev("import", "tomato soup"), ev("import", "on rainy days")], chips: [] } as never);
+  assert.ok(!links.some((l) => /science fiction/.test(l.text)), "the unrelated line isn't linked");
+  const one = linkSources(card, { evidence: [ev("import", "tomato soup on rainy days")], chips: [] } as never);
+  assert.deepEqual(one.map((l) => l.text), ["Loves tomato soup on rainy days."]);
+});
+
+test("Codex #581 recut P1: a report saved with no linked lines (sources: []) still takes the quoted list item out of the call profile", async (t) => {
+  const h = harness(() => RAW);
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  await h.ins.get("u1", 3000);
+  const c0 = (await h.store.getStyle("u1"))!;
+  const [a, ...rest] = c0.insights!.observations;
+  const likes = [{ text: "Food: spicy, seafood.", label: "explicit", scope: "any" }];
+  const quoted = { ...a, claim: "You love spicy food", chips: [], evidence: [{ source: "import", quote: "I like spicy food.", source_label: "From the reply you pasted" }], sources: [] };
+  await h.store.putStyle("u1", { ...c0, sections: { ...c0.sections, likes } as never, insights: { ...c0.insights!, observations: [quoted, ...rest] } as never });
+  await h.ins.verdict("u1", a.id, { verdict: "not_me" });
+  const card1 = (await h.store.getStyle("u1"))!;
+  assert.deepEqual(card1.sections.likes.map((f) => f.text), ["Food: seafood."], "spicy leaves the call profile");
+});
+
+test("Codex #581 recut r2 P1: a list item named inside a paste quote is linked too, next to another linked line", async () => {
+  const { linkSources } = await import("../src/insights/report.ts");
+  const card = { sections: { likes: [{ text: "Food: spicy, seafood." }, { text: "Style: Minimal." }] } } as never;
+  const got = linkSources(card, { evidence: [{ source: "import", quote: "I like spicy food.", source_label: "x" }, { source: "answer", quote: "Minimal", source_label: "x" }], chips: [] } as never);
+  assert.deepEqual(got, [{ section: "likes", text: "Food: spicy, seafood.", item: "spicy" }, { section: "likes", text: "Style: Minimal." }]);
+});
+
+test("Codex #581 recut r3 P1: a one-item line named inside a paste quote is linked too", async () => {
+  const { linkSources } = await import("../src/insights/report.ts");
+  const card = { sections: { likes: [{ text: "Food: spicy." }, { text: "Style: Minimal." }] } } as never;
+  const got = linkSources(card, { evidence: [{ source: "import", quote: "I like spicy food.", source_label: "x" }, { source: "answer", quote: "Minimal", source_label: "x" }], chips: [] } as never);
+  assert.deepEqual(got, [{ section: "likes", text: "Food: spicy." }, { section: "likes", text: "Style: Minimal." }]);
 });

@@ -384,8 +384,11 @@ struct MouthQualityTests {
         #expect(maxOff < 9)
         #expect(maxStep < 0.6)
         #expect(maxRoll < 2.0)
-        let a = FaceRenderer(faceSet: animalSet, outputSize: CGSize(width: out, height: 960), seed: 7).motionTransforms(at: 4.2, open: 0)
-        let b = FaceRenderer(faceSet: animalSet, outputSize: CGSize(width: out, height: 960), seed: 8).motionTransforms(at: 4.2, open: 0)
+        // seeded: same frames in time order (every run starts still, AliveMotion.settleSeconds), different seeds differ
+        let ra = FaceRenderer(faceSet: animalSet, outputSize: CGSize(width: out, height: 960), seed: 7)
+        let rb = FaceRenderer(faceSet: animalSet, outputSize: CGSize(width: out, height: 960), seed: 8)
+        for i in 0..<105 { _ = ra.motionTransforms(at: Double(i) / 25, open: 0); _ = rb.motionTransforms(at: Double(i) / 25, open: 0) }
+        let a = ra.motionTransforms(at: 4.2, open: 0), b = rb.motionTransforms(at: 4.2, open: 0)
         #expect(a.head != b.head)
     }
 
@@ -467,12 +470,40 @@ struct MouthQualityTests {
 
     /// codex P2: the cap holds in on-screen pixels for any output shape (a tall output fills by height) — through the
     /// renderer's own scale.
-    @Test func theSwayCapHoldsOnATallOutput() {
-        let face = faceCI(animalSet)
+    /// the flow fixture (an animal) with the served `alive.sway` (nil = no `alive` block) and, optionally, another kind
+    private func flowSet(sway: Double?, kind: String? = nil) throws -> FaceSet {
+        let dir = Bundle.module.url(forResource: "face-flow-animal", withExtension: nil, subdirectory: "Fixtures")!
+        var m = try JSONDecoder().decode(FaceManifest.self, from: Data(contentsOf: dir.appendingPathComponent("manifest.json")))
+        if let sway { var a = FlowMap.Alive(); a.sway = sway; m.flow?.map?.alive = a }
+        if let kind { m.flow?.kind = kind }
+        return try FaceSet(manifest: m) { try Data(contentsOf: dir.appendingPathComponent(($0 as NSString).lastPathComponent)) }
+    }
+
+    /// Build 10 (Chelsea: "the person moving left and right is distracting"): with no `alive` block, one without
+    /// `sway`, or `sway` 0, the frame never translates, rolls or scales — person, animal, or no flow at all.
+    @Test func noServedSwayMeansAStillFrame() throws {
+        let noSway = try JSONDecoder().decode(FlowMap.Alive.self, from: Data(#"{"headX": 0, "headRoll": 0, "lockY": true}"#.utf8))
+        #expect(noSway.sway == 0)
+        #expect(FlowMap.Alive().sway == 0)
+        for set in [animalSet, try flowSet(sway: nil), try flowSet(sway: nil, kind: "human"), try flowSet(sway: 0), try flowSet(sway: 0, kind: "human")] {
+            let r = FaceRenderer(faceSet: set, outputSize: CGSize(width: 540, height: 960), seed: 4)
+            var worst = 0.0
+            for i in 0..<250 {
+                let cam = r.motionTransforms(at: Double(i) / 25, open: (i % 12) < 4 ? 0.9 : 0.1).camera
+                worst = max(worst, abs(Double(cam.tx)) + abs(Double(cam.ty)) + abs(Double(cam.b)) + abs(Double(cam.a) - 1))
+            }
+            #expect(worst < 1e-9)
+        }
+    }
+
+    @Test func theSwayCapHoldsOnATallOutput() throws {
+        let set = try flowSet(sway: 2)   // a served sway (an animal: halved and smoothed); build 10 serves 0
+        let face = faceCI(set)
         for size in [CGSize(width: 540, height: 1280), CGSize(width: 540, height: 960), CGSize(width: 960, height: 540)] {
-            let r = FaceRenderer(faceSet: animalSet, outputSize: size, seed: 4)
+            let still = FaceRenderer(faceSet: animalSet, outputSize: size, seed: 4).screenScale   // no framing zoom
+            #expect(abs(still - max(size.width / animalSet.pixelSize.width, size.height / animalSet.pixelSize.height) * AliveMotion.overscan) < 1e-6)
+            let r = FaceRenderer(faceSet: set, outputSize: size, seed: 4)
             let s = r.screenScale
-            #expect(abs(s - max(size.width / animalSet.pixelSize.width, size.height / animalSet.pixelSize.height) * AliveMotion.overscan) < 1e-6)
             let pts = [CGPoint(x: face.minX, y: face.minY), CGPoint(x: face.maxX, y: face.minY), CGPoint(x: face.minX, y: face.maxY),
                        CGPoint(x: face.maxX, y: face.maxY), CGPoint(x: face.midX, y: face.midY)]
             var worst: CGFloat = 0

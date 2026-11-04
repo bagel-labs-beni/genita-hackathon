@@ -24,3 +24,12 @@ test("Codex #541 r2: 'see what I'm saying' is an idiom; a shared screen answers 
   assert.equal(cameraOffHint("look at this!", false, true), null);
   assert.match(cameraOffHint("do I look ok for this date?", false, true) ?? "", /camera is off/);
 });
+
+test("task546 gate: a short push right after a look ask keeps the camera-off boundary", async () => {
+  const { cameraOffHint, CAMERA_OFF_PUSH_HINT } = await import("../src/convo/cameraAsk.ts");
+  assert.equal(cameraOffHint("lol just tell me", false, false, "ok do i look ok for this date"), CAMERA_OFF_PUSH_HINT);
+  assert.equal(cameraOffHint("be honest", false, false, "how do I look?"), CAMERA_OFF_PUSH_HINT);
+  assert.equal(cameraOffHint("lol just tell me", true, false, "how do I look?"), null, "camera on");
+  assert.equal(cameraOffHint("just tell me what to cook", false, false, "how do I look?"), null, "a new ask, not a push");
+  assert.equal(cameraOffHint("lol just tell me", false, false, "what should I cook"), null, "no look ask before");
+});

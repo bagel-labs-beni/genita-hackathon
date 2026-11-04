@@ -5,6 +5,7 @@ import Observation
 // F5-U-CAM · CAM-H: the boxes the server finds on a camera frame (`observe.boxes`, 0–1 of that frame) drawn over the
 // live preview. Each box pops in (240 ms, 60 ms apart), the label sits above the box (below when there is no room),
 // everything fades after 4 s, and a tapped ingredient chip lights its box (and brings the boxes back for 4 s).
+// Demo S3 (iPhone): a batch from the server stays until the companion has said what she sees (`Hold`), not 4 s.
 
 struct LiveBox: Identifiable, Equatable {
     /// One per label, except with SAM masks on (one item per match): "tomatoes", "tomatoes#1", "tomatoes#2".
@@ -29,6 +30,12 @@ struct LiveBox: Identifiable, Equatable {
     private(set) var findId: String?
     /// Boxes are on screen; false after the 4 s fade.
     private(set) var visible = false
+    /// D63: the phone has really moved since the analysed frame (`CameraMotion`) — the masks fade out (150 ms) and
+    /// come back when the picture lines up again. The hold (#676) keeps running underneath: moving doesn't end it.
+    private(set) var misaligned = false
+    func setMisaligned(_ on: Bool) { if misaligned != on { misaligned = on } }
+    /// The analysed frame index of the current batch (a batch on another frame is a new look).
+    @ObservationIgnored private(set) var boxFrame: Int?
     /// Label of the lit box (chip tapped), lowercased.
     private(set) var highlighted: String?
     /// Bumped on every reveal so a new batch re-runs the pop animation.
@@ -141,6 +148,10 @@ struct LiveBox: Identifiable, Equatable {
     func apply(_ e: ServerEvent.ObserveBoxes) {
         guard e.w > 0, e.h > 0, !e.items.isEmpty else { return }
         if findId != e.findId { boxes = []; highlighted = nil }
+        // a new look is on the frame just taken: it lines up again (D63). More items found on the same frame (the
+        // server pushes a batch per confirmed ingredient) keep the hide: the picture still hasn't lined up (Codex r1)
+        if findId != e.findId || boxFrame != e.frame { misaligned = false }
+        boxFrame = e.frame
         findId = e.findId
         frameSize = CGSize(width: e.w, height: e.h)
         let known = Set(boxes.map(\.id))
@@ -158,20 +169,22 @@ struct LiveBox: Identifiable, Equatable {
         }
         boxes = next
         maskCache = [:]
-        reveal()
+        if Self.holdEnabled { holdBatch() } else { reveal() }
     }
 
     /// Chip tapped (or tapped again to let go). Only a chip that has a box lights one (every instance of it).
     func highlight(_ name: String?) {
         let key = name?.lowercased()
         highlighted = key.flatMap { k in boxes.contains { $0.key == k } ? k : nil }
-        if highlighted != nil { reveal() }
+        // a chip tapped while the batch is held keeps the hold (it ends after the companion's sentence, not 4 s later)
+        if highlighted != nil { if holding { visible = true } else { reveal() } }
     }
 
     func clear(stale: Bool = true) {
+        endHold()
         fadeTask?.cancel()
         if stale { epoch += 1 }
-        boxes = []; highlighted = nil; visible = false; findId = nil; maskCache = [:]
+        boxes = []; highlighted = nil; visible = false; findId = nil; maskCache = [:]; misaligned = false; boxFrame = nil
     }
 
     private func reveal() {
@@ -183,6 +196,127 @@ struct LiveBox: Identifiable, Equatable {
             guard let self, !Task.isCancelled else { return }
             self.visible = false
         }
+    }
+
+    // MARK: demo S3 hold — the masks stay until the companion has said what she sees
+
+    /// How long a batch from the server stays up, in seconds after it landed. On build 9 the masks faded after 4 s and the
+    /// companion's "I can see tomato, bell pepper…" came 2–7 s later (s3-b9: boxes 3.6–6.9 s, reply 8.3–11.8 s after
+    /// the question). Now: nobody speaks → `cap`. Her next reply starts playing → until it has played (+ `afterSpeech`),
+    /// at most `sentence` after it started (the ingredient sentence comes first). Never shorter than `minimum`.
+    struct Hold: Equatable {
+        var minimum: Double = 4
+        var cap: Double = 12
+        var sentence: Double = 6
+        var afterSpeech: Double = 0.6
+
+        /// `speechStart` / `speechEnd`: seconds after the batch landed (negative = before a later batch of the same find).
+        func fadeAt(speechStart: Double?, speechEnd: Double?) -> Double {
+            guard let start = speechStart, start < cap else { return cap }
+            var end = start + sentence
+            if let e = speechEnd { end = min(end, e + afterSpeech) }
+            return max(minimum, end)
+        }
+    }
+
+    /// On by default on iPhone; `GENITA_MASK_HOLD=0` or the `genita.maskHold` default set to false = the 4 s fade as before.
+    /// Off on the Mac: it draws no boxes, so its result sheet must never wait for them.
+    static var holdEnabled: Bool {
+        #if os(iOS)
+        if let env = ProcessInfo.processInfo.environment["GENITA_MASK_HOLD"] { return env != "0" }
+        return UserDefaults.standard.object(forKey: "genita.maskHold") as? Bool ?? true
+        #else
+        return false
+        #endif
+    }
+
+    @ObservationIgnored var hold = Hold()
+    /// A batch is up and waiting for the companion's sentence (the Finds sheet stays at peek meanwhile, FindsModel).
+    private(set) var holding = false
+    /// The hold ended (faded, or the boxes were cleared): FindsModel raises a card that waited at peek.
+    @ObservationIgnored var onHoldEnded: (() -> Void)?
+    /// A new hold began for this find: FindsModel folds a card that only just rose by itself (card before masks).
+    @ObservationIgnored var onHoldStarted: ((String) -> Void)?
+    /// `find.started.utteranceId` per find: the turn's own reply ("Ooh, let me see."). Her answer about what she sees is
+    /// the server's follow-up reply with a new utteranceId (PROTOCOL.md 11/2), so the ack never counts, however late it plays.
+    @ObservationIgnored var ackUtterance: [String: Int] = [:]
+    @ObservationIgnored var now: () -> ContinuousClock.Instant = { ContinuousClock.now }
+    @ObservationIgnored private var holdFind: String?
+    @ObservationIgnored private var landedAt: ContinuousClock.Instant?
+    @ObservationIgnored private var speechStart: ContinuousClock.Instant?
+    @ObservationIgnored private var speechEnd: ContinuousClock.Instant?
+    @ObservationIgnored private var speechUtterance: Int?
+    @ObservationIgnored private var playingUtterance: Int?
+    /// What was already playing when the hold began ("Let me see."): not the answer about the ingredients.
+    @ObservationIgnored private var fillerUtterance: Int?
+
+    /// The companion's voice started playing utterance `id` (CallController, once per utterance).
+    func companionStarted(_ id: Int) {
+        playingUtterance = id
+        guard holding, speechStart == nil, id != fillerUtterance, id != holdFind.flatMap({ ackUtterance[$0] }) else { return }
+        speechStart = now(); speechUtterance = id
+        scheduleHoldFade()
+    }
+
+    /// Utterance `id` finished playing; nil = all playback stopped (cancelled, flushed, call over).
+    func companionStopped(_ id: Int?) {
+        if id == nil || id == playingUtterance { playingUtterance = nil }
+        if id == nil || id == fillerUtterance { fillerUtterance = nil }
+        guard holding, let answer = speechUtterance, speechEnd == nil, id == nil || id == answer else { return }
+        speechEnd = now()
+        scheduleHoldFade()
+    }
+
+    private func holdBatch() {
+        // another find's batch starts its own hold (the old one's sentence is not this one's)
+        if holding, holdFind != findId { endHold() }
+        if !holding {
+            holding = true
+            holdFind = findId
+            speechStart = nil; speechEnd = nil; speechUtterance = nil
+            fillerUtterance = playingUtterance
+            if let findId { onHoldStarted?(findId) }
+        }
+        landedAt = now()
+        visible = true
+        generation += 1
+        scheduleHoldFade()
+    }
+
+    private func scheduleHoldFade() {
+        guard holding, let landedAt else { return }
+        let at = hold.fadeAt(speechStart: speechStart.map { Self.seconds($0 - landedAt) }, speechEnd: speechEnd.map { Self.seconds($0 - landedAt) })
+        let wait = landedAt + .milliseconds(Int(at * 1000)) - now()
+        fadeTask?.cancel()
+        fadeTask = Task { [weak self] in
+            if wait > .zero { try? await Task.sleep(for: wait) }
+            guard let self, !Task.isCancelled else { return }
+            self.visible = false
+            self.endHold()
+        }
+    }
+
+    private func endHold() {
+        guard holding else { return }
+        holding = false
+        holdFind = nil; landedAt = nil; speechStart = nil; speechEnd = nil; speechUtterance = nil; fillerUtterance = nil
+        onHoldEnded?()
+    }
+
+    static func seconds(_ d: Duration) -> Double {
+        Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18
+    }
+
+    /// How far the camera stage moves up so the held boxes clear the Finds sheet (searching / peek, 148 pt): the
+    /// boxes' lowest edge goes 12 pt above the sheet, never lifting the highest box (with its 32 pt label) above
+    /// `floor`, and never more than the sheet hides at the bottom (the stage's bottom edge stays under the sheet).
+    static func stageLift(boxes: [CGRect], sheetTop: CGFloat, viewHeight: CGFloat, floor: CGFloat) -> CGFloat {
+        guard let first = boxes.first, sheetTop < viewHeight else { return 0 }
+        let union = boxes.dropFirst().reduce(first) { $0.union($1) }
+        let need = union.maxY + 12 - sheetTop
+        let room = union.minY - 32 - floor
+        let hidden = viewHeight - sheetTop - 40
+        return max(0, min(need, room, hidden))
     }
 
     // MARK: geometry

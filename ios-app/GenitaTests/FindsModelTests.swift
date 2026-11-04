@@ -64,12 +64,28 @@ import XCTest
 
     func testNewResultDoesNotTakeTheCardYouRead() {
         let m = FindsModel()
+        m.followsNewSearch = false
         m.apply(started("a")); m.apply(created("a")); m.force(.half)
         m.apply(started("b"))
         XCTAssertEqual(m.state, .half); XCTAssertEqual(m.page, 0)
         m.apply(created("b"))
         XCTAssertEqual(m.page, 0); XCTAssertNotNil(m.newFind)
         m.viewNewFind(); XCTAssertEqual(m.page, 1); XCTAssertNil(m.newFind)
+    }
+
+    /// P1-12: on the Mac the sheet stays open while she talks, so the search she just asked for takes the sheet.
+    func testMacSheetFollowsTheNewSearchInsteadOfABannerOnly() async throws {
+        let m = FindsModel()
+        m.followsNewSearch = true
+        m.apply(started("a")); m.apply(created("a")); m.force(.full)
+        m.apply(started("b"))
+        XCTAssertEqual(m.state, .searching, "the new search shows, not nothing until a banner")
+        XCTAssertEqual(m.current?.id, "b")
+        m.apply(created("b"))
+        XCTAssertEqual(m.state, .rising); XCTAssertNil(m.newFind, "its card rises, no New · View banner")
+        try await Task.sleep(for: .milliseconds(600))
+        XCTAssertEqual(m.state, .half); XCTAssertEqual(m.current?.id, "b")
+        XCTAssertEqual(m.cardCount, 2, "the first card stays in the pager")
     }
 
     func testItemsAndImagesUpdateTheCard() throws {

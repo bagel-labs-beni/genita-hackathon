@@ -146,7 +146,11 @@ import UniformTypeIdentifiers
                     let fit = Self.readingFit(orb: orb, nodes: nodes, limit: contentBottom - bodyTop)
                     ReadingOrb(node: fit.orb, resource: resource, progress: progress, finished: progress >= 1 || model.readingDone).designSlot(fit.orb, width: width, top: bodyTop)
                 } else {
-                    SoulOrbSlot(node: orb, resource: resource).designSlot(orb, width: width, top: bodyTop)
+                    // V04 (SY-03 / SY-06): the pale orb on white sits on the same soft blue backing as HISY-0 / HISY-7
+                    ZStack {
+                        if stage == .voice { OrbBacking(diameter: min(orb.w, orb.h) * 1.2) }
+                        SoulOrbSlot(node: orb, resource: resource)
+                    }.frame(width: orb.w, height: orb.h).designSlot(orb, width: width, top: bodyTop)
                 }
             }
             ZStack {
@@ -250,8 +254,30 @@ import UniformTypeIdentifiers
         }()
         DesignShape(node: card).designSlot(card, width: width, top: top)
         ForEach(texts.filter { $0.id != title.id && $0.y < 700 && ($0.y < 319 || $0.y >= 617) }) { n in
-            DesignText(node: n).designSlot(n, width: width, top: top)
+            if stage == .paste, model.importRetryNote, n.characters?.hasPrefix("Paste the full response") == true {
+                // AU-15 (춘식이 F2): back from a failed background import — the subtitle itself says so, same slot, no shift
+                let line = n.lineHeight ?? 24
+                HStack(alignment: .top, spacing: 6) {
+                    Circle().fill(Color(red: 251 / 255, green: 227 / 255, blue: 180 / 255)).frame(width: 18, height: 18)
+                        .overlay(Text("!").font(TypeStyle.body(12, .bold)).foregroundStyle(Color(red: 138 / 255, green: 75 / 255, blue: 0)))
+                        .padding(.top, max(0, (line - 18) / 2))
+                    Text("That one didn’t come through. Paste it again below.")
+                        .font(TypeStyle.body(n.fontSize ?? 18, .medium))
+                        .lineSpacing(max(0, line - (UIFont(name: "PretendardVariable-Medium", size: n.fontSize ?? 18)?.lineHeight ?? line)))
+                        .foregroundStyle(Color(red: 138 / 255, green: 75 / 255, blue: 0))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .designSlot(n, width: width, top: top)
+                .transition(.opacity)
+                .accessibilityElement(children: .combine).accessibilityIdentifier("importRetryNote")
+            } else {
+                DesignText(node: n).designSlot(n, width: width, top: top)
+            }
         }
+        .animation(.easeInOut(duration: 0.2), value: model.importRetryNote)
+        // a new paste or an edit brings the usual subtitle back (200 ms crossfade above)
+        .onChange(of: model.setup.response) { _, _ in if model.importRetryNote { model.importRetryNote = false } }
         let body = texts.first { $0.y == 319 }!
         if stage == .prompt {
             // ui-deferred: the prompt fades at both scroll edges (20 pt under the header, 32 pt at the bottom), never a hard cut.
@@ -478,6 +504,9 @@ import UniformTypeIdentifiers
             .accessibilityElement(children: .ignore).accessibilityLabel("I have the right to use this image")
             .accessibilityValue(model.rightsAcked ? "On" : "Off").accessibilityAddTraits(.isButton).accessibilityIdentifier("rightsAck")
     }
+    /// SY-03 (춘식이 11/4): every selected option card (N2, D01, P1) uses N2's navy text, #0C4F74 title and subtitle
+    /// (8.3:1 on #D7F1FF); the sky-blue #00A2FF / #54C1FF lines were 2.2–2.9:1
+    static let selectedInk = UIColor(red: 0x0C / 255, green: 0x4F / 255, blue: 0x74 / 255, alpha: 1)
     var cardFrames: [DesignNode] { nodes.filter { $0.type == "frame" && $0.x == 24 && $0.w == 342 && $0.h == 68 }.sorted { $0.y < $1.y } }
     func cardTexts(_ card: DesignNode) -> [DesignNode] { texts.filter { $0.y >= card.y && $0.y < card.y + card.h }.sorted { $0.y < $1.y } }
     @ViewBuilder func card(_ frame: DesignNode, selected: Bool, width: CGFloat, action: @escaping () -> Void) -> some View {
@@ -487,7 +516,7 @@ import UniformTypeIdentifiers
                 RoundedRectangle(cornerRadius: 12).fill(selected ? Color(red: 0.8431, green: 0.9451, blue: 1) : .white)
                     .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(selected ? Color.clear : Color(white: 0.8902), lineWidth: 1))
                 ForEach(Array(labels.enumerated()), id: \.element.id) { i, n in
-                    DesignText(node: n, color: selected ? UIColor(red: i == 0 ? 0 : 0.3294, green: i == 0 ? 0.6353 : 0.7569, blue: 1, alpha: 1) : i == 0 ? UIColor(white: 0.067, alpha: 1) : Palette.secondaryUI)
+                    DesignText(node: n, color: selected ? Self.selectedInk : i == 0 ? UIColor(white: 0.067, alpha: 1) : Palette.secondaryUI)
                         .frame(width: n.w, height: n.h).position(x: n.x - frame.x + n.w / 2, y: n.y - frame.y + n.h / 2)
                 }
                 if selected { SelectionMark().frame(width: 26, height: 26).position(x: width - 36, y: 34) }
@@ -525,30 +554,8 @@ import UniformTypeIdentifiers
     /// until the server answers (and in the reference snapshot) the curated four per look are drawn greyed
     var voiceList: [OnboardingClient.CompanionVoice] { player.voices.isEmpty ? VoicePlayer.fallback(kind: model.setup.imageType) : player.voices }
     func voiceCard(_ v: OnboardingClient.CompanionVoice, index i: Int, waking: Bool) -> some View {
-        let playing = player.playing == v.id
-        let picked = model.setup.voice == i
-        let detail = playing ? "Playing · \(v.blurb)" : picked ? "Selected · \(v.blurb)" : v.blurb
-        let detailColor = playing ? Color(red: 0, green: 99.0 / 255, blue: 159.0 / 255) : Palette.secondary // D1: picked and idle both #737373
-        return ZStack {
-            RoundedRectangle(cornerRadius: 12).fill(.white)
-                // Figma voice.json: 1 pt #E3E3E3 edge (white card on #FDFDFD had no visible edge on device, design review 11/4)
-                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(picked || playing ? Color("Ink") : Color(red: 0xE3 / 255, green: 0xE3 / 255, blue: 0xE3 / 255), lineWidth: picked || playing ? 1.5 : 1))
-            Button { player.stop(); selectVoice(i) } label: { Color.clear.contentShape(Rectangle()) }.disabled(waking)
-                .accessibilityLabel("\(v.name), \(detail)").accessibilityAddTraits(picked ? .isSelected : []).accessibilityIdentifier("voice\(i)")
-            VStack(alignment: .leading, spacing: 4) {
-                Text(v.name).font(.custom("PretendardVariable-SemiBold", fixedSize: 18)).foregroundStyle(Color("Ink"))
-                Text(detail).font(.custom("PretendardVariable-Medium", fixedSize: 12)).foregroundStyle(detailColor)
-            }.padding(.leading, 21).padding(.top, 13).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).allowsHitTesting(false)
-            Button { selectVoice(i); player.preview(v, client: model.onboarding) } label: {
-                ZStack {
-                    Circle().fill(Color("Ink")).frame(width: 32, height: 32)
-                    if playing { HStack(spacing: 4) { RoundedRectangle(cornerRadius: 1).frame(width: 3, height: 11); RoundedRectangle(cornerRadius: 1).frame(width: 3, height: 11) }.foregroundStyle(.white) }
-                    else if player.fetching == v.id { ProgressView().controlSize(.small).tint(.white) }
-                    else { Image(systemName: "play.fill").font(.system(size: 11)).foregroundStyle(.white).offset(x: 1) }
-                }.frame(width: 44, height: 44)
-            }.disabled(waking).accessibilityLabel(playing ? "Stop \(v.name)" : "Play \(v.name)").accessibilityIdentifier("play\(i)")
-                .frame(maxWidth: .infinity, alignment: .trailing).padding(.trailing, 14)
-        }.opacity(waking ? 0.5 : 1).buttonStyle(.plain)
+        VoiceCardView(voice: v, index: i, picked: model.setup.voice == i, playing: player.playing == v.id, fetching: player.fetching == v.id, waking: waking,
+                      onSelect: { player.stop(); selectVoice(i) }, onPlay: { selectVoice(i); player.preview(v, client: model.onboarding) })
     }
     func selectVoice(_ i: Int) {
         guard i < player.voices.count else { return }   // greyed placeholders are never picked
@@ -601,7 +608,7 @@ import UniformTypeIdentifiers
             } label: {
                 ZStack {
                     RoundedRectangle(cornerRadius: 12).fill(selected ? Color("Selection") : .white).overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(selected ? Color.clear : Color(white: 0.89)))
-                    DesignText(node: label, color: selected ? UIColor(red: 0, green: 0.6353, blue: 1, alpha: 1) : UIColor(white: 0.067, alpha: 1)).frame(width: 100, height: label.h)
+                    DesignText(node: label, color: selected ? Self.selectedInk : UIColor(white: 0.067, alpha: 1)).frame(width: 100, height: label.h)
                     if selected { SelectionMark().frame(width: 16, height: 16).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing).padding(6) }
                 }
             }.buttonStyle(.plain).frame(width: cardWidth, height: 65).position(x: left + cardWidth / 2, y: label.y - 22 + 32.5 + top + stretch)

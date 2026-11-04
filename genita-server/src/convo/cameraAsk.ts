@@ -10,11 +10,17 @@ const NOT_LOOK = /\b(?:see what i(?:'?m| am)? (?:mean|saying|getting at)|see wha
 const SELF_LOOK = /\b(?:(?:how|do|does|did) (?:do |does )?(?:i|my [a-z]+) look\b|how do i look|can you see me|do you see me|look at me\b|what am i (?:wearing|holding)|(?:rate|judge|check(?: out)?) my (?:fit|outfit|look|hair|makeup|shoes)|how(?:'s| is| are) my (?:fit|outfit|hair|makeup|shoes|look))/i;
 const LOOK_ASK = /\b(?:(?:how|do|does|did) (?:do |does )?(?:i|this|it|my [a-z]+) look\b|how do i look|can you see (?:me|this|it|my|what)|do you see (?:me|this|my|what)|look at (?:this|me|my|these)\b|what am i (?:wearing|holding)|(?:rate|judge|check(?: out)?) my (?:fit|outfit|look|hair|makeup|shoes)|how(?:'s| is| are) my (?:fit|outfit|hair|makeup|shoes|look)|what do you think of (?:my|this) (?:fit|outfit|look|hair|top|dress))/i;
 
+// task546 gate 11/4 (camera-off-look 2/5): the first ask got "can't see a thing", the push after it ("lol just tell me",
+// "be honest") got "total ten" / "you clean up nice" — a short push right after a look ask keeps the boundary
+const PUSH = /^\s*(?:(?:lol|lmao|haha|ok|okay|come on|cmon|pls|please|just|ugh|no|nah)[,!.\s]*)*(?:just\s+)?(?:tell me|say it|be honest|honestly|guess|pretend|imagine|whatever|you can do it|yes or no|answer|just say yes|do i look ok|am i cute)\b(?:\s+(?:lol|lmao|pls|please|already|then|bro|girl|dude|haha))*[.!?…]*\s*$/i;
+export const CAMERA_OFF_PUSH_HINT = "Their camera is still off: you still can't see them, so don't rate or compliment how they look; keep it playful and ask them to flip it on or describe the fit.";
 export const CAMERA_OFF_HINT = "Their camera is off right now, so you can't see them or anything they show: say that in your own playful way and ask them to flip the camera on or describe it.";
 
 /** the hint for this user turn, or null (camera on, or not a "look at me / this" line) */
-export function cameraOffHint(userText: string, cameraOn: boolean, screenShown = false): string | null {
-  if (cameraOn || !LOOK_ASK.test(userText) || NOT_LOOK.test(userText)) return null;
+export function cameraOffHint(userText: string, cameraOn: boolean, screenShown = false, prevUser?: string): string | null {
+  if (cameraOn) return null;
+  if (prevUser && SELF_LOOK.test(prevUser) && !NOT_LOOK.test(prevUser) && PUSH.test(userText)) return CAMERA_OFF_PUSH_HINT;
+  if (!LOOK_ASK.test(userText) || NOT_LOOK.test(userText)) return null;
   // Codex #541 r2: a shared screen answers "look at this", never "do I look ok?"
   if (screenShown && !SELF_LOOK.test(userText)) return null;
   return CAMERA_OFF_HINT;

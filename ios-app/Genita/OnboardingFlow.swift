@@ -124,6 +124,23 @@ extension AppState {
         await applyServerCompanion(c, launchRequest: launchRequest, request: request, forgets: forgets)
     }
 
+    /// D99: a companion made before this build has no saved date — Settings asks once for it.
+    func loadCompanionSince() async {
+        guard serverWired, setup.companionCreated == true, setup.companionSince == nil else { return }
+        let launchRequest = launchAuthSnapshot
+        let c: CompanionInfo
+        do { c = try await onboarding.companion() } catch {
+            // an expired token still signs out (the client already dropped it); a late answer for another account does nothing
+            // the client drops the token before throwing, so the snapshot's token is already nil: same sign-in generation = same account
+            let now = launchAuthSnapshot
+            let same = launchRequest.token != nil && launchRequest.generation == now.generation
+            if same, !Task.isCancelled { route(error) }
+            return
+        }
+        guard launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled, setup.companionSince == nil, let made = c.createdAt else { return }
+        setup.companionSince = made
+    }
+
     func restoreCompanion(for request: OnboardingSessionGeneration.Snapshot? = nil) async {
         let launchRequest = launchAuthSnapshot
         let request = request ?? onboardingSnapshot()
@@ -141,6 +158,7 @@ extension AppState {
         setup.imageType = c.type
         setup.companionCreated = true
         setup.companionDemo = c.demo
+        if let made = c.createdAt { setup.companionSince = made }
         // the saved voice (Settings → Voice); the name comes from this phone's pick or the curated list
         if let v = c.voiceId, v != setup.voiceId { setup.voiceId = v; setup.voiceName = VoicePlayer.name(forVoiceId: v) }
         if let p = c.session?.persona { setup.serverPersona = p }
@@ -286,7 +304,7 @@ extension AppState {
     /// I02 "Use this response" → I03. Spark makes the six-row style (4–8 s); the pasted text isn't stored on the server.
     func startImport() {
         importTask?.cancel()
-        importError = nil
+        importError = nil; importFailedQuietly = false; importRetryNote = false
         let text = setup.response
         story = nil; storyChanged = [:]; storyFailed = false; hisyPage = 0; insightReport = nil; insightUnavailable = false; insightAnswersSent = nil
         guard serverWired else { importing = false; return }
@@ -295,6 +313,9 @@ extension AppState {
         importing = true
         importTask = Task { [weak self] in
             guard let self else { return }
+            // AU-17: the import keeps running when the user leaves the app during I03 (iOS gives ~30 s; Spark takes 4–8 s)
+            let bg = BackgroundTaskToken.begin("genita.import")
+            defer { bg.end() }
             do {
                 let style = try await onboarding.importReply(text)
                 // "Forget all of this" meanwhile (AU-92): the old answer is never applied
@@ -315,9 +336,19 @@ extension AppState {
                 importing = false
                 importError = Self.importErrorLine(error)
                 if stage == .preparing { returnTo(.paste) }
+                // AU-15: the user already moved on ("Continue in the background"): say so where they are
+                else if stage != .paste, error as? GenitaAuthError != .unauthorized, error as? GenitaAuthError != .consentRequired { importFailedQuietly = true }
                 route(error)
             }
         }
+    }
+
+    /// AU-15 banner "Paste again": I02 with the reply still on the phone, and the note over the title.
+    func pasteImportAgain() {
+        importFailedQuietly = false
+        importRetryNote = true
+        importError = nil
+        go(.paste)
     }
 
     func cancelImport() { importTask?.cancel(); importTask = nil; importing = false; returnTo(.paste) }
@@ -632,6 +663,7 @@ extension AppState {
             do {
                 let c = try await createCompanionAfterReset(imageId: imageId)
                 setup.companionCreated = true
+                if let made = c.createdAt { setup.companionSince = made }
                 prep = c.prep
             } catch GenitaAuthError.server(409, "reset_in_progress", _) {
                 // still starting over after the retries: nothing exists yet, NM01 Continue creates it (#514)
@@ -719,7 +751,8 @@ extension AppState {
                 if voiceUnsaved, let voiceId = setup.voiceId, (try? await onboarding.saveVoice(voiceId)) != nil { voiceUnsaved = false }
                 if setup.companionCreated == true { try await onboarding.renameCompanion(setup.companionName ?? "") }
                 else if let imageId = setup.imageId {
-                    try await createCompanionAfterReset(imageId: imageId, voiceId: setup.voiceId, name: setup.companionName)
+                    let made = try await createCompanionAfterReset(imageId: imageId, voiceId: setup.voiceId, name: setup.companionName)
+                    if let at = made.createdAt { setup.companionSince = at }
                     setup.companionCreated = true
                 }
                 go(.depth)
@@ -770,13 +803,15 @@ extension AppState {
         defer { insightLoading = false }
         await insightAnswersTask?.value
         let request = onboardingSnapshot()
-        for _ in 0..<3 {
+        // demo P0 (11/4): the answers' rewrite takes 15–50 s. The report with the answers' own parts is there at once
+        // (refreshing); keep asking for up to ~60 s, showing it with "Adding your answers…", and swap in the rewrite.
+        for _ in 0..<8 {
             do {
-                let r = try await onboarding.insights(wait: 6)
+                let r = try await onboarding.insights(wait: 8)
                 guard ownsOnboardingResponse(request), !Task.isCancelled else { return }
                 // a report that arrives later (Settings) clears an earlier failure (AU-94)
                 if let report = r.report, insightVerdictTask == nil { insightReport = report; insightUnavailable = false }
-                if r.status == .ready { return }
+                if r.status == .ready, r.report?.refreshing != true { return }
                 if r.status == .none || r.status == .failed { break }
             } catch {
                 if ownsOnboardingResponse(request) { route(error) }
@@ -913,5 +948,22 @@ extension AppState {
         guard setup.firstCallPending == true else { return nil }
         setup.firstCallPending = false
         return 2000
+    }
+}
+
+/// A UIKit background task that is ended exactly once: by its owner, or by iOS's expiration handler (AU-17).
+@MainActor final class BackgroundTaskToken {
+    private var id: UIBackgroundTaskIdentifier = .invalid
+    static func begin(_ name: String) -> BackgroundTaskToken {
+        let token = BackgroundTaskToken()
+        token.id = UIApplication.shared.beginBackgroundTask(withName: name) { [weak token] in
+            MainActor.assumeIsolated { token?.end() }
+        }
+        return token
+    }
+    func end() {
+        guard id != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(id)
+        id = .invalid
     }
 }

@@ -51,6 +51,37 @@ test("CW-02: an outfit card with no taste line from the model gets the account's
   assert.ok(c.why.length >= 2, "seen reasons");
 });
 
+test("P1-7: the taste fallback is the imported preference, never a line said in this call or one made up", async () => {
+  const run = async (o: { profile?: string; taste?: import("../src/personalize/reasons.ts").TasteLine[] }) => {
+    const events: import("../src/protocol.ts").ServerEvent[] = [];
+    const vendors = {
+      async spark() {
+        return { text: '{"pick":0,"title":"Wear the trench.","taste":"","situation":"","options":[{"label":"Beige trench","frame":1},{"label":"Denim jacket","frame":0}],"why":["Clean camel.","Casual blue."],"ask":[],"say":"Trench."}', output: [] };
+      },
+      async *sparkStream() {},
+      async sam() { return []; },
+      async image() { return null; },
+    } as unknown as FindsVendors;
+    const runner = new FindsRunner({ vendors, store: new MemoryFindsStore(), images: false, imageBase: "/v1/finds" }, { emit: (e) => events.push(e), announce() {}, log() {}, now: () => performance.now() });
+    runner.configure({ owner: "acct-a", memories: [], ...o });
+    runner.onTurn({ text: "Which one looks better on me?", frames: ["data:image/jpeg;base64,AAA", "data:image/jpeg;base64,BBB"], utteranceId: 1, replyText: Promise.resolve(null), recent: [] });
+    await runner.settle();
+    return (events.find((e) => e.type === "find.created") as Extract<import("../src/protocol.ts").ServerEvent, { type: "find.created" }>).card;
+  };
+  // said in this call + imported: the card's taste line is the imported one
+  const both = await run({ taste: [{ text: "Style: oversized hoodies", label: null, fromCall: true }, { text: "Style: clean, minimal clothes", label: "explicit" }] });
+  assert.equal(both.subtitle, "Your style: clean, minimal clothes");
+  assert.equal(both.evidence?.style, both.subtitle);
+  // only a line said in this call: no imported preference → no taste line (the grey chip still shows it)
+  const call = await run({ taste: [{ text: "Style: oversized hoodies", label: null, fromCall: true }] });
+  assert.equal(call.subtitle, "");
+  assert.equal(call.evidence, undefined);
+  // no import at all (demo account d): nothing on the line
+  const none = await run({});
+  assert.equal(none.subtitle, "");
+  assert.equal(none.evidence, undefined);
+});
+
 test("AU-70 (Codex r2): a slower read of an earlier pick never takes the newer pick back", async () => {
   let release!: () => void;
   const gate = new Promise<void>((r) => (release = r));
@@ -70,4 +101,27 @@ test("AU-70 (Codex r2): a slower read of an earlier pick never takes the newer p
   release();
   await a;
   assert.match(runner.onScreen() ?? "", /^Card B/);
+});
+
+test("demo S5 return visit: 'what shoes did you find for me earlier?' gets this account's recent Finds in the prompt", async () => {
+  const store = new MemoryFindsStore();
+  const shoes: FindCard = { ...card("33333333-aaaa-4bbb-8ccc-000000000003", "Dark brown boots for tonight"), kind: "product", createdAt: new Date(Date.now() - 3_600_000).toISOString(), why: ["Warm brown goes with your black trench."], products: [{ id: "p1", name: "Leather Chelsea Boot", url: "https://x.example/p1", domain: "x.example", store: "Thursday", price: "$199", taste: "clean, minimal", situation: "Halloween party" }] };
+  const old = { ...card("44444444-aaaa-4bbb-8ccc-000000000004", "Last month's soup"), createdAt: "2026-09-01T10:00:00Z" };
+  await store.put(ownerKey("acct-a"), shoes);
+  await store.put(ownerKey("acct-a"), old);
+  await store.put(ownerKey("acct-b"), { ...card("55555555-aaaa-4bbb-8ccc-000000000005", "Someone else's boots"), createdAt: new Date().toISOString() });
+  const runner = new FindsRunner({ vendors: noVendors, store, images: false, imageBase: "/v1/finds" }, { emit() {}, announce() {}, log() {}, now: () => 0 });
+  runner.configure({ owner: "acct-a", memories: [] });
+  await new Promise((r) => setTimeout(r, 20));
+  const line = runner.foundBefore("What shoes did you find for me earlier, and why did you pick them?") ?? "";
+  assert.match(line, /Leather Chelsea Boot \(Thursday, \$199/);
+  assert.match(line, /Warm brown goes with your black trench/);
+  assert.doesNotMatch(line, /soup|Someone else/);
+  assert.equal(runner.foundBefore("what should I cook tonight"), undefined, "only when they ask about it");
+  // Codex #675 r1: "you find" in ordinary talk is no ask about earlier finds
+  for (const t of ["What do you find relaxing?", "What did you find funny about that movie?"]) assert.equal(runner.foundBefore(t), undefined, t);
+  for (const t of ["What things did you find funny about that movie?", "Why are my Finds not loading?"]) assert.equal(runner.foundBefore(t), undefined, t);
+  assert.ok(runner.foundBefore("which boots did you pick?"));
+  // Codex #675 r4 P2: an opinion ask ("do you find") is not about earlier finds
+  assert.equal(runner.foundBefore("What shoes do you find comfortable for long walks?"), undefined);
 });

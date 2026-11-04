@@ -1,0 +1,21 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { restatesHeadline } from "../src/personalize/story.ts";
+
+// TF 331: HISY card 1's body repeated its title word for word.
+test("an item that only says the headline again is a restatement", () => {
+  assert.equal(restatesHeadline("You decide by comparing, not by guessing.", "You decide by comparing, not by guessing."), true);
+  assert.equal(restatesHeadline("Warm, direct, and short.", "You want it warm, direct and short."), true);
+});
+
+test("an item that adds something new is kept", () => {
+  assert.equal(restatesHeadline("You decide by comparing, not by guessing.", "You line up two or three options side by side before you pick, and you like seeing the trade-offs."), false);
+  assert.equal(restatesHeadline("Warm, direct, and short.", "You like a friendly tone, but you want the answer up front. Long replies lose you."), false);
+  assert.equal(restatesHeadline("Hi.", "Hi there."), false, "a one-word headline is never enough to judge");
+  assert.equal(restatesHeadline("Short, direct answers.", "You want short, direct answers at work."), false, "a condition is new");
+  assert.equal(restatesHeadline("Short, direct answers.", "You don't want short, direct answers."), false, "a negation is new");
+  assert.equal(restatesHeadline("Short answers, not long answers.", "I want long answers, not short answers."), false, "the opposite is new");
+  assert.equal(restatesHeadline("You like planning and comparing.", "You prefer planning to comparing."), false, "a preference order is new");
+  assert.equal(restatesHeadline("You compare options.", "You compare 2 options."), false, "a number is new");
+  assert.equal(restatesHeadline("You compare plan A with plan B.", "You compare plan B with plan C."), false, "one-letter names count");
+});

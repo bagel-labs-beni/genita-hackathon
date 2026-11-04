@@ -12,6 +12,9 @@ struct CallWaitStage: View {
     var size: CGSize
     /// true once the generated face is here: the orb steps back
     var leaving = false
+    /// DEBUG review capture (`GENITA_WAIT_FREEZE=1`): the step back held at its midpoint (~150 ms) — orb at 1.06,
+    /// half faded — so the "arriving" frame can be shot (XCUITest only captures once animations settle)
+    var frozenMid = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// the handoff snapshot (ImageRenderer can't draw the UIKit/Metal orb): the PNG orb at rest
     @Environment(\.genitaStillRender) private var stillRender
@@ -32,12 +35,12 @@ struct CallWaitStage: View {
         ZStack {
             Self.ground
             orb(d, calm: calm)
-                .scaleEffect(leaving && !calm ? 1.06 : 1)
+                .scaleEffect(leaving && (!calm || frozenMid) ? 1.06 : 1)
                 .position(x: size.width / 2, y: size.height * 0.38)
         }
         .frame(width: size.width, height: size.height)
-        .opacity(leaving ? 0 : 1)
-        .animation(calm ? .easeInOut(duration: 0.25) : .easeIn(duration: 0.3), value: leaving)
+        .opacity(leaving ? (frozenMid ? 0.5 : 0) : 1)
+        .animation(frozenMid ? nil : calm ? .easeInOut(duration: 0.25) : .easeIn(duration: 0.3), value: leaving)
         .allowsHitTesting(false)
         .accessibilityElement()
         .accessibilityLabel("Getting ready")

@@ -58,6 +58,8 @@ final class PCMPlayer {
     }
 
     private func ensureStarted() {
+        // An output-device change (sample rate, unplugged headphones) stops the engine behind our back.
+        if started, !engine.isRunning { started = false }
         guard !started else { return }
         if var id = device, let unit = engine.outputNode.audioUnit {
             AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &id, UInt32(MemoryLayout<AudioDeviceID>.size))
@@ -65,11 +67,17 @@ final class PCMPlayer {
         node.volume = volume
         do {
             try engine.start()
-            node.play()
-            started = true
+            started = playSafely()
         } catch {
             started = false
         }
+    }
+
+    /// AVAudioPlayerNode.play() raises an Objective-C exception (SIGABRT) on a stopped engine (TF 331 CRASH-1;
+    /// Codex #684 found the same path here): play only on a running engine, and catch it if it raises anyway.
+    private func playSafely() -> Bool {
+        guard engine.isRunning, node.engine === engine else { return false }
+        return GenitaCatchObjC({ node.play() }) == nil
     }
 
     func play(_ pcm: Data) {
@@ -82,13 +90,15 @@ final class PCMPlayer {
             for i in 0..<frames { dst[i] = Float(Int16(littleEndian: src[i])) / 32768 }
         }
         ensureStarted()
+        // not started (the output device is changing): drop the chunk, so a later cancel can't leave it queued
+        guard started else { return }
         node.scheduleBuffer(buf)
     }
 
     func flush() {
+        node.stop()   // drops whatever is queued, started or not (Codex #684 r2)
         guard started else { return }
-        node.stop()
-        node.play()
+        if !playSafely() { started = false }   // the next play(_:) restarts the engine
     }
 
     func stop() {

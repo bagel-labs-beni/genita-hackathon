@@ -146,7 +146,9 @@ Renaming in a call ("Call yourself Max") saves the same way and sends `companion
 
 ## Prep progress (F2-L9, F2-L22)
 
-`GET /v1/companion/prep` → `{status: running|ready|failed, progress:{done,total}, sceneUrl, face, emotionVideos:{}, lips:{status:"skipped", detail:null, url:null, ms:null}, steps:{scene, videos, face:{status, settled, total, ms}|null}}`.
+`GET /v1/companion/prep` → `{status: running|ready|failed, progress:{done,total}, sceneUrl, framing, face, emotionVideos:{}, lips:{status:"skipped", detail:null, url:null, ms:null}, steps:{scene, videos, face:{status, settled, total, ms}|null}}`.
+
+`framing` (additive, 11/4, face plan item 1) = `{zoom, cx, cy}|null`: the call-screen crop of the scene, the same rule as GenitaKit `FaceRenderer.framing(set)` (zoom 1…2 about `cx`,`cy`, fractions of the scene, y down; people 1, a non-human face under 35 % of the height zoomed up to it, ≤ 1.35×; `flow.map.framing` wins). The app draws the scene with it before the face set is downloaded, so the rest frame lands on the same pixels. `null` until the scene and its face box are known; before the face flow exists the companion `type` stands in for the flow kind.
 
 ### Meta-only pipeline
 
