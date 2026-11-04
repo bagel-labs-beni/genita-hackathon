@@ -146,6 +146,8 @@ export type TurnInput = {
   unclear?: boolean;
   /** Chelsea 11/4 D: the Mac's shared screen right now (watch together), when a share is on */
   screen?: string;
+  /** the turn's own signal (barge-in, cancel): a judged card for a cancelled turn never starts */
+  signal?: AbortSignal;
 };
 
 export type TurnStarted = { findId: string; kind: FindKind | "identify"; ack?: string };
@@ -475,6 +477,9 @@ export class FindsRunner {
     this.judgeAbort = abort;
     // a barged-in / cancelled turn (its reply resolves null) starts nothing (Codex judge r1 P2)
     void t.replyText.then((said) => { if (said === null) abort.abort(); }).catch(() => {});
+    // cut off while it played (the reply text was already final): the turn's own signal (Codex judge r2 P2)
+    if (t.signal?.aborted) return;
+    t.signal?.addEventListener("abort", () => abort.abort(), { once: true });
     // the picture is chosen from what they said ("on my screen" → the share), and kept for the card (Codex judge r1 P2)
     const useScreen = !!t.screen && (!t.frames.length || SCREEN_WORDS.test(t.text));
     const frame = useScreen ? t.screen : t.frames.at(-1);
@@ -537,10 +542,10 @@ export class FindsRunner {
     if (this.closed || this.purged || (this.owner && this.deps.store.work.isDeleted(this.owner))) return null;
     // one sheet card per turn: whichever of the judge and the reply's own search came first (Codex judge r1 P2)
     if (this.judged.has(o.utteranceId)) return null;
-    this.judged.add(o.utteranceId);
     const findId = randomUUID();
     const card = webAnswerCard({ id: findId, question: o.question, said: o.said, searches: o.searches });
     if (!card) return null;
+    this.judged.add(o.utteranceId);
     this.onEvent({ type: "find.started", findId, utteranceId: o.utteranceId, kind: "answer", title: "Looked it up", detail: card.subtitle });
     // never taste chips on a looked-up fact
     card.reasons = [];

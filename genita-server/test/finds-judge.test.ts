@@ -183,3 +183,22 @@ test("judge (Codex r1): 'on the screen' sends the shared frame (and the card kee
   assert.deepEqual(judgedIntent({ kind: "recipe", reason: "x" }, { text: "x", frames: [], screen: SCREEN }), { kind: "recipe" });
   assert.equal(judgedIntent({ kind: "outfit", reason: "x" }, { text: "x", frames: [] }), null);
 });
+
+test("judge (Codex r2): cut off while playing (the turn's signal) → nothing; a reply search with no usable card doesn't block the judge", async () => {
+  let release: (r: JudgeResult) => void = () => {};
+  let run = runnerWith(() => new Promise<JudgeResult>((res) => (release = res)), { timeoutMs: 500 });
+  const turnAbort = new AbortController();
+  run.r.onTurn({ ...turn("Any good spots for that around Hongdae?"), signal: turnAbort.signal });
+  turnAbort.abort();
+  release({ kind: "general", reason: "late" });
+  await settleJudge();
+  assert.equal(run.events.length, 0);
+  run.r.close();
+  run = runnerWith(() => new Promise<JudgeResult>((res) => (release = res)), { timeoutMs: 500 });
+  run.r.onTurn(turn("Any good spots for that around Hongdae?"));
+  assert.equal(run.r.webAnswer({ utteranceId: 7, question: "q", said: "Hm.", searches: [{ query: "q", urls: ["https://evil-casino.top/a"] }] }), null);
+  release({ kind: "general", reason: "late" });
+  await settleJudge();
+  assert.ok(run.events.some((e) => e.type === "find.started" && e.kind === "answer"));
+  run.r.close();
+});
