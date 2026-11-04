@@ -724,7 +724,7 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
   const raw = Array.isArray(j?.items) ? (j!.items as ItemJson[]) : [];
   const seen = new Set<string>();
   const cands: { item: ItemJson; url: string; inTrace: boolean }[] = [];
-  const dropped: { notOpened: number; notProduct: number; offOccasion?: number; offColor?: number; otherDepartment?: number; offPick?: number } = { notOpened: 0, notProduct: 0 };
+  const dropped: { notOpened: number; notProduct: number; offOccasion?: number; offColor?: number; otherDepartment?: number; offPick?: number; unavailable?: number } = { notOpened: 0, notProduct: 0 };
   const colors = pick?.color ? colorFamilies(pick.color) : askedColors(ctx.question, ctx.previous);
   for (const item of raw) {
     if (cands.length >= 6) break;
@@ -793,7 +793,9 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
   const rank = (i: number) => (offColor(str(cands[i].item?.name, 200), colors) ? 2 : 0) + (proven(cands[i].url, facts[i]) ? 0 : 1);
   const order = cands.map((_, i) => i).sort((a, b) => rank(a) - rank(b));
   let cardDept: Department | undefined = dept;
-  order.forEach((i) => {
+  // no empty pictures: pages we read with neither a price nor a picture wait; they fill a slot only when no better one is left
+  const weak: number[] = [];
+  const consider = (i: number, weakOk: boolean) => {
     const p = cands[i];
     if (products.length >= PRODUCT_COUNT && (!gate || spares.length >= MAX_SPARES)) return;
     const full = products.length >= PRODUCT_COUNT;
@@ -813,6 +815,18 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
     if (!isProductPage(p.url, f)) {
       dropped.notProduct++;
       ctx.log("product.not_product", { findId: ctx.findId, url: p.url.slice(0, 200), page: f?.kind ?? "unread" });
+      return;
+    }
+    // no empty pictures (QA 11/4, Target "Item not available"): a page that says it can't be bought is never shown;
+    // one we read and found neither a price nor a picture on gives its place to the next verified product
+    if (gate && f?.unavailable) {
+      dropped.unavailable = (dropped.unavailable ?? 0) + 1;
+      ctx.log("product.invalid", { findId: ctx.findId, url: p.url.slice(0, 200), why: "unavailable" });
+      return;
+    }
+    if (gate && f && !weakOk && !f.price && !f.image && !f.inPageImage) {
+      weak.push(i);
+      ctx.log("product.invalid", { findId: ctx.findId, url: p.url.slice(0, 200), why: "no_price_no_image" });
       return;
     }
     const domain = domainOf(p.url);
@@ -839,7 +853,12 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
       taste: styleLine ? str(p.item.taste, 30) : "",
       situation: str(p.item.situation, 34),
     });
-  });
+  };
+  order.forEach((i) => consider(i, false));
+  for (const i of weak) {
+    if (products.length >= PRODUCT_COUNT) break;
+    consider(i, true);
+  }
   // one-link cards (QA 11/4): a second listed result whose URL is one product's page fills the slot when its read
   // ran out of time (a slow shop). A read that answered — 404, a list, no product markup — never fills (invented URLs stay out)
   if (products.length < PRODUCT_COUNT && fillUnread()) {
