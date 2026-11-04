@@ -14,7 +14,12 @@ const MAX_SOURCES = 3;
 const MAX_POINTS = 3;
 
 /** Sites a card never cites: free subdomain hosts, spam TLDs, betting, content farms, SEO aggregators (#413 review 11/3). */
-const BLOCKED = /(^|\.)(pp\.ua|pages\.dev|vercel\.app|netlify\.app|web\.app|firebaseapp\.com|github\.io|herokuapp\.com|wixsite\.com|weebly\.com|substack\.com|blogspot\.com|wordpress\.com|medium\.com|quora\.com|pinterest\.com|scribd\.com|slideshare\.net|bet365\.com|draftkings\.com|fanduel\.com|clay\.com|simplywall\.st|ceoinsider\.com)$|\.(xyz|top|click|buzz|icu|loan|win|bid|rest|cfd|sbs)$|(^|[.-])(bet|casino|poker|slots?)[.-]|gamb(?:l|yl)|sportsbook|betting|odds/i;
+const BLOCKED = /(^|\.)(pp\.ua|pages\.dev|vercel\.app|netlify\.app|web\.app|firebaseapp\.com|github\.io|herokuapp\.com|duckdns\.org|ddns\.net|no-ip\.(?:com|org)|ngrok-free\.app|ngrok\.io|trycloudflare\.com|wixsite\.com|weebly\.com|substack\.com|blogspot\.com|wordpress\.com|medium\.com|quora\.com|pinterest\.com|scribd\.com|slideshare\.net|bet365\.com|draftkings\.com|fanduel\.com|clay\.com|simplywall\.st|ceoinsider\.com)$|\.(xyz|top|click|buzz|icu|loan|win|bid|rest|cfd|sbs)$|(^|[.-])(bet|casino|poker|slots?)[.-]|gamb(?:l|yl)|sportsbook|betting|odds/i;
+
+/** a site a card never cites (also the general search's results, general.ts) */
+export function isBlockedSite(domain: string): boolean {
+  return BLOCKED.test(domain);
+}
 
 /** Official and large outlets go first (search order kept within each tier). */
 const TRUSTED = /(^|\.)(gov|edu|mil|int|gov\.[a-z]{2}|ac\.[a-z]{2}|go\.[a-z]{2})$|(^|\.)(wikipedia\.org|britannica\.com|reuters\.com|apnews\.com|bbc\.(com|co\.uk)|nytimes\.com|washingtonpost\.com|wsj\.com|bloomberg\.com|ft\.com|cnn\.com|nbcnews\.com|cbsnews\.com|abcnews\.go\.com|npr\.org|theguardian\.com|economist\.com|cnbc\.com|forbes\.com|time\.com|axios\.com|politico\.com|theverge\.com|techcrunch\.com|wired\.com|arstechnica\.com|engadget\.com|espn\.com|nbcsports\.com|si\.com|mlb\.com|nba\.com|nfl\.com|fifa\.com|space\.com|nature\.com|science\.org|who\.int|imdb\.com|variety\.com|hollywoodreporter\.com|billboard\.com|rollingstone\.com|yna\.co\.kr|koreaherald\.com|koreatimes\.co\.kr|kbs\.co\.kr|nhk\.or\.jp)$/i;

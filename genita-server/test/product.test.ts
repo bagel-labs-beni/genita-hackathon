@@ -15,7 +15,8 @@ test("product intent: voice alone starts it; shopping beats the camera; other as
   assert.deepEqual(classifyTurn("Jin, can we look for a jacket for this weekend?", false), { kind: "product" });
   assert.deepEqual(classifyTurn("Find a couple that match my style, and send me the links.", false), { kind: "product" });
   // sweep 11/3 [P1]: "send me the links" alone is not a shopping ask — a web answer with its sources sheet
-  assert.equal(classifyTurn("What are the best ramen places in Seoul? Send me the links.", false), null);
+  // not a product search: a web search card (general.ts, 11/4; was the reply's own sources sheet, #413)
+  assert.deepEqual(classifyTurn("What are the best ramen places in Seoul? Send me the links.", false), { kind: "answer" });
   assert.equal(classifyTurn("send me the links", false), null);
   assert.deepEqual(classifyTurn("send me the links", false, true), { kind: "product" }, "right after a product search it still is");
   assert.deepEqual(classifyTurn("Can you send me the links for those sneakers?", false), { kind: "product" });

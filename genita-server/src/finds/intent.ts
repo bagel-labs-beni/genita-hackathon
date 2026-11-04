@@ -9,6 +9,7 @@
  */
 import type { FindKind } from "../protocol.ts";
 import { findUrl } from "./parse.ts";
+import { generalIntent } from "./general.ts";
 
 const COOK =
   /\b(cook|cooking|make|making|recipe|recipes|eat|dinner|lunch|breakfast|meal|fridge|ingredients?|leftovers?|hungry|snack)\b|냉장고|요리|해\s*먹|먹을|레시피|재료|저녁|점심|아침|반찬/i;
@@ -70,7 +71,12 @@ const ORDER = /\b(order|online|purchase|in stock|on sale|cheapest)\b/i;
 /** Only these say "shop the web" when they hold clothes up to the camera; "recommend / suggest" stays a pick (AU-61). */
 const EXPLICIT_SHOP = /\b(look(?:ing)? for|find(?:ing)?|search(?:ing)? for|shop(?:ping)? for|buy(?:ing)?|get me|where (?:can|do) i (?:get|buy))\b|찾아|사고\s*싶|살\s*만한/i;
 
+/** Chelsea 11/4: a turn no card takes but that asks something the web knows opens a search card (general.ts). */
 export function classifyTurn(text: string, hasFrames: boolean, afterProduct = false): Intent {
+  return cardIntent(text, hasFrames, afterProduct) ?? generalIntent(text);
+}
+
+function cardIntent(text: string, hasFrames: boolean, afterProduct = false): Intent {
   const url = findUrl(text);
   if (url) return { kind: "link", url };
   // clothes held up to the camera and a choice between them: an outfit pick, even with "recommend" or "dinner" in it
