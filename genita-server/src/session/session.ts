@@ -119,6 +119,9 @@ export type SessionDeps = {
    * (server.ts). With server memory on, `start.history` is otherwise ignored, so the Mac lost the iPhone's turns.
    */
   priorTurns?: (revision: number) => HistoryItem[] | null;
+  /** Codex #640 r13: what this account's other / just-ended calls said about their age, held by the server and handed
+   * over at start, independent of a slow memory read or history restore */
+  accountAge?: () => AgeSay;
   /** Session memory: the thread those turns belong to (same conversation on the next device), read right after priorTurns */
   priorThread?: (revision: number) => ThreadState | null;
   /** same-device return visit: the last lines of the call the user just hung up (server.ts), read right after priorTurns */
@@ -742,6 +745,7 @@ export class Session {
       if (claimedCrisis(msg.history)) this.crisisInCall = true;
       this.ageSaid = foldAge(this.ageSaid, claimedAge(msg.history));
     }
+    this.ageSaid = foldAge(this.ageSaid, this.deps.accountAge?.() ?? NO_AGE);
     const startMode: Mode = msg.mode === "interpret" ? "interpret" : "chat";
     // the mic ASR opened during start listens in the start mode's languages (no English-only stream to replace)
     this.startingMode = startMode;

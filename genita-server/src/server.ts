@@ -410,6 +410,17 @@ export async function startServer(
    * Personalize (P1 11/3, demo S4): this call continues the account's conversation from the OTHER device — a live
    * call there, or one that ended there < 10 min ago. Independent of memory (off or slow) and of `start.handoff`.
    */
+  /** Codex #640 r13: the account's age flags from its live calls and the < 10 min cached one (no memory read) */
+  function accountAge(userId: string, self: string): AgeSay {
+    const cached = lastTurns.get(userId);
+    let a: AgeSay = cached && Date.now() - cached.at < 10 * 60_000 && cached.ageSaid ? cached.ageSaid : NO_AGE;
+    for (const [sid, u] of sessionUsers) {
+      if (u !== userId || sid === self) continue;
+      const s = sessions.get(sid);
+      if (s) a = foldAge(a, s.ageSaid);
+    }
+    return a;
+  }
   function continuesOtherDevice(userId: string, self: string, device: string): boolean {
     for (const [sid, u] of sessionUsers) {
       if (u === userId && sid !== self && sessionDevices.get(sid) !== device) return true;
@@ -485,6 +496,7 @@ export async function startServer(
       priorTurns: (revision) => priorTurns(who.userId, id, revision, callDevice), priorThread: () => priorThread(id), lastCall: () => lastCall(id),
       personalize: deps.personalize ?? prep.deps.personalize, macNearby,
       continuesCall: () => continuesOtherDevice(who.userId, id, callDevice),
+      accountAge: () => accountAge(who.userId, id),
       onHistoryChange: (role) => {
         const p = progress.get(id) ?? zero;
         progress.set(id, role === "user" ? { turn: ++nextTurn, update: 0 } : { turn: p.turn, update: p.update + 1 });

@@ -1626,3 +1626,13 @@ test("Codex #640 r8: 'I'm actually 15 years old.' keeps the boundary past the tr
   assert.match(await say("do you have a crush on me?"), /under 18/);
   session.close();
 });
+
+test("Codex #640 r13: the account's age from the server reaches a new call with no memory / history restore", { skip: !v1 }, async () => {
+  const { client, session, calls } = setup(["<happy> Ha, okay."], { accountAge: () => ({ minor: true, adult: false, teen: false }) });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
+  const n = calls.length;
+  await session.onClientText(JSON.stringify({ type: "text", text: "do you have a crush on me lol" }));
+  await client.waitFor((m) => m.type === "reply" && m.final === true && calls.length > n);
+  assert.match(calls.at(-1)!.instructions ?? "", /under 18: no flirting or romance at all/);
+  session.close();
+});
