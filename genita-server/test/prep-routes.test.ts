@@ -85,6 +85,9 @@ test("prep routes: prompt, validation, one companion per user, prefs → persona
   const prep = await call("GET", "/v1/companion/prep");
   assert.equal(prep.json.status, "failed");
   assert.equal(prep.json.progress.total, 21);
+  // face plan item 1: the route carries the scene crop (null: no scene / face box here)
+  assert.ok("framing" in prep.json);
+  assert.equal(prep.json.framing, null);
 
   assert.equal((await call("POST", "/v1/companion/prefs", { depth: "quick", answers: { help: "Be there" } })).json.error, "bad_prefs");
   // no Meta key → Spark fails → deterministic persona fallback still answers
