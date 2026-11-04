@@ -456,8 +456,7 @@ struct FindEntry: Identifiable, Equatable {
         guard var c = live else { return listed }
         // ingredients still being checked when the call lost the server: the server finished them, the list has that (Codex r5)
         if live?.items.contains(where: { $0.tier == .checking }) == true {
-            // the photos this call already got stay (Codex r1: they were dropped before the merge below could pick them)
-            c.items = keepingImages(listed.items, from: c.items); c.subtitle = listed.subtitle; c.status = listed.status
+            c.items = listed.items; c.subtitle = listed.subtitle; c.status = listed.status
         }
         let pick = { (mine: FindImage?, theirs: FindImage?) -> FindImage? in mine?.status != .ready && theirs?.status == .ready ? theirs : mine }
         c.hero = pick(c.hero, listed.hero)

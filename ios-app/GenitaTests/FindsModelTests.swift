@@ -406,13 +406,13 @@ import XCTest
         XCTAssertEqual(m.pillText, "Egg, tofu +2", "a later update without a pill keeps it")
     }
 
-    /// UI sweep 11/3 → r02: in the half sheet (scrolling off) the picture gives way so the 94 pt ingredient tile strip
+    /// UI sweep 11/3 → r02: in the half sheet (scrolling off) the picture gives way so the 88 pt ingredient tile strip
     /// (64 pt photo tile + one name line) ends inside the 344 pt page under any title.
     func testHalfSheetPictureLeavesRoomForTheTiles() {
-        XCTAssertEqual(FindCardPage.halfCameraHeight(titleRow: 53), 89, "one-line title + subtitle: 89 pt picture")
+        XCTAssertEqual(FindCardPage.halfCameraHeight(titleRow: 53), 95, "one-line title + subtitle: 95 pt picture")
         let twoLines: CGFloat = 87 // "Kimchi fried rice / with tofu and egg" + subtitle
         XCTAssertLessThanOrEqual(40 + 44 + 3 * 8 + twoLines + FindCardPage.halfCameraHeight(titleRow: twoLines) + FindCardPage.stripHeight, 344, "tiles whole")
-        XCTAssertEqual(FindCardPage.halfCameraHeight(titleRow: 70), 72, "72 while it fits")
+        XCTAssertEqual(FindCardPage.halfCameraHeight(titleRow: 76), 72, "72 while it fits")
         XCTAssertEqual(FindCardPage.halfCameraHeight(titleRow: 200), 0, "big text: no picture in the half sheet, tiles whole")
     }
 

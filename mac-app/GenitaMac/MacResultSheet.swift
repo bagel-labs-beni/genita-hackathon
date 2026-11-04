@@ -168,7 +168,7 @@ struct MacResultSheet: View {
                             MacHowTo(card: card)
                         } else if picks.isEmpty, layout != .outfit, !card.sources.isEmpty {
                             // r01: one row per result, picture first, the reason once
-                            MacFindRows(rows: card.macFindRows, top: card.topPick?.index)
+                            MacFindRows(rows: card.macFindRows)
                         } else if picks.isEmpty {
                             // chip flow → the rest: 12 pt (춘식이 11/4), else the usual 16 under the subtitle
                             generic(card).padding(.top, card.occasionChip != nil ? 12 : 16)
@@ -523,13 +523,11 @@ struct MacSkeletonRow: View {
 /// Whole row = button → the Mac's default browser.
 struct MacFindRows: View {
     let rows: [MacFindRow]
-    /// `FindCard.topPick`: the row shown big (contract v2: not always row 0)
-    var top: Int?
 
-    private var heroRow: MacFindRow? { top.flatMap { rows.indices.contains($0) && rows[$0].picture != nil ? rows[$0] : nil } }
+    private var heroRow: MacFindRow? { rows.first.flatMap { $0.picture != nil ? $0 : nil } }
 
     var body: some View {
-        let rest = rows.filter { $0.id != heroRow?.id }
+        let rest = heroRow == nil ? rows : Array(rows.dropFirst())
         VStack(alignment: .leading, spacing: 0) {
             if let hero = heroRow { MacTopPick(row: hero).padding(.top, 18) }
             VStack(spacing: 0) {
@@ -710,8 +708,7 @@ extension FindCard {
                 }
             }
             var image = s.image
-            // an older server sends #1's picture only as the hero; never when some row has its own (v2: the hero may be another row's)
-            if i == 0, image?.status != .ready, hero?.status == .ready, !sources.contains(where: { $0.image?.status == .ready }) { image = hero }
+            if i == 0, image?.status != .ready, hero?.status == .ready { image = hero }
             return MacFindRow(id: i, title: title, why: why.flatMap { $0.isEmpty ? nil : $0 }, domain: s.domain, url: s.url, image: image, favicon: s.favicon)
         }
     }
@@ -769,14 +766,6 @@ struct MacRecipeCard: View {
                 }.accessibilityElement(children: .contain).accessibilityLabel("Ingredients").accessibilityIdentifier("macIngredients")
             }
             if !card.steps.isEmpty { MacStepCards(steps: card.steps).padding(.top, 22) }
-            // the recipe pages it came from, once, as r01 rows (Codex r1: the old text card had these links)
-            let rows = card.macFindRows
-            if !rows.isEmpty {
-                MacSectionLabel(text: "Sources").padding(.top, 10)
-                VStack(spacing: 0) {
-                    ForEach(Array(rows.enumerated()), id: \.element.id) { i, row in MacFindRowView(row: row, divider: i > 0) }
-                }.padding(.top, 4)
-            }
         }
     }
 }
@@ -881,13 +870,12 @@ struct MacPlaceList: View {
     let card: FindCard
     var body: some View {
         let rows = card.macFindRows
-        let top = card.topPick.flatMap { rows.indices.contains($0.index) && rows[$0.index].picture != nil ? $0.index : nil }
-        let rest = Array(card.sources.enumerated()).filter { $0.offset != top }
+        let top = rows.first.flatMap { $0.picture != nil ? $0 : nil }
         VStack(alignment: .leading, spacing: 0) {
-            if let top { MacPlaceTop(row: rows[top], source: card.sources[top]).padding(.top, 18) }
+            if let top, let s = card.sources.first { MacPlaceTop(row: top, source: s).padding(.top, 18) }
             VStack(spacing: 0) {
-                ForEach(Array(rest.enumerated()), id: \.element.offset) { n, item in
-                    MacPlaceRow(row: rows[item.offset], source: item.element, divider: n > 0)
+                ForEach(Array(card.sources.enumerated()).dropFirst(top == nil ? 0 : 1), id: \.offset) { i, s in
+                    MacPlaceRow(row: rows[i], source: s, divider: i > (top == nil ? 0 : 1))
                 }
             }.padding(.top, top == nil ? 12 : 14)
         }.accessibilityElement(children: .contain).accessibilityIdentifier("macPlaceList")

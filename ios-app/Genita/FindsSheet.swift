@@ -694,8 +694,8 @@ struct FindCardPage: View {
     /// r02 recipe: the camera frame (fridge) or the dish photo (a named dish), the ingredient tiles (one scrolling row in
     /// the half sheet, a 4-column grid in the full one), then the numbered step cards.
     @ViewBuilder private var recipe: some View {
-        // a reopened card's half page is 396: 396 − 40 − 44 − 3 × 8 − 94 strip = 194 for title row + picture
-        let reopenedHeight = min(card.title.count <= 17 ? 196 : 130, titleRowHeight > 0 ? 194 - titleRowHeight : 196)
+        // a reopened card's half page is 396: 396 − 40 − 44 − 3 × 8 − 88 strip = 200 for title row + picture
+        let reopenedHeight = min(card.title.count <= 17 ? 196 : 130, titleRowHeight > 0 ? 200 - titleRowHeight : 196)
         let camHeight = full ? 196 : (entry.reopened ? (reopenedHeight >= 72 ? reopenedHeight : 0) : halfCameraHeight)
         if let cam = card.camera, camHeight > 0 {
             CameraFrame(frame: entry.frames.indices.contains(cam.frame) ? entry.frames[cam.frame] : nil, camera: cam, items: card.items, selected: finds.selectedItem,
@@ -715,23 +715,22 @@ struct FindCardPage: View {
             ingredientStrip.findsRise(4)
         }
         if let sel = card.items.first(where: { $0.id == finds.selectedItem }), sel.tier == .maybe { confirmRow(sel) }
-        // id "steps": "Walk me through it" scrolls here (#767 walkThrough → scrollTarget "steps")
-        if !card.steps.isEmpty { stepCards(doneButtons: true).findsRise(4).id("steps") }
+        if !card.steps.isEmpty { stepCards(doneButtons: true).findsRise(4) }
     }
 
     private func sectionLabel(_ text: String) -> some View {
         Text(text).font(TypeStyle.body(12, .medium)).foregroundStyle(CallInk.mute).padding(.top, 10)
     }
 
-    /// The half-sheet ingredient strip: 6 (room for the corner chip) + 64 pt tile + 7 + one 17 pt name line.
-    static let stripHeight: CGFloat = 94
+    /// The half-sheet ingredient strip: 64 pt tile + 7 + one 17 pt name line.
+    static let stripHeight: CGFloat = 88
 
     /// Half sheet (344 pt page, scrolling off): the picture gives way so the ingredient tiles show whole under a
-    /// two-line title. 344 − 40 top − 44 header − 3 × 8 spacing − 94 tile strip = 142 for title row + picture; 132 at
+    /// two-line title. 344 − 40 top − 44 header − 3 × 8 spacing − 88 tile strip = 148 for title row + picture; 132 at
     /// most (r03), 72 at least. With accessibility text sizes the title row alone can take the room (AX-L): then the
     /// half sheet drops the picture (it is in the full sheet) so the ingredient tiles stay whole.
     static func halfCameraHeight(titleRow: CGFloat) -> CGFloat {
-        let room = 344 - 40 - 44 - 3 * 8 - stripHeight - titleRow
+        let room = 148 - titleRow
         return room >= 72 ? min(132, room) : 0
     }
     private var halfCameraHeight: CGFloat { titleRowHeight > 0 ? Self.halfCameraHeight(titleRow: titleRowHeight) : 132 }
@@ -963,30 +962,33 @@ struct FindCardPage: View {
 
     // MARK: Finds r01 ② results: each result once. #1 big with its photo, the rest as 64 pt thumbnail rows.
 
-    /// The rows under the top pick: every result once, in order, without the one shown big.
-    private var restRows: [(offset: Int, element: FindCard.Source)] {
-        let top = card.topPick?.index
-        return card.sources.enumerated().filter { $0.offset != top }.map { (offset: $0.offset, element: $0.element) }
+    /// #1's photo: its og:image (`source-0`), else the card hero the server already sends for #1; nil → rows only (④).
+    private var topPhoto: FindImage? {
+        if let img = card.sources.first?.image, img.status != .failed { return img }
+        if let hero = card.hero, hero.status != .failed { return hero }
+        return nil
     }
 
     @ViewBuilder private var resultList: some View {
-        let pick = card.topPick
-        if let pick {
-            topPick(card.sources[pick.index], index: pick.index, photo: pick.photo).findsRise(3)
+        let sources = card.sources
+        let photo = topPhoto
+        if let photo, let first = sources.first {
+            topPick(first, photo: photo).findsRise(3)
         }
+        let rest = Array(sources.enumerated()).dropFirst(photo == nil ? 0 : 1)
         VStack(spacing: 0) {
-            ForEach(Array(restRows.enumerated()), id: \.element.element.url) { n, item in
+            ForEach(Array(rest.enumerated()), id: \.element.element.url) { n, item in
                 resultRow(item.element, index: item.offset, divider: n > 0).findsRise(min(4 + n, 8))
             }
-        }.padding(.top, pick == nil ? 4 : 6)
+        }.padding(.top, photo == nil ? 4 : 6)
     }
 
     private func openSource(_ s: FindCard.Source) {
         if !offline { withAnimation(.drawer) { finds.state = .full; finds.browser = s } }
     }
 
-    private func topPick(_ s: FindCard.Source, index: Int, photo: FindImage) -> some View {
-        let why = Self.why(s, index: index, steps: card.steps, sourceCount: card.sources.count)
+    private func topPick(_ s: FindCard.Source, photo: FindImage) -> some View {
+        let why = Self.why(s, index: 0, steps: card.steps, sourceCount: card.sources.count)
         return Button { openSource(s) } label: {
             VStack(alignment: .leading, spacing: 0) {
                 FindPicture(image: photo, resolve: call.findsURL, showFailText: false, quietGlyph: "photo")
@@ -1113,19 +1115,21 @@ struct FindCardPage: View {
     // rows with the rating line and the address instead of the reason
 
     @ViewBuilder private var placeList: some View {
-        let pick = card.topPick
-        if let pick {
-            placeTop(card.sources[pick.index], index: pick.index, photo: pick.photo).findsRise(3)
+        let sources = card.sources
+        let photo = topPhoto
+        if let photo, let first = sources.first {
+            placeTop(first, photo: photo).findsRise(3)
         }
+        let rest = Array(sources.enumerated()).dropFirst(photo == nil ? 0 : 1)
         VStack(spacing: 0) {
-            ForEach(Array(restRows.enumerated()), id: \.element.element.url) { n, item in
+            ForEach(Array(rest.enumerated()), id: \.element.element.url) { n, item in
                 placeRow(item.element, index: item.offset, divider: n > 0).findsRise(min(4 + n, 8))
             }
-        }.padding(.top, pick == nil ? 4 : 10)
+        }.padding(.top, photo == nil ? 4 : 10)
         .accessibilityElement(children: .contain).accessibilityIdentifier("placeList")
     }
 
-    private func placeTop(_ s: FindCard.Source, index: Int, photo: FindImage) -> some View {
+    private func placeTop(_ s: FindCard.Source, photo: FindImage) -> some View {
         let place = s.place
         return VStack(alignment: .leading, spacing: 0) {
             Button { openSource(s) } label: {
@@ -1142,7 +1146,7 @@ struct FindCardPage: View {
                     if let place { placeMeta(place).padding(.top, 3) }
                     if let address = place?.address, !address.isEmpty {
                         Text(address).font(TypeStyle.body(14)).foregroundStyle(CallInk.mute).lineLimit(2).multilineTextAlignment(.leading).padding(.top, 2)
-                    } else if let why = Self.why(s, index: index, steps: card.steps, sourceCount: card.sources.count) {
+                    } else if let why = Self.why(s, index: 0, steps: card.steps, sourceCount: card.sources.count) {
                         Text(why).font(TypeStyle.body(14)).foregroundStyle(Self.whyInk).lineLimit(2).multilineTextAlignment(.leading).padding(.top, 3)
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
