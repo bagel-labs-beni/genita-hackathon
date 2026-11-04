@@ -1222,6 +1222,7 @@ enum CallStop: Equatable {
         // Another account (or signed out) never sees the face set loaded for the one before.
         if face != nil, Self.tokenSubject(currentEndpoint.token) != faceOwner { useFace(nil, key: nil, reduceMotion: reduceMotion) }
         faceOnScreen = true
+        if face == nil { facePrepRetried = false }
         #if DEBUG
         faceDebugShows += 1
         #endif
@@ -1307,7 +1308,17 @@ enum CallStop: Equatable {
         return CompanionFaceLoader(endpoint: currentEndpoint)
     }
 
-    /// One load. True = no face yet but one may still come (prep still running, or offline): try again.
+    /// One prep retry per time the call screen shows (DEMO P0): a failed face set is asked for again, not forever.
+    @ObservationIgnored private var facePrepRetried = false
+    @ObservationIgnored private var lastFaceState = ""
+    /// Device Console (`FACE_STATE …`, subsystem ai.genita): why a call shows the photo instead of the moving face.
+    private func faceState(_ state: String) {
+        guard state != lastFaceState else { return }
+        lastFaceState = state
+        log.notice("FACE_STATE \(state, privacy: .public)")
+    }
+
+    /// One load. True = no face yet but one may still come (prep still running or retried, or offline): try again.
     private func loadFaceOnce() async -> Bool {
         #if DEBUG
         faceDebugAttempts += 1
@@ -1329,11 +1340,26 @@ enum CallStop: Equatable {
             guard !Task.isCancelled else { return false }
             switch outcome {
             case .unchanged: return false
-            case .none: if face != nil { useFace(nil, key: nil, reduceMotion: faceReduceMotion) }; return false
+            case .none:
+                faceState("none")
+                if face != nil { useFace(nil, key: nil, reduceMotion: faceReduceMotion) }; return false
             case .pending:
+                faceState("pending")
                 if face != nil { useFace(nil, key: nil, reduceMotion: faceReduceMotion) }
                 return faceOnScreen
+            case .failed:
+                // DEMO P0 (11/4): a failed face set used to leave the photo frozen for the whole call. Ask the server
+                // to make it again (once per time the call screen shows), then keep checking; it swaps in when made.
+                faceState("failed")
+                if face != nil { useFace(nil, key: nil, reduceMotion: faceReduceMotion) }
+                if faceOnScreen, !facePrepRetried {
+                    facePrepRetried = true
+                    do { try await makeFaceLoader().retryPrep(); faceState("retry_sent") }
+                    catch { log.error("face set retry: \(String(describing: error), privacy: .public)") }
+                }
+                return !Task.isCancelled && faceOnScreen
             case let .loaded(key, set):
+                faceState("loaded")
                 log.info("face set \(key, privacy: .public): \(set.patches.count) mouth shapes; \(set.notes.joined(separator: "; "), privacy: .public)")
                 useFace(set, key: key, owner: owner, reduceMotion: faceReduceMotion)
                 return false

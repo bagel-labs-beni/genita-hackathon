@@ -139,6 +139,21 @@ public final class FaceDriver: ObservableObject {
         return queue.sync { renderer.render(at: t, lip: lip) }
     }
 
+    /// What the display link draws at this playhead: the mouth (with its lookahead), the expression stills and the
+    /// speech sway all read the same audio clock. nil playhead → the face at rest (alive motion still runs).
+    private func liveInputs(playbackMs ms: Double?) -> (LipFrame, LipFrame?, LipContext?) {
+        let lip = ms.map { timeline.sample(atMs: $0 + lookaheadMs) } ?? .rest
+        let ahead = aheadMs > 0 ? ms.map { timeline.sample(atMs: $0 + lookaheadMs + aheadMs) } : nil
+        let ctx = ms.map { LipContext(audioMs: $0 + lookaheadMs, timeline: timeline) }
+        return (lip, ahead, ctx)
+    }
+
+    /// One frame exactly as the live display link draws it (tests): mouth, expressions and alive motion.
+    public func renderLiveFrame(at t: Double, playbackMs: Double?) -> CGImage? {
+        let (lip, ahead, ctx) = liveInputs(playbackMs: playbackMs)
+        return queue.sync { renderer.render(at: t, lip: lip, ahead: ahead, lipContext: ctx) }
+    }
+
     public func start() {
         #if os(iOS)
         guard link == nil else { return }
@@ -182,9 +197,7 @@ public final class FaceDriver: ObservableObject {
         guard !rendering else { return }   // drop a frame rather than queue them up
         rendering = true
         let ms = currentUtteranceId == nil ? nil : playbackClock()
-        let lip = ms.map { timeline.sample(atMs: $0 + lookaheadMs) } ?? .rest
-        let ahead = aheadMs > 0 ? ms.map { timeline.sample(atMs: $0 + lookaheadMs + aheadMs) } : nil
-        let ctx = ms.map { LipContext(audioMs: $0 + lookaheadMs, timeline: timeline) }
+        let (lip, ahead, ctx) = liveInputs(playbackMs: ms)
         let r = renderer, t = now()
         queue.async { [weak self] in
             let image = r.render(at: t, lip: lip, ahead: ahead, lipContext: ctx)
