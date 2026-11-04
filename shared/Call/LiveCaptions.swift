@@ -205,7 +205,8 @@ struct LiveCaptions: Equatable {
     private mutating func tickYou(now: Double, level: Float?) {
         let l = level ?? 0
         // sound = clearly above the resting level: follows quiet rooms down at once, noisy ones up slowly (~15 s)
-        let floor = min(noiseFloor ?? l, l)
+        // (the first sample may already be speech: the resting level starts no higher than 0.05)
+        let floor = min(noiseFloor ?? min(l, 0.05), l)
         noiseFloor = level == nil ? noiseFloor : floor + (l - floor) * 0.003
         let loud = l >= max(Self.levelOn, floor + Self.levelOn)
         if loud { lastLoud = now; if loudSince == nil { loudSince = now } } else { loudSince = nil }
@@ -213,7 +214,9 @@ struct LiveCaptions: Equatable {
         if let since = loudSince, now - since >= Self.soundHoldMs {
             // only on an empty stage: mic noise never replaces words the server heard (TF 341: the heard line was wiped
             // during "thinking" and the reply came with no user line). A new turn the server confirms clears the rest.
-            if (you == nil || you?.phase == .missed) && reply == nil {
+            // a finished reply (its voice ended) gives the stage back at once; while thinking, the heard line keeps it
+            let free = reply == nil ? (you == nil || you?.phase == .missed) : reply?.endedAt != nil
+            if free {
                 newTurn(now: now)
                 you = You(text: Self.youSound, phase: .sound, byLevel: true)
             }

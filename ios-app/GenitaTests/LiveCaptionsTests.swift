@@ -51,7 +51,6 @@ final class LiveCaptionsTests: XCTestCase {
 
     func testLocalMicShowsSoundAfter150msAndDropsNoiseAfter1200ms() {
         var c = LiveCaptions()
-        XCTAssertNil(c.frame(now: -50, level: 0.02, playheadMs: nil).you, "a quiet room sets the resting level")
         XCTAssertNil(c.frame(now: 0, level: 0.3, playheadMs: nil).you)
         XCTAssertNil(c.frame(now: 100, level: 0.3, playheadMs: nil).you, "not before 150 ms")
         XCTAssertEqual(c.frame(now: 160, level: 0.3, playheadMs: nil).you?.phase, .sound)
@@ -216,6 +215,21 @@ final class LiveCaptionsTests: XCTestCase {
         XCTAssertEqual(f.you?.text, "What should I eat tonight?")
         XCTAssertEqual(f.you?.dim, true)
         XCTAssertEqual(f.reply?.text, "Wednesday")
+    }
+
+    func testSpeakingRightAfterAReplyStartsANewTurnAtOnce() {
+        var c = LiveCaptions()
+        c.apply(transcript("hi", final: true), now: 0)
+        c.apply(delta(1, "Hey you."), now: 10)
+        c.apply(audio(1, sentence: 0, offset: 0, words: [("Hey", 0, 200), ("you.", 200, 500)]), now: 20)
+        c.apply(reply(1, "Hey you."), now: 30)
+        _ = c.frame(now: 100, level: 0.02, playheadMs: 100)
+        _ = c.frame(now: 700, level: 0.02, playheadMs: nil)   // voice done
+        _ = c.frame(now: 1000, level: 0.4, playheadMs: nil)
+        let f = c.frame(now: 1200, level: 0.4, playheadMs: nil)
+        XCTAssertEqual(f.you?.phase, .sound, "the user talks again: bars at once, the finished turn goes")
+        XCTAssertNil(f.reply)
+        XCTAssertEqual(c.frame(now: 5800, level: 0.4, playheadMs: nil).you?.phase, .sound, "the old turn's 5 s clear no longer applies")
     }
 
     func testMicStateOnlyHidesTheSoundPlaceholder() {
