@@ -65,6 +65,22 @@ final class FakeLoginItemService: LoginItemService {
             item.signedIn()
             check(!service.calls.contains("register"), "switched off before signing in: sign-in does not register")
         }
+        do { // the first register() fails: tried again on the next launch, not every refresh of this one
+            let suite = "genita.login-item-check.retry.\(UUID().uuidString)"
+            let defaults = UserDefaults(suiteName: suite)!
+            let service = FakeLoginItemService()
+            service.statusAfterRegister = .notFound
+            service.registerThrows = true
+            let first = MacLoginItem(service: service, defaults: defaults, bundlePath: { "/Applications/Genita.app" })
+            first.signedIn(); first.signedIn()
+            check(service.calls == ["register"] && !first.configured, "failed register: not marked done, once per launch")
+            service.statusAfterRegister = .enabled
+            service.registerThrows = false
+            let next = MacLoginItem(service: service, defaults: defaults, bundlePath: { "/Applications/Genita.app" })
+            next.signedIn()
+            check(service.calls == ["register", "register"] && next.configured && next.isOn, "failed register: the next launch registers")
+            defaults.removePersistentDomain(forName: suite)
+        }
         do { // macOS wants approval
             let (item, service, _) = fresh("approval")
             service.statusAfterRegister = .requiresApproval

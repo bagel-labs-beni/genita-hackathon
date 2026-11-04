@@ -90,13 +90,17 @@ final class InertLoginItemService: LoginItemService {
         return path.hasPrefix("/Volumes/") || path.contains("/AppTranslocation/")
     }
 
-    /// After a successful sign-in (`/me` answered for a signed-in account). Registers once, on the first one.
+    /// After a successful sign-in (`/me` answered for a signed-in account). Registers once, on the first one. A
+    /// failed register() is tried again on the next launch (Codex P2), never more than once per launch.
     func signedIn() {
         refresh()
-        guard !configured, !transientLocation else { return }
-        defaults.set(true, forKey: Self.configuredKey)
-        if preference { apply(true) }
+        guard !configured, !transientLocation, !triedThisLaunch else { return }
+        guard preference else { defaults.set(true, forKey: Self.configuredKey); return }
+        triedThisLaunch = true
+        apply(true)
+        if status == .enabled || status == .requiresApproval { defaults.set(true, forKey: Self.configuredKey) }
     }
+    private var triedThisLaunch = false
 
     /// Settings ▸ Open at login.
     func setOn(_ on: Bool) {
