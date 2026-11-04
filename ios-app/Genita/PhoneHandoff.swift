@@ -66,6 +66,8 @@ import ARKit
     private let accountResolver = HandoffAccountResolver()
     /// a first /me is in flight (set when resolving starts; cleared on adopt, expiry and any setAccount)
     private var resolving=false
+    /// P01 opened by itself this launch (HandoffPairingInput.autoPrompt); Not now keeps it closed until the next launch.
+    private var autoPrompted=false
     init() {
         let args=ProcessInfo.processInfo.arguments
         if args.contains("--uitesting") { for key in ["genita.handoff.ownership","genita.handoff.rememberedMac"] {UserDefaults.standard.removeObject(forKey:key)} }
@@ -121,7 +123,7 @@ import ARKit
         generation+=1;pairingAttempt+=1;moveAttempt+=1;moveFailedToken+=1
         pending=nil;motion=nil;renderedMotionID=nil;feedback.cancel()
         moving=false;moveFailed=false;pairingFailed=false;code="";settings=false
-        registering=false;registeringVisible=false;registeredToast=false
+        registering=false;registeringVisible=false;registeredToast=false;autoPrompted=false
         trackingURL=nil;trackingStarted=false;tracker.stop();lastPing=0;snapshot=""
         media.stopAll()
         ownership.useAccount(accountID)
@@ -280,7 +282,14 @@ import ARKit
         let reachable=debugPeerReachable ?? ((link.connected && Date().timeIntervalSince1970-lastPing<3) || server.peerOnline)
         let next=ownership.surface(peerReachable:reachable)
         if next != surface {withAnimation(.easeOut(duration:0.24)) {surface=next}}
+        if HandoffPairingInput.autoPrompt(signedIn:accountScope.accountID != nil,foreground:sceneActive,inCall:CallController.shared.link == .live,
+                                          macOnline:server.peerOnline,paired:isPaired,linkConnected:link.connected,sheetOpen:settings,prompted:autoPrompted) {
+            autoPrompted=true;settings=true
+        }
     }
+    /// P02 offers "Set up touch to move" (P03, the rear-camera scan) only outside a live call. P01/P02 open from the call,
+    /// whose capture session holds the camera, so P03 stayed dark with a spinner (TF 331, Chelsea 11/4).
+    var offersTouchSetup: Bool { proximitySupported && CallController.shared.link != .live }
     func receive(_ data:[String:Any]) {
         guard accountScope.accountID != nil else{return}
         switch data["type"] as? String {

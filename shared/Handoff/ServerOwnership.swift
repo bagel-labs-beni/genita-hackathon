@@ -95,7 +95,9 @@ struct PresenceState: Equatable {
 }
 
 /// Where `/v1/presence` is. Same keys as the call client (`GENITA_SERVER_URL` / defaults
-/// `genita.server.url`, which point at `/v1/session`) and the same session token.
+/// `genita.server.url`, which point at `/v1/session`), the same default (the deployed server) and the same session token.
+/// TF 331: the fallback was ws://127.0.0.1:8787, and only the Mac registers `genita.server.url`, so the iPhone's presence
+/// never reached the server (no proximity, no Continue here when the Mac took the call).
 struct PresenceEndpoint: Equatable {
     var url: URL
     var token: String?
