@@ -67,10 +67,12 @@ struct MacConversationView: View {
                 if waitingCopy != nil { handoffScrim.frame(width: 390, height: 844).allowsHitTesting(false) }
                 Button { withAnimation { menuOpen.toggle() } } label: { MacGlassControl(icon: "glass-menu-icon") }
                     .buttonStyle(.plain).position(x: 47.5, y: topRowY).opacity(sheetFull || linkOpened != nil || menuOpen ? 0 : 1).allowsHitTesting(!sheetFull && linkOpened == nil && !menuOpen).accessibilityIdentifier("macOpenMenu")
-                if interpret.isLive {
-                    InterpretOverlay(board: call.interpretBoard, level: { call.inputLevel }, onClose: { interpret.stop() }, onHold: { call.setHold($0) })
+                if interpreting && !findsUp {
+                    // F10 INT-1~6 on the Mac (as the iPhone): the face stays, the bar, bubbles and Hold to talk replace the rail
+                    InterpretOverlay(board: call.interpretBoard, level: { call.inputLevel }, onClose: { stopInterpreting() }, onHold: { call.setHold($0) })
                         .frame(width: 390, height: 844)
-                } else if waitingCopy == nil {
+                        .transition(.opacity)
+                } else if waitingCopy == nil && !interpreting {
                     // live captions r01: same layer as the iPhone, bottom edge 16 above the rail (626), under the self view and rail
                     captionLayer
                     if MacDesignV2.enabled {
@@ -96,11 +98,11 @@ struct MacConversationView: View {
                         }.buttonStyle(MotionPressStyle())
                             .modifier(MacControlEntrance(shown: call.link != .connecting, index: 1))
                             .accessibilityLabel(call.micOn ? "Turn microphone off" : "Turn microphone on").accessibilityIdentifier("macMicToggle")
-                        if MacInterpretController.enabled {
+                        if MacInterpretController.callAppsEnabled {
                             Button { withAnimation(.easeOut(duration: 0.22)) { interpret.open() } } label: { MacGlassControl(icon: "glass-more-icon", size: 46) }
                                 .buttonStyle(.plain).modifier(MacControlEntrance(shown: call.link != .connecting, index: 2)).accessibilityLabel("More").accessibilityIdentifier("macMore")
                         } else {
-                            // ⋮ = the Mac menu (MC-M: Finds, Setting, Move to iPhone) while interpretation is cut — never a dead button
+                            // ⋮ = the Mac menu (MC-M: Interpret a conversation, Finds, Settings, Move to iPhone) — never a dead button
                             Button { withAnimation { menuOpen = true } } label: { MacGlassControl(icon: "glass-more-icon", size: 46) }
                                 .buttonStyle(.plain).modifier(MacControlEntrance(shown: call.link != .connecting, index: 2)).accessibilityLabel("More").accessibilityIdentifier("macMore")
                         }
@@ -120,7 +122,7 @@ struct MacConversationView: View {
                         MediaPermissionSheet(kind: denied, name: call.companionName, openSettings: { media.openSystemSettings(for: denied) }, dismiss: { call.dismissDenied() })
                     }.frame(width: 390, height: 844)
                 }
-                if waitingCopy == nil && !interpret.isLive {
+                if waitingCopy == nil && (!interpreting || findsUp) {
                     if linkOpened == nil {
                         MacResultSheet(finds: call.finds) { pick in withAnimation(.easeOut(duration: 0.22)) { linkOpened = pick } }
                             .frame(width: 390, height: 844, alignment: .topLeading)
@@ -138,11 +140,16 @@ struct MacConversationView: View {
                         MacLinkPrompt(share: { linkOpened = nil; sharing.requestSharing() }, notNow: { withAnimation(.easeOut(duration: 0.22)) { linkOpened = nil } })
                     }
                 }
+                // D73 (TR-01 NET) as the iPhone: interpreting hides the call cue, except S09-R — a dropped link must show
+                if waitingCopy == nil && interpreting && !findsUp && call.link == .reconnecting, let text = cueText {
+                    MacCallCue(text: text).frame(maxWidth: 342, alignment: .leading).fixedSize(horizontal: false, vertical: true)
+                        .position(x: 195, y: MacDesignV2.enabled && !displaySharing ? 103 : 142).frame(width: 390, height: 844, alignment: .topLeading).allowsHitTesting(false)
+                }
                 // A full result sheet owns the top of the window; the share chip and cards come back when it folds.
                 if !sheetFull { WatchOverlays(sharing: sharing, review: reviewState) }
             }.frame(width: 390, height: 844).offset(x: menuOpen ? 299 : 0)
             if menuOpen { menu }
-            if MacInterpretController.enabled && interpret.stage == .picking { interpretSheet }
+            if MacInterpretController.callAppsEnabled && interpret.stage == .picking { interpretSheet }
             if permissionVisible { permissionPanel }
             // QA #216 to-be: no fake 9:41 / battery bar on a real Mac (the island handle stays for moving the window)
             if !MacDesignV2.enabled { MacDemoSystemBar(onDark: waitingCopy != nil || sheetFull).allowsHitTesting(false).accessibilityHidden(true) }
@@ -181,13 +188,34 @@ struct MacConversationView: View {
             else if let id = call.sessionId { sharing.watchConfig = .init(server: call.currentEndpoint.url, token: call.currentEndpoint.token, sessionId: id) }
         }
         .onChange(of: macCall.isSignedIn) { _, signedIn in if !signedIn { sharing.stop(); sharing.watchConfig = nil } }
-        .onChange(of: call.micOn) { _, on in if handoff.ownership.isOwner { MacCall.micRemembered = on } }
+        // interpretation turns the mic on for itself only (TR-01): that is not the user's mic choice
+        .onChange(of: call.micOn) { _, on in if handoff.ownership.isOwner && !call.micOnForInterpret { MacCall.micRemembered = on } }
         .sheet(isPresented: $settingsOpen) { MacSettingsSheet(compact: true) }
         .alert("Couldn’t start interpreting", isPresented: Binding(get: { if case .failed = interpret.stage { return true } else { return false } }, set: { if !$0 { interpret.stage = .idle } })) {
             Button("OK") { interpret.stage = .idle }
         } message: { if case let .failed(message) = interpret.stage { Text(message) } }
         .onDisappear { if interpret.isLive { interpret.stop() } }
         .alert(sharing.errorTitle, isPresented: Binding(get: { sharing.error != nil }, set: { if !$0 { sharing.error = nil } })) { Button("OK") { sharing.error = nil } } message: { Text(sharing.error ?? "") }
+    }
+    /// F10 on the Mac: face-to-face interpretation (⋮ → Interpret a conversation, the iPhone's INT-0) or the call-app
+    /// path (INT-M0, `callAppsEnabled`). Both draw the shared InterpretOverlay; nothing shows once the call is idle.
+    private var interpreting: Bool {
+        interpret.isLive || (MacInterpretController.enabled && call.mode == .interpret && call.link != .connecting && call.link != .idle)
+    }
+    /// F10 sheet during interpretation (iPhone 11/2 decision): Finds can open; while it is up the bubbles and Hold to
+    /// talk are hidden, and they come back when it closes. The call-app path keeps its old rule (no sheet).
+    private var findsUp: Bool { !interpret.isLive && call.finds.state != .idle && call.finds.state != .dismissed }
+    /// INT-0 toggle, as the iPhone's More row: on closes the menu and shows INT-1; off returns to the call.
+    private func toggleInterpreting() {
+        let on = call.mode != .interpret
+        withAnimation(.easeOut(duration: 0.22)) {
+            menuOpen = false
+            call.setInterpreting(on)
+        }
+    }
+    /// ✕ Stop interpreting: the call-app path tears its capture down; face-to-face goes back to chat.
+    private func stopInterpreting() {
+        if interpret.isLive { interpret.stop() } else { withAnimation(.easeOut(duration: 0.22)) { call.setInterpreting(false) } }
     }
     /// INT-M0 · pick the call app, then Start interpreting.
     private var interpretSheet: some View {
@@ -324,6 +352,14 @@ struct MacConversationView: View {
             VStack(alignment: .leading, spacing: 0) {
                 Text("Genita").font(MacSheetInk.serif(28)).tracking(-0.28).foregroundStyle(ink).frame(height: 34, alignment: .leading)
                     .padding(.leading, 33).padding(.bottom, 12).accessibilityAddTraits(.isHeader)
+                if MacInterpretController.enabled {
+                    // F10 INT-0 (the iPhone's first More row): toggles face-to-face interpretation; dim until a call is live
+                    let canInterpret = call.link == .live || call.link == .reconnecting || call.mode == .interpret
+                    menuLine("Interpret a conversation", icon: AnyView(Image(systemName: "globe").font(.system(size: 17, weight: .light))), dim: !canInterpret,
+                             trailing: call.mode == .interpret ? "On" : nil, id: "macMenuInterpret") { toggleInterpreting() }
+                        .disabled(!canInterpret)
+                        .accessibilityValue(call.mode == .interpret ? call.interpretBoard.moreSubtitle : "For talking across languages")
+                }
                 menuLine("Chat", icon: AnyView(resourceImage("reference-menu-chat").resizable().frame(width: 20, height: 20)), dim: true, trailing: MacDesignV2.enabled ? "Soon" : nil, id: "macMenuChat") {}.disabled(true)
                 menuLine("Finds", icon: AnyView(Image(systemName: "bookmark").font(.system(size: 17, weight: .light))), trailing: finds > 0 ? "\(finds)" : nil, id: "macMenuFinds") {
                     withAnimation { menuOpen = false }

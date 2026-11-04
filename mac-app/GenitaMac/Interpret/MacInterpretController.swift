@@ -13,10 +13,14 @@ import Observation
 /// Known limit (checked 11/2): the call app keeps its own mic open, so the other person also
 /// hears the user's own voice before Genita's translation. See mac-app/README.md.
 @MainActor @Observable final class MacInterpretController {
-    /// D40 (PRD v12, 11/2): Mac FaceTime/Zoom interpretation is cut for the hackathon build.
-    /// The ⋮ entry stays the disabled "More" control; iPhone face-to-face interpretation is unaffected.
-    /// Flip to `true` to bring the INT-M0 sheet back.
-    nonisolated static let enabled = false
+    /// F10 on the Mac (11/4, Chelsea "no deferrals"): ⋮ → menu → "Interpret a conversation" runs the iPhone's
+    /// face-to-face interpretation (INT-0~6: bar, bubbles, Hold to talk or just talk) with the shared InterpretOverlay.
+    /// `false` hides the menu row and the overlay for face-to-face (the call keeps working as chat).
+    nonisolated static let enabled = true
+    /// D40 / D11 (PRD v12, 11/2): the FaceTime/Zoom call-app path (INT-M0 sheet, call sound capture) stays cut —
+    /// the call app keeps its own mic open, so the other person hears the user's voice before the translation.
+    /// Flip to `true` to bring the INT-M0 sheet back on ⋮ (it replaces the menu there).
+    nonisolated static let callAppsEnabled = false
 
     enum Stage: Equatable { case idle, picking, starting, live, failed(String) }
 
