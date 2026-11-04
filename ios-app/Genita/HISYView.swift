@@ -878,8 +878,11 @@ struct HISYFixSheet: View {
 
     private func begin() {
         defer { starting = false }
-        guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US")) ?? SFSpeechRecognizer(), recognizer.isAvailable else {
-            note = "Speech isn’t available right now. Type it instead."; return
+        // on this phone only (AU audit P2): Genita's AI is Meta's; Apple's server speech recognition is never used
+        // (it's not in the privacy notice). No en-US recognizer, or no on-device model → type it instead.
+        guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US")), recognizer.isAvailable,
+              recognizer.supportsOnDeviceRecognition else {
+            note = "Speech isn’t available on this iPhone. Type it instead."; return
         }
         do {
             let session = AVAudioSession.sharedInstance()
@@ -888,7 +891,7 @@ struct HISYFixSheet: View {
             let engine = AVAudioEngine()
             let request = SFSpeechAudioBufferRecognitionRequest()
             request.shouldReportPartialResults = true
-            if recognizer.supportsOnDeviceRecognition { request.requiresOnDeviceRecognition = true }
+            request.requiresOnDeviceRecognition = true
             let input = engine.inputNode
             input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { buffer, _ in request.append(buffer) }
             engine.prepare()
