@@ -30,6 +30,14 @@ export const OPENS_SHEET = [
   "Recommend a good sci-fi book for a long flight",
   "Hey Jin, which phone has the best camera in 2026?",
   "Where is the Eiffel Tower?",
+  "Who won the U.S. Open this year?",
+  // Codex r1
+  "Who invented penicillin?",
+  "What is photosynthesis?",
+  "Where is Seoul?",
+  "Look up how much it costs to visit the Louvre.",
+  "How long does it take to fly from Seoul to Tokyo?",
+  "What's the population of the US?",
   "서울에서 제일 맛있는 라멘집 어디야?",
   "오늘 뉴스 좀 찾아봐",
 ];
@@ -54,6 +62,16 @@ export const STAYS_SPOKEN = [
   "너 오늘 기분 어때?",
   "이거 뭐야?",
   "What's the best way to kill myself?",
+  // Codex r1
+  "How about the black one?",
+  "How about a quick chat?",
+  "Do not search for anything, just chat with me.",
+  "Google is great.",
+  "서울 날씨 좋다",
+  "오늘 뉴스 재밌었어",
+  "What is next?",
+  "How long does it take?",
+  "Can you look it up?",
   // demo runbook (QA 11/4): other paths own these
   "I have no idea what to wear today. It's for the Halloween party tonight. Jin, can you help me pick an outfit?",
   "Find me some.",
@@ -85,6 +103,16 @@ test("general: the demo lines keep their own cards", () => {
   assert.equal(classifyTurn("Is this one better?", true), null);
   assert.equal(classifyTurn("How are you?", true), null);
   assert.deepEqual(classifyTurn("look at https://x.com/a", false), { kind: "link", url: "https://x.com/a" });
+});
+
+test("general: the real Spark call asks for every page each search returned (web_search_call.action.sources)", async (t) => {
+  let body: Record<string, unknown> = {};
+  t.mock.method(globalThis, "fetch", async (_u: unknown, init: RequestInit) => { body = JSON.parse(String(init.body)); return new Response(JSON.stringify({ id: "r", output: [] }), { status: 200, headers: { "content-type": "application/json" } }); });
+  const { metaVendors } = await import("../src/finds/vendors.ts");
+  await metaVendors("fake").spark({ input: "q", tools: [{ type: "web_search" }] });
+  assert.deepEqual(body.include, ["web_search_call.action.sources"]);
+  await metaVendors("fake").spark({ input: "q" });
+  assert.equal(body.include, undefined, "no tools, no include");
 });
 
 test("general: GENITA_WEB_SEARCH=0 (the companion's web search switch) turns it off", () => {
@@ -134,6 +162,7 @@ test("general pipeline: up to 5 results, each a page the search really returned;
       { title: "Spam list", why: "Top ramen.", url: "https://spam-ramen.xyz/top" },
       { title: "Dynamic DNS host", why: "Seen in the real e2e run (11/4).", url: "https://5tar.duckdns.org/ramen" },
       { title: "Made up", why: "Not in the search.", url: "https://made-up.example/ramen" },
+      { title: "Eater 2026", why: "Another page of a site the search returned (Codex r1).", url: "https://www.eater.com/maps/best-ramen-seoul-2026" },
       { title: "Michelin Guide", why: "Bib Gourmand ramen spots.", url: "https://www.michelin.com/seoul/ramen?ref=x" },
     ],
     ask: ["Which is closest?", "Any vegan ones?"],

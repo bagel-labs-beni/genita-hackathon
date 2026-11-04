@@ -39,6 +39,8 @@ export function metaVendors(key: string, opts: { samMasks?: boolean } = {}): Fin
           reasoning: { effort: req.effort ?? "minimal" },
           ...(req.instructions ? { instructions: req.instructions } : {}),
           ...(req.tools?.length ? { tools: req.tools } : {}),
+          // the pages each search returned (not only the ones it opened), as the streaming call asks (spark.ts)
+          ...(req.tools?.some((t) => t.type === "web_search") ? { include: ["web_search_call.action.sources"] } : {}),
           ...(req.maxOutputTokens ? { max_output_tokens: req.maxOutputTokens } : {}),
           ...(req.text ? { text: req.text } : {}),
         },
