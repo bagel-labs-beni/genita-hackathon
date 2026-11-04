@@ -60,22 +60,42 @@ function run(sparkMs: number, renderMs: number, fails: { opener?: number; answer
   return { client, calls, session };
 }
 
-test("greetOpenerWaitMs: 2500 by default, 0 turns the hold off, capped at 5 s", () => {
-  assert.equal(greetOpenerWaitMs({}), 2500);
+test("greetOpenerWaitMs: 300 by default (<= 300 ms grace), 0 turns the hold off, capped at 5 s", () => {
+  assert.equal(greetOpenerWaitMs({}), 300);
+  assert.equal(greetOpenerWaitMs({ GENITA_GREET_OPENER_WAIT_MS: "2500" }), 2500);
   assert.equal(greetOpenerWaitMs({ GENITA_GREET_OPENER_WAIT_MS: "0" }), 0);
   assert.equal(greetOpenerWaitMs({ GENITA_GREET_OPENER_WAIT_MS: "99999" }), 5000);
-  assert.equal(greetOpenerWaitMs({ GENITA_GREET_OPENER_WAIT_MS: "x" }), 2500);
+  assert.equal(greetOpenerWaitMs({ GENITA_GREET_OPENER_WAIT_MS: "x" }), 300);
+});
+
+test("prod 11/4: Spark slower than the grace (2 s) -> the opener speaks within the 300 ms grace, Spark's line follows", async () => {
+  const saved = process.env.GENITA_GREET_OPENER_WAIT_MS;
+  delete process.env.GENITA_GREET_OPENER_WAIT_MS;
+  try {
+    const { client, calls, session } = run(2000, 20);
+    const t0 = Date.now();
+    await session.onClientText(JSON.stringify({ type: "start", persona, mic: false, user: { name: "Summer" }, greetAfterMs: 0 }));
+    const first = await client.waitFor((m) => m.type === "audio");
+    assert.ok(first.t - t0 < 700, `the opener did not hold for Spark (${first.t - t0} ms)`);
+    assert.ok(calls[0] && /Summer/.test(calls[0].text), "the opener is the first voice");
+    await client.waitFor((m) => m.type === "reply" && m.final === true, 6000);
+    assert.ok(calls.some((c) => /interview/.test(c.text)), "Spark's greeting still follows as the next line");
+    session.close();
+  } finally {
+    if (saved === undefined) delete process.env.GENITA_GREET_OPENER_WAIT_MS;
+    else process.env.GENITA_GREET_OPENER_WAIT_MS = saved;
+  }
 });
 
 test("server voice: the opener waits for Spark's first sentence, and both voices are asked for together", async () => {
-  const { client, calls, session } = run(400, 50);
+  const { client, calls, session } = run(200, 50); // Spark inside the 300 ms grace
   const t0 = Date.now();
   await session.onClientText(JSON.stringify({ type: "start", persona, mic: false, user: { name: "Summer" }, greetAfterMs: 0 }));
   await client.waitFor((m) => m.type === "reply" && m.final === true);
   const answer = calls.find((c) => /interview/.test(c.text));
   const opener = calls.find((c) => /Summer/.test(c.text));
   assert.ok(opener && answer, JSON.stringify(calls));
-  assert.ok(opener.t - t0 >= 350, `the opener waited for Spark (${opener.t - t0} ms)`);
+  assert.ok(opener.t - t0 >= 170, `the opener waited for Spark (${opener.t - t0} ms)`);
   assert.ok(answer.t - opener.t < 60, `the answer's voice was asked for with the opener's, not after it played (${answer.t - opener.t} ms)`);
   const audio = client.json.filter((x) => x.m.type === "audio");
   assert.ok(audio.length >= 2);

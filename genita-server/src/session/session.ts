@@ -462,13 +462,17 @@ export function greetOpenerOn(env: NodeJS.ProcessEnv = process.env): boolean {
 }
 /**
  * DEMO 11/4 (Chelsea, build 10: "Hey Summer" … ~3 s … the rest): with the server voice the opener clip is instant but
- * Spark's first greeting sentence takes ~2.2 s (prod p50), so the opener used to stand alone in silence. The opener now
- * waits for Spark's first sentence, at most this long, and that sentence's voice is asked for at once: the two play
- * back to back. GENITA_GREET_OPENER_WAIT_MS=0 = the opener at once again (no redeploy, a restart).
+ * Spark's first greeting sentence takes ~2.2 s (prod p50). The opener waits for Spark's first sentence, at most this
+ * long, and that sentence's voice is asked for at once: when Spark is already there the two play back to back.
+ * 21:1x 11/4 (prod log: `call.greet_opener_held ms:2500 timedOut:true` on every call, first audio ~2.7 s): Spark is
+ * never there within 2.5 s, so the hold only moved the silence in front of "Hey, Summer!". Default is now a short
+ * 300 ms grace: the opener speaks at once and Spark's line follows as the next line when it lands.
+ * GENITA_GREET_OPENER_WAIT_MS=2500 = the old hold, =0 = no grace at all (no redeploy, a restart).
  */
+export const GREET_OPENER_WAIT_DEFAULT_MS = 300;
 export function greetOpenerWaitMs(env: NodeJS.ProcessEnv = process.env): number {
-  const v = Number(env.GENITA_GREET_OPENER_WAIT_MS ?? 2500);
-  return Number.isFinite(v) ? Math.max(0, Math.min(5000, v)) : 2500;
+  const v = Number(env.GENITA_GREET_OPENER_WAIT_MS ?? GREET_OPENER_WAIT_DEFAULT_MS);
+  return Number.isFinite(v) ? Math.max(0, Math.min(5000, v)) : GREET_OPENER_WAIT_DEFAULT_MS;
 }
 /** Chelsea 11/4: 3–4 variants, never the same every time; "Hey!" family without a name */
 export const GREET_OPENERS = ["Hey, {name}!", "Hi, {name}!", "Oh hey, {name}!", "Hey hey, {name}!"];
