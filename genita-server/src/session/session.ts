@@ -79,6 +79,7 @@ import { forgetOpenerTopics, pickOpenerTopic, storedTopics } from "../convo/open
 import { InitiativeGovernor, initiativeBlock, initiativeInput, type InitiativeSource } from "../convo/initiative.ts";
 import { cueRhythm } from "../convo/rhythm.ts";
 import type { PerceptionSource } from "../convo/types.ts";
+import { clipTranscript, transcriptLogOn } from "./transcriptLog.ts";
 
 export { PROTOCOL_VERSION, FRAME_HEADER_BYTES, FRAME_KIND_TTS_PCM } from "../protocol.ts";
 
@@ -3394,6 +3395,11 @@ export class Session {
       this.log("profile.asked", {});
     }
     this.client.sendJson({ type: "reply", utteranceId, text: full, emotion: emotion ?? "neutral", interpret, final: true });
+    // opt-in transcript (GENITA_TRANSCRIPT_LOG_USERS): text only for listed user ids; a greeting/cue/card line has no
+    // user line of its own (its input is our prompt), so `user` is null there
+    if (transcriptLogOn(this.deps.userId)) {
+      this.log("turn.text", { utteranceId, user: synthetic || self ? null : clipTranscript(text), reply: clipTranscript(full), ...(self ? { self } : {}), ...(greeting ? { greeting: true } : {}), ...(interpret ? { interpret: true } : {}) });
+    }
     const metrics = {
       utteranceId,
       model: SPARK_MODEL,
