@@ -151,8 +151,11 @@ struct SettingsView: View {
     @ViewBuilder private var aboutYouPage: some View {
         #if os(iOS)
         if model.useInsightReport {
+            // one title only: the report page draws its own header, so the bar keeps the plain system title
+            // (settingsTitle's custom principal item rendered "About you" a second time here, b12 device log)
             InsightReportView(model: model, showsCTA: false)
-                .settingsTitle("About you")
+                .navigationTitle("About you")
+                .navigationBarTitleDisplayMode(.inline)
         } else {
             AboutYouPage(model: model)
         }
