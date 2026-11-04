@@ -47,12 +47,12 @@ import XCTest
     }
 
     /// A stub server: `/prep` answers `prep` (after `prepDelay`), face files come from the fixture folder.
-    private func server(prep: Data, files: [String: String], missing: Set<String> = [], prepDelay: Duration = .zero) -> (CompanionFaceLoader.Fetch, Box<[String]>) {
-        let seen = Box<[String]>([])
+    private func server(prep: Data, files: [String: String], missing: Set<String> = [], prepDelay: Duration = .zero) -> (CompanionFaceLoader.Fetch, Requests) {
+        let seen = Requests()
         let dir = Self.flowDir
         let fetch: CompanionFaceLoader.Fetch = { req in
             let url = req.url!
-            seen.value.append(url.lastPathComponent)
+            seen.add(url.lastPathComponent)   // fetches run in parallel: one locked append (a get + set lost requests on CI)
             func reply(_ status: Int, _ body: Data) -> (Data, URLResponse) {
                 (body, HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: nil)!)
             }
@@ -86,7 +86,7 @@ import XCTest
         var all: [(kind: String, key: String, set: FaceSet?, requests: Int)] { lock.withLock { events } }
     }
 
-    private func consumer(_ log: EarlyLog, _ seen: Box<[String]>) -> CompanionFaceLoader.EarlyConsumer {
+    private func consumer(_ log: EarlyLog, _ seen: Requests) -> CompanionFaceLoader.EarlyConsumer {
         { e in log.add(e, requests: seen.value.count); return true }
     }
 
@@ -300,4 +300,13 @@ import XCTest
         XCTAssertEqual(line?.components(separatedBy: "prep=").count, 2, "a step's first time only")
         XCTAssertNil(t.lineOnce(needing: ["firstFrame", "done"]), "one line per load")
     }
+}
+
+/// The stub server's request log: concurrent image fetches append at once, so the append itself is locked
+/// (`Box.value.append` is a read and a write and lost requests on CI).
+final class Requests: @unchecked Sendable {
+    private let lock = NSLock()
+    private var names: [String] = []
+    func add(_ name: String) { lock.withLock { names.append(name) } }
+    var value: [String] { lock.withLock { names } }
 }
