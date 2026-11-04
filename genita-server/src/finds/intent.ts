@@ -60,7 +60,25 @@ export function isOutfitAsk(text: string, afterProduct = false): boolean {
 }
 
 /** "identify" (CEO demo 11/4): outline the thing in view and name it — no card, no sheet */
-export type Intent = { kind: FindKind | "identify"; url?: string } | null;
+export type Intent = { kind: FindKind | "identify"; url?: string; named?: true } | null;
+
+/**
+ * P0 11/4 (Chelsea): a dish asked for by name ("kimchi fried rice recipe", "how do I make bibimbap", "show me the
+ * recipe") opens the visual recipe card from the web (namedRecipe.ts), with or without the camera — the fridge card
+ * stays for "what can I make with these".
+ */
+const NAMED_RECIPE =
+  /\b(?:recipes?)\b|\bhow (?:do|can|would|should) (?:i|you|we) (?:make|cook|prepare|bake)\b|\bhow to (?:make|cook|prepare|bake)\b|\bteach me (?:how )?to (?:make|cook|bake)\b|레시피|만드는\s*(?:법|방법)|어떻게\s*만들/i;
+/** "how do I make money / a website / friends": not a dish */
+const NOT_DISH =
+  /\b(?:money|website|site|app|apps|friends?|time|decisions?|videos?|games?|accounts?|playlists?|resume|cv|slides?|presentation|spreadsheet|chart|graph|logo|bed|plans?|appointments?|reservations?|calls?|payments?|changes?|progress|sense|difference|it work|this work|that work|a living|an? (?:impression|offer|wish|point|deal|list|request|call))\b/i;
+export function isNamedRecipeAsk(text: string): boolean {
+  if (!NAMED_RECIPE.test(text) || NOT_DISH.test(text)) return false;
+  // "how do I make this?" points at something in view: not a dish by name
+  if (/\b(?:make|cook|prepare|bake) (?:this|these|that|those|it|them)\b/i.test(text)) return false;
+  // a restaurant search stays a web search (#735)
+  return !/\brestaurants?\b|\b(?:places?|spots?) to eat\b/i.test(text);
+}
 
 /** "What's this?" / "이게 뭐야" about a thing held up to the camera (not a song, a smell or what a word means). */
 const IDENTIFY =
@@ -125,7 +143,7 @@ function cardIntent(text: string, hasFrames: boolean, afterProduct = false): Int
   }
   // shopping words win over the camera: "look for a jacket" with the camera on is a search, not a try-on
   if (isProductAsk(text, afterProduct)) return { kind: "product" };
-  if (!hasFrames) return null;
+  if (!hasFrames) return isNamedRecipeAsk(text) ? { kind: "recipe", named: true } : null;
   const cook = COOK.test(text);
   const clothes = CLOTHES.test(text);
   // "what should I wear to dinner?" names a meal but asks about clothes (AU-60); only a choice opens the outfit card —
@@ -134,6 +152,8 @@ function cardIntent(text: string, hasFrames: boolean, afterProduct = false): Int
   // P0 11/4 ("recommend a dinner menu" opened the fridge card): only "what can I make with these / what's in here";
   // never a restaurant search ("a dinner place near Gangnam", #735)
   if (cook && RECIPE_ASK.test(text) && !/\brestaurants? (?:near|in|around)\b|\b(?:dinner|lunch|brunch|breakfast) (?:places?|spots?)\b|\bplaces? to eat\b|\bspots? to eat\b|\b(?:near|around) [A-Z]|\bin [A-Z][a-z]+\b/.test(text)) return { kind: "recipe" };
+  // camera on but nothing pointed at ("these" / "with this"): a dish by name is the web recipe card
+  if (isNamedRecipeAsk(text)) return /\b(?:with|from|using) (?:this|these|that|those|what i (?:have|got))\b|\bthese\b|이걸로|이거로/i.test(text) ? { kind: "recipe" } : { kind: "recipe", named: true };
   if (isIdentifyAsk(text)) return { kind: "identify" };
   return null;
 }
