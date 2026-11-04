@@ -76,6 +76,10 @@ export function fridgePill(items: FindItem[]): string {
 }
 
 /** IC-4 for the fridge (Figma copy): title, then body. Other kinds keep their own wording. */
+/** Chelsea 11/4: a cat on a desk made "Air fryer peaches" — no seen food confirmed on camera = no card, said plainly */
+export const NO_FOOD_LINE = "I don't see any food there.";
+/** the seen list also reads up to this many earlier frames of the turn (a blurred last frame killed the fridge, 11/4) */
+export const SEEN_FRAMES = 3;
 export const FRIDGE_UNCLEAR = "I can't make out the shelves. Get a little closer or turn on a light. I won't guess what's in there.";
 
 /** D23: after the card is ready, wait at most this long for the remaining checks before speaking */
@@ -251,6 +255,7 @@ export async function runRecipe(ctx: PipelineCtx): Promise<PipelineResult> {
   const at = new Date();
   const cands = new Candidates();
   const checks: Promise<void>[] = [];
+  const cameraChecks: Promise<void>[] = [];
   let card: FindCard | null = null;
   let wh = { w: 0, h: 0 };
   let lastItems = "";
@@ -321,7 +326,7 @@ export async function runRecipe(ctx: PipelineCtx): Promise<PipelineResult> {
 
   const addAndCheck = (name: string, src: Parameters<Candidates["add"]>[1]) => {
     const c = cands.add(name, src);
-    if (c) checks.push(check(c));
+    if (c) { const p = check(c); checks.push(p); if (src.camera) cameraChecks.push(p); }
     return c;
   };
 
@@ -335,8 +340,11 @@ export async function runRecipe(ctx: PipelineCtx): Promise<PipelineResult> {
 
   let seenCount = 0;
   let seenFailed = false;
-  try {
-    const split = new LineSplitter();
+  const seenReq = (f: string) => ({ input: userMessage(SEEN_PROMPT, [f]), effort: "minimal" as const, maxOutputTokens: 600 });
+  // the earlier frames of the turn are read beside the last one; their foods join the same list (checked on the last frame)
+  const earlier = ctx.frames.slice(Math.max(0, frameIndex - (SEEN_FRAMES - 1)), frameIndex);
+  const earlierP = earlier.map((f) => ctx.vendors.spark(seenReq(f), ctx.signal).then((r) => r.text, () => ""));
+  {
     const onLine = (line: string) => {
       const s = parseSeenLine(line);
       if (!s) return;
@@ -354,9 +362,10 @@ export async function runRecipe(ctx: PipelineCtx): Promise<PipelineResult> {
       }
       ctx.emit({ type: "find.progress", findId: ctx.findId, detail: `${capFirst(shown || names[0])} · recipes` });
     };
-    const seenReq = { input: userMessage(SEEN_PROMPT, [frame]), effort: "minimal" as const, maxOutputTokens: 600 };
+  try {
+    const split = new LineSplitter();
     try {
-      for await (const ev of ctx.vendors.sparkStream(seenReq, ctx.signal)) {
+      for await (const ev of ctx.vendors.sparkStream(seenReq(frame), ctx.signal)) {
         if (ev.type === "text") split.push(ev.delta).forEach(onLine);
       }
       split.flush().forEach(onLine);
@@ -364,13 +373,19 @@ export async function runRecipe(ctx: PipelineCtx): Promise<PipelineResult> {
       // a stalled stream (1 of 10 on 11/2: first-token timeout) gets one plain retry
       if (ctx.signal.aborted || seenCount > 0) throw err;
       ctx.log("find.seen_retry", { findId: ctx.findId, message: String(err).slice(0, 160) });
-      const r = await ctx.vendors.spark(seenReq, ctx.signal);
+      const r = await ctx.vendors.spark(seenReq(frame), ctx.signal);
       r.text.split(/\r?\n/).filter((l) => l.trim()).forEach(onLine);
     }
   } catch (err) {
     if (ctx.signal.aborted) return { card: null, timings };
     seenFailed = seenCount === 0;
     ctx.log("find.seen_error", { findId: ctx.findId, message: String(err).slice(0, 160) });
+  }
+  if (earlierP.length) {
+    const more = (await withTimeout(Promise.all(earlierP), CHECK_TIMEOUT_MS, ctx.signal)) ?? [];
+    for (const text of more) text.split(/\r?\n/).filter((l) => l.trim()).forEach(onLine);
+    if (seenCount > 0) seenFailed = false;
+  }
   }
   timings.seenDoneMs = ms();
   if (ctx.signal.aborted) return { card: null, timings };
@@ -383,6 +398,17 @@ export async function runRecipe(ctx: PipelineCtx): Promise<PipelineResult> {
     // IC-4: blurry or dark — say so, never make a list up
     // IC-4 copy from Figma (UI-3): "Title. Body" — the app splits on the first ". "
     ctx.emit({ type: "find.failed", findId: ctx.findId, reason: "unclear", message: FRIDGE_UNCLEAR });
+    return { card: null, timings };
+  }
+
+  // no card when none of the foods it listed is confirmed on camera (Spark YES or a SAM box): "Air fryer peaches"
+  // from a cat on a desk (Chelsea 11/4). The camera checks started at the first seen line; the recipe runs meanwhile.
+  await withTimeout(Promise.all(cameraChecks), CHECK_TIMEOUT_MS, ctx.signal);
+  if (ctx.signal.aborted) return { card: null, timings };
+  if (!cands.all().some((c) => c.fromCamera && (c.yes === true || !!c.box))) {
+    ctx.log("find.no_food", { findId: ctx.findId, seen: seenCount });
+    ctx.emit({ type: "find.failed", findId: ctx.findId, reason: "unclear", message: NO_FOOD_LINE });
+    ctx.speak?.(NO_FOOD_LINE);
     return { card: null, timings };
   }
 
