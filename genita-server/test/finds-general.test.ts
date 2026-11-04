@@ -196,10 +196,9 @@ test("general pipeline: up to 5 results, each a page the search really returned;
   assert.equal(card.title, "Best ramen in Seoul");
   assert.equal(card.say, GENERAL_SAY, "spoken: a short line, never the results");
   assert.deepEqual(card.sources.map((s) => s.domain), ["timeout.com", "eater.com", "michelin.com"]);
-  assert.equal(card.sources[0].title, "Time Out: best ramen in Seoul");
-  assert.equal(card.steps.length, 3);
-  assert.match(card.steps[0].text, /Time Out: best ramen in Seoul — A recent roundup/);
-  assert.equal(card.steps[0].source, "https://www.timeout.com/seoul/restaurants/best-ramen-in-seoul");
+  assert.match(card.sources[0].title, /^Time Out: best ramen in Seoul — A recent roundup/);
+  assert.equal(card.sources[0].url, "https://www.timeout.com/seoul/restaurants/best-ramen-in-seoul");
+  assert.equal(card.steps.length, 1, "one summary line; each result once, in Sources");
   assert.ok(card.sources.length >= 1 && card.sources.length <= 5);
   assert.deepEqual(card.reasons, [], "never taste chips on a looked-up fact");
   // the search is a real web search, the app sees started → created, both valid protocol events
@@ -216,7 +215,7 @@ test("general pipeline: no usable JSON but the search ran → the search's own p
   assert.ok(r.card);
   assert.ok(r.card.sources.length >= 1 && r.card.sources.length <= 5);
   assert.ok(!r.card.sources.some((s) => s.domain.endsWith(".xyz") || s.domain.endsWith("duckdns.org")));
-  assert.equal(r.card.steps.length, r.card.sources.length);
+  assert.equal(r.card.steps.length, 1);
 
   const none: ServerEvent[] = [];
   const r2 = await runGeneral(ctxFor(fakeVendors("{}", []), none));
@@ -336,4 +335,67 @@ test("general in a call (mix): one spoken sentence before the search lands, no l
   assert.doesNotMatch(answer, /2018/, `one sentence only: ${spoken}`);
   assert.ok(spoken.includes(GENERAL_SAY), `the card's line is said when it lands: ${spoken}`);
   s.close();
+});
+
+// ───────── P0 11/4 (prod Mac test): a general turn never ends in "Sorry, I lost you" ─────────
+
+async function callWith(reply: () => AsyncIterable<SparkStreamEvent>) {
+  const json = JSON.stringify({ title: "KBBQ in Suwon", results: [{ title: "Suwon galbi guide", why: "Five spots.", url: "https://www.timeout.com/suwon-galbi" }] });
+  const asr = Object.assign(new EventEmitter(), { isOpen: false, async connect() { this.isOpen = true; }, sendAudio() {}, end() { this.isOpen = false; } });
+  const client = new Client();
+  const reqs: SparkRequest[] = [];
+  const deps: SessionDeps = {
+    config: { ...loadConfig({ MODEL_API_KEY: "fake-meta" }), port: 0, speculate: false, sparkHedge: 1 },
+    openAsr: () => asr,
+    userId: "acct",
+    async *spark(req): AsyncIterable<SparkStreamEvent> { reqs.push(req); yield* reply(); },
+    async *tts() {},
+    finds: { vendors: fakeVendors(json, [searchItem("kbbq suwon", ["https://www.timeout.com/suwon-galbi"])]), store: new MemoryFindsStore(), images: false, imageBase: "/v1/finds" },
+  };
+  const s = new Session("p0", client, deps);
+  await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Rio" }, mic: false }));
+  await s.onClientText(JSON.stringify({ type: "text", text: "What is the best KBBQ place in Suwon?" }));
+  const spoken = () => client.events.filter((e) => e.type === "say" || e.type === "reply").map((e) => String((e as { text?: string }).text ?? "")).join(" | ");
+  await waitFor(() => spoken().length > 0 && client.events.some((e) => e.type === "find.created"), 8000);
+  await new Promise((r) => setTimeout(r, 50));
+  s.close();
+  return { spoken: spoken(), reqs, events: client.events };
+}
+
+test("P0: a general turn whose only sentence is a lookup announcement, a bare tag, or nothing (token cap) gets the hedge, never 'lost you'", async () => {
+  for (const out of [["I'll look that up for you. "], ["<warm> "], []]) {
+    const r = await callWith(() => chunks(out));
+    assert.doesNotMatch(r.spoken, /lost you/i, `${JSON.stringify(out)} → ${r.spoken}`);
+    assert.match(r.spoken, /off the top of my head/i, `${JSON.stringify(out)} → ${r.spoken}`);
+    assert.ok(!r.events.some((e) => e.type === "error"), "no error card");
+  }
+});
+
+test("P0 (Codex): the voice model failing twice on a general turn → the hedge, no error card / retry UI", async () => {
+  // eslint-disable-next-line require-yield
+  const r = await callWith(async function* () { throw new Error("upstream 503"); });
+  assert.match(r.spoken, /off the top of my head/i, r.spoken);
+  assert.doesNotMatch(r.spoken, /lost you/i);
+  assert.ok(!r.events.some((e) => e.type === "error"), `no spark_unavailable: ${JSON.stringify(r.events.filter((e) => e.type === "error"))}`);
+});
+
+test("P0: the general reply keeps the normal output budget (reasoning spends ~120 tokens before any text)", async () => {
+  const r = await callWith(() => chunks(["Galbi spots near Suwon station are a safe bet. "]));
+  const req = r.reqs.at(-1)!;
+  assert.ok((req.maxOutputTokens ?? 800) >= 800, `maxOutputTokens ${req.maxOutputTokens}`);
+});
+
+test("P0: the sheet card lists each result once (title — why, with its link) and has no empty 'Why these' / how lines", async () => {
+  const json = JSON.stringify({ title: "Best ramen in Seoul", results: [
+    { title: "Time Out: best ramen", why: "A roundup of 12 shops.", url: "https://www.timeout.com/seoul/restaurants/best-ramen-in-seoul" },
+    { title: "Eater map", why: "Local picks.", url: "https://www.eater.com/maps/best-ramen-seoul" },
+  ] });
+  const events: ServerEvent[] = [];
+  const r = await runGeneral(ctxFor(fakeVendors(json, TRACE), events));
+  const card = r.card!;
+  assert.deepEqual(card.sources.map((s) => s.title), ["Time Out: best ramen — A roundup of 12 shops.", "Eater map — Local picks."]);
+  for (const s of card.sources) assert.equal(card.steps.filter((st) => st.text.includes(s.title.split(" — ")[0])).length, 0, "no second listing in the steps");
+  assert.equal(card.steps.length, 1, "one summary line (the iPhone link layout always shows its Takeaways label)");
+  assert.deepEqual(card.how, [], "the Mac shows how lines under 'Why these'");
+  assert.deepEqual(card.why, []);
 });

@@ -25,6 +25,8 @@ import { answerTitle, isBlockedSite } from "./webAnswer.ts";
 
 /** said when the card lands (after the one-sentence answer) */
 export const GENERAL_SAY = "I put a few links up for you.";
+/** the one sentence when the model has none the voice would say (P0 11/4: never "Sorry, I lost you" on a search turn) */
+export const GENERAL_HEDGE = "Not sure off the top of my head, pulling up a few sources.";
 /** rides the turn's reply instructions (session.ts) when the sheet is searching */
 export const GENERAL_REPLY_LINE =
   "Web results for this question are about to appear on their screen. Answer right now in ONE short sentence (under 20 words) from what you already know. No links, no site names, no lists, and don't say you're searching or looking it up. If you don't know, or it changes often (news, scores, prices, hours), make that one sentence a natural hedge, like \"Not sure off the top of my head, pulling up a few sources.\"";
@@ -240,17 +242,17 @@ export async function runGeneral(ctx: PipelineCtx): Promise<PipelineResult> {
     status: `${n} result${n > 1 ? "s" : ""}`,
     say: GENERAL_SAY,
     items: [],
-    steps: results.map((r) => ({ text: r.why ? `${r.title} — ${r.why}` : r.title, source: r.url })),
+    // each result once: in Sources, as "title — why" with its link (P0 11/4: the Mac listed them twice); one summary line
+    // above them because the iPhone link layout always shows its Takeaways label
+    steps: [{ text: `Top ${n} result${n > 1 ? "s" : ""} from the web. Tap one to open it.` }],
     options: [],
     why: [],
     ask: strList(j?.ask, 2, 40),
-    sources: results.map((r) => ({ title: r.title, url: r.url, domain: r.domain })),
+    sources: results.map((r) => ({ title: r.why ? `${r.title} — ${r.why}` : r.title, url: r.url, domain: r.domain })),
     // never taste chips on a looked-up fact
     reasons: [],
-    how: [
-      query ? `Searched the web for “${query.replace(/[?.!]+$/, "")}”.` : "Searched the web.",
-      "Each result is a page that search returned. Open it to check the details.",
-    ],
+    // no how lines: the Mac shows them under an empty-looking "Why these" (P0 11/4)
+    how: [],
   };
   ctx.emit({ type: "find.created", findId: ctx.findId, card });
   timings.cardMs = Math.round(ctx.now() - t0);
@@ -271,6 +273,11 @@ function scrubWord(w: string): string {
 }
 const scrub = (t: string) => t.split(/(\s+)/).map((w) => (/^\s+$/.test(w) ? w : scrubWord(w))).join("").replace(/ {2,}/g, " ");
 /** a line the voice drops anyway ("I'll look that up.", "Hmm."): not the one sentence */
+/** some sentence of it is one the voice would say */
+const sayable = (all: string) => {
+  const sp = new SentenceSplitter({ firstClauseMaxChars: Number.POSITIVE_INFINITY });
+  return [...sp.push(`${all} `), ...sp.flush()].some((x) => !unsaid(x));
+};
 const unsaid = (raw: string) => {
   // judged on what is said, without "<warm>" / "[smile]" tags (Codex mix r2)
   const s = parseTaggedSentence(raw).displayText.trim();
@@ -303,6 +310,8 @@ export async function* firstSentenceOnly(src: AsyncIterable<SparkStreamEvent>): 
       if (stopAt === null) {
         const t = take(all.length);
         if (t) yield { type: "text", delta: t };
+        // nothing the voice would say (an announcement, a bare tag, an empty reply): the hedge (P0 11/4)
+        if (!sayable(all)) { const h = `${said && !/\s$/.test(said) ? " " : ""}${GENERAL_HEDGE}`; said += h; yield { type: "text", delta: h }; }
       }
       yield { ...ev, text: said };
       return;
