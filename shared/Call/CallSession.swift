@@ -1197,6 +1197,14 @@ enum CallStop: Equatable {
         }
     }
 
+    /// While the face's reply is still audible (at most a minute): swapping the driver then would drop its timeline.
+    private func waitUntilNothingPlays() async {
+        for _ in 0..<600 {
+            guard !Task.isCancelled, playing else { return }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+    }
+
     /// #645 part 1: the load's `face.timing` line goes out once the face has drawn its first frame and the load is over.
     @ObservationIgnored private var faceTiming: FaceLoadTiming?
     @ObservationIgnored private var faceFirstFrameWatch: AnyCancellable?
@@ -1455,6 +1463,9 @@ enum CallStop: Equatable {
                 let prepared = await PreparedFace.build(set, reduceMotion: faceReduceMotion)
                 guard !Task.isCancelled else { return false }
                 timing.mark("renderer")
+                // item 6: the full set replaces its partial one between replies, so a reply being heard keeps its mouth
+                if faceKey == key + CompanionFaceLoader.partialSuffix { await waitUntilNothingPlays() }
+                guard !Task.isCancelled else { return false }
                 useFace(set, key: key, owner: owner, reduceMotion: faceReduceMotion, prepared: prepared)
                 watchFirstFrame(timing)
                 return false

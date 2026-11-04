@@ -126,6 +126,19 @@ import XCTest
         XCTAssertNotNil(CompanionFaceLoader.diskManifest(root: root, subject: "a"), "the whole set is on disk for the next launch")
     }
 
+    /// Codex P2: a load cancelled after its partial set (call screen gone) never marks the folder as a finished set.
+    func testACancelledLoadIsNeverSavedAsAFinishedSet() async throws {
+        let (_, prep, files) = try flowManifest()
+        let (fetch, _) = server(prep: prep, files: files)
+        let root = tempDir()
+        let handle = Box<Task<CompanionFaceLoader.Outcome, Error>?>(nil)
+        let l = loader("a", root: root, fetch: fetch)
+        let task = Task { try await l.load(currentKey: nil, early: { _ in handle.value?.cancel(); return true }) }
+        handle.value = task
+        _ = try? await task.value
+        XCTAssertNil(CompanionFaceLoader.diskManifest(root: root, subject: "a"), "next launch must not take it as complete")
+    }
+
     func testWithoutAnEarlyConsumerTheSetIsBuiltOnceWithEverything() async throws {
         let (_, prep, files) = try flowManifest()
         let (fetch, seen) = server(prep: prep, files: files)

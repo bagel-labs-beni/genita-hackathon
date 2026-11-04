@@ -130,7 +130,11 @@ struct CompanionFaceLoader: Sendable {
             let dir = cacheRoot.appending(path: disk.key, directoryHint: .isDirectory)
             let parts = Self.parts(of: disk.manifest)
             let bytes = Self.diskBytes(parts.all(withVisemes: true), dir: dir)
-            if let set = try? await Self.makeSet(disk.manifest, parts: parts, bytes: bytes, withVisemes: !parts.flowComplete(bytes)) {
+            let flowFiles = parts.flowComplete(bytes)
+            var set = try? await Self.makeSet(disk.manifest, parts: parts, bytes: bytes, withVisemes: !flowFiles)
+            // flow files there but not decodable: the viseme stills the first download fell back to (Codex P2)
+            if flowFiles, set != nil, set?.flow == nil { set = try? await Self.makeSet(disk.manifest, parts: parts, bytes: bytes, withVisemes: true) }
+            if let set {
                 timing?.mark("compute", note: "disk")
                 if await early(.face(key: disk.key, set: set)) { shownKey = disk.key }
             }
@@ -180,6 +184,7 @@ struct CompanionFaceLoader: Sendable {
             set = try await Self.makeSet(manifest, parts: parts, bytes: bytes, withVisemes: withVisemes, priority: .utility)
         }
         // the whole set is on disk: the next launch starts from it (manifest.json last, so its presence means done)
+        guard !Task.isCancelled else { return .unchanged }
         try? Data(Self.ownerTag(subject).utf8).write(to: dir.appending(path: Self.ownerFile), options: .atomic)
         if let json = try? JSONEncoder().encode(manifest) { try? json.write(to: dir.appending(path: Self.manifestFile), options: .atomic) }
         return .loaded(key: key, set: set)
@@ -278,8 +283,9 @@ struct CompanionFaceLoader: Sendable {
                         try? data.write(to: file, options: .atomic)
                         return (ref, data)
                     } catch {
-                        // A rejected or missing image: the face set falls back to its nearest shape.
-                        if k == "neutral" { throw error }
+                        // A rejected or missing image: the face set falls back to its nearest shape. A cancelled load
+                        // is not a missing image (it must never be saved as a finished set, Codex P2).
+                        if k == "neutral" || Task.isCancelled { throw error }
                         return (ref, nil)
                     }
                 }
