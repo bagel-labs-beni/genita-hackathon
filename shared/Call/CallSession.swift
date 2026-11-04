@@ -392,6 +392,7 @@ enum CallStop: Equatable {
         userEnded = true
         micOnForInterpret = false   // a new call starts from the user's own mic choice (Codex #596)
         graceTask?.cancel(); graceTask = nil; micBeforeBackground = false
+        micHeldForPreview = false
         reconnectTask?.cancel(); pingTask?.cancel(); holdTask?.cancel(); profileChipTask?.cancel(); profileChip = nil; askingChipTask?.cancel(); askingChip = nil
         socket?.close()
         socket = nil
@@ -452,6 +453,7 @@ enum CallStop: Equatable {
     var inBackgroundGrace: Bool { graceTask != nil }
 
     private func suspendCapture() {
+        micHeldForPreview = false // a suspend wins over a Settings preview: the mic stays off after the clip (Codex P2)
         guard !userEnded else { return }
         if micOn { setMic(false) }
         if cameraOn { toggleCamera() }
@@ -716,6 +718,15 @@ enum CallStop: Equatable {
     func dismissMicBlocked() { micDenied = false }
     /// E01/E02 sheet closed (Mac).
     func dismissDenied() { micDenied = false; cameraDenied = false }
+
+    /// Settings → Voice preview during a call (11/4): the clip isn't in the echo canceller's reference, so the mic
+    /// rests while it plays and opens again after. The user's own toggle (and `micWasOn`) is left as it was.
+    private var micHeldForPreview = false
+    func holdMicForPreview(_ hold: Bool) {
+        if hold, micOn, !micHeldForPreview { micHeldForPreview = true; setMic(false) }
+        // reconnecting too: its `start.mic` follows micOn (Codex re-review P2)
+        else if !hold, micHeldForPreview { micHeldForPreview = false; if !userEnded, ownsConversation, link != .idle { setMic(true) } }
+    }
 
     private func setMic(_ on: Bool) {
         if on {

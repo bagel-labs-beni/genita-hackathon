@@ -474,9 +474,10 @@ struct AboutYouSummary: Equatable {
     }
 }
 
-/// Name and voice of the companion (read-only today).
+/// Name and voice of the companion; Voice opens the V04 list (iPhone, 11/4).
 struct SettingsCompanionPage: View {
     @Bindable var model: AppState
+    @State private var voiceOpen = false
     var body: some View {
         SettingsPage {
             VStack(spacing: 10) {
@@ -491,12 +492,20 @@ struct SettingsCompanionPage: View {
             SettingsGroup {
                 SettingsRowLabel(title: "Name", value: model.companionDisplayName)
                 SettingsSeparator()
+                #if os(iOS)
+                // 11/4: the V04 list as a sheet, so the voice can change after onboarding (iPhone; the Mac reads the saved voice)
+                Button { voiceOpen = true } label: {
+                    SettingsRowLabel(title: "Voice", value: model.setup.voiceName ?? CuratedVoices.name(model.setup.voiceId) ?? "Default", chevron: true)
+                }.buttonStyle(SettingsRowStyle()).accessibilityIdentifier("settingsVoice")
+                #else
                 SettingsRowLabel(title: "Voice", value: model.setup.voiceName ?? CuratedVoices.name(model.setup.voiceId) ?? "Default")
+                #endif
             }
         }
         .navigationTitle("Your companion")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $voiceOpen) { VoiceSettingsSheet(model: model) }
         #endif
     }
 }
