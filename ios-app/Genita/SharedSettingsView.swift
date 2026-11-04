@@ -100,8 +100,10 @@ struct SettingsView: View {
             }
             .navigationTitle("Settings")
             #if os(iOS)
-            // the About you row's preview and counts come from the insight report (GET /v1/profile/insights)
-            .task { if model.insightReport == nil && model.insightsEnabled { await model.loadInsights() } }
+            // the About you row's preview and counts come from the insight report (GET /v1/profile/insights); read again
+            // on every open — a call may have scrubbed it since ("forget that", That's not me: AU-94). The old one stays
+            // on screen meanwhile.
+            .task { if model.insightsEnabled { await model.loadInsights() } }
             #endif
             .reportFlow(isPresented: $reportOpen, surface: "settings", auth: model.onboarding.auth) { CallController.shared.lastReplyText }
             #if os(iOS)
