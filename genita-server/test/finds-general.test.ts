@@ -105,6 +105,12 @@ export const STAYS_SPOKEN = [
   "How come the sky is blue?",
   "What makes a good friend?",
   "Does black or white look good in daylight?",
+  // Codex r3 (narrowing)
+  "What's good?",
+  "What's the vibe?",
+  "What's the next step?",
+  "어디까지 얘기 했지?",
+  "행복은 어디서 오는 걸까?",
   // demo runbook (QA 11/4): other paths own these
   "I have no idea what to wear today. It's for the Halloween party tonight. Jin, can you help me pick an outfit?",
   "Find me some.",
