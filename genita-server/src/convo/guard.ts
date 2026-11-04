@@ -243,6 +243,16 @@ function weaponHit(t: string, clauses: Clause[]): boolean {
   });
 }
 
+/**
+ * Codex r1–r3 on #545 (11/4): word lists for "real crisis" keep leaking both ways, so this PR never DELETES help:
+ * a sentence the model wrote that points to a help line or emergency help is always spoken. Only a therapy push
+ * ("see a therapist") on a plainly harmless line is dropped, and "harmless" means none of these words at all.
+ */
+const HELP_LINE = /\b(?:988|911|112|999|nine[- ]eight[- ]eight|nine[- ]one[- ]one|hotline|helpline|(?:988|suicide|crisis)[\w\s&]{0,25}lifeline|crisis (?:text )?line|emergency|samaritans)\b/i;
+const NEAR_SELF_HARM = /\b(?:myself|suicid\w*|die|dying|dead|death|kill\w*|hurt\w*|harm\w*|cut(?:ting)?|slash\w*|slit\w*|bleed\w*|blood|blade|razor|knife|gun|pills?|overdos\w*|o\.?d\.?|jump\w*|bridge|roof|ledge|railing|hang\w*|rope|noose|wrists?|throat|end(?:ing)?|not wake up|alive|exist|be here|better off without me|goodbye|farewell|kill me)\b/i;
+/** the user's words come anywhere near harm (wide on purpose): help stays, no "no hotlines" line rides it */
+export function mayBeSelfHarm(text: string): boolean { return NEAR_SELF_HARM.test(text.replace(/[‘’ʼ]/g, "'")) || realCrisisSignal(text); }
+
 export function realCrisisSignal(text: string): boolean {
   // curly apostrophes from the keyboard / ASR ("I don’t see the point…", Codex #441 P1)
   const t = text.replace(/[‘’ʼ]/g, "'");
@@ -317,8 +327,24 @@ function energyLabel(s: string): boolean {
 const FILLER_ONLY = /^(?:yeah,?\s+|oh,?\s+|aw,?\s+|ugh,?\s+)?(?:that (?:sounds|feels) (?:really |so |super |pretty )?(?:draining|heavy|like a lot|painful|tough|hard|rough|exhausting|overwhelming)|i'?m (?:right )?here with you|(?:that'?s|that is) (?:a lot|so much) to (?:carry|handle|deal with)(?: today| right now)?)[\s,.!…]*(?:summer)?[\s.!…]*$/i;
 export function guardSentence(sentence: string, ctx: GuardContext): GuardClass | null {
   // emergency help and real crisis turns first (Codex #372 r2: "You can cut me off and call 911 right now")
-  if (INTERRUPTION.test(sentence) && !EMERGENCY_HELP.test(sentence) && !realCrisisSignal(ctx.userText)) return "interruption";
+  if (INTERRUPTION.test(sentence) && !EMERGENCY_HELP.test(sentence) && !HELP_LINE.test(sentence) && !realCrisisSignal(ctx.userText)) return "interruption";
   // emergency help and real crisis turns come before everything, narration included (Codex #356 P1)
+  // #545 Codex r11: a help-line sentence (988, crisis line, hotline…) is protected like emergency help, before every
+  // other filter (unseen, appearance, sensitive…): "You look scared so please call 988." is spoken
+  // Codex r12: not even an AI-denial rewrite replaces it ("No, I can't call 988 for you, but you can call or text it")
+  // Codex r14: "you're my lifeline" is no help line (only "988 / suicide & crisis lifeline"), and a clingy line next
+  // to a help word stays guarded outside a real crisis ("Don't leave me, you're my hotline")
+  // Codex r15: a human claim next to a number is still corrected ("I'm not an AI and you can call 988" → denies_ai; the
+  // session's crisis follow-up then adds the help line), unlike "I can't call 988 for you" (a limit, not a denial)
+  // Codex r16/r18: main's whole AI-denial check stays (it reads the AI question in the user's line) ("No, I'm just Mina, and you can call 988"); only a plain limit
+  // ("No, I can't call 988 for you, but you can…") with no identity claim is spared
+  if (HELP_LINE.test(sentence)) {
+    const t = sentence.replace(/[‘’ʼ]/g, "'");
+    const identity = (CLAIMS_HUMAN.test(t) && !/\bwish\b|\bif i (?:were|was)\b/i.test(t));
+    const limit = /\bi\s*(?:can't|cannot|can not|won't|couldn't|'m not able to|am not able to|'m unable to|am unable to)\b/i.test(t);
+    if (identity || (!limit && deniesAi(sentence, ctx.userText))) return "denies_ai";
+  }
+  if (HELP_LINE.test(sentence)) return !realCrisisSignal(ctx.userText) && !EMERGENCY_HELP.test(sentence) && CLASSES.find(([c]) => c === "guilt")![1].test(sentence) ? "guilt" : null;
   if (EMERGENCY_HELP.test(sentence)) return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;
   // saving out loud is never said, even after real content (Codex gate P2: "Pistachio is elite. I'll save that detail quietly.")
   if (!realCrisisSignal(ctx.userText) && SAVE_TALK.some((re) => re.test(sentence.replace(/’/g, "'")))) return "save_talk";
@@ -341,6 +367,8 @@ export function guardSentence(sentence: string, ctx: GuardContext): GuardClass |
     // Codex #610 r2: after a crisis line in this call only the staying / help lines are spared (never the number,
     // appearance or unseen guards)
     if (ctx.crisisInCall && (cls === "counselor" || cls === "referral")) continue;
+    // #545 (Codex r3): help is never deleted — a help-line sentence always stays, a therapy push stays near harm words
+    if (cls === "referral" && (HELP_LINE.test(sentence) || mayBeSelfHarm(ctx.userText))) continue;
     return cls;
   }
   return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;

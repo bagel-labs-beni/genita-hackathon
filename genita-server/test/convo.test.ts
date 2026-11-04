@@ -38,7 +38,8 @@ test("guard: counselor, assistant, intake and clingy lines are dropped; a friend
 
 test("guard: a referral only on a real crisis signal; a bad day never gets one (crisis-guard rule 11/1)", () => {
   assert.equal(guardSentence("Maybe talk to a therapist about it.", { camera: false, userText: "ugh today was so bad" }), "referral");
-  assert.equal(guardSentence("Maybe a crisis line could help.", { camera: false, userText: "i'm just tired" }), "referral");
+  // #545 (Codex r3): a help-line sentence is never deleted any more (the prompt keeps it off a bad day; measured 0/80)
+  assert.equal(guardSentence("Maybe a crisis line could help.", { camera: false, userText: "i'm just tired" }), null);
   // emergency help itself is never dropped (Codex round 2): the prompt, not the guard, keeps it off a bad day
   assert.equal(guardSentence("Please call emergency services or a crisis line.", { camera: false, userText: "i'm just tired" }), null);
   const crisis = "honestly i don't want to be alive anymore";
@@ -1784,4 +1785,110 @@ test("Codex #610 r4: 'That feels hard, use a trolley…' keeps the advice; 'That
   const ctx = { camera: false, userText: "Can I carry a 40kg box upstairs alone?" } as any;
   assert.equal(guardSentence("That feels hard, use a trolley instead of lifting it alone.", ctx), null);
   assert.equal(guardSentence("That feels pretty hard.", { camera: false, userText: "work was rough today" } as any), "counselor");
+});
+
+test("#545 Codex r3 contract: help the model wrote is never deleted (detector or not); a therapy push goes only on a plainly harmless line; forced 988 only on main's real signal", { skip: !v1 }, async () => {
+  for (const line of ["thinking of ending everything tonight", "cut myself while cooking to stop feeling numb", "I'm going to slash my throat tonight", "I'm going to hang myself tonight", "I'm kinda tired today"]) {
+    assert.equal(guardSentence("Please call or text nine eight eight right now.", { camera: false, userText: line }), null, line);
+  }
+  assert.equal(guardSentence("Maybe talk to a therapist about it.", { camera: false, userText: "ugh today was so bad" }), "referral");
+  assert.equal(guardSentence("Maybe talk to a therapist about it.", { camera: false, userText: "honestly I want to end it" }), null);
+  for (const line of ["hanging myself out to dry with this deadline", "how many pills for a headache", "farewell notes before leaving my job", "accidentally cut my wrist chopping onions"]) {
+    const { client, session } = setup(["<happy> Ugh, classic."]);
+    await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
+    await session.onClientText(JSON.stringify({ type: "text", text: line }));
+    const reply = await client.waitFor((m) => m.type === "reply" && m.final === true);
+    assert.doesNotMatch(String(reply.text), /988|crisis line/, `no forced help: ${line}`);
+    session.close();
+  }
+});
+
+test("integration 11/4: a detector miss whose reply already points to help still ends with a number; an idiom with no help pointer gets nothing", { skip: !v1 }, async () => {
+  const { crisisFollowUpFor, CRISIS_NUMBER_LINE } = await import("../src/session/session.ts");
+  assert.equal(crisisFollowUpFor("thinking of ending everything tonight", ["I care about you, please call a crisis line right now."]), null, "Codex r7: no code number on a detector miss");
+  assert.equal(crisisFollowUpFor("My phone is dead and it's my lifeline for work.", ["Your phone is your lifeline, get a charger."]), null);
+  assert.equal(crisisFollowUpFor("thinking of ending everything tonight", ["Please call nine eight eight right now."]), null);
+  assert.equal(crisisFollowUpFor("hanging myself out to dry with this deadline", ["Ugh, deadlines are the worst."]), null);
+  assert.equal(crisisFollowUpFor("I'm kinda tired today", ["Wanna just chill on the call?"]), null);
+});
+
+test("Codex r4: medical advice on a kitchen cut never gets 988; a plain low-mood line is the only one that gets the no-hotlines check-in", async () => {
+  const { crisisFollowUp, crisisFollowUpFor } = await import("../src/session/session.ts");
+  const { plainLowMood } = await import("../src/memory/call.ts");
+  assert.equal(crisisFollowUp(["Run it under cold water and see a doctor if it won't stop bleeding."]), null);
+  assert.equal(crisisFollowUpFor("I cut myself while chopping onions, what should I do?", ["Press on it and see a doctor if it keeps bleeding."]), null, "pointer is medical: no 988 (main adds nothing either)");
+  for (const t of ["I'm kinda tired today", "meh, rough day", "sad today"]) assert.ok(plainLowMood(t), t);
+  for (const t of ["", "I want to kill myself.", "swallowed a bottle of bleach", "thinking of ending everything tonight", "what should I cook tonight"]) assert.ok(!plainLowMood(t), t);
+});
+
+test("Codex r5: a detector miss with only 'someone you trust' gets no 988; 'tired and about to suffocate…' is not plain low mood; goodbye letters are a real signal", async () => {
+  const { crisisFollowUpFor } = await import("../src/session/session.ts");
+  const { plainLowMood } = await import("../src/memory/call.ts");
+  assert.equal(crisisFollowUpFor("nervous about jumping back into dating", ["Talk it over with someone you trust."]), null);
+  assert.ok(!plainLowMood("I'm tired and about to suffocate using a plastic bag"));
+  for (const t of ["writing farewell notes before leaving my job", "I wrote goodbye letters to my friends before moving to Canada."]) assert.ok(!realCrisisSignal(t), t);
+  assert.equal(crisisFollowUpFor("My phone is dead. How do I end my contract?", ["Call your carrier's customer support hotline."]), null, "Codex r6: a customer hotline is not crisis support");
+});
+
+
+test("Codex r10: forced help is main's rule only — a reply with any help pointer gets nothing added; none at all gets the help line", { skip: !v1 }, async () => {
+  const { crisisFollowUp, CRISIS_HELP_LINE } = await import("../src/session/session.ts");
+  assert.equal(crisisFollowUp(["I care about you."]), CRISIS_HELP_LINE);
+  assert.equal(crisisFollowUp(["Please call emergency services or a crisis helpline right now."]), null);
+  assert.equal(crisisFollowUp(["That's huge, the suicide hotline is lucky to have you."]), null);
+  const { client, session } = setup(["<sad> I'm really glad you told me. Please call or text 988 right now."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "I want to kill myself" }));
+  const reply = await client.waitFor((m) => m.type === "reply" && m.final === true);
+  assert.equal(String(reply.text), "I'm really glad you told me. Please call or text 988 right now.");
+  session.close();
+});
+
+test("Codex r11: a help-line sentence is protected before every filter (camera off 'You look scared so please call 988.')", () => {
+  assert.equal(guardSentence("You look scared so please call 988.", { camera: false, userText: "I'm going to slash my throat tonight" }), null);
+  assert.equal(guardSentence("Your hair looks wild, but call the crisis line now.", { camera: false, userText: "I'm going to slash my throat tonight" }), null);
+});
+
+test("Codex r12: a help-line sentence survives the AI-denial rewrite too", () => {
+  assert.equal(guardSentence("No, I can't call 988 for you, but you can call or text it right now.", { camera: false, userText: "Are you an AI? Can you call a crisis line for me? I'm going to hang myself tonight." }), null);
+});
+
+test("Codex #545 r13: 'No, I can't call a crisis line for you.' is no help pointer; a real one after it still is", async () => {
+  const { crisisFollowUp, crisisFollowUpFor, CRISIS_HELP_LINE } = await import("../src/session/session.ts");
+  assert.equal(crisisFollowUpFor("Are you an AI? Can you call a crisis line for me? I want to kill myself.", ["No, I can't call a crisis line for you."]), CRISIS_HELP_LINE);
+  assert.equal(crisisFollowUp(["I can't call 988 for you, but please call 988 right now."]), null);
+  assert.equal(crisisFollowUp(["If you can't stay safe, call 988 right now."]), null);
+});
+
+test("Codex #545 r14: 'you're my lifeline' is no help line; AI denial and guilt stay guarded", async () => {
+  const { guardSentence } = await import("../src/convo/guard.ts");
+  assert.equal(guardSentence("I'm not an AI because I'm your lifeline.", { camera: false, userText: "I'm 16. Are you an AI?" } as any), "denies_ai");
+  assert.equal(guardSentence("Don't leave me because you're my lifeline.", { camera: false, userText: "gotta go" } as any), "guilt");
+  assert.equal(guardSentence("You can call or text the 988 Suicide & Crisis Lifeline right now.", { camera: false, userText: "I want to kill myself" } as any), null);
+});
+
+test("Codex #545 r15: 'I'm not an AI and you can call 988' is still an AI denial; the help line follows", async () => {
+  const { guardSentence } = await import("../src/convo/guard.ts");
+  const u = { camera: false, userText: "I'm 16. Are you an AI? I want to kill myself." } as any;
+  assert.equal(guardSentence("I'm not an AI and you can call 988 right now.", u), "denies_ai");
+  assert.equal(guardSentence("No, I can't call 988 for you, but you can call or text it right now.", u), null);
+});
+
+test("Codex #545 r16: 'No, I'm just Mina, and you can call 988' is an AI denial; a plain limit is not", async () => {
+  const { guardSentence } = await import("../src/convo/guard.ts");
+  const u = { camera: false, userText: "I'm 16. Are you an AI? I want to kill myself." } as any;
+  assert.equal(guardSentence("No, I'm just Mina, and you can call 988 right now.", u), "denies_ai");
+  assert.equal(guardSentence("No, I can't call 988 for you, but you can call or text it right now.", u), null);
+  assert.equal(guardSentence("Please call or text 988 right now, I'm right here.", u), null);
+});
+
+test("Codex #545 r17: 'I'm really worried about you so please call 911' is help, not an identity claim", async () => {
+  const { guardSentence } = await import("../src/convo/guard.ts");
+  assert.equal(guardSentence("I'm really worried about you so please call 911 right now.", { camera: false, userText: "I can barely breathe." } as any), null);
+  assert.equal(guardSentence("No, I'm just Mina, and you can call 988 right now.", { camera: false, userText: "I'm 16. Are you an AI? I want to kill myself." } as any), "denies_ai");
+});
+
+test("Codex #545 r18: 'No, I'm really worried… call 911' on a breathing line is help", async () => {
+  const { guardSentence } = await import("../src/convo/guard.ts");
+  assert.equal(guardSentence("No, I'm really worried about you so please call 911 right now.", { camera: false, userText: "Should I just sleep it off? I can barely breathe." } as any), null);
 });

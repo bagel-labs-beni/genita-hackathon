@@ -65,7 +65,7 @@ import type { TasteLine } from "../personalize/reasons.ts";
 import { backchannelOn, convoV1, englishOnly, eotHoldOn, initiativeOn } from "../convo/flags.ts";
 import { Backchannel } from "../convo/backchannel.ts";
 import { EOT, eotTuning, joinSegments, judgeEndOfTurn, type EotKind, type EotVerdict } from "../convo/endOfTurn.ts";
-import { addressUser, thirdPersonCouldBeUser, fallbackLine, guardSentence, neverSpoken, NO_ANSWER_LINE, LOST_LINE, UPSTREAM_RETRY_MS, realCrisisSignal, nameAsYou, type GuardClass } from "../convo/guard.ts";
+import { addressUser, thirdPersonCouldBeUser, fallbackLine, guardSentence, neverSpoken, NO_ANSWER_LINE, LOST_LINE, UPSTREAM_RETRY_MS, realCrisisSignal, mayBeSelfHarm, nameAsYou, type GuardClass } from "../convo/guard.ts";
 import { isInterjectionOnly } from "../text/toolNarration.ts";
 import { daySeed, openerBlock, openerKind, profileHooks } from "../convo/opener.ts";
 import { mentionsProfile, moodFrom, moodLine, turnHints, type Mood } from "../convo/rhythm.ts";
@@ -313,6 +313,27 @@ export function stripCueEcho(text: string): string {
 export const CRISIS_HELP_LINE = "<sad> Please reach out right now: call or text a crisis line, like 988 in the US, or your local emergency number, or someone you trust. I'm right here.";
 /** real help outside the call — "reach out to me" is not one (Codex #423 final P1) */
 const HELP_POINTER = /\b(?:988|911|112|999|nine eight eight|nine one one|crisis (?:line|text line)|hotline|emergency (?:services|number|room)|someone you trust|samaritans|lifeline|a doctor|a counselor)\b/i;
+/** lead 11/4 (intel eval crisis-means: 1/5 said "emergency services or a crisis helpline" with no number): a real number */
+export const CRISIS_NUMBER_LINE = "<sad> You can call or text 988 any time in the US, or your local emergency number.";
+/** what a real crisis reply still needs: the whole help line (no pointer at all), just the number line, or nothing */
+// Codex r8: only explicit crisis services earn the number line (not "someone you trust", not a generic hotline)
+export function crisisFollowUp(said: string[]): string | null {
+  // Codex r10: main's rule only (no help pointer at all → the help line); the number comes from the prompt's "988 in the
+  // US" (sweep: the model said it 20/20), so no new forced path versus main
+  return said.some((x) => HELP_POINTER.test(x.replace(/[‘’ʼ]/g, "'").replace(SAID_I_CANT, " "))) ? null : CRISIS_HELP_LINE;
+}
+/** Codex r13: "No, I can't call a crisis line for you." names a line but points nowhere; that clause earns no pass */
+const SAID_I_CANT = /\b(?:(?:no|nope|sorry),?\s*)?i\s*(?:can't|cannot|can not|won't|couldn't|am not able to|'m not able to|am unable to|'m unable to|don't have)\b[^,.;!?]*/gi;
+/**
+ * The follow-up for this turn: on a real signal (detector) the full rule above; otherwise, when the user's words come
+ * near harm AND the model itself pointed to help (it judged it a crisis), just the number if it left one out. A
+ * detector miss ("thinking of ending everything tonight") still ends with a number; an idiom with no help pointer gets
+ * nothing (integration 11/4: number 20/20 on real lines, forced 988 0 on ordinary ones).
+ */
+export function crisisFollowUpFor(userText: string, said: string[]): string | null {
+  // Codex r7: no number line on a detector miss (the sweep used it 0×; the prompt's "988 in the US" gives the number)
+  return realCrisisSignal(userText) ? crisisFollowUp(said) : null;
+}
 const QUESTION_START = /^(?:(?:hey|hi|okay|ok|so|wait|yo)\b[^,.!?]{0,20},?\s*)?(?:so,?\s*)?(?:(?:how|what|when|where|who|why|which)(?:'s|'re|'d| is| am| are| was| were| did| do| does| has| have| had| will| would| can| could| should)\b|(?:did|do|does|are|is|was|were|have|has|can|could|will|would) (?:you|it|they|we|that|this|he|she)\b|you (?:feeling|ready|nervous|excited)\b)/i;
 /** Demo S4 (QA P2: Spark ignored SUGGEST_MAC_LINE 1/4 and gave outfit advice in 8.5 s): the iPhone's outfit ask with the
  * Mac open always gets this line, at once (no Spark); rotates by utterance */
@@ -2121,7 +2142,12 @@ export class Session {
         (e) => e.type === "function_call");
     };
     const last = typeof req.input === "string" ? req.input : req.input.at(-1);
-    const query = typeof last === "string" ? last : last && "role" in last && typeof last.content === "string" ? last.content : "";
+    // Codex r4 P2: a camera turn's content is an array (input_text + images) — its text is the query too
+    const content = last && typeof last !== "string" && "role" in last ? last.content : undefined;
+    const query = typeof last === "string" ? last : typeof content === "string" ? content
+      : Array.isArray(content) ? content.map((p) => (p && typeof p === "object" && "type" in p && p.type === "input_text" && "text" in p ? String(p.text) : "")).join(" ").trim() : "";
+    // Codex r8: a crisis line earlier in THIS call also keeps the "no hotlines" check-in away
+    if (this.memoryCall) this.memoryCall.callHadCrisis = this.crisisInCall || realCrisisSignal(query);
     return this.memoryCall && useMemory ? this.memoryCall.stream(req, signal, source, query, opening, confirmed, memoryRetry) : source(req, signal);
   }
 
@@ -2715,7 +2741,7 @@ export class Session {
           // AI sweep 11/3 [P1 safety] (2/13): a real crisis hint answered with a promise or "I'm staying with you" and no
           // pointer to real help gets one fixed line (DESIGN §8.1)
           // a reply the help line now covers is not an error card either (Codex gate P2)
-          if (this.v1 && !interpret && !self && !synthetic && realCrisisSignal(text) && !sentences.some((x) => HELP_POINTER.test(x.display))) { enqueueSentences([CRISIS_HELP_LINE], true); lostLine = true; }
+          if (this.v1 && !interpret && !self && !synthetic) { const need = crisisFollowUpFor(text, sentences.filter((x) => !x.drop).map((x) => x.display)); if (need) { enqueueSentences([need], true); lostLine = true; } }
           // S4: a guard dropped the Mac sentence ("You look great already, but move our call to your Mac…", camera off):
           // the ask is still said (Codex #423 final P2)
           if (built.suggestMac && !interpret && !self && !sparkError && (guarded.first || guarded.narration) && sentences.length && !sentences.some((x) => /\bMac\b/i.test(x.display))) enqueueSentences([SUGGEST_MAC_TAIL], true);
@@ -2756,7 +2782,7 @@ export class Session {
           // AI sweep 11/3 [P1 safety] (2/13): a real crisis hint answered with a promise or "I'm staying with you" and no
           // pointer to real help gets one fixed line (DESIGN §8.1)
           // a reply the help line now covers is not an error card either (Codex gate P2)
-          if (this.v1 && !interpret && !self && !synthetic && realCrisisSignal(text) && !sentences.some((x) => HELP_POINTER.test(x.display))) { enqueueSentences([CRISIS_HELP_LINE], true); lostLine = true; }
+          if (this.v1 && !interpret && !self && !synthetic) { const need = crisisFollowUpFor(text, sentences.filter((x) => !x.drop).map((x) => x.display)); if (need) { enqueueSentences([need], true); lostLine = true; } }
           // S4: a guard dropped the Mac sentence ("You look great already, but move our call to your Mac…", camera off):
           // the ask is still said (Codex #423 final P2)
           if (built.suggestMac && !interpret && !self && !sparkError && (guarded.first || guarded.narration) && sentences.length && !sentences.some((x) => /\bMac\b/i.test(x.display))) enqueueSentences([SUGGEST_MAC_TAIL], true);
