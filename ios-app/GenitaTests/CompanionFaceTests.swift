@@ -88,6 +88,21 @@ import XCTest
         XCTAssertEqual(try XCTUnwrap(call.faceClockMs(utterance: 8, now: t0 + 2.2)), 200 - lat, accuracy: 30)
     }
 
+    /// DEMO P0: the call screen moves the still while she speaks (no live face yet); a cancel stops it at once.
+    func testSpeakingStateFollowsTheServerAndStopsOnCancel() {
+        let call = CallController()
+        XCTAssertFalse(call.companionSpeaking)
+        call.handle(#"{"type":"speaking","on":true,"utteranceId":4,"emotion":"happy"}"#)
+        XCTAssertTrue(call.companionSpeaking)
+        call.handle(#"{"type":"speaking","on":false,"utteranceId":4}"#)
+        XCTAssertFalse(call.companionSpeaking)
+        call.handle(#"{"type":"speaking","on":true,"utteranceId":5,"emotion":"warm"}"#)
+        call.handle(#"{"type":"utterance.cancelled","utteranceId":5,"reason":"barge_in"}"#)
+        XCTAssertFalse(call.companionSpeaking)
+        XCTAssertGreaterThan(StillSpeech.level(at: 0.07), 0)
+        XCTAssertTrue((0...1).contains(StillSpeech.level(at: 12.3)))
+    }
+
     func testWordTimingsInTheAudioEventShapeTheMouth() throws {
         let (call, face, _) = try callWithFace()
         call.handle(audio(8, seq: 1, words: #"[{"w":"mama","s":0,"e":400}]"#))
