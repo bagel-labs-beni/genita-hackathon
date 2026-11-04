@@ -27,7 +27,9 @@ function own(re: RegExp, t: string): boolean {
     // the nearest attribution before it decides (Codex #640 r5: 'mom said "Be honest" and I said "I'm 15"' is theirs)
     const last = [...before.matchAll(ATTRIBUTION)].at(-1);
     const tail = last ? before.slice(last.index! + last[0].length) : "";
-    const quoted = !!last && !/^(?:i|we)$/i.test(last[1]) && !/[.!?]/.test(tail) && (tail.trim().length <= 8 || (before.match(/"/g) ?? []).length % 2 === 1);
+    // fail-safe (Codex #640 r6): skipped only INSIDE an open quote that someone else said; an unquoted or closed-quote
+    // age is theirs ("My mom said "hi", I'm 15"), and a doubtful case keeps the boundary (no flirting is the safe side)
+    const quoted = !!last && !/^(?:i|we)$/i.test(last[1]) && (tail.match(/"/g) ?? []).length % 2 === 1;
     if (!quoted) return true;
   }
   return false;
