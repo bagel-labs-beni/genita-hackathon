@@ -362,3 +362,19 @@ test("Codex #675 r3: 'get somewhere safe' and 'transfer the call to it' are neve
   assert.match(reply, /transfer the call/);
   s.close();
 });
+test("Codex #675 r4 P1: 'call nine one one' and 'move your call there' are never dropped; only a real clothing pick is", async () => {
+  const { deps, sink, events } = setup(() => true);
+  deps.spark = async function* (): AsyncGenerator<SparkStreamEvent> {
+    yield { type: "text", delta: "Your Mac is open. I'd say call nine one one immediately. I'd say move your call there. I'd go with the black dress." };
+    yield { type: "done", responseId: "r", text: "", status: "completed" };
+  };
+  const s = new Session("p13", sink, deps);
+  await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  await s.onClientText(JSON.stringify({ type: "text", text: ASK }));
+  await waitFor(() => events.some((e) => e.type === "reply" && (e as { final?: boolean }).final === true));
+  const reply = String((events.filter((e) => e.type === "reply").at(-1) as { text?: string }).text);
+  assert.match(reply, /call nine one one immediately/);
+  assert.match(reply, /move your call there/);
+  assert.doesNotMatch(reply, /black dress/);
+  s.close();
+});

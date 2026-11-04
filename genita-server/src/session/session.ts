@@ -353,7 +353,9 @@ export const SUGGEST_MAC_REPLIES = [
 /** demo S4 rehearsal (1/6): "…move this call to your Mac. Pretty sure that black top is still the move" — on the
  * suggest turn a pick before seeing the outfit is never said (sentences after the Mac one are checked for one) */
 /** Codex #675 r2: emergency help and a move ask in other words ("move the call over there") are never an early pick */
-const EARLY_PICK_KEEP = /\b(?:911|988|112|999|emergency|police|ambulance|call for help|somewhere safe|safe place|get out|(?:move|moving|switch|hop|transfer|transferring|take|bring) (?:the |this |our |it |us |over|to)|over there|bigger screen|big screen|so i can see|let me see|show me)\b/i;
+const EARLY_PICK_KEEP = /\b(?:911|988|112|999|nine one one|nine eight eight|emergency|police|ambulance|call for help|somewhere safe|safe place|get out|(?:move|moving|switch|hop|transfer|transferring|take|bring) (?:the |this |our |your |my |it |us |over|to|there)|(?:your|the|our|this) call|over there|bigger screen|big screen|so i can see|let me see|show me)\b/i;
+/** Codex #675 r4 P1: only a real clothing pick is dropped (it names a piece, a colour or "the … one") — never help or a move ask */
+const EARLY_PICK_OUTFIT = /\b(?:outfit|look|fit|top|coat|trench|jacket|dress|shirt|blouse|sweater|cardigan|hoodie|skirt|pants|jeans|trousers|shorts|shoes|boots|sneakers|heels|loafers|scarf|blazer|suit|tee|tank|one|ones|black|white|red|blue|green|cream|beige|camel|brown|grey|gray|navy|pink|purple|yellow|olive)\b/i;
 export const EARLY_PICK = /\b(?:go with|i'?d (?:go|pick|choose|wear|say)|wins?\b|(?:is|'s) (?:still )?(?:the move|my pick|it)|my (?:pick|vote)|no contest|for sure|definitely (?:the|wear)|(?:wear|pick|choose|grab) the|(?:black|white|red|blue|green|cream|beige|camel|brown|grey|gray|navy) (?:one|top|coat|trench|jacket|dress|shirt)\b[^.!?]{0,40}\b(?:is|wins|works|hits|pops))/i;
 export async function* mustNameMac(src: AsyncIterable<SparkStreamEvent>, line: string, now: () => number = Date.now, waitMs = 2500): AsyncGenerator<SparkStreamEvent> {
   let buf = "";
@@ -2504,7 +2506,7 @@ export class Session {
         }
         // demo S4 rehearsal (1/6): after the "move to your Mac" sentence, no outfit pick before the Mac camera sees it
         // Codex #675 r1: a sentence that itself asks to move to the Mac is the ask, never dropped
-        if (built.suggestMac && tts && !interpret && !self && sentences.some((x) => /\bMac\b/i.test(x.display)) && !/\bMac\b/i.test(tts) && !EARLY_PICK_KEEP.test(tts) && EARLY_PICK.test(tts)) {
+        if (built.suggestMac && tts && !interpret && !self && sentences.some((x) => /\bMac\b/i.test(x.display)) && !/\bMac\b/i.test(tts) && !EARLY_PICK_KEEP.test(tts) && !HELP_POINTER.test(tts) && EARLY_PICK.test(tts) && EARLY_PICK_OUTFIT.test(tts)) {
           this.log("handoff.early_pick_dropped", { utteranceId });
           tts = "";
         }
