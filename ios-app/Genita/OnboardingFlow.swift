@@ -506,14 +506,46 @@ extension AppState {
         companionTask = Task {
             defer { creatingCompanion = false }
             do {
-                let c = try await onboarding.createCompanion(imageId: imageId)
+                let c = try await createCompanionAfterReset(imageId: imageId)
                 setup.companionCreated = true
                 prep = c.prep
+            } catch GenitaAuthError.server(409, "reset_in_progress", _) {
+                // still starting over after the retries: nothing exists yet, NM01 Continue creates it (#514)
+            } catch is CancellationError {
+                // another account now: nothing of this one's create applies
             } catch GenitaAuthError.server(409, _, _) {
                 setup.companionCreated = true   // one companion per user; it already exists
             } catch { flowError = Self.errorLine(error); route(error) }
         }
         suggestName()
+    }
+
+    /// The server's own words for `409 reset_in_progress` (prep/routes.ts, #514).
+    static let resetBusyLine = "Starting over. Try again in a moment."
+
+    /// POST /v1/companion. `409 reset_in_progress` (#514: a Start over on this account is still erasing) means
+    /// nothing exists yet, not "already made": wait a moment and ask again, a few times (handover b9-6).
+    @discardableResult
+    func createCompanionAfterReset(imageId: String, voiceId: String? = nil, name: String? = nil) async throws -> CompanionInfo {
+        // another sign-in (or sign-out) meanwhile: never send this account's photo and name under the next one's
+        // token, and never apply the answer to it (Codex P2)
+        let generation = authGeneration
+        func stillOurs() throws { if authGeneration != generation || Task.isCancelled { throw CancellationError() } }
+        var tries = 0
+        while true {
+            try stillOurs()
+            do {
+                let c = try await onboarding.createCompanion(imageId: imageId, voiceId: voiceId, name: name)
+                try stillOurs()
+                return c
+            } catch {
+                // an error for the account before (its 401, say) is not this account's: no A02 bounce (Codex r2 P2)
+                try stillOurs()
+                guard case .server(409, "reset_in_progress"?, _)? = error as? GenitaAuthError, tries < resetRetries else { throw error }
+                tries += 1
+                try await Task.sleep(for: resetRetryDelay)
+            }
+        }
     }
 
     // MARK: V04
@@ -562,12 +594,16 @@ extension AppState {
                 if voiceUnsaved, let voiceId = setup.voiceId, (try? await onboarding.saveVoice(voiceId)) != nil { voiceUnsaved = false }
                 if setup.companionCreated == true { try await onboarding.renameCompanion(setup.companionName ?? "") }
                 else if let imageId = setup.imageId {
-                    try await onboarding.createCompanion(imageId: imageId, voiceId: setup.voiceId, name: setup.companionName)
+                    try await createCompanionAfterReset(imageId: imageId, voiceId: setup.voiceId, name: setup.companionName)
                     setup.companionCreated = true
                 }
                 go(.depth)
             } catch GenitaAuthError.server(400, _, _) {
                 nameError = "Try a different name."
+            } catch GenitaAuthError.server(409, "reset_in_progress", _) {
+                nameError = Self.resetBusyLine
+            } catch is CancellationError {
+                // another account now: this NM01's answer doesn't belong to it
             } catch { nameError = Self.errorLine(error); route(error) }
         }
     }
