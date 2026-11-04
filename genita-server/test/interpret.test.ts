@@ -202,21 +202,13 @@ test("INT-1→3: the first other language sets the pair; their Korean becomes an
   session.close();
 });
 
-test("INT-5: my English after the pair is set goes out in polite Korean; before it, nothing is relayed", async () => {
-  const { client, session, mic, sparkCalls, ttsCalls } = setup();
+test("INT-5: my English goes out in polite Korean, even before the other person spoke (pair assumed English↔Korean)", async () => {
+  const { client, session, mic, sparkCalls } = setup();
   await startInterpret(session);
   mic().turn("Yes, two blocks down, next to the bakery.");
-  await sleep(20);
-  const skipped = client.bubbles("skipped")[0];
-  assert.equal(skipped.reason, "no_other_language");
-  assert.equal(skipped.speaker, "me");
-  assert.equal(sparkCalls.length, 0);
-  assert.equal(ttsCalls.length, 0);
-
-  mic().turn("이거 얼마예요?");
-  await client.waitFor((m) => m.type === "reply");
-  mic().turn("Yes, two blocks down, next to the bakery.");
   await client.waitFor((m) => m.type === "reply" && m.text === "네, 두 블록 내려가면 빵집 옆에 있어요.");
+  assert.equal(client.bubbles("skipped").length, 0);
+  assert.deepEqual(client.of("interpret.pair")[1], { type: "interpret.pair", user: "English", other: "Korean", source: "face", by: "auto" });
   const mine = client.bubbles("done").find((b) => b.speaker === "me")!;
   assert.deepEqual(mine.translation, { lang: "Korean", text: "네, 두 블록 내려가면 빵집 옆에 있어요." });
   assert.match(String(sparkCalls.at(-1)!.instructions), /into natural spoken Korean[\s\S]*존댓말/);
@@ -420,5 +412,69 @@ test("call frames are ignored outside call mode; leaving interpret closes the ca
   assert.equal(call().isOpen, false);
   session.onClientAudio(Buffer.concat([encodeFrameHeader(CLIENT_FRAME_KIND_CALL, 0), Buffer.alloc(320)]));
   assert.equal(asrs.length, 2, "no new call ASR in chat mode");
+  session.close();
+});
+
+// ───────────────────────── Chelsea 11/4 20:21 device test ─────────────────────────
+
+test("first line translates at once: held Korean with no pair yet goes out in English (no no_other_language)", async () => {
+  const { client, session, mic, sparkCalls } = setup();
+  await startInterpret(session);
+  assert.equal(client.of("interpret.pair")[0].other, null);
+  await session.onClientText(JSON.stringify({ type: "hold", on: true }));
+  mic().fire({ type: "partial", text: "이거 얼마예요?" });
+  await session.onClientText(JSON.stringify({ type: "hold", on: false }));
+  mic().fire({ type: "speechComplete", turnId: 2, text: "이거 얼마예요?" });
+  const reply = await client.waitFor((m) => m.type === "reply");
+  assert.equal(reply.text, "How much is this?");
+  assert.equal(client.bubbles("skipped").length, 0);
+  assert.match(String(sparkCalls[0].instructions), /from Korean into natural spoken English/);
+  const done = client.bubbles("done")[0];
+  assert.equal(done.via, "hold");
+  assert.deepEqual(done.original, { lang: "Korean", text: "이거 얼마예요?" });
+  assert.deepEqual(done.translation, { lang: "English", text: "How much is this?" });
+  assert.equal(client.of("interpret.pair").at(-1)!.other, "Korean");
+  session.close();
+});
+
+test("target is never the source: Korean is always translated into English and English into Korean, held or not", async () => {
+  const { client, session, mic, sparkCalls } = setup();
+  await startInterpret(session, { interpret: { other: "Korean" } });
+  const held = async (text: string) => {
+    await session.onClientText(JSON.stringify({ type: "hold", on: true }));
+    mic().fire({ type: "partial", text });
+    await session.onClientText(JSON.stringify({ type: "hold", on: false }));
+    mic().fire({ type: "speechComplete", turnId: 9, text });
+  };
+  await held("다음 주 화요일 회의 괜찮으세요?");
+  await client.waitFor((m) => m.type === "reply" && m.text === "Does next Tuesday's meeting work for you?");
+  await held("Tuesday works. Can we do 3 pm?");
+  await client.waitFor((m) => m.type === "reply" && m.text === "화요일 좋아요. 오후 3시 괜찮을까요?");
+  mic().turn("이거 얼마예요?");
+  await client.waitFor((m) => m.type === "reply" && m.text === "How much is this?");
+  mic().turn("Yes, two blocks down, next to the bakery.");
+  await client.waitFor((m) => m.type === "reply" && m.text === "네, 두 블록 내려가면 빵집 옆에 있어요.");
+  assert.equal(sparkCalls.length, 4);
+  for (const c of sparkCalls) {
+    const m = String(c.instructions).match(/from (\w+) into natural spoken (\w+)/)!;
+    assert.notEqual(m[1], m[2], String(c.instructions));
+    assert.equal(m[1] === "Korean" ? "Korean" : "English", /\p{Script=Hangul}/u.test(String(c.input)) ? "Korean" : "English");
+  }
+  for (const b of client.bubbles("done")) assert.notEqual((b.original as Json).lang, (b.translation as Json).lang);
+  session.close();
+});
+
+test("rude speech is translated, not refused: the instructions say so and the bubble carries the translation", async () => {
+  const instr = buildTranslateInstructions("Korean", "English");
+  assert.match(instr, /profane speech is still translated faithfully/);
+  assert.match(instr, /Never refuse or leave it empty/);
+  const { client, session, mic, sparkCalls } = setup();
+  await startInterpret(session);
+  mic().turn("너 게이냐? 씨발놈아?");
+  const reply = await client.waitFor((m) => m.type === "reply");
+  assert.equal(reply.text, "T(너 게이냐? 씨발놈아?)");
+  assert.match(String(sparkCalls[0].instructions), /from Korean into natural spoken English[\s\S]*profane/);
+  assert.equal(client.bubbles("done").length, 1);
+  assert.equal(client.of("error").length, 0);
   session.close();
 });

@@ -475,7 +475,7 @@ test("round 2: an interpretation echo does not spend the second real utterance's
   const s = fakeSession(config(), "interpreter", ops, "Hello there.");
   try {
     await s.session.onClientText(JSON.stringify({ type: "start", persona: { name: "Synthetic" }, mode: "interpret", greeting: false }));
-    await s.session.onClientText(JSON.stringify({ type: "text", text: "The other language is not known yet." }));
+    // (#750: a typed line before the pair is known is now translated at once, so it is not part of the skipped set)
     s.asr.emit("event", { type: "speechComplete", turnId: 0, text: "   " });
     s.asr.emit("event", { type: "speechComplete", turnId: 0, text: "…" });
     s.asr.emit("event", { type: "speechComplete", turnId: 1, text: "이거 얼마예요?" });
