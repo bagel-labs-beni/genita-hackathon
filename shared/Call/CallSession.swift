@@ -1674,7 +1674,7 @@ enum CallStop: Equatable {
                 // to make it again (once per time the call screen shows), then keep checking; it swaps in when made.
                 faceState("failed")
                 if face != nil || facePoster != nil { useFace(nil, key: nil, reduceMotion: faceReduceMotion) }
-                if faceOnScreen, !facePrepRetried {
+                if faceOnScreen || faceKeepTrying, !facePrepRetried {
                     facePrepRetried = true
                     do { try await makeFaceLoader().retryPrep(); faceState("retry_sent") }
                     catch { log.error("face set retry: \(String(describing: error), privacy: .public)") }
