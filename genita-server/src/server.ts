@@ -505,6 +505,9 @@ export async function startServer(
       if (u === userId && sid !== self && sessionDevices.get(sid) !== device) return true;
     }
     const cached = lastTurns.get(userId);
+    // Codex #694 P2: a hang-up on the other device longer than RECONNECT_GAP_MS ago is a new call (it greets), so it is
+    // planned and counted like one too — the same rule as the greeting in priorTurns
+    if (cached?.hungUp && Date.now() - cached.at > RECONNECT_GAP_MS) return false;
     return !!cached && cached.turns.length > 0 && cached.device !== device && Date.now() - cached.at < 10 * 60_000;
   }
   function priorThread(self: string): ThreadState | null {
