@@ -16,4 +16,5 @@ test("an item that adds something new is kept", () => {
   assert.equal(restatesHeadline("Short, direct answers.", "You don't want short, direct answers."), false, "a negation is new");
   assert.equal(restatesHeadline("Short answers, not long answers.", "I want long answers, not short answers."), false, "the opposite is new");
   assert.equal(restatesHeadline("You like planning and comparing.", "You prefer planning to comparing."), false, "a preference order is new");
+  assert.equal(restatesHeadline("You compare options.", "You compare 2 options."), false, "a number is new");
 });

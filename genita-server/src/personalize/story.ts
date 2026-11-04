@@ -402,7 +402,7 @@ function lineEvidence(text: string, card: StyleCard, id: SparkStoryId): Evidence
 // words count, so "planning to comparing" never matches "planning and comparing" (Codex P2)
 const STOP = new Set(["a", "an", "the", "you", "your", "you're", "it", "is", "are", "be", "so", "that", "this", "i", "me", "my", "want"]);
 const contentWords = (s: string) =>
-  s.toLowerCase().replace(/[’']/g, "'").split(/[^\p{L}\p{N}']+/u).filter((w) => w.length > 1 && !STOP.has(w)).map((w) => w.replace(/(ing|ed|es|s)$/, ""));
+  s.toLowerCase().replace(/[’']/g, "'").split(/[^\p{L}\p{N}']+/u).filter((w) => (w.length > 1 || /\p{N}/u.test(w)) && !STOP.has(w)).map((w) => w.replace(/(ing|ed|es|s)$/, ""));
 
 /** An item that only says the headline again: the same words in the same order, nothing added (word order kept, so
  *  "long, not short" never matches "short, not long"; Codex P2). */
