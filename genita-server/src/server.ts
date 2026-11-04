@@ -39,6 +39,7 @@ import { createAccounts, type AccountsService, type Principal } from "./auth/ind
 import { looksLikeJwt } from "./auth/jwt.ts";
 import { createMemory, PgMemoryRepository } from "./memory/index.ts";
 import type { ThreadState } from "./memory/call.ts";
+import { foldAge, NO_AGE, type AgeSay } from "./convo/minorBoundary.ts";
 import { isMemoryRoute, memoryRoute } from "./memory/routes.ts";
 import { findsFromEnv } from "./finds/setup.ts";
 import { handleFindsHttp, isFindsRoute } from "./finds/http.ts";
@@ -327,7 +328,7 @@ export async function startServer(
   const zero: Progress = { turn: 0, update: 0 };
   const newer = (a: Progress, b: Progress) => a.turn > b.turn || (a.turn === b.turn && a.update > b.update);
   // device + hungUp (demo S5): the same device calling again after its user hung up is a return visit, not a move
-  const lastTurns = new Map<string, { turns: HistoryItem[]; thread: ThreadState | null; revision: number | null; progress: Progress; at: number; device: string; hungUp: boolean; gen: number; forgetAsked?: boolean; crisisInCall?: boolean; minorInCall?: boolean; unsubscribe?: () => void }>();
+  const lastTurns = new Map<string, { turns: HistoryItem[]; thread: ThreadState | null; revision: number | null; progress: Progress; at: number; device: string; hungUp: boolean; gen: number; forgetAsked?: boolean; crisisInCall?: boolean; ageSaid?: AgeSay; unsubscribe?: () => void }>();
   function dropLastTurns(userId: string) {
     lastTurns.get(userId)?.unsubscribe?.();
     lastTurns.delete(userId);
@@ -362,7 +363,7 @@ export async function startServer(
     let forgetAsked = !!cached?.forgetAsked;
     let crisisInCall = !!cached?.crisisInCall;
     // Codex #640: a minor's boundary rides the same handoff as the crisis flag
-    let minorInCall = !!cached?.minorInCall;
+    let ageSaid: AgeSay = cached?.ageSaid ?? NO_AGE;
     let bestGen = cached?.gen ?? 0;
     for (const [sid, u] of sessionUsers) {
       if (u !== userId || sid === self) continue;
@@ -379,12 +380,13 @@ export async function startServer(
         hungUpHere = session.isClosed && session.endedByUser && sessionDevices.get(sid) === device;
         forgetAsked = session.forgetAsked;
         crisisInCall = session.crisisInCall;
-        minorInCall = session.minorInCall;
+        ageSaid = session.ageSaid;
       }
     }
     // a crisis earlier in the conversation goes with it (next device or a quick call-back): no take nudge (Codex #502 P1 r3)
     if (best && crisisInCall) { const me = sessions.get(self); if (me) me.crisisInCall = true; }
-    if (best && minorInCall) { const me = sessions.get(self); if (me) me.minorInCall = true; }
+    // the three age flags as they were (Codex #640 r3: a teen phrase stays a teen phrase, an adult age can still win)
+    if (best && (ageSaid.minor || ageSaid.adult || ageSaid.teen)) { const me = sessions.get(self); if (me) me.ageSaid = foldAge(me.ageSaid, ageSaid); }
     // Hung up on this same device and called again: a return visit (greeting + the last call's notes). A call
     // on the OTHER device still continues it, whatever order its stop and the claim arrived in (Codex 11/3).
     if (best && hungUpHere) {
@@ -444,7 +446,7 @@ export async function startServer(
       const tags = keep ? { device: cached!.device, hungUp: cached!.hungUp, gen: cached!.gen } : { device, hungUp: session.endedByUser, gen };
       dropLastTurns(userId);
       const unsubscribe = deps.memory?.subscribe(userId, () => dropLastTurns(userId));
-      lastTurns.set(userId, { turns, thread, revision, progress: p, at: now, ...tags, forgetAsked: session.forgetAsked || (same && !!cached!.forgetAsked), crisisInCall: session.crisisInCall || (same && !!cached!.crisisInCall), minorInCall: session.minorInCall || (same && !!cached!.minorInCall), unsubscribe });
+      lastTurns.set(userId, { turns, thread, revision, progress: p, at: now, ...tags, forgetAsked: session.forgetAsked || (same && !!cached!.forgetAsked), crisisInCall: session.crisisInCall || (same && !!cached!.crisisInCall), ageSaid: same && cached!.ageSaid ? foldAge(session.ageSaid, cached!.ageSaid) : session.ageSaid, unsubscribe });
       log("history.cached", { session: session.id, turns: turns.length });
     };
     if (!deps.memory) return save();

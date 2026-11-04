@@ -1597,3 +1597,12 @@ test("Codex #640: the minor boundary stays after the 16-line history trim", { sk
   assert.match(await say("do you have a crush on me lol"), /under 18: no flirting or romance at all/);
   session.close();
 });
+
+test("Codex #640 r3: a call known to be with a minor carries the line on the greeting too", { skip: !v1 }, async () => {
+  const { session } = setup(["<happy> Hey."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
+  (session as unknown as { minorInCall: boolean }).minorInCall = true;
+  const s = session as unknown as { v1Extras(t: unknown): { turn?: string } };
+  assert.match(s.v1Extras({ greeting: { item: null } }).turn ?? "", /under 18/);
+  session.close();
+});

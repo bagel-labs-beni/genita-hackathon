@@ -53,7 +53,7 @@ import type { CallStart, VoiceUpdate } from "../personalize/service.ts";
 import type { CallTurn } from "../personalize/extract.ts";
 import { ASK_TURNS, replyAsks } from "../personalize/unknowns.ts";
 import { mightBeCorrection } from "../personalize/corrections.ts";
-import { ageSays, isMinor, MINOR_LINE, minorLine, type AgeSay } from "../convo/minorBoundary.ts";
+import { ageSays, foldAge, isMinor, MINOR_LINE, minorLine, NO_AGE, type AgeSay } from "../convo/minorBoundary.ts";
 import { avoidKeys, forgetTarget, isForgetRequest, scrubHistory, type Removed } from "../personalize/forgotten.ts";
 import { isForgetRequest as isMemoryForgetRequest } from "../memory/extract.ts";
 import { localTimeLine } from "../personalize/knows.ts";
@@ -1566,8 +1566,9 @@ export class Session {
       }) ?? undefined;
     }
     // safety gate 11/4: once they said they're a minor in this call, no romance at all (rides the This-turn line)
-    if (!turn.greeting && userText) {
-      const minor = isMinor([...this.ageSaid, ageSays(userText)]) ? MINOR_LINE : null;
+    // Codex #640 r3: every chat request of a call known to be with a minor carries it (greeting and cues too)
+    {
+      const minor = isMinor([this.ageSaid, userText ? ageSays(userText) : NO_AGE]) ? MINOR_LINE : null;
       // first in the line: the This-turn block is cut at 400 chars, the safety part must never be the cut part
       if (minor) turnLine = turnLine ? turnLine.replace(/^This turn: /, `This turn: ${minor} `) : `This turn: ${minor}`;
     }
@@ -1661,10 +1662,11 @@ export class Session {
    * the next device with the turns (server.ts), like forgetAsked. No take nudge after it (Codex #502 P1 r1–r3) */
   crisisInCall = false;
   /** Codex #640: what they said about their own age in this call, kept past the 16-line trim (never stored) */
-  ageSaid: AgeSay[] = [];
-  /** they're a minor by what this call said (server.ts carries it across a handoff, like crisisInCall) */
-  get minorInCall(): boolean { return isMinor(this.ageSaid); }
-  set minorInCall(v: boolean) { if (v && !this.minorInCall) this.ageSaid = [...this.ageSaid, { minor: true, adult: false, teen: false }]; }
+  ageSaid: AgeSay = NO_AGE;
+  /** they're a minor by what this call said (server.ts carries ageSaid across a handoff, like crisisInCall) */
+  get minorInCall(): boolean { return isMinor([this.ageSaid]); }
+  /** a handed-over or claimed history said "minor" (explicitly) */
+  set minorInCall(v: boolean) { if (v) this.ageSaid = foldAge(this.ageSaid, { minor: true, adult: false, teen: false }); }
   /** the user hung up (`stop`), as opposed to a dropped socket or a move to the other device */
   endedByUser = false;
 
@@ -1674,7 +1676,7 @@ export class Session {
     if (role === "user" && (isForgetRequest(text) || isMemoryForgetRequest(text))) this.forgetAsked = true;
     if (role === "user" && realCrisisSignal(text)) this.crisisInCall = true;
     // Codex #640: kept for the whole call (the 16-line history trim would drop the "I'm 15" line)
-    if (role === "user") { const a = ageSays(text); if (a.minor || a.adult || a.teen) this.ageSaid = [...this.ageSaid, a].slice(-20); }
+    if (role === "user") this.ageSaid = foldAge(this.ageSaid, ageSays(text));
     this.history.push({ role, text });
     if (this.history.length > MAX_HISTORY) this.history.splice(0, this.history.length - MAX_HISTORY);
     this.deps.onHistoryChange?.(role);

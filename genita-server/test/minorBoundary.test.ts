@@ -8,3 +8,11 @@ test("minor boundary: own minor ages and phrases → the line; ages of things, o
   assert.ok(minorLine(["I'm a teenager and I'm 20 hours into this game"]), "20 hours is no adult age");
   assert.equal(minorLine(["I'm 19", ...Array(12).fill("ok"), "I'm a teenager lol"]), null, "an adult age said earlier beats a later teen phrase");
 });
+
+test("Codex #640 r3: own age after a quote counts; seconds are no age; an explicit minor age stays however many lines follow", async () => {
+  const { ageSays, foldAge, isMinor, NO_AGE } = await import("../src/convo/minorBoundary.ts");
+  assert.ok(minorLine(['My sister said, "I\'m 17", but I\'m 15.']));
+  assert.ok(minorLine(["I'm in middle school", "I'm 20 seconds into the video"]));
+  let a = NO_AGE; for (const l of ["I'm 15", ...Array(25).fill("I'm 19")]) a = foldAge(a, ageSays(l));
+  assert.ok(isMinor([a]), "an explicit minor age always wins");
+});
