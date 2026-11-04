@@ -825,6 +825,9 @@ export class Session {
     // the dropped turn's cue-echo filter goes with it (Codex b9-6 r2)
     this.cuedTurn = false;
     this.handedOff = true;
+    // 11/4: the Mac's share is over with the move. A locked Mac kept capturing black, and the black-screen line and
+    // hint followed the conversation to the iPhone; nothing from this device's watch is used until it comes back
+    this.watch?.halt("handoff");
     this.bcGen++;
     this.backchannel?.stop();
     if (this.started && !this.closed) this.dispatch({ type: "client_barge_in" });
@@ -946,6 +949,7 @@ export class Session {
       // (no new speechStart) — its final is answered (Codex b9-6 r2)
       this.handedOff = false;
       this.dropLateFinal = false;
+      this.watch?.resume();
     }
     let pcm = frame;
     // F8 Mac call mode: frames carry a "GA" header saying mic (3) or call sound (4)
@@ -1740,6 +1744,11 @@ export class Session {
 
   // ───────────────────────── watch together (F5) ─────────────────────────
 
+  /** The device this call runs on locked (presence `active: false`): its capture is black, the share stops. */
+  watchDeviceLocked(): void {
+    this.watch?.pause("device_locked");
+  }
+
   /** The Mac opened /v1/watch for this call. Null until `start`. */
   attachWatch(sink: WatchSink): WatchController | null {
     if (!this.started || this.closed) return null;
@@ -1774,6 +1783,8 @@ export class Session {
       },
     );
     this.watch.attach(sink);
+    // an uplink that (re)connects after the conversation left this device starts nothing here
+    if (this.handedOff) this.watch.halt("handoff");
     // watch together is not a getting-to-know-you call: drop this call's question and give the count back
     if (this.callPlanned && this.deps.personalize?.unplanCall && this.deps.userId && !this.ask?.asked) {
       const item = this.ask?.item ?? null;
@@ -2219,7 +2230,9 @@ export class Session {
       };
     }
     const camera = this.takeFrames();
-    const watch = this.watch?.questionContext() ?? null;
+    // camera frames in hand win over a watch without a clear picture (black, stopped): the camera is what is in
+    // front of the user now, and a stale share must not tell the model the screen is black
+    const watch = camera.length && !this.watch?.hasLivePicture ? null : (this.watch?.questionContext() ?? null);
     const images = [...camera, ...(watch?.images ?? [])];
     const content: string | ContentPart[] = images.length
       ? [{ type: "input_text", text }, ...images.map((u) => ({ type: "input_image" as const, image_url: u }))]

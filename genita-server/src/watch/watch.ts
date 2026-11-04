@@ -171,6 +171,12 @@ const ECHO_WAIT_MS = 1_500;
 /** a partial that doesn't match the user's words gets this long to catch up before the turn counts as theirs */
 const ECHO_SETTLE_MS = 350;
 const BLANK_LINE = "<neutral> Hmm, I can't see that one. It's protected and shows up black to me. Wanna put on a YouTube clip?";
+/**
+ * 11/4 (Mac → iPhone move, then the Mac locked): a share that has shown only black this long is stale (a locked or
+ * sleeping Mac captures black). It stops: no more black-screen line, no "shows up black" hint on every question.
+ * A clear frame from the same uplink picks it up again.
+ */
+const BLANK_STOP_MS = 10_000;
 /** memo: a black video picture inside a visible page (Netflix in a browser): the same honest line, once per share */
 const PROTECTED_HOLD_MS = 15_000;
 const PROTECTED_LINE = "<neutral> I can't see that video, it's protected and shows up black to me. Wanna put on a YouTube clip?";
@@ -209,6 +215,12 @@ export class WatchController {
   private sharingSince = 0;
   private blank = false;
   private blankSpoken = false;
+  /** when the current black stretch began (null = the picture is clear) */
+  private blankSince: number | null = null;
+  /** the call moved to another device: no share starts here until the conversation comes back (resume) */
+  private halted: string | null = null;
+  /** stopped as stale (black too long, the Mac locked): a clear frame from the same uplink starts it again */
+  private resumeOnClear = false;
   private frames: Frame[] = [];
   private seen: SeenMoment[] = [];
   /** bumped when the video changes: a look that started on the old one is dropped */
@@ -286,6 +298,47 @@ export class WatchController {
 
   get isSharing(): boolean {
     return this.sharing;
+  }
+
+  /** sharing and showing a clear picture right now (not black, frames in hand) */
+  get hasLivePicture(): boolean {
+    return this.sharing && !this.blank && this.frames.length > 0;
+  }
+
+  /**
+   * The conversation moved to another device (proximity handoff, the move button): this device's share is over.
+   * Nothing from it is spoken or added to a question, and a `start` is refused until `resume`.
+   */
+  halt(reason: string): void {
+    if (this.closed) return;
+    const was = this.sharing;
+    this.halted = reason;
+    this.stop(reason);
+    // a move that did not happen after all (the claim lost) leaves the Mac still capturing: its next clear frame
+    // picks the share up once the conversation is back here
+    this.resumeOnClear = was;
+    this.log("watch.halted", { reason, wasSharing: was });
+  }
+
+  /** The conversation is on this device again: a share may start (or a halted one resume on its next clear frame). */
+  resume(): void {
+    if (this.halted === null) return;
+    this.halted = null;
+    this.log("watch.resumable", {});
+  }
+
+  /** The watch device locked or went to sleep: its capture is black from now on. Stops, resumable on a clear frame. */
+  pause(reason: string): void {
+    if (!this.sharing || this.closed) return;
+    this.stop(reason);
+    this.resumeOnClear = true;
+  }
+
+  /** a share black for BLANK_STOP_MS is stale: stopped (true) */
+  private expireBlank(now: number): boolean {
+    if (!this.sharing || !this.blank || this.blankSince === null || now - this.blankSince < BLANK_STOP_MS) return false;
+    this.pause("blank_timeout");
+    return true;
   }
 
   /** A (new) watch socket from the app. One at a time per call; a new one replaces the old. */
@@ -391,6 +444,11 @@ export class WatchController {
   }
 
   private start(source: string | null): void {
+    if (this.halted !== null) {
+      this.log("watch.start_refused", { why: this.halted });
+      return this.emitState();
+    }
+    this.resumeOnClear = false;
     if (!this.sharing) {
       this.stoppedAt = null;
       const last = this.lastShare;
@@ -417,6 +475,7 @@ export class WatchController {
     this.lastLookedAt = -Infinity;
     this.blank = false;
     this.blankSpoken = false;
+    this.blankSince = null;
     this.protectedSpoken = false;
     this.protectedPending = false;
     this.protectedShown = false;
@@ -450,6 +509,7 @@ export class WatchController {
   stop(reason: string): void {
     if (!this.sharing) return;
     this.sharing = false;
+    this.resumeOnClear = false;
     if (this.tickTimer) clearInterval(this.tickTimer);
     if (this.padTimer) clearInterval(this.padTimer);
     this.tickTimer = null;
@@ -473,6 +533,7 @@ export class WatchController {
     this.flushWaiters();
     this.setSpeaker(null);
     this.blank = false;
+    this.blankSince = null;
     this.protectedShown = false;
     this.emitState();
     this.log("watch.stop", { reason, ...this.summary() });
@@ -487,7 +548,10 @@ export class WatchController {
   }
 
   private onFrame(image: unknown, blank: boolean, motion: number | null = null): void {
-    if (!this.sharing || typeof image !== "string" || !image) return;
+    if (typeof image !== "string" || !image) return;
+    // a stale share (black too long, a lock, a move that didn't happen) comes back with a clear picture
+    if (!this.sharing && this.resumeOnClear && !blank && this.halted === null) this.resumeShare();
+    if (!this.sharing) return;
     const url = image.startsWith("data:image/") ? image : `data:image/jpeg;base64,${image}`;
     if (url.length > MAX_FRAME_URL) return this.sink?.send({ type: "error", code: "frame_too_large", message: "Each frame must be under 1.5 MB" });
     const now = this.deps.now();
@@ -508,10 +572,21 @@ export class WatchController {
     }
     if (blank !== this.blank) {
       this.blank = blank;
+      this.blankSince = blank ? now : null;
       if (!blank) this.blankSpoken = false;
       this.emitState();
       this.log("watch.blank", { on: blank });
     }
+    this.expireBlank(now);
+  }
+
+  private resumeShare(): void {
+    const last = this.lastShare;
+    const title = last?.title ?? null;
+    this.start(last?.source ?? null);
+    // the Mac sends the title only when it changes: the same window keeps the one it had
+    if (this.sharing && this.title === null && title !== null) { this.title = title; this.reconnectTitle = null; }
+    this.log("watch.resume", { source: this.source });
   }
 
   // ───────────────────────── video sound ─────────────────────────
@@ -594,6 +669,7 @@ export class WatchController {
 
   /** Runs every 500 ms while sharing (tests call it directly). */
   tick(): void {
+    this.expireBlank(this.deps.now());
     this.maybeQuick();
     if (this.protectedPending && this.sharing && !this.closed) this.speakProtected();
     if (this.held && this.sharing && !this.closed) this.tryReact(this.held.v, this.held.at, true);
@@ -633,7 +709,8 @@ export class WatchController {
 
   /** MS-3: say once per black episode that the window shows up black. */
   private maybeSpeakBlank(): void {
-    if (!this.sharing || !this.blank || this.blankSpoken || !this.host.conversationQuiet()) return;
+    if (!this.sharing || !this.blank || this.blankSpoken || this.halted !== null || !this.host.conversationQuiet()) return;
+    if (this.expireBlank(this.deps.now())) return;
     if (this.host.react(BLANK_LINE) !== null) {
       this.blankSpoken = true;
       this.log("watch.blank.spoken", {});
@@ -950,6 +1027,10 @@ export class WatchController {
   /** Watch context for the user's question, or null when nothing has been watched. */
   questionContext(): QuestionContext | null {
     const now = this.deps.now();
+    this.expireBlank(now);
+    // the call moved to another device: what this device was sharing is not part of the conversation there. A stale
+    // share (black too long, the Mac locked) is still "on" for the user, so no "they stopped sharing" either
+    if (this.halted !== null || this.resumeOnClear) return null;
     // AU-66: a stopped share is "just watched" for 90 s, then the call is about something else
     if (!this.sharing && (this.stoppedAt === null || now - this.stoppedAt > AFTER_STOP_KEEP_MS)) return null;
     const memo = this.memo.filter((e) => now - e.at <= MEMO_KEEP_MS);

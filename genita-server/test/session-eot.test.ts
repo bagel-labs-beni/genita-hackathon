@@ -249,7 +249,7 @@ test("Codex P1: a late watch-echo verdict never restarts the commit clock while 
   await partA(h);
   // watch together starts sharing; its echo check is slow
   let release!: (echo: boolean) => void;
-  (h.session as unknown as { watch: unknown }).watch = { isSharing: true, isEcho: () => new Promise<boolean>((r) => (release = r)), questionContext: () => null, close() {} };
+  (h.session as unknown as { watch: unknown }).watch = { isSharing: true, isEcho: () => new Promise<boolean>((r) => (release = r)), questionContext: () => null, halt() {}, resume() {}, close() {} };
   h.asr.fire({ type: "speechStart", turnId: 1 });
   h.asr.fire({ type: "speechEnd", turnId: 1 });
   h.asr.fire({ type: "speechComplete", turnId: 1, text: "Not tonight love" }); // the video's line
@@ -303,7 +303,7 @@ test("Codex r2: a held turn whose echo check finished after an empty later final
   let release!: (echo: boolean) => void;
   await h.session.onClientText(JSON.stringify({ type: "start", persona: { name: "Mina" } }));
   await sleep(30);
-  (h.session as unknown as { watch: unknown }).watch = { isSharing: true, isEcho: () => new Promise<boolean>((r) => (release = r)), questionContext: () => null, close() {} };
+  (h.session as unknown as { watch: unknown }).watch = { isSharing: true, isEcho: () => new Promise<boolean>((r) => (release = r)), questionContext: () => null, halt() {}, resume() {}, close() {} };
   h.asr.fire({ type: "speechStart", turnId: 0 });
   h.advance(4000);
   h.asr.fire({ type: "speechEnd", turnId: 0 });
@@ -425,7 +425,7 @@ test("Codex b9-6 P2: an echo check running at the handoff never completes a turn
   await h.session.onClientText(JSON.stringify({ type: "start", persona: { name: "Mina" } }));
   await sleep(30);
   let release!: (echo: boolean) => void;
-  (h.session as unknown as { watch: unknown }).watch = { isSharing: true, isEcho: () => new Promise<boolean>((r) => (release = r)), questionContext: () => null, close() {} };
+  (h.session as unknown as { watch: unknown }).watch = { isSharing: true, isEcho: () => new Promise<boolean>((r) => (release = r)), questionContext: () => null, halt() {}, resume() {}, close() {} };
   h.asr.fire({ type: "speechStart", turnId: 0 });
   h.asr.fire({ type: "speechEnd", turnId: 0 });
   h.asr.fire({ type: "speechComplete", turnId: 0, text: "My sister is coming this weekend." });
