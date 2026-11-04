@@ -42,6 +42,8 @@ export const OPENS_SHEET = [
   "Search Nintendo CEO",
   "How come the sky is blue?",
   "오늘 서울 날씨 알려줄 수 있어",
+  // Codex r3
+  "Jin, search Nintendo CEO",
   "What's the population of the US?",
   "서울에서 제일 맛있는 라멘집 어디야?",
   "오늘 뉴스 좀 찾아봐",
@@ -78,6 +80,8 @@ export const STAYS_SPOKEN = [
   "How long does it take?",
   "Can you look it up?",
   "How long does it take to get there?",
+  "How long does it take to get there by train?",
+  "오늘 서울 날씨 알려줬네",
   // demo runbook (QA 11/4): other paths own these
   "I have no idea what to wear today. It's for the Halloween party tonight. Jin, can you help me pick an outfit?",
   "Find me some.",

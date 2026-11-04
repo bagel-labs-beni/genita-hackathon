@@ -77,7 +77,7 @@ const DEICTIC = [
   /^(?:what|who)(?:'s| is| are| was)\s+(?:it|they|he|she)\b/,
 ];
 /** Korean asks: a question ending, "추천", "알려줘" ("서울 날씨 좋다" is a remark, Codex r1) */
-const KO_ASK = /[?？]\s*$|(?:야|니|나|까|지|요|래|줘|봐|어때)\s*[?？.!]*$|추천|알려|수\s*있(?:어|니|나|을까)|해\s*줄래/;
+const KO_ASK = /[?？]\s*$|(?:야|니|나|까|지|요|래|줘|봐|어때)\s*[?？.!]*$|추천|알려\s*(?:줘|줄래|줄\s*수|주세요|줄래요)|수\s*있(?:어|니|나|을까)\s*[?？]*$|해\s*줄래/;
 const DEICTIC_KO = /이거|이게|이건|저거|저게|저건|그거|그게|그건|이것|저것|이\s*중/;
 
 function words(t: string): number {
@@ -105,12 +105,12 @@ export function isGeneralAsk(text: string, env: NodeJS.ProcessEnv = process.env)
   const full = country.replace(/[‘’ʼ]/g, "'").toLowerCase();
   const t = coreQuestion(country);
   if (NO_SEARCH.test(full)) return false;
-  const searchVerb = SEARCH_VERB.test(full) || SEARCH_KO.test(full);
+  const searchVerb = SEARCH_VERB.test(full) || SEARCH_VERB.test(t) || SEARCH_KO.test(full);
   if (SMALL_TALK.test(t) && !searchVerb) return false;
   if (DEICTIC.some((re) => re.test(t)) || DEICTIC_KO.test(t)) return false;
   // a pronoun points back into the conversation, unless it's a dummy "it" or a spelled-out search ("look up how much it costs…")
   // ("how long does it take to get there?" still points back: "there" is in the conversation, Codex r2)
-  const pronounFree = DUMMY_IT.test(t) && !/\b(?:there|here)\s*[?.!]*$/.test(t) ? t.replace(/\bit\b/, "") : t;
+  const pronounFree = DUMMY_IT.test(t) && !/\b(?:there|here)\b/.test(t) ? t.replace(/\bit\b/, "") : t;
   if (PRONOUN.test(pronounFree) && !(searchVerb && !LOOK_IT_UP.test(full) && words(t) >= 5)) return false;
   if (FEELING.test(t) && !searchVerb) return false;
   if (YOU.test(t) && !searchVerb) return false;
