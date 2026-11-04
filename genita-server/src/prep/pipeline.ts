@@ -142,9 +142,9 @@ export async function checkImage(d: PrepDeps, userId: string, bytes: Buffer, rig
 
 // ---------- F3-L2: import ----------
 
-export async function importStyle(d: PrepDeps, userId: string, pasted: unknown): Promise<StyleCard> {
+export async function importStyle(d: PrepDeps, userId: string, pasted: unknown, genAtRequest?: number): Promise<StyleCard> {
   // "Forget all of this" while this reads (AU-92): its result is not saved
-  const gen = d.personalize?.generation(userId);
+  const gen = genAtRequest ?? d.personalize?.generation(userId);
   const p = checkPaste(pasted);
   if (!p.ok) throw new PrepError(400, `import_${p.reason}`, "I couldn't read this one. Paste the whole reply, or try again.");
   const t0 = performance.now();

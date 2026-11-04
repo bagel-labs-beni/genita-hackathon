@@ -161,8 +161,9 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
     if (m === "GET" && p === "/v1/import/prompt") return send(res, 200, { prompt: IMPORT_PROMPT, chars: IMPORT_PROMPT.length });
 
     if (m === "POST" && p === "/v1/import") {
+      const gen = d.personalize?.generation(user);   // before the body arrives (Codex #583 r17)
       const body = await readJson(req);
-      const job = importStyle(d, user, body.text);
+      const job = importStyle(d, user, body.text, gen);
       if (body.background === true) {
         const state = { status: "processing" as const };
         importJobs.set(user, state);
@@ -183,9 +184,16 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
     }
 
     if (m === "POST" && p === "/v1/import/skip") {
+      // before the body is read: a "Forget all of this" while it arrives refuses it (Codex #583 r17)
+      const gen = d.personalize?.generation(user);
       const r = skipStyleCard(await readJson(req));
       if (!r.ok) throw new PrepError(400, "bad_skip", "Pick up to 8 short answers.");
-      if (d.personalize) await d.personalize.replaceStyle(user, r.card);
+      if (d.personalize) {
+        try { await d.personalize.replaceStyle(user, r.card, gen); } catch (err) {
+          if (err instanceof PersonalizeError) throw new PrepError(err.status, err.code, err.message);
+          throw err;
+        }
+      }
       else await d.store.putStyle(user, r.card);
       d.log("import.skipped", { item_count: r.card.itemCount, partial: r.card.partial });
       return send(res, 200, { status: "ready", style: r.card, profile: styleProfileText(r.card) });

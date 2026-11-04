@@ -659,7 +659,9 @@ export class FindsRunner {
     if (!c) return undefined;
     const old = this.tasteForgottenAt !== null && ((c.createdAt ?? "") <= this.tasteForgottenAt || this.tasteForgottenIds.has(c.id));
     // an outfit card's subtitle is written from their taste ("You prefer minimal clothes."): not after a forget (Codex #583 r8)
-    const parts = [`${c.title}${c.subtitle && !old ? ` (${c.subtitle})` : ""}`];
+    // a card made before the forget: its title and subtitle were written from the old taste ("Minimal, just like you"):
+    // only its kind goes to the prompt (Codex #583 r17)
+    const parts = [old ? (c.kind === "product" ? "Product picks" : c.kind === "outfit" ? "Outfit pick" : c.title) : `${c.title}${c.subtitle ? ` (${c.subtitle})` : ""}`];
     if (c.kind === "recipe") {
       const by = (t: string) => c.items.filter((i) => i.tier === t).map((i) => i.name).join(", ");
       if (by("have")) parts.push(`they have: ${by("have")}`);
