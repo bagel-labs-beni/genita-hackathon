@@ -633,7 +633,7 @@ final class FlowMorph: @unchecked Sendable {
         if Self.chinStop, let face, data.roi.height > 0 {
             let kys = Double(height) / Double(data.roi.height)
             // the open keys drop the lower lip and jaw below the neutral chin line: leave room for that (codex P2)
-            let chin = (Double(face.maxY) + Self.jawRoom * Double(face.height) - Double(data.roi.minY)) * kys
+            let chin = (Self.chinLine(data: data, face: face, mouth: mouth) - Double(data.roi.minY)) * kys
             let feather = max(2, 0.05 * Double(face.height) * kys)
             let top = chin - feather
             for y in 0..<height where Double(y) > top {
@@ -647,7 +647,7 @@ final class FlowMorph: @unchecked Sendable {
         if Self.chinStop, let face, let mouth, data.roi.width > 0, data.roi.height > 0 {
             let kxs = Double(width) / Double(data.roi.width), kys = Double(height) / Double(data.roi.height)
             let top = (Double(mouth.minY) - Double(mouth.height) - Double(data.roi.minY)) * kys
-            let bottom = (Double(face.maxY) + Self.jawRoom * Double(face.height) - Double(data.roi.minY)) * kys
+            let bottom = (Self.chinLine(data: data, face: face, mouth: mouth) - Double(data.roi.minY)) * kys
             let cx = (Double(mouth.midX) - Double(data.roi.minX)) * kxs, cy = (top + bottom) / 2
             let rx = max(4, 0.36 * Double(face.width) * kxs), ry = max(4, (bottom - top) / 2)
             for y in 0..<height { for x in 0..<width {
@@ -689,8 +689,8 @@ final class FlowMorph: @unchecked Sendable {
            data.flowSize.w > 0, data.flowSize.h > 0, data.roi.width > 0, data.roi.height > 0 {
             let fw = data.flowSize.w, fh = data.flowSize.h
             let yTop = Double(mouth.midY), yLip = Double(mouth.maxY)
-            let yEnd = Double(face.maxY) + Self.jawRoom * Double(face.height), yFade = yLip + 0.6 * max(1, yEnd - yLip)
-            let cx = Double(mouth.midX), hw = 0.75 * Double(mouth.width), side = max(1, cw.sideW * Double(face.width))
+            let yEnd = Self.chinLine(data: data, face: face, mouth: mouth), yFade = yLip + 0.6 * max(1, yEnd - yLip)
+            let cx = Double(mouth.midX), hw = 0.6 * Double(mouth.width), side = max(1, 1.5 * cw.sideW * Double(face.width))
             func ss(_ a: Double, _ b: Double, _ v: Double) -> Double { let u = min(1, max(0, (v - a) / max(1e-6, b - a))); return u * u * (3 - 2 * u) }
             var w = [Float](repeating: 0, count: fw * fh)
             for j in 0..<fh { for i in 0..<fw {
@@ -812,6 +812,14 @@ final class FlowMorph: @unchecked Sendable {
     private var periD: [(Double, Double)]? = nil
     private var periA: (open: Double, ee: Double, round: Double, mbp: Double) = (0, 0, 0, 0)
     private var periLoud = 0.0, periT: Double?
+    /// Where the blend stops below the face (still px, y down): the face box's bottom + `jawRoom`. Animals with a chin
+    /// warp: at least 2.5 mouth heights under the mouth — prep keeps that band in the blend for animals (maskVersion 3);
+    /// an animal's face box often ends at the mouth, which cut the moving chin off in a hard line.
+    static func chinLine(data: FaceFlowData, face: CGRect, mouth: CGRect?) -> Double {
+        let base = Double(face.maxY) + jawRoom * Double(face.height)
+        guard data.map.chinWarp != nil, data.map.drive == "open", let mouth else { return base }
+        return max(base, Double(mouth.maxY) + 2.5 * Double(mouth.height))
+    }
     /// Animal chin warp: weight per flow cell, working px at full opening, low-passed opening and its clock.
     private var chinWarpW: [Float] = [], chinWarpPx: Float = 0
     private var chinO = 0.0, chinT: Double?
