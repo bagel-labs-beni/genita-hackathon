@@ -1,5 +1,7 @@
 # Genita
 
+> **Everything in this demo was built during the hackathon on Meta models; none of our earlier products' code is used.** Genita is a new app, first commit October 31, 2026. The only third-party code is open-source libraries, listed in [Credits](#credits).
+
 ### The AI companion that already knows you, sees what you see, and follows you from iPhone to Mac.
 
 Genita is a face-to-face video call with an AI companion. It starts out knowing you from the AI assistant you already use, looks through your camera and your Mac screen with you, answers with cards you can act on, and carries the same conversation from your iPhone to your Mac.
@@ -158,6 +160,10 @@ Calling a model is easy. Making it feel like a person on a video call, on two de
 | F10 | Live interpretation | Transcribe → Spark translation → voice, language picked automatically | Nov 2 |
 | F11 | Memory | Memory extraction, storage, recall, forgetting during a call | Nov 2 |
 | F12 | Coming back | Return greeting, same companion and context on both devices | Nov 2 |
+
+**About Beni.** Our team also runs Beni, a separate companion app; the demo video mentions its user numbers as background, because that is where we learned what people want from a companion. Genita shares no code, assets or infrastructure with Beni. Everything listed above was written from scratch for this hackathon.
+
+**About the move effect.** The iPhone → Mac transition uses EffectSource, an open-source blur shader and sampler (MIT, © 2026 Akash T, license kept next to the source). It is a dependency, not our work; the compositor around it and everything else in the handoff are new code.
 
 Some early commits have voice and image adapters for non-Meta providers. We replaced them during the hackathon to follow the Meta-only rule; the latest commit calls only Meta models.
 
