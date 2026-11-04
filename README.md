@@ -272,6 +272,8 @@ The full source is in this repository: the iOS and Mac apps (SwiftUI) in `ios-ap
 
 The agents are development tools only. At runtime Genita calls Meta models alone.
 
+> P.S. Yes, we know. English isn't our first language, and nobody told us how close "Genita" is to another English word until it was too late to rename. On the bright side, you won't forget it.
+
 ## Team
 
 We're Summer and Dyno, a two-person team that has been building together since we met through hackathons in 2020. We're both full-stack builders: between the two of us we designed, coded and shipped every part of Genita, from the iOS and Mac apps to the server, the Meta model pipelines and the cloud deployment. We bring together experience in AI products, product strategy and commercialization. Our team also runs Beni, a separate companion app used by 33,000 people; that is where we learned what people want from a companion, and Genita is the new product we built from scratch for this hackathon.
