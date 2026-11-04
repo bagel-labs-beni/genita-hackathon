@@ -1,6 +1,7 @@
 # Asset provenance
 
 - Figma file: `gwtsmRVpVmuBzrEQDfa0yX`; hackathon page `526:15117`.
+- Public export: `companion.png`, `qa-sample-human.jpg` and `finds-frame-outfit-0/1.jpg` show photorealistic people, so the public repository has non-human stand-ins at the same paths (a dog, a clay character, a jacket); the originals stay private.
 - `companion.png`: original bitmap from current iPhone conversation node `560:19929` (`imgImage6`). A selected upload replaces this design reference in the local conversation preview.
 - `camera`, `microphone`, `more`, `menu`, `selfPreview`: original SVG exports from the same current node. PNGs are transparent local renders of those vectors, not recreated icons.
 - `orb.png`: original soul-orb bitmap from the existing Genita design prototype (`53b53c1be3257303.png`). SwiftUI clips its original transparent padding using the Figma crop ratio.
