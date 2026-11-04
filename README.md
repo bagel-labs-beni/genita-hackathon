@@ -21,7 +21,9 @@ Genita is a face-to-face video call with an AI companion. It starts out knowing 
 
 ## Why we built it
 
-People already talk to an AI assistant every day. Three things still break:
+For a lot of people, ChatGPT is already a friend: they talk to it every day about what to cook, what to wear and what they're watching. **We want to build the most emotive, adaptive companion for daily life**: one with a face and a voice, that reacts to you, adapts to who you are, and is there on whatever screen you're using.
+
+Today three things still break:
 
 1. **Every new AI starts from zero.** You introduce yourself again and again.
 2. **It can't see your world.** You describe your fridge, your outfit or your screen in words.
