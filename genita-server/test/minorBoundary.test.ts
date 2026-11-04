@@ -21,3 +21,9 @@ test("Codex #640 r4: 'I told him I'm 15', 'a 15-year-old', '15 years of age' cou
   for (const t of ["I told him I'm 15", "I'm a 15-year-old", "I'm 15 years of age"]) assert.ok(minorLine([t]), t);
   assert.equal(minorLine(['My mom said "I\'m 15" in a play']), null);
 });
+
+test("Codex #640 r5: the nearest attribution decides", () => {
+  assert.ok(minorLine(['My mom said "Be honest" and I said "I\'m 15".']));
+  assert.ok(minorLine(['My sister said, "I\'m 17", but I\'m 15.']));
+  assert.equal(minorLine(['My sister said, "I\'m 15".']), null);
+});

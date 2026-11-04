@@ -16,7 +16,7 @@ const UNDER_18 = new RegExp(`${SELF}(?:under\\s+(?:18|eighteen)\\b${QUANTITY}|a\
 const TEEN_PHRASE = /\b(?:i'?m|i am|im)\s+(?:a\s+)?(?:teen(?:ager)?|in (?:middle|high) school|a (?:freshman|sophomore|junior|senior) in high school)\b/i;
 // someone else's words: My sister said, "I'm 15"
 // someone else's words: My sister said, "I'm 15" — but "I told him I'm 15" is their own (Codex #640 r4)
-const QUOTED = /\b(\w+)\s+(?:said|says|told (?:me|us|her|him|them)|texted|wrote|asked|goes|went)\b[^.!?]{0,6}["“'‘]?\s*$/i;
+const ATTRIBUTION = /\b(\w+)\s+(?:said|says|told (?:me|us|her|him|them)|texted|wrote|asked|goes|went)\b/gi;
 
 export type AgeSay = { minor: boolean; adult: boolean; teen: boolean };
 // Codex #640 r3: every match is checked; only one inside someone else's quote is skipped
@@ -24,8 +24,10 @@ function own(re: RegExp, t: string): boolean {
   const g = new RegExp(re.source, "gi");
   for (const m of t.matchAll(g)) {
     const before = t.slice(0, m.index);
-    const q = QUOTED.exec(before);
-    const quoted = (!!q && !/^(?:i|we)$/i.test(q[1])) || ((before.match(/"/g) ?? []).length % 2 === 1 && /\b(?!i\b|we\b)\w+\s+(?:said|says|told|texted|wrote|asked)\b/i.test(before));
+    // the nearest attribution before it decides (Codex #640 r5: 'mom said "Be honest" and I said "I'm 15"' is theirs)
+    const last = [...before.matchAll(ATTRIBUTION)].at(-1);
+    const tail = last ? before.slice(last.index! + last[0].length) : "";
+    const quoted = !!last && !/^(?:i|we)$/i.test(last[1]) && !/[.!?]/.test(tail) && (tail.trim().length <= 8 || (before.match(/"/g) ?? []).length % 2 === 1);
     if (!quoted) return true;
   }
   return false;
