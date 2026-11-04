@@ -42,10 +42,15 @@ export function styleLine(s: StyleInput): { line: string; asks: boolean } {
   const base = "Style call: say your pick first, then one personal reason in the same breath, from what you know about them: their coloring, favorite colors, the style they like, the occasion, a fit they said they like or hate, or what they picked before; like \"the cream one, warm tones always look good on you\" or \"black's your go-to anyway, and it's sharper for tonight\". One reason, two at most, friend tone, no list or lecture. Never comment on their body shape.";
   if (known) return { line: `${base}${rotate}`, asks: false };
   if (s.askedColoring) return { line: `${base} You don't know their coloring: if you mention it, read it lightly from what you see (like \"with your hair color, the warmer one pops\"), never as certain.${rotate}`, asks: false };
-  return { line: `${base} You don't know their coloring yet: read it lightly from what you see (never as certain), or end with one casual question like \"warm or cool tones usually work for you?\". Only one question.${rotate}`, asks: true };
+  // Chelsea 11/4 (#14): unknown taste or coloring → one light question at the start, then use the answer; never a quiz
+  return { line: `${base} You don't know their coloring yet: give the reason from what you do know (the occasion, their taste), then end with one casual question, like \"warm or cool tones usually work for you?\" — only this one question, and use their answer from then on.${rotate}`, asks: true };
 }
 
-/** "find me some" right after a style verdict: keep its reason and say it once */
-export const STYLE_FOLLOW_LINE = "They want you to find something for the look you just picked: keep the reason you gave (the color or tone) and say it once in a few words, like \"going warm-toned like we said\".";
+/** "find me some" right after a style verdict: keep its reason and say it once (only a reason it really gave) */
+export const STYLE_FOLLOW_LINE = "They want you to find something for the look you just picked: say in a few words that you're keeping the reason you gave, like \"keeping it in those tones like we said\", only a reason you actually said, and don't say you found anything yet.";
+export function styleFollowLine(verdict: string | undefined): string {
+  const v = (verdict ?? "").replace(/<[^>]*>|\[[^\]]*\]/g, "").replace(/["\n]/g, " ").replace(/\s*[—–-]+\s*$/, "").trim().slice(0, 200);
+  return v ? `${STYLE_FOLLOW_LINE} Your verdict was (data): "${v}".` : STYLE_FOLLOW_LINE;
+}
 /** the same reason for the product search (rides the Finds follow-up ask) */
 export const STYLE_SEARCH_HINT = "Keep the reason you gave out loud (the color or tone that suits them) in what you pick.";

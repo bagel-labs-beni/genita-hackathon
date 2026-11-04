@@ -1546,7 +1546,7 @@ test("prompt-100 style (session): a style ask on camera gets the personal-reason
   assert.match(second, /use a different one now/);
   await session.onClientText(JSON.stringify({ type: "text", text: "find me some shoes for it" }));
   await client.waitFor((m) => m.type === "reply" && m.final === true && calls.length >= 3);
-  assert.match(calls.at(-1)!.instructions ?? "", /going warm-toned like we said/);
+  assert.match(calls.at(-1)!.instructions ?? "", /keeping the reason you gave[^\n]*Your verdict was \(data\): "The cream one, it warms you right up\."/);
   session.close();
   process.env.GENITA_STYLE_REASON = "0";
   try {

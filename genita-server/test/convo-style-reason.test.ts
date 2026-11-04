@@ -1,7 +1,7 @@
 /** prompt-100 style (Chelsea 11/4 23:4x): style feedback uses what we know about them, woven in. */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isStyleTurn, knowsColoring, styleLine, STYLE_FOLLOW_LINE, STYLE_SEARCH_HINT, styleReasonOn } from "../src/convo/styleReason.ts";
+import { isStyleTurn, knowsColoring, styleFollowLine, styleLine, STYLE_FOLLOW_LINE, STYLE_SEARCH_HINT, styleReasonOn } from "../src/convo/styleReason.ts";
 import { normalizeEnglish } from "../src/voice/normalize.ts";
 import { buildInstructions } from "../src/prompt/persona.ts";
 import { GENERAL_REPLY_LINE } from "../src/finds/general.ts";
@@ -20,12 +20,13 @@ test("style turns, coloring known or not, the once-only question, rotation", () 
   const unknown = styleLine({ profile: "", said: [], askedColoring: false });
   assert.equal(unknown.asks, true);
   assert.match(unknown.line, /warm or cool tones usually work for you\?/);
-  assert.match(unknown.line, /never as certain/);
+  assert.match(unknown.line, /only this one question, and use their answer from then on/);
   const later = styleLine({ profile: "", said: ["The cream one, warm tones always look good on you."], askedColoring: true });
   assert.equal(later.asks, false);
   assert.doesNotMatch(later.line, /usually work for you\?/);
   assert.match(later.line, /Reasons you already gave this call \(data\): "The cream one, warm tones always look good on you\."; use a different one now/);
-  assert.match(STYLE_FOLLOW_LINE, /say it once/);
+  assert.match(STYLE_FOLLOW_LINE, /only a reason you actually said, and don't say you found anything yet/);
+  assert.match(styleFollowLine("<happy> The cream one, warm tones love you."), /Your verdict was \(data\): "The cream one, warm tones love you\."/);
   assert.match(STYLE_SEARCH_HINT, /Keep the reason/);
   assert.ok(styleReasonOn({}));
   assert.ok(!styleReasonOn({ GENITA_STYLE_REASON: "0" }));
@@ -33,8 +34,8 @@ test("style turns, coloring known or not, the once-only question, rotation", () 
 
 test("prod 23:30 items: digits in text, years read naturally, no 'we got cut off', a real answer before the sheet, the card on screen only when asked", () => {
   const p = buildInstructions({ persona: { name: "Mira", kind: "human", traits: ["warm"] }, mode: "chat", style: "v1", onScreen: "Best ramen in Seoul: Oreno Ramen, Yuzu Ramen" });
-  assert.match(p, /write numbers, years, times and prices in digits/);
-  assert.match(p, /talk about it only if their line is about it/);
+  assert.match(p, /write numbers in digits, like 1889 or 330, never as words/);
+  assert.match(p, /Talk about that card only if their line is about it\./);
   assert.equal(normalizeEnglish("It was built in 1889."), "It was built in eighteen eighty-nine.");
   assert.equal(normalizeEnglish("Back in 2019 it was $40."), "Back in twenty nineteen it was forty dollars.");
   assert.doesNotMatch(RECONNECT_LINE, /cut off/);
