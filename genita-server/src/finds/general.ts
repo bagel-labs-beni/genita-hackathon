@@ -12,7 +12,7 @@
  * natural hedge when it doesn't), with no search of its own, while the sheet fills; "I put a few links up for you."
  * when the card lands (after that sentence). The results are never read aloud.
  */
-import type { FindCard } from "../protocol.ts";
+import type { FindCard, FindImage } from "../protocol.ts";
 import type { SparkStreamEvent } from "../meta/spark.ts";
 import { SentenceSplitter } from "../text/sentences.ts";
 import { parseTaggedSentence } from "../text/tags.ts";
@@ -32,6 +32,10 @@ export const GENERAL_REPLY_LINE =
   "Web results for this question are about to appear on their screen. Answer right now in ONE short sentence (under 20 words) from what you already know. No links, no site names, no lists, and don't say you're searching or looking it up. If you don't know, or it changes often (news, scores, prices, hours), make that one sentence a natural hedge, like \"Not sure off the top of my head, pulling up a few sources.\"";
 export const GENERAL_MAX_RESULTS = 5;
 export const GENERAL_TIMEOUT_MS = 25_000;
+/** r01: each result's og:image read (and its bytes) is cut off after this; a slow page never holds the sheet */
+export const GENERAL_IMAGE_MS = 1500;
+/** r01: the searching sheet's title when the question has nothing to show */
+export const GENERAL_TITLE_FALLBACK = "Looking it up";
 
 // ───────── which turns search ─────────
 
@@ -197,6 +201,85 @@ export function pickResults(j: GeneralJson | null, traced: string[]): Result[] {
   return out;
 }
 
+// ───────── r01 sheet data ─────────
+
+/** "search for" / "look up" left after coreQuestion, and the "what's the" before the thing itself */
+const TITLE_VERB = /^(?:look (?:up|it up)|search(?: for| up| the web for)?|google|find out|check)\s+/;
+const TITLE_LEAD = /^(?:what(?:'s| is| are|s)|which(?:'s| is| are)|where(?:'s| is| are))\s+(?:the|a|an)\s+/;
+const TITLE_HOWTO = /^how (?:do|can|should|would) (?:i|we)\s+/;
+const SMALL_WORD = /^(?:a|an|the|and|or|but|in|on|of|for|to|at|by|with|near|vs|from|into)$/;
+export const TITLE_MAX_WORDS = 6;
+
+/** The searching sheet's title: the question in a few words, title-cased ("what's the best kbbq in suwon?" → "Best KBBQ in Suwon"). */
+export function questionTitle(question: string): string {
+  let t = coreQuestion(question).replace(/[?.!。？！]+$/u, "").trim();
+  t = t.replace(TITLE_VERB, "").replace(TITLE_LEAD, "").replace(TITLE_HOWTO, "").trim();
+  // at most 6 words that carry meaning ("the", "in" don't count) and 8 in all
+  let w: string[] = [];
+  let content = 0;
+  for (const x of t.split(/\s+/).filter(Boolean)) {
+    if (w.length >= 8 || (!SMALL_WORD.test(x) && content >= TITLE_MAX_WORDS)) break;
+    if (!SMALL_WORD.test(x)) content++;
+    w.push(x);
+  }
+  while (w.length > 1 && SMALL_WORD.test(w[w.length - 1])) w = w.slice(0, -1);
+  if (!w.length) return GENERAL_TITLE_FALLBACK;
+  return w
+    .map((x, i) => {
+      if (i > 0 && SMALL_WORD.test(x)) return x;
+      // "kbbq", "nyc", "bts": no vowel → an acronym
+      if (/^[a-z]{2,5}$/.test(x) && !/[aeiouy]/.test(x)) return x.toUpperCase();
+      return x.charAt(0).toUpperCase() + x.slice(1);
+    })
+    .join(" ");
+}
+
+/** The reason line on its own, at most 18 words; undefined when there is none (no empty labels). */
+export function whyLine(why: string): string | undefined {
+  const w = why.trim().split(/\s+/).filter(Boolean);
+  if (!w.length) return undefined;
+  return w.length > 18 ? `${w.slice(0, 18).join(" ").replace(/[,;:—-]+$/, "")}…` : w.join(" ");
+}
+
+/** find.image "source-N" (0-based) on a stored card (runner + app keep the picture with its row). */
+export function applySourceImage(card: FindCard, img: FindImage): void {
+  const m = img.slot.match(/^source-(\d+)$/);
+  const s = m ? card.sources?.[Number(m[1])] : undefined;
+  if (s) s.image = img;
+}
+
+function cutOff<T>(run: (signal: AbortSignal) => Promise<T>, ms: number, outer: AbortSignal): Promise<T | null> {
+  const a = new AbortController();
+  const signal = AbortSignal.any([outer, a.signal]);
+  return new Promise<T | null>((resolve) => {
+    const t = setTimeout(() => { a.abort(); resolve(null); }, ms);
+    run(signal).then((v) => { clearTimeout(t); resolve(v); }, () => { clearTimeout(t); resolve(null); });
+  });
+}
+
+/** Each result's own og:image, read in parallel (≤ GENERAL_IMAGE_MS per read), stored like a product photo. */
+async function resultPictures(ctx: PipelineCtx, results: Result[]): Promise<void> {
+  const { pageFacts, productImage } = ctx.vendors;
+  if (!pageFacts || !productImage) return;
+  await Promise.all(
+    results.map(async (r, i) => {
+      const slot = `source-${i}`;
+      const facts = await cutOff((s) => pageFacts(r.url, s), GENERAL_IMAGE_MS, ctx.signal);
+      const bytes = facts?.image ? await cutOff((s) => productImage(facts.image!, s), GENERAL_IMAGE_MS, ctx.signal) : null;
+      if (ctx.signal.aborted) return;
+      try {
+        if (!bytes?.length) throw new Error(facts?.image ? "image unreadable" : "no og:image");
+        // #1 is also the card's hero (the iPhone link layout already draws it)
+        if (i === 0) ctx.emit({ type: "find.image", findId: ctx.findId, slot: "hero", status: "ready", url: await ctx.putImage("hero", bytes) });
+        ctx.emit({ type: "find.image", findId: ctx.findId, slot, status: "ready", url: await ctx.putImage(slot, bytes) });
+      } catch (err) {
+        if (ctx.signal.aborted) return;
+        ctx.emit({ type: "find.image", findId: ctx.findId, slot, status: "failed" });
+        ctx.log("find.general_image_failed", { findId: ctx.findId, slot, message: String(err).slice(0, 120) });
+      }
+    }),
+  );
+}
 
 function prompt(question: string, timeZone?: string): string {
   return [
@@ -211,7 +294,7 @@ function prompt(question: string, timeZone?: string): string {
 export async function runGeneral(ctx: PipelineCtx): Promise<PipelineResult> {
   const t0 = ctx.now();
   const timings: Record<string, number> = {};
-  ctx.emit({ type: "find.started", findId: ctx.findId, utteranceId: ctx.utteranceId, kind: "answer", title: "Looking it up", detail: "Searching the web" });
+  ctx.emit({ type: "find.started", findId: ctx.findId, utteranceId: ctx.utteranceId, kind: "answer", title: questionTitle(ctx.question), detail: "Searching the web" });
   let j: GeneralJson | null = null;
   let traced: string[] = [];
   try {
@@ -231,7 +314,11 @@ export async function runGeneral(ctx: PipelineCtx): Promise<PipelineResult> {
     return { card: null, timings };
   }
   const n = results.length;
-  const query = coreQuestion(ctx.question);
+  // r01 stage line: what was read, then what was picked (the app rotates on its own clock when these don't come)
+  const pages = new Set(traced.map(samePageKey)).size;
+  if (pages) ctx.emit({ type: "find.progress", findId: ctx.findId, detail: `Reading ${pages} page${pages > 1 ? "s" : ""}` });
+  ctx.emit({ type: "find.progress", findId: ctx.findId, detail: `Picking the best ${n}` });
+  const pictures = !!(ctx.vendors.pageFacts && ctx.vendors.productImage);
   const card: FindCard = {
     id: ctx.findId,
     kind: "answer",
@@ -248,7 +335,17 @@ export async function runGeneral(ctx: PipelineCtx): Promise<PipelineResult> {
     options: [],
     why: [],
     ask: strList(j?.ask, 2, 40),
-    sources: results.map((r) => ({ title: r.why ? `${r.title} — ${r.why}` : r.title, url: r.url, domain: r.domain })),
+    // title stays "title — why" for apps that predate `why` (r01 apps show `why` on its own line and drop the suffix)
+    sources: results.map((r, i) => {
+      const why = whyLine(r.why);
+      return {
+        title: r.why ? `${r.title} — ${r.why}` : r.title,
+        url: r.url,
+        domain: r.domain,
+        ...(why ? { why } : {}),
+        ...(pictures ? { image: { slot: `source-${i}`, status: "pending" as const } } : {}),
+      };
+    }),
     // never taste chips on a looked-up fact
     reasons: [],
     // no how lines: the Mac shows them under an empty-looking "Why these" (P0 11/4)
@@ -257,6 +354,8 @@ export async function runGeneral(ctx: PipelineCtx): Promise<PipelineResult> {
   ctx.emit({ type: "find.created", findId: ctx.findId, card });
   timings.cardMs = Math.round(ctx.now() - t0);
   ctx.log("find.general", { findId: ctx.findId, results: n, traced: traced.length });
+  await resultPictures(ctx, results);
+  timings.picturesMs = Math.round(ctx.now() - t0);
   return { card, timings };
 }
 
