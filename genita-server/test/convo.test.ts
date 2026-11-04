@@ -1992,3 +1992,32 @@ test("Codex #664 r2: medical / danger emergencies get no hold beat", async () =>
   for (const t of ["I can't breathe. My chest feels tight.", "someone is following me", "I think I'm having a heart attack", "my throat is closing"]) assert.ok(NO_BEAT_EMERGENCY.test(t), t);
   for (const t of ["what's for dinner?", "tell me about octopuses", "I had a long day"]) assert.ok(!NO_BEAT_EMERGENCY.test(t), t);
 });
+
+test("demo S4: asked which to wear, a neutral undertone / color-season note is advice; a looks judgment still is not", async () => {
+  const { guardSentence } = await import("../src/convo/guard.ts");
+  const ask = "Which one looks better on me, the white one or the black one? It's for the Halloween party tonight.";
+  assert.equal(guardSentence("You have warm undertones, so dark brown shoes or leather accessories will pull it together.", { camera: true, userText: ask }), null);
+  assert.equal(guardSentence("With your warm skin tone, the black one with dark brown shoes works.", { camera: true, userText: ask }), null);
+  assert.equal(guardSentence("Your skin is glowing, the black one wins.", { camera: true, userText: ask }), "appearance");
+  assert.equal(guardSentence("You look so pretty in the black one.", { camera: true, userText: ask }), "appearance");
+  assert.equal(guardSentence("Your warm skin tone looks great.", { camera: true, userText: "how was your day" }), "appearance", "no style ask: still a comment on them");
+});
+
+test("Codex #675 r1: a body judgment next to 'warm undertones' is still an appearance line; 'explain the word outfit' is no style ask", async () => {
+  const { guardSentence } = await import("../src/convo/guard.ts");
+  assert.equal(guardSentence("Your body is too fat for that dress, even with warm undertones.", { camera: true, userText: "Which outfit should I wear?" }), "appearance");
+  assert.equal(guardSentence("You have warm undertones, so dark brown shoes or leather accessories will pull it together.", { camera: true, userText: "Which one looks better on me, the white one or the black one?" }), null);
+});
+
+test("Codex #675 r2: 'your skin is wrinkled' next to undertones is still appearance; 'what goes with mashed potatoes' is no style ask", async () => {
+  const { guardSentence } = await import("../src/convo/guard.ts");
+  assert.equal(guardSentence("Your skin is wrinkled despite your warm undertones.", { camera: true, userText: "Which outfit should I wear?" }), "appearance");
+  assert.equal(guardSentence("Your warm skin tone works well with black.", { camera: true, userText: "What goes with mashed potatoes?" }), "appearance");
+  assert.equal(guardSentence("Your warm skin tone works well with black.", { camera: true, userText: "What goes with this black dress?" }), null);
+});
+test("Codex #675 r3: a verdict on the skin tone itself, or a non-clothes 'which one is better', gets no color exception", async () => {
+  const { guardSentence } = await import("../src/convo/guard.ts");
+  assert.equal(guardSentence("Your skin tone is blotchy and uneven.", { camera: true, userText: "Which outfit should I wear?" }), "appearance");
+  assert.equal(guardSentence("Your warm skin tone is dull.", { camera: true, userText: "Which one is better for learning Python?" }), "appearance");
+  assert.equal(guardSentence("You have warm undertones, so dark brown shoes or leather accessories will pull it together.", { camera: true, userText: "Which one looks better on me, the white one or the black one?" }), null);
+});

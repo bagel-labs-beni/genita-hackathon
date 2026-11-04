@@ -366,6 +366,11 @@ export const SUGGEST_MAC_REPLIES = [
  * of text) go by without it, or the reply ends without it, say the fixed line instead and stop reading Spark.
  * Upstream errors still throw (a failed reply keeps the suggestion for the retry).
  */
+/** demo S4 rehearsal (1/6): "…move this call to your Mac. Pretty sure that black top is still the move" — on the
+ * suggest turn a pick before seeing the outfit is never said (sentences after the Mac one are checked for one) */
+/** Codex #675 r2: emergency help and a move ask in other words ("move the call over there") are never an early pick */
+const EARLY_PICK_KEEP = /\b(?:911|988|112|999|emergency|police|ambulance|call for help|somewhere safe|safe place|get out|(?:move|moving|switch|hop|transfer|transferring|take|bring) (?:the |this |our |it |us |over|to)|over there|bigger screen|big screen|so i can see|let me see|show me)\b/i;
+export const EARLY_PICK = /\b(?:go with|i'?d (?:go|pick|choose|wear|say)|wins?\b|(?:is|'s) (?:still )?(?:the move|my pick|it)|my (?:pick|vote)|no contest|for sure|definitely (?:the|wear)|(?:wear|pick|choose|grab) the|(?:black|white|red|blue|green|cream|beige|camel|brown|grey|gray|navy) (?:one|top|coat|trench|jacket|dress|shirt)\b[^.!?]{0,40}\b(?:is|wins|works|hits|pops))/i;
 export async function* mustNameMac(src: AsyncIterable<SparkStreamEvent>, line: string, now: () => number = Date.now, waitMs = 2500): AsyncGenerator<SparkStreamEvent> {
   let buf = "";
   let passing = false;
@@ -2182,6 +2187,7 @@ export class Session {
       language: this.language,
       cameraAttached: camera.length > 0,
       onScreen: this.finds?.onScreen(),
+      foundBefore: this.finds?.foundBefore(text),
       renamedFrom,
       // this call's one question rides the first user turns (the turn being built is userTurns + 1)
       // never while watching together (the question would land on top of the show)
@@ -2585,6 +2591,12 @@ export class Session {
         if (this.v1 && tts && !keepOpener && !interpret && !self) {
           const named = dropRepeatedName(tts, this.user?.name, [...this.recentReplies.slice(-2), ...sentences.map((x) => x.display)]);
           if (named !== tts) { tts = named; this.log("convo.name_dropped", { utteranceId }); }
+        }
+        // demo S4 rehearsal (1/6): after the "move to your Mac" sentence, no outfit pick before the Mac camera sees it
+        // Codex #675 r1: a sentence that itself asks to move to the Mac is the ask, never dropped
+        if (built.suggestMac && tts && !interpret && !self && sentences.some((x) => /\bMac\b/i.test(x.display)) && !/\bMac\b/i.test(tts) && !EARLY_PICK_KEEP.test(tts) && EARLY_PICK.test(tts)) {
+          this.log("handoff.early_pick_dropped", { utteranceId });
+          tts = "";
         }
         // v1 (AI sweep 11/3): "Summer should know that by now" — the user's name as a sentence subject → "You …"
         if (this.v1 && tts && !interpret && !self) {

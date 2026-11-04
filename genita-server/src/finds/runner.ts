@@ -150,6 +150,10 @@ export type RunnerHooks = {
 
 type Running = { abort: AbortController; done: Promise<PipelineResult> };
 
+/** demo S5: how far back "what did you find for me earlier" looks */
+const RECENT_FINDS_MS = 72 * 3_600_000;
+// Codex #675 r1: an ask about earlier finds, never "what do you find relaxing" / "what did you find funny about that movie"
+const FOUND_ASK = /\b(?:what|which)\s+(?:shoes|boots|sneakers|products|items|picks|jackets?|coats?|dress(?:es)?|tops?|recipes?)\b[^.?!]{0,30}\b(?:did you|you)\s+(?:find|found|pick|picked|pull|pulled|show|showed|recommend|recommended|suggest|suggested)\b|\b(?:what|which)\b[^.?!]{0,40}\b(?:did you|you)\s+(?:find|found|pick|picked|pull|pulled|recommend|recommended)\s+(?:for me\b|earlier|last time|before|yesterday)|\b(?:the|those|that) (?:shoes|boots|picks|ones|finds|products|options|stuff|things) you (?:found|picked|showed|pulled|recommended)\b|\b(?:what you|you) found (?:for me|earlier|last time|before)\b/i;
 export class FindsRunner {
   private readonly deps: FindsDeps;
   private readonly hooks: RunnerHooks;
@@ -184,6 +188,15 @@ export class FindsRunner {
     this.timeZone = o.timeZone && /^[A-Za-z_+\-/0-9]{1,40}$/.test(o.timeZone) ? o.timeZone : undefined;
     // the account's style card, read once per call (a failure just means no blue chip)
     this.likes = o.owner && this.deps.likes ? this.deps.likes(o.owner).catch(() => undefined) : Promise.resolve(undefined);
+    // demo S5 return visit (0/5, once "I didn't pull any shoes"): this account's recent Finds, read once per call, so
+    // "what did you find for me earlier?" is answered from them (foundBefore)
+    this.recent = [];
+    const owner = this.owner;
+    if (owner) void this.deps.store.list(owner).then((cards) => {
+      if (this.owner !== owner || this.purged) return;
+      const since = Date.now() - RECENT_FINDS_MS;
+      this.recent = cards.filter((c) => Date.parse(c.createdAt) >= since).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 3);
+    }).catch(() => {});
     // S5: shoes in each color this account likes, searched in the background before anyone asks (11/4)
     if (this.deps.productCache === true) void this.warmProducts();
   }
@@ -710,6 +723,20 @@ export class FindsRunner {
     for (const stop of [...this.backgroundStops]) stop();
     // the last product search's question / label (a "find a couple more" refine) was made from it too (Codex #583 r16)
     this.lastProduct = null;
+  }
+
+  private recent: FindCard[] = [];
+  /** demo S5: the line about what was found before this call, only when the user asks about it ("what shoes did you
+   * find for me earlier?"). Cards made in this call are left out (they are on screen / in the turns). Data only. */
+  foundBefore(userText: string): string | undefined {
+    if (!FOUND_ASK.test(userText)) return undefined;
+    const old = this.recent.filter((c) => !this.cards.has(c.id));
+    if (!old.length) return undefined;
+    return old.map((c, i) => {
+      const what = c.products?.length ? c.products.map((p) => `${p.name} (${p.store}${p.price ? `, ${p.price}` : ""}${p.taste ? `; ${p.taste}` : ""})`).join(", ") : c.subtitle;
+      const why = c.why.length ? ` why: ${c.why.join(" ")}` : c.evidence?.style ? ` why: ${c.evidence.style}` : "";
+      return `${i + 1}. ${c.title}${what ? `: ${what}` : ""}.${why}`;
+    }).join(" ").slice(0, 700);
   }
 
   /** One line for the system prompt about the card on screen, or undefined. Data only. */
