@@ -98,8 +98,68 @@ final class MicStallTests: XCTestCase {
     }
 
     func testConfigRebuildsAreCappedPerFiveSeconds() {
-        XCTAssertEqual(change(lastBuild: 0, nowOut: 44_100, recent: 3), .keep)
-        XCTAssertEqual(change(lastBuild: 0, nowOut: 44_100, running: false, recent: 3), .restart)
+        // the cap holds back rebuilds whose formats are as built (the TF 351 self-induced loop), not real format changes
+        XCTAssertEqual(change(lastBuild: 0, wantMic: true, hasMic: false, builtIn: 0, nowIn: 0, recent: 3), .keep)
+        XCTAssertEqual(change(lastBuild: 0, wantMic: true, hasMic: false, builtIn: 0, nowIn: 0, running: false, recent: 3), .restart)
+    }
+
+    // MARK: b14 — AirPods: no sound at all after the route moved (the capped change restarted into the old format)
+
+    private let speaker = MicStall.Hardware(inRate: 48_000, inChannels: 1, outRate: 48_000, outChannels: 2,
+                                            route: "in=MicrophoneBuiltIn out=Speaker")
+    private let airPodsHFP = MicStall.Hardware(inRate: 16_000, inChannels: 1, outRate: 16_000, outChannels: 1,
+                                               route: "in=BluetoothHFP out=BluetoothHFP")
+
+    private func route(from built: MicStall.Hardware, to now: MicStall.Hardware, lastBuild: TimeInterval = 0, recent: Int = 0,
+                       running: Bool = false) -> MicStall.ConfigAction {
+        MicStall.onConfigChange(now: 10, lastBuild: lastBuild, wantMic: true, hasMic: true, builtIn: built.inRate, nowIn: now.inRate,
+                                builtOut: built.outRate, nowOut: now.outRate, running: running, recentRebuilds: recent,
+                                built: built, current: now)
+    }
+
+    func testARouteChangeToANewRateAlwaysRebuilds() {
+        XCTAssertEqual(route(from: speaker, to: airPodsHFP), .rebuild, "AirPods mid-call: 48 → 16 kHz")
+        XCTAssertEqual(route(from: speaker, to: airPodsHFP, recent: 3), .rebuild, "past the self-induced cap it still rebuilds")
+        XCTAssertEqual(route(from: speaker, to: airPodsHFP, lastBuild: 9.8), .rebuild, "not held in the 750 ms window")
+        XCTAssertEqual(route(from: speaker, to: airPodsHFP, running: true), .rebuild)
+        XCTAssertEqual(route(from: airPodsHFP, to: speaker), .rebuild, "AirPods taken out")
+    }
+
+    func testANewRouteAtTheSameRateOrOnlyNewChannelsRebuildsToo() {
+        var wideband = airPodsHFP
+        wideband.inRate = 24_000; wideband.outRate = 24_000
+        var speaker24 = speaker
+        speaker24.inRate = 24_000; speaker24.outRate = 24_000
+        XCTAssertEqual(route(from: speaker24, to: wideband), .rebuild, "speaker 24 kHz → HFP wide-band 24 kHz: the port moved")
+        var mono = speaker
+        mono.outChannels = 1
+        XCTAssertEqual(route(from: speaker, to: mono, recent: 3), .rebuild, "2 → 1 output channels")
+    }
+
+    func testAFlappingRouteWaitsThenStillRebuilds() {
+        XCTAssertEqual(route(from: speaker, to: airPodsHFP, recent: MicStall.maxHardwareRebuilds), .wait(MicStall.hardwareStormWaitS))
+    }
+
+    func testOurOwnBuildsChangeIsStillCoalescedAndATransientZeroIsNotARouteChange() {
+        guard case .wait = route(from: speaker, to: speaker, lastBuild: 9.8) else { return XCTFail("self-induced change rebuilt") }
+        XCTAssertFalse(MicStall.hardwareChanged(built: speaker, now: .init(inRate: 0, inChannels: 0, outRate: 48_000, outChannels: 2,
+                                                                          route: speaker.route)))
+        XCTAssertTrue(MicStall.hardwareChanged(built: speaker, now: airPodsHFP))
+    }
+
+    func testThePlaybackWatchdogFiresAfter800msAndBacksOff() {
+        XCTAssertFalse(MicStall.playbackStalled(now: 10.7, lastProgress: 10, lastRecover: -.infinity, recoveries: 0))
+        XCTAssertTrue(MicStall.playbackStalled(now: 10.8, lastProgress: 10, lastRecover: -.infinity, recoveries: 0))
+        XCTAssertFalse(MicStall.playbackStalled(now: 11, lastProgress: 10, lastRecover: 10.5, recoveries: 2), "1.6 s after 2 tries")
+        XCTAssertTrue(MicStall.playbackStalled(now: 12.2, lastProgress: 10, lastRecover: 10.5, recoveries: 2))
+        XCTAssertFalse(MicStall.playbackStalled(now: 14, lastProgress: 10, lastRecover: 10, recoveries: 10), "at most every 5 s")
+    }
+
+    func testTheMicWatchdogFiresAfterTwoSecondsOfNoUplink() {
+        XCTAssertFalse(MicStall.uplinkStalled(now: 11.9, lastProgress: 10, lastRecover: -.infinity, recoveries: 0))
+        XCTAssertTrue(MicStall.uplinkStalled(now: 12, lastProgress: 10, lastRecover: -.infinity, recoveries: 0))
+        XCTAssertFalse(MicStall.uplinkStalled(now: 13, lastProgress: 10, lastRecover: 10, recoveries: 2), "4 s after 2 tries")
+        XCTAssertTrue(MicStall.uplinkStalled(now: 14, lastProgress: 10, lastRecover: 10, recoveries: 2))
     }
 
     func testAMicThatGivesOnlyDigitalSilenceAfterABuildIsCaught() {
@@ -114,7 +174,8 @@ final class MicStallTests: XCTestCase {
         XCTAssertTrue(MicStall.mayRebuild(recent: 2))
         XCTAssertFalse(MicStall.mayRebuild(recent: 3))
         XCTAssertEqual(change(lastBuild: 0, running: false, recent: 3, stopped: true), .rebuild, "a queued reply is carried, never dropped")
-        XCTAssertEqual(change(lastBuild: 0, nowOut: 44_100, running: false, vp: false), .restart, "no voice processing: restart only")
+        XCTAssertEqual(change(lastBuild: 0, running: false, vp: false), .restart, "no voice processing: restart only")
+        XCTAssertEqual(change(lastBuild: 0, nowOut: 44_100, running: false, vp: false), .rebuild, "…unless the hardware format moved (b14)")
         XCTAssertEqual(change(lastBuild: 0, wantMic: true, hasMic: false, builtIn: 0, nowIn: 0, vp: false), .rebuild, "…unless the mic is gone")
     }
 }
