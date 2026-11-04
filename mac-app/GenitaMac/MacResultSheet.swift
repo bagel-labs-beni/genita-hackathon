@@ -135,8 +135,16 @@ struct MacResultSheet: View {
                         if !card.subtitle.isEmpty {
                             Text(card.subtitle).font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.mute).padding(.top, 2)
                         }
+                        // CW-02 (춘식이 11/4): the outfit's occasion, the grey "what you said" chip, 8 pt under the subtitle
+                        if let occasion = card.occasionChip {
+                            Text(occasion.text).font(MacSheetInk.sans(12, .medium)).lineLimit(1).truncationMode(.tail).foregroundStyle(MacSheetInk.ink)
+                                .padding(.horizontal, 10).frame(height: 24).background(MacSheetInk.chip, in: Capsule())
+                                .padding(.top, 8)
+                                .accessibilityLabel(occasion.accessibilityLabel).accessibilityIdentifier("macOutfitOccasion")
+                        }
                         if picks.isEmpty {
-                            generic(card).padding(.top, 16)
+                            // chip flow → the rest: 12 pt (춘식이 11/4), else the usual 16 under the subtitle
+                            generic(card).padding(.top, card.occasionChip != nil ? 12 : 16)
                         } else {
                             HStack(alignment: .top, spacing: 12) {
                                 ForEach(Array(picks.enumerated()), id: \.element.id) { i, pick in
