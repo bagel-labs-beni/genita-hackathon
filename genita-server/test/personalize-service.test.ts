@@ -36,7 +36,7 @@ const IMPORT_RAW = {
   rules: [],
   to_confirm: ["Reminder frequency", "Favorite shows", "Weekend rhythm", "Music"],
 };
-const card = (id: string, headline: string, o: Record<string, unknown> = {}) => ({ id, headline, items: [{ text: `You ${id} like this.`, evidence: "explicit" }], promise: "So I'll keep that in mind.", evidence: "explicit", tags: id === "taste" ? [{ group: "style", text: "Clean, minimal", dislike: false }] : [], help: id === "help" ? [{ label: "Find things for me", sub: "Two picks", mode: "just_do_it" }] : [], ...o });
+const card = (id: string, headline: string, o: Record<string, unknown> = {}) => ({ id, headline, items: [{ text: `You ${id} like this, warm and direct.`, evidence: "explicit" }], promise: "So I'll keep that in mind.", evidence: "explicit", tags: id === "taste" ? [{ group: "style", text: "Clean, minimal", dislike: false }] : [], help: id === "help" ? [{ label: "Find things for me", sub: "Two picks", mode: "just_do_it" }] : [], ...o });
 const STORY_RAW = { cards: ["think", "talk", "taste", "help", "lines"].map((id) => card(id, `${id} headline.`)), topics: [] };
 
 function harness(handler: Handler) {
@@ -89,7 +89,7 @@ test("import: the story is written in parallel with the parse (no extra wait) an
   assert.ok(body.story, "story came back with the import");
   assert.deepEqual(body.story!.map((c) => c.id), ["think", "talk", "taste", "help", "lines", "unknowns"]);
   assert.equal(body.story!.find((c) => c.id === "talk")!.headline, "talk headline.");
-  assert.equal(body.story!.find((c) => c.id === "talk")!.items[0].text, "You talk like this.");
+  assert.equal(body.story!.find((c) => c.id === "talk")!.items[0].text, "You talk like this, warm and direct.");
   const stored = await h.store.getStyle("u1");
   assert.equal(stored!.story!.from, "text");
 });
@@ -148,7 +148,8 @@ test("PATCH /v1/profile (C1→C3): marked lines + what's right → profile chang
   assert.doesNotMatch(profile, /Clean, minimal clothes/);
   const reworded = (await h.p.story("u1")).cards.find((c) => c.id === "taste")!;
   assert.equal(reworded.headline, "Plain, no logos.");
-  assert.deepEqual(cardTexts(reworded).filter((x) => /logos|Plain/.test(x)), ["Plain basics", "Not for you: logos"]);
+  // D19: Spark's "Plain basics" has no word in the card (only "Dislikes logos and loud prints." now): dropped
+  assert.deepEqual(cardTexts(reworded).filter((x) => /logos|Plain/.test(x)), ["Not for you: logos"]);
   const storyReq = h.calls.find((c) => c.schemaName === "story_cards")!;
   assert.match(storyReq.instructions!, /only these cards: taste\./);
   assert.match(String(h.calls[0].input), /marked these as wrong: \"Clean, minimal\"/);
@@ -338,7 +339,8 @@ test("S1 perf: PATCH /v1/profile answers before any Spark call (slow correction 
     if (req.schemaName === "profile_correction") return { updates: [{ field: "likes", text: "Dislikes logos and loud prints.", replaces: ["Style: Clean, minimal clothes."], chip: "no logos" }], answered: { field: "", text: "", chip: "" } };
     if (req.schemaName === "story_cards") {
       if (++storyCalls > 1) await new Promise((r) => setTimeout(r, 1500)); // the reword after the import's story
-      return { cards: [card("taste", "Plain, no logos.")], topics: [] };
+      // the reword's tag is the new line's ("Logos" from "Dislikes logos…"); the removed "Clean, minimal" can't come back (D19)
+      return { cards: [card("taste", "Plain, no logos.", { tags: [{ group: "style", text: "Logos", dislike: true }] })], topics: [] };
     }
     return null;
   });
