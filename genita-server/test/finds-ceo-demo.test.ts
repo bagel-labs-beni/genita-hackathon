@@ -17,7 +17,7 @@ import type { SamBox } from "../src/meta/sam.ts";
 // ───────────── A: identify ─────────────
 
 test("A intent: 'what's this?' with the camera on is an identify ask; without the camera it stays a spoken answer", () => {
-  for (const l of ["What's this?", "what is this", "What is that?", "Hey Peter, what's this?", "What am I holding?", "Do you know what this is?", "이게 뭐야", "이거 뭐야?", "이건 뭐야"]) {
+  for (const l of ["What's this?", "what is this", "What is that?", "Hey Rio, what's this?", "What am I holding?", "Do you know what this is?", "이게 뭐야", "이거 뭐야?", "이건 뭐야"]) {
     assert.deepEqual(classifyTurn(l, true), { kind: "identify" }, l);
     assert.equal(classifyTurn(l, false), null, l);
   }
