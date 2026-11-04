@@ -85,6 +85,14 @@ test("soft prompt (content-policy retry): speech framing, same keep line, distin
     for (const k of FACE_KEYS) assert.match(faceSoftPrompt(k, kind), /lighting, background, framing and camera exactly the same/);
   }
   assert.doesNotMatch(faceSoftPrompt("A", "human"), /wide|jaw|tongue/);
+  // P1-3: human AH2 retries with its own milder line in the edit scaffold (passed 18/24 where the shape line got 8/22)
+  for (const ctx of [{}, { profile: "human" as const }]) {
+    const p = faceSoftPrompt("AH2", "human", ctx);
+    assert.match(p, /^Edit only the person's mouth and jaw: .*caught mid-sentence saying 'ah', the mouth open a bit more than for a quick 'ah'/);
+    assert.match(p, /not smiling\. Do not move, resize, rotate or re-crop/);
+    assert.doesNotMatch(p, /fingers|wider|lowered|father/, "wording that drew refusals on 11/4");
+  }
+  assert.doesNotMatch(faceSoftPrompt("AH2", "animal"), /mid-sentence/, "non-human AH2 keeps the generic retry");
 });
 
 test("face prompts: one scaffold, a distinct shape line per key, kind-aware wording, stricter retry", () => {
@@ -225,8 +233,20 @@ test("makeFaceSet: an edit error is retried once, then rejected; all edits faili
   const policy = new Error('meta 400: {"error":{"code":"content_policy_violation"}}');
   const one = fakeMedia({ keyOf: keyOf("human"), fail: (t) => (t.startsWith("EI") ? policy : null) });
   const st = await makeFaceSet({ metaKey: "k", media: one.media, scene: scene(), kind: "human", size: "1024x1820" });
-  assert.deepEqual(one.calls.edits.filter((e) => e.key.startsWith("EI")).map((e) => e.key), ["EI", "EI~"], "a content-policy refusal is retried with the softer speech framing");
+  assert.deepEqual(one.calls.edits.filter((e) => e.key.startsWith("EI")).map((e) => e.key), ["EI", "EI~", "EI"], "a content-policy refusal is retried with the softer speech framing, then the shape prompt once more");
   assert.deepEqual(faceManifest(st, urlFor).rejected, [{ key: "EI", reason: "content_policy", retried: true }]);
+  // P1-3: Muse refuses AH2 at random on the same scene; its own milder line gets a second roll and keeps it.
+  // Prep runs humans with profile "human", so that is what this passes.
+  const flaky = fakeMedia({ keyOf: keyOf("human"), fail: (t) => (t === "AH2#1" || t === "AH2~#1" ? policy : null) });
+  const st2 = await makeFaceSet({ metaKey: "k", media: flaky.media, scene: scene(), kind: "human", profile: "human", size: "1024x1820" });
+  assert.deepEqual(flaky.calls.edits.filter((e) => e.key.startsWith("AH2")).map((e) => e.key), ["AH2", "AH2~", "AH2~"]);
+  const m2 = faceManifest(st2, urlFor);
+  assert.equal(m2.mouthKeys.AH2, "/v1/companion/face/AH2", "AH2 kept on the third try");
+  assert.deepEqual(m2.rejected, []);
+  // a drift is still one stricter retry, never a third try
+  const drift = fakeMedia({ keyOf: keyOf("human"), fail: (t) => (t === "AH2!#1" ? policy : null), sam: (tag, part) => (/^AH2#/.test(tag) && part === "face" ? [box(380, 400, 780, 900)] : [part === "face" ? FACE : MOUTH]) });
+  await makeFaceSet({ metaKey: "k", media: drift.media, scene: scene(), kind: "human", profile: "human", size: "1024x1820" });
+  assert.deepEqual(drift.calls.edits.filter((e) => e.key.startsWith("AH2")).map((e) => e.key), ["AH2", "AH2!"], "drift then refusal: no third try");
 
   const all = fakeMedia({ keyOf: keyOf("human"), fail: () => new Error("meta 503: down") });
   const saved: string[] = [];
