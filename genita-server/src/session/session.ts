@@ -3005,6 +3005,8 @@ export class Session {
             ...chunkTiming(this.lip.active, chunk.alignment, sentenceOffset),
           });
           sentAudio = true;
+          // Codex #664 r5 P2: a beat counts as played at its first PCM (a stream error after it still remembers it)
+          if (s.beat) this.lastBeat = playedBeat(s.display);
           heard = true;
           if (chunk.alignment) sentChars += chunk.alignment.chars.join("");
           if (chunk.audio.length) {
@@ -3021,7 +3023,6 @@ export class Session {
         }
         if (!signal.aborted) {
           if (!s.beat) reply.spoken.push(s.display);
-          else if (sentAudio) this.lastBeat = playedBeat(s.display);
           // after the clause's audio: its words' span (aligner) or else its audio span, same timeline as audio.offsetMs
           if (s.face && sentAudio && this.deps.config.voice?.expressions !== false) {
             const startMs = clauseWords?.s ?? Math.round(sentenceOffset);
