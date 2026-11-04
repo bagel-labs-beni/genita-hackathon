@@ -6,7 +6,10 @@
  * on screen so "Ask about this" follow-ups make sense.
  */
 import { webAnswerCard, type WebSearch } from "./webAnswer.ts";
-import { applySourceImage, runGeneral } from "./general.ts";
+import { applySourceImage, assessLine, runGeneral } from "./general.ts";
+import { JUDGE_TIMEOUT_MS, judgeEnabled, judgeWithin, sparkJudge, type Judge, type JudgeResult } from "./judge.ts";
+import type { Intent } from "./intent.ts";
+import { findUrl } from "./parse.ts";
 import { reasonChips, tasteLines, type TasteLine } from "../personalize/reasons.ts";
 import { randomUUID } from "node:crypto";
 import type { FindCard, FindKind, ServerEvent } from "../protocol.ts";
@@ -33,6 +36,10 @@ export type FindsDeps = {
   productPrefetch?: boolean;
   /** S5 product cache + background warm-up (GENITA_PRODUCT_CACHE=0 turns it off) */
   productCache?: boolean;
+  /** the find judge (judge.ts); default: one Spark call. Tests stub it. */
+  judge?: Judge;
+  /** the judge's deadline (default JUDGE_TIMEOUT_MS) */
+  judgeTimeoutMs?: number;
   /** demo S5: a product search with nothing on screen by then gets one "still hunting" line (default 30 s) */
   stillSearchingMs?: number;
 };
@@ -140,6 +147,8 @@ export type TurnInput = {
   unclear?: boolean;
   /** Chelsea 11/4 D: the Mac's shared screen right now (watch together), when a share is on */
   screen?: string;
+  /** the turn's own signal (barge-in, cancel): a judged card for a cancelled turn never starts */
+  signal?: AbortSignal;
 };
 
 /** reaction: S5 — the spoken line made from the same pick the search shops (null = say the plain ack) */
@@ -297,7 +306,6 @@ export class FindsRunner {
     if (this.closed || (this.owner && this.deps.store.work.isDeleted(this.owner))) return null;
     let t = input;
     /** P0 11/4: a camera find that can't see clearly closes quietly — the spoken reply already answered */
-    const silentFail = (e: ServerEvent): ServerEvent => (e.type === "find.failed" && e.reason !== "stopped" ? { ...e, reason: "stopped", message: "" } : e);
     const afterProduct = this.afterProduct(t.recent);
     // demo S4→S5: a bare "send me the links" while the outfit's shoes are being searched already takes that search
     // (only a links ask: "does this jacket match my style?" stays an outfit question, Codex P2)
@@ -318,8 +326,19 @@ export class FindsRunner {
     // Chelsea 11/4 D: while the Mac shares its screen, a question takes the shared frame (fresher than the camera,
     // ≤1 s old), unless it's about them or what they hold; "on my screen" / "this video" always mean the share
     const intent0 = followUp ? { kind: "product" as const } : base ?? (prefetchLive && isLinksAsk(t.text) ? { kind: "product" as const } : null);
-    if (!intent0) return null;
-    const intent = intent0;
+    // Chelsea 11/4: nothing in the words alone — the judge looks at the line, the context and the picture (judge.ts)
+    this.judgeAbort?.abort();
+    this.judgeAbort = null;
+    if (!intent0) {
+      this.startJudge(input);
+      return null;
+    }
+    return this.start(intent0, t, followUp, false);
+  }
+
+  /** The keyword intent or the judge's pick, started the same way. `judged`: the turn already answered out loud. */
+  private start(intent: NonNullable<Intent>, t: TurnInput, followUp: boolean, judged: boolean): TurnStarted | null {
+    const silentFail = (e: ServerEvent): ServerEvent => (e.type === "find.failed" && e.reason !== "stopped" ? { ...e, reason: "stopped", message: "" } : e);
     // the share when there is no camera picture, or when the line points at it; otherwise the camera (Codex r1 P2)
     const useScreen = !!t.screen && !followUp && (
       !t.frames.length || SCREEN_WORDS.test(t.text) || (intent.kind === "product" && refersToScreen(t.text) && !CAMERA_WORDS.test(t.text))
@@ -489,15 +508,64 @@ export class FindsRunner {
    */
   webAnswer(o: { utteranceId: number; question: string; said: string; searches: WebSearch[] }): string | null {
     if (this.closed || this.purged || (this.owner && this.deps.store.work.isDeleted(this.owner))) return null;
+    // one sheet card per turn: whichever of the judge and the reply's own search came first (Codex judge r1 P2)
+    if (this.judged.has(o.utteranceId)) return null;
     const findId = randomUUID();
     const card = webAnswerCard({ id: findId, question: o.question, said: o.said, searches: o.searches });
     if (!card) return null;
+    this.judged.add(o.utteranceId);
     this.onEvent({ type: "find.started", findId, utteranceId: o.utteranceId, kind: "answer", title: "Looked it up", detail: card.subtitle });
     // never taste chips on a looked-up fact
     card.reasons = [];
     this.onEvent({ type: "find.created", findId, card });
     this.hooks.log("find.done", { findId, kind: "answer", ok: true, sources: card.sources.length });
     return findId;
+  }
+
+  /** the judge of the latest turn (a newer turn stops it) */
+  private judgeAbort: AbortController | null = null;
+  /** turns a judged card answered: the reply's own web search adds no second sheet card */
+  private readonly judged = new Set<number>();
+
+  /**
+   * Chelsea 11/4: an "open" line (assessLine) with nothing in its words goes to the find judge beside the spoken reply.
+   * A pick other than none starts the same pipeline as a keyword intent, with find.started at once.
+   */
+  private startJudge(t: TurnInput): void {
+    if (!judgeEnabled() || t.unclear) return;
+    if (assessLine(t.text) !== "open") return;
+    const abort = new AbortController();
+    this.judgeAbort = abort;
+    // a barged-in / cancelled turn (its reply resolves null) starts nothing (Codex judge r1 P2)
+    void t.replyText.then((said) => { if (said === null) abort.abort(); }).catch(() => {});
+    // cut off while it played (the reply text was already final): the turn's own signal (Codex judge r2 P2)
+    if (t.signal?.aborted) return;
+    t.signal?.addEventListener("abort", () => abort.abort(), { once: true });
+    // the picture is chosen from what they said ("on my screen" → the share), and kept for the card (Codex judge r1 P2)
+    const useScreen = !!t.screen && (!t.frames.length || SCREEN_WORDS.test(t.text));
+    const frame = useScreen ? t.screen : t.frames.at(-1);
+    const seen: TurnInput = useScreen ? { ...t, frames: [], screen: t.screen } : { ...t, screen: undefined };
+    const judge = this.deps.judge ?? sparkJudge(this.deps.vendors);
+    const t0 = this.hooks.now();
+    void judgeWithin(judge, { text: t.text, recent: (t.recent ?? []).slice(-4), ...(frame ? { frame, screen: useScreen } : {}) }, this.deps.judgeTimeoutMs ?? JUDGE_TIMEOUT_MS, abort.signal).then((r) => {
+      const ms = Math.round(this.hooks.now() - t0);
+      if (this.judgeAbort === abort) this.judgeAbort = null;
+      if (abort.signal.aborted || this.closed) {
+        this.hooks.log("finds.judge", { utteranceId: t.utteranceId, kind: r.kind, started: null, reason: "cancelled", ms });
+        return;
+      }
+      const intent = judgedIntent(r, seen);
+      // the reply's own web search already put a card up for this turn
+      const taken = this.judged.has(t.utteranceId);
+      this.hooks.log("finds.judge", { utteranceId: t.utteranceId, kind: r.kind, started: taken ? null : intent?.kind ?? null, reason: r.reason, ms });
+      if (!intent || taken) return;
+      if (this.owner && this.deps.store.work.isDeleted(this.owner)) return;
+      this.judged.add(t.utteranceId);
+      const question = (intent.kind === "answer" || intent.kind === "product") && r.query ? r.query : t.text;
+      // a judged turn already answered out loud: its fixed line (ack) is dropped, so a failure isn't said either
+      const started = this.start(intent, { ...seen, text: question }, false, true);
+      if (started) this.acked.delete(started.findId);
+    });
   }
 
   /** Waits for every running pipeline (tests, e2e script). */
@@ -815,6 +883,9 @@ export class FindsRunner {
   private tasteForgottenIds = new Set<string>();
   forgetTaste(): void {
     this.tasteForgottenAt = new Date().toISOString();
+    // a judge still thinking was asked with the old conversation: it starts nothing (Codex judge r1 P1)
+    this.judgeAbort?.abort();
+    this.judgeAbort = null;
     this.lastOutfit = null; // its verdict may quote the forgotten taste (Codex r1 P1)
     for (const id of this.running.keys()) this.tasteForgottenIds.add(id);
     // a prefetch searched with the old taste: stopped and never reused (Codex #583 r9)
@@ -880,10 +951,30 @@ export class FindsRunner {
     // purge (account deleted): stop everything and never write again.
     this.closed = true;
     if (opts.purge) this.purged = true;
+    this.judgeAbort?.abort(); // a judge still thinking starts nothing after the call
     this.prefetched?.abort.abort();
     this.prefetched = null;
     for (const stop of this.backgroundStops) stop();
     for (const [id, r] of this.running) if (opts.purge || !this.cards.has(id)) r.abort.abort();
   }
   private purged = false;
+}
+
+const RECIPE_ASK = /\bwhat (?:can|could|should) (?:i|we) (?:make|cook)\b|\bwhat'?s in (?:here|there|my fridge)\b|\bin (?:my|the) fridge\b|\bwith (?:these|this|what i have|what's here)\b|뭐\s*해\s*먹|냉장고/i;
+const OUTFIT_CHOICE = /\b(?:which|better|or|should i wear|pick|choose|decide|go with)\b|어느|뭐가\s*나아|골라/i;
+
+/** The judge's pick as a runner intent, or null: camera kinds need a picture, a link needs a URL, general needs web search on. */
+export function judgedIntent(r: JudgeResult, t: { text: string; frames: string[]; screen?: string }, env: NodeJS.ProcessEnv = process.env): NonNullable<Intent> | null {
+  const picture = t.frames.length > 0 || !!t.screen;
+  switch (r.kind) {
+    case "general": return env.GENITA_WEB_SEARCH === "0" ? null : { kind: "answer" };
+    case "product": return { kind: "product" };
+    case "identify": return picture ? { kind: "identify" } : null;
+    // Chelsea 11/4 (finds lane): describe / observe lines ("what am I wearing?", "recommend a dinner menu") stay a spoken
+    // answer — an outfit card needs a choice, a recipe card a cooking-from-these ask, same as the keyword path
+    case "recipe": return picture && RECIPE_ASK.test(t.text) ? { kind: "recipe" } : null;
+    case "outfit": return picture && OUTFIT_CHOICE.test(t.text) ? { kind: "outfit" } : null;
+    case "link": { const url = findUrl(t.text); return url ? { kind: "link", url } : null; }
+    default: return null;
+  }
 }

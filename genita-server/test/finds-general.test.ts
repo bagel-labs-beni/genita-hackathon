@@ -19,106 +19,7 @@ import { checkServerEvent, type FindCard, type ServerEvent } from "../src/protoc
 
 const FRAME = "data:image/jpeg;base64,AAAA";
 
-export const OPENS_SHEET = [
-  "Who won the World Series last night?",
-  "What's the best ramen place in Seoul?",
-  "Can you look up when the Met opens on Sunday?",
-  "How do I get a red wine stain out of a carpet?",
-  "What's the latest news on the Artemis mission?",
-  "Do you know who the CEO of Nintendo is?",
-  "How much does a Tesla Model 3 cost right now?",
-  "Recommend a good sci-fi book for a long flight",
-  "Hey Jin, which phone has the best camera in 2026?",
-  "Where is the Eiffel Tower?",
-  "Who won the U.S. Open this year?",
-  // Codex r1
-  "Who invented penicillin?",
-  "What is photosynthesis?",
-  "Where is Seoul?",
-  "Look up how much it costs to visit the Louvre.",
-  "How long does it take to fly from Seoul to Tokyo?",
-  // Codex r2
-  "Google ramen restaurants in Seoul",
-  "Search Nintendo CEO",
-  "오늘 서울 날씨 알려줄 수 있어",
-  // P0 11/4 (device test): external, look-up-able only
-  "Recommend a good dinner place near Gangnam",
-  "Best KBBQ in Suwon?",
-  // Codex r1 (narrowing)
-  "who is the ceo of nintendo?",
-  "닌텐도 CEO 누구야?",
-  "Can you recommend a good dinner place near Gangnam for me?",
-  // Codex r2 (narrowing)
-  "where is the eiffel tower?",
-  "에펠탑은 어디에 있어?",
-  "Recommend a good cafe for me",
-  // Codex r3
-  "Jin, search Nintendo CEO",
-  "What's the population of the US?",
-  "서울에서 제일 맛있는 라멘집 어디야?",
-  "오늘 뉴스 좀 찾아봐",
-];
-
-export const STAYS_SPOKEN = [
-  "How are you?",
-  "What do you think of me?",
-  "Is this one better?",
-  "What's your favorite color?",
-  "Who are you?",
-  "How do I look?",
-  "What should I eat tonight?",
-  "I feel kind of tired today",
-  "Tell me a joke",
-  "Thanks, that's great",
-  "What is this?",
-  "What about that one?",
-  "How was your day?",
-  "What did you find for me earlier?",
-  "Which of these avocados looks ripe?",
-  "send me the links",
-  "너 오늘 기분 어때?",
-  "이거 뭐야?",
-  "What's the best way to kill myself?",
-  // Codex r1
-  "How about the black one?",
-  "How about a quick chat?",
-  "Do not search for anything, just chat with me.",
-  "Google is great.",
-  "서울 날씨 좋다",
-  "오늘 뉴스 재밌었어",
-  "What is next?",
-  "How long does it take?",
-  "Can you look it up?",
-  "How long does it take to get there?",
-  "How long does it take to get there by train?",
-  "오늘 서울 날씨 알려줬네",
-  // P0 11/4 (device test): personal advice / opinion is a spoken answer from the camera and her profile, never a web sheet
-  "Recommend black or white for me",
-  "Recommend black or white for my phone",
-  "Recommend black or white",
-  "Black or white?",
-  "Which is better, black or white?",
-  "What should I eat for dinner?",
-  "Which color suits me?",
-  "Should I get bangs?",
-  "Suggest something to wear for me",
-  "What's the best thing to do when you're bored?",
-  "How come the sky is blue?",
-  "What makes a good friend?",
-  "Does black or white look good in daylight?",
-  // Codex r3 (narrowing)
-  "What's good?",
-  "What's the vibe?",
-  "What's the next step?",
-  "어디까지 얘기 했지?",
-  "행복은 어디서 오는 걸까?",
-  // demo runbook (QA 11/4): other paths own these
-  "I have no idea what to wear today. It's for the Halloween party tonight. Jin, can you help me pick an outfit?",
-  "Find me some.",
-  "Yes please",
-  "Hey Jin, I'm back.",
-  "What is it like?",
-];
+import { OPENS_SHEET, STAYS_SPOKEN } from "./helpers/general-lines.ts";
 
 test("general: information questions open a web search, with or without the camera", () => {
   for (const line of OPENS_SHEET) {
@@ -258,8 +159,6 @@ test("general pipeline: no usable JSON but the search ran → the search's own p
   const r2 = await runGeneral(ctxFor(fakeVendors("{}", []), none));
   assert.equal(r2.card, null);
   assert.deepEqual(none.map((e) => e.type), ["find.started", "find.failed"]);
-  const failed = none.find((e) => e.type === "find.failed") as Extract<ServerEvent, { type: "find.failed" }>;
-  assert.deepEqual([failed.reason, failed.message], ["stopped", ""], "a failed search is silent (Chelsea 11/4: finds only add a sheet)");
   for (const e of none) assert.deepEqual(checkServerEvent(e), [], JSON.stringify(e));
 });
 

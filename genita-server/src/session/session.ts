@@ -2525,7 +2525,7 @@ export class Session {
       const said = new Promise<string | null>((r) => (resolveSaid = r));
       // history already holds this turn (remember above): the lines before it
       const recent = this.history.slice(-7, -1).map((h) => `${h.role === "user" ? "User" : "You"}: ${h.text}`);
-      const started = this.finds.onTurn({ text, frames: built.images, ...(built.screen ? { screen: built.screen } : {}), utteranceId, replyText: said, recent, unclear: built.images.length > 0 && this.framesUnclear });
+      const started = this.finds.onTurn({ text, frames: built.images, ...(built.screen ? { screen: built.screen } : {}), utteranceId, replyText: said, recent, unclear: built.images.length > 0 && this.framesUnclear, signal });
       cardTurn = !!started;
       signal.addEventListener("abort", () => resolveSaid(null), { once: true });
       if (started?.kind === "answer" && !started.ack) {
