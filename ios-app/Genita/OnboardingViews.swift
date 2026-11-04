@@ -18,6 +18,8 @@ struct RootView: View {
                 case .consent: ConsentView(model: model)
                 // D47 HISY v2: I03 / N3 → HISY-0 (S0) → cards → HISY-7 (the six I04 rows are still saved)
                 case .preferences: HISYView(model: model)
+                // SUM insight report (춘식이 r02 R1); flag off / no report → the old SUM below
+                case .summary where model.useInsightReport: InsightReportView(model: model)
                 case .name, .prompt, .paste, .preparing, .image, .voice, .depth, .help, .relationship, .challenge, .tempo, .initiative, .boundaries, .presence, .summary: ReferenceOnboardingView(model: model)
                 case .imageCheck: ImageCheckView(model: model)
                 case .companionName: CompanionNameView(model: model)

@@ -25,7 +25,9 @@ import { domainOf, lastJsonObject, str } from "./parse.ts";
 import { userMessage, type FindsVendors, type OutputItem } from "./vendors.ts";
 import type { PageFacts } from "./fetchPage.ts";
 import type { PipelineCtx, PipelineResult } from "./pipeline.ts";
-import { colorsOf } from "./productCache.ts";
+import { askedColors, offColor } from "./productCache.ts";
+// one color rule for search, cache and warm-up (handover b9-6): it lives in productCache.ts
+export { askedColors, offColor };
 
 export const PRODUCT_COUNT = 2;
 /** PF-1 searching line: one line at 390 pt next to Stop (≈ 32 characters of Pretendard 16 medium) */
@@ -174,12 +176,50 @@ export function shortName(s: string): string {
   return cut.slice(0, cut.lastIndexOf(" ") > 20 ? cut.lastIndexOf(" ") : 48).replace(/[\s,;:–-]+$/, "") + "…";
 }
 
-/** Keep a product page: the page says product → yes; says list → no; can't tell → URL shape must not be a list. */
+const PLURAL_GOODS = "boots|shoes|sneakers|loafers|sandals|heels|flats|jackets|coats|blazers|dresses|shirts|tops|tees|sweaters|hoodies|pants|trousers|jeans|skirts|bags|totes|accessories|clothing";
+/** "/womens-brown-boots", "/mens-jackets", "/boots-dark-brown/": a category slug, not one item (AU-79). */
+const LIST_SLUG = new RegExp(`^(?:(?:womens?|mens?|women-s|men-s|kids|all|shop)-(?:[a-z]+-){0,3}(?:${PLURAL_GOODS})|(?:${PLURAL_GOODS})(?:-[a-z]+){0,3})$`, "i");
+/** A title only a results page has: "24 results", "Results for brown boots", "Shop all". */
+const LIST_TITLE_STRONG = /\b(?:\d+ (?:items|results|products|styles)|results for|shop all)\b/i;
+/** One title part that names a category: "Women's Boots", "Brown boots collection", "Boots". */
+const CATEGORY_PART = new RegExp(`^(?:(?:women|men|kid)'?s(?: [a-z]+){0,2} (?:${PLURAL_GOODS})|(?:[a-z]+ ){0,3}(?:collection|category)|(?:${PLURAL_GOODS})|shop (?:women|men))$`, "i");
+/**
+ * A title that is only a category (+ a short shop name): "Women's Boots | Shop", "Brown boots collection – Acme".
+ * "Women's Boots - Heritage Chelsea Boot" names one item in another part, so it is not (Codex AU-79 r1).
+ */
+function categoryTitle(title: string): boolean {
+  const parts = title.split(/\s+[|–—:-]\s+/).map((p) => p.trim()).filter(Boolean);
+  return parts.some((p) => CATEGORY_PART.test(p)) && parts.every((p) => CATEGORY_PART.test(p) || p.split(/\s+/).length <= 2);
+}
+
+/** A category / collection the URL slug or the page title gives away, when the markup can't say (AU-79). */
+export function looksLikeList(url: string, title?: string): boolean {
+  if (title && LIST_TITLE_STRONG.test(title)) return true;
+  // "/products/boots-dark-brown" is one product whatever its slug or a category word in its title says
+  if (urlShape(url) === "product") return false;
+  if (title && categoryTitle(title)) return true;
+  try {
+    const seg = new URL(url).pathname.replace(/\/+$/, "").split("/").pop() ?? "";
+    return LIST_SLUG.test(seg.replace(/\.html?$/i, ""));
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Keep a product page: the page says product → yes; says list → no; can't tell (unread, or no markers) → the URL
+ * shape must not be a list and neither the slug nor the title may read as a category (FD-02: category pages 0).
+ */
 export function isProductPage(url: string, facts: PageFacts | null): boolean {
   if (hardList(url)) return false;
   if (facts?.kind === "product") return true;
   if (facts?.kind === "list") return false;
-  return urlShape(url) !== "list";
+  if (urlShape(url) === "list") return false;
+  return !looksLikeList(url, facts?.title);
+}
+/** Pages that say "one product" (markup or URL) are taken before ones nothing could confirm. */
+function proven(url: string, facts: PageFacts | null): boolean {
+  return facts?.kind === "product" || urlShape(url) === "product";
 }
 
 const words = (s: string) => new Set(s.toLowerCase().match(/[a-z가-힣]{3,}/g) ?? []);
@@ -252,55 +292,6 @@ export function offOccasion(product: string, asked: string): boolean {
   // only a shoe ask and a shoe product ("Leather slide buckle belt" is a belt, Codex P2)
   if (!SHOE_ASK.test(asked) || NOT_SHOE.test(name)) return false;
   return HOUSE_SHOES.test(name) && !HOUSE_SHOES.test(asked);
-}
-
-/** Color words that are the same color to someone asking for it ("dark brown" → a chocolate or espresso boot). */
-const COLOR_FAMILY: Record<string, string> = {
-  brown: "brown", chocolate: "brown", espresso: "brown", mocha: "brown", cognac: "brown",
-  tan: "tan", camel: "tan", beige: "tan", sand: "tan", khaki: "tan", taupe: "tan", oatmeal: "tan", nude: "tan",
-  black: "black",
-  grey: "grey", gray: "grey", charcoal: "grey", stone: "grey",
-  white: "white", ivory: "white", cream: "white", bone: "white", ecru: "white",
-  navy: "blue", blue: "blue", indigo: "blue", denim: "blue", teal: "blue", turquoise: "blue",
-  red: "red", burgundy: "red", wine: "red", maroon: "red", oxblood: "red", cherry: "red", rust: "red",
-  green: "green", olive: "green", mint: "green",
-  pink: "pink", coral: "pink", purple: "purple", plum: "purple", lavender: "purple", lilac: "purple",
-  yellow: "yellow", mustard: "yellow", orange: "orange", silver: "silver", gold: "gold", copper: "gold", bronze: "gold",
-};
-const families = (text: string) => new Set(colorsOf(text).map((c) => COLOR_FAMILY[c] ?? c));
-const GOODS = /^(?:boots?|shoes?|sneakers?|loafers?|sandals?|heels?|flats|mules|jackets?|coats?|blazers?|parkas?|dress(?:es)?|shirts?|overshirts?|tees?|t-shirts?|tops?|sweaters?|cardigans?|hoodies?|skirts?|pants|trousers|jeans|shorts|bags?|totes?|backpacks?|belts?|hats?|caps?|scarf|scarves|watch(?:es)?|wallets?|socks|gloves|ones?)$/;
-/**
- * The color the thing to buy is asked in, in the order said: "dark brown boots", "black leather loafers", "another
- * one in brown". Not a color they rule out ("no black ones") or one of what they own ("my brown trench", Codex r1).
- */
-function colorAsks(text: string): string[] {
-  const w = text.toLowerCase().match(/[a-z]+(?:-[a-z]+)?/g) ?? [];
-  const out: string[] = [];
-  w.forEach((x, i) => {
-    if (!colorsOf(x).length) return;
-    const before = w.slice(Math.max(0, i - 3), i);
-    if (before.some((b) => /^(no|not|without|except|than|my|your|his|her|their|our)$/.test(b))) return;
-    const after = w.slice(i + 1, i + 4);
-    const names = after.some((a) => GOODS.test(a)) || /^(in|colou?r)$/.test(w[i - 1] ?? "");
-    if (names) out.push(x);
-  });
-  return out;
-}
-/** The color asked for: this turn's, else the latest one in the search it refines ("black…", "in brown instead" → brown). */
-export function askedColors(question: string, previous?: string): Set<string> {
-  const now = colorAsks(question);
-  if (now.length) return families(now.join(" "));
-  const before = colorAsks(previous ?? "");
-  return before.length ? families(before[before.length - 1]) : new Set();
-}
-/**
- * FD-02 "color request match 100%" (AU-78): a product whose own name names only other colors than the one asked
- * for ("Black Chelsea Boot" for "dark brown boots"). A name with no color word is not off-color.
- */
-export function offColor(name: string, asked: Set<string>): boolean {
-  if (!asked.size) return false;
-  const has = families(name);
-  return has.size > 0 && ![...has].some((c) => asked.has(c));
 }
 
 export function productPrompt(o: { question: string; recent: string[]; taste: string[]; previous?: string; city: string | null; region: string; today: string; seeing?: boolean; oneSearch?: boolean }): string {
@@ -530,7 +521,12 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
 
   const products: (FindProduct & { _image?: string })[] = [];
   let serverOpened = 0;
-  cands.forEach((p, i) => {
+  // proven product pages first, then pages nothing could confirm (a category page can't take a slot a product page had)
+  // the asked color first (AU-78), then proven product pages before unconfirmed ones (Codex #602 r2)
+  const rank = (i: number) => (offColor(str(cands[i].item?.name, 200), colors) ? 2 : 0) + (proven(cands[i].url, facts[i]) ? 0 : 1);
+  const order = cands.map((_, i) => i).sort((a, b) => rank(a) - rank(b));
+  order.forEach((i) => {
+    const p = cands[i];
     if (products.length >= PRODUCT_COUNT) return;
     const f = facts[i];
     // not in the trace: only a page we fetched ourselves and that says "one product" counts as opened

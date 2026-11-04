@@ -133,11 +133,11 @@ extension FindsModel {
                 for e in rest where isImage(e) { self?.apply(e) }
             }
         case 44:
-            // motion card 5 demo: the recipe at half; 6 s later the "?" kimchi chip turns ✓ (as if confirmed on the call)
+            // motion card 5 demo: the recipe at half; 11 s later the "?" kimchi chip turns ✓ (as if confirmed on the call)
             play([(recipe, recipe.events)]); state = .half
             let lastItems = recipe.events.last { if case .findItems = $0 { return true }; return false }
             Task { [weak self] in
-                try? await Task.sleep(for: .seconds(6))
+                try? await Task.sleep(for: .seconds(11))
                 guard case var .findItems(i)? = lastItems else { return }
                 i.items = i.items.map { item in
                     var item = item

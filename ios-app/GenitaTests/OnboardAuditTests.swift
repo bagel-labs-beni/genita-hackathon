@@ -202,4 +202,58 @@ import UIKit
         XCTAssertFalse(AppState.forgetEarlierInstall(storage: updated) { cleared += 1 })
         XCTAssertEqual(cleared, 1)
     }
+
+    /// Handover b9-6 (#514 × onboard): POST /v1/companion's `409 reset_in_progress` (a Start over still erasing) is
+    /// "try again in a moment", never "a companion already exists"; a real `companion_exists` still is.
+    func testResetInProgressIsRetriedNotTakenAsAnExistingCompanion() async throws {
+        let posts = Box(0)
+        let companion = Data(#"{"id":"c1","name":"Jin","type":"human","prep":{"status":"running","steps":{}}}"#.utf8)
+        let voices = Data(#"{"voices":[{"id":"72","name":"Tara"}],"suggested":"72","available":true}"#.utf8)
+        let busy = Data(#"{"error":"reset_in_progress","message":"Starting over. Try again in a moment."}"#.utf8)
+        func model(busyFor n: Int, then last: (Int, Data)) -> AppState {
+            let (m, _) = makeModel { req in
+                let path = req.url?.path ?? ""
+                if path.hasSuffix("/v1/companion/voices") { return (200, voices) }
+                if path.hasSuffix("/v1/companion") && req.httpMethod == "POST" {
+                    posts.value += 1
+                    return posts.value <= n ? (409, busy) : last
+                }
+                return (404, Data())
+            }
+            m.resetRetryDelay = .milliseconds(20)
+            m.setup.imageId = "img1"
+            m.go(.imageCheck)
+            return m
+        }
+        // busy twice, then made
+        posts.value = 0
+        let a = model(busyFor: 2, then: (200, companion))
+        a.useCheckedImage()
+        await a.companionTask?.value
+        XCTAssertEqual(posts.value, 3, "asked again after each reset_in_progress")
+        XCTAssertEqual(a.setup.companionCreated, true)
+        // busy every time: nothing was made, so the app must not think it was (NM01 creates it later)
+        posts.value = 0
+        let b = model(busyFor: 99, then: (200, companion))
+        b.useCheckedImage()
+        await b.companionTask?.value
+        XCTAssertEqual(posts.value, 1 + b.resetRetries)
+        XCTAssertNotEqual(b.setup.companionCreated, true, "reset_in_progress is not 'already exists'")
+        // another sign-in while it waits: no more tries under the new account's token, nothing applied to it
+        posts.value = 0
+        let d = model(busyFor: 99, then: (200, companion))
+        d.resetRetryDelay = .milliseconds(200)
+        d.useCheckedImage()
+        for _ in 0..<100 where posts.value == 0 { try await Task.sleep(for: .milliseconds(10)) }
+        d.signedIn(userId: "u2", consented: true)
+        try await Task.sleep(for: .milliseconds(600))   // past two of the old retry gaps
+        XCTAssertEqual(posts.value, 1, "the old account's create stops at the sign-in")
+        XCTAssertNotEqual(d.setup.companionCreated, true)
+        // a real companion_exists still means it exists
+        posts.value = 0
+        let c = model(busyFor: 0, then: (409, Data(#"{"error":"companion_exists"}"#.utf8)))
+        c.useCheckedImage()
+        await c.companionTask?.value
+        XCTAssertEqual(c.setup.companionCreated, true)
+    }
 }

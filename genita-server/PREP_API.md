@@ -52,6 +52,30 @@ Card `{id, eyebrow, headline, subline?, items, promise?, evidence, tags?, note?,
 
 In calls (with an account): the server uses the stored profile; each of the first 3 calls asks one `unknowns` topic (first 3 turns; `profile.asking` when the reply asks it, then the next line is checked for the answer → `profile.updated` "Noted: …"); corrections said in the call → `profile.updated` "Updated: …"; after the call, explicit statements and repeated patterns from it are saved. Finds cards get `reasons` (PROTOCOL.md).
 
+## Insight report (SUM, Chelsea 11/4 — data model 춘식이 r01 + r02)
+
+What Genita noticed about the user, written in the background (Muse Spark) so SUM opens with it:
+the import starts it on the redacted paste (saved after the card), N1–N3 on the picks, and the app sends the setup
+answers when the last P screen opens. Stored in `user_styles.style_json.insights`; the pasted reply is kept in
+memory only (2 h) and never stored. `GENITA_INSIGHTS=0` → 404 (the app keeps the old SUM).
+`GENITA_INSIGHTS_PROFILE=0` keeps it out of the call profile.
+
+| Call | Body | Answer |
+|---|---|---|
+| `GET /v1/profile/insights?wait=s` (0–8, 30/min) | — | `{status: ready\|pending\|failed\|none, report}`; `pending` may carry the previous report |
+| `POST /v1/profile/insights` (6/min) | `{answers}` — the prefs keys, partial is fine | `202 {status:"pending"}`; `400 bad_answers` |
+| `POST /v1/profile/insights/:id/verdict` (10/min) | `{verdict: right\|not_me, correction?≤200}` | the report; `404 not_found`, `400 bad_verdict / bad_correction` |
+
+`report`: `headline`, `observations[]` (3–5: `id, category, claim` "You …", `evidence[]{source import|answer, quote, source_label, highlight?}`,
+`confidence high|medium` (medium → the app writes "I think"), `score, surprise, use_in_call` "I'll …", `chips?`, `verdict`),
+`type {name, line, signature[3], basis[]}|null`, `mix[] {id, left, right, position 0–4, evidence}` (picks only),
+`strengths[] {text, basis}`, `watchouts[] {text, fix, basis}`, `chain {you_are, so_you, so_ill}|null`,
+`share {title "{name} is …", lines}|null`, `learning[] {id, label}`, `usage` "In our calls …",
+`settings {why, energy, initiative, never}|null` (the old SUM four lines), `at, from, ms`.
+Server checks: an import quote must be in the paste word for word, an answer quote must be a pick; generic /
+horoscope lines, labels, flattery, sensitive or creepy inferences and minors' details are dropped; low
+confidence → `learning`. `not_me` removes the observation (→ `learning`, and "not true" in the call profile).
+
 ## Image, voices, companion (F2-L20, F2-L8, F2-L3)
 
 | call | body | answer |

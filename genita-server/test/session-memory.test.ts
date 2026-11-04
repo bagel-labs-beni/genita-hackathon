@@ -959,3 +959,56 @@ test("AU-42: a Mac start without a name uses the name the account's iPhone sent 
     assert.match(requests.at(-1)!.instructions ?? "", /The user's name is Summer/);
   } finally { for (const w of sockets) w.terminate(); }
 });
+
+test("CA-14 × Forget (#585 Codex P1): a turn held open at the Forget is dropped — never answered, never saved after it", async () => {
+  const { memory, deps, requests } = setup();
+  const asr = deps.openAsr([]) as unknown as EventEmitter;
+  const c = client();
+  const seen: string[] = [];
+  const sink0 = c.sink.sendJson;
+  c.sink.sendJson = (e) => { seen.push(String((e as { type: string }).type) + ((e as { state?: string }).state ? ":" + (e as { state?: string }).state : "")); sink0(e); };
+  const s = new Session("call-held", c.sink, deps);
+  await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" } }));
+  await waitFor(c.ready);
+  // the greeting plays out first (talking over it would be a barge-in, not a turn)
+  await waitFor(() => seen.includes("reply") && seen.lastIndexOf("state:listening") > seen.indexOf("reply"), 8000);
+  const before = requests.length;
+  asr.emit("event", { type: "speechStart", turnId: 0 });
+  asr.emit("event", { type: "speechEnd", turnId: 0 });
+  asr.emit("event", { type: "speechComplete", turnId: 0, text: "My ex Daniel lives on Maple Street and" }); // held
+  await new Promise((r) => setTimeout(r, 50));
+  await memory.forget("acct-a");
+  await new Promise((r) => setTimeout(r, 2600)); // past the 2.0 s hold
+  assert.equal(requests.length, before, "the held line never reached Spark");
+  assert.doesNotMatch(JSON.stringify(requests), /Maple Street/);
+  s.close(); await memory.drain();
+  assert.doesNotMatch(JSON.stringify(await memory.list("acct-a")), /Maple Street/);
+});
+
+test("CA-14 × Forget (Codex P1 r2): the user resumed the held turn when the Forget came — its late final is not answered or saved", async () => {
+  const { memory, deps, requests } = setup();
+  const asr = deps.openAsr([]) as unknown as EventEmitter;
+  const c = client();
+  const seen: string[] = [];
+  const sink0 = c.sink.sendJson;
+  c.sink.sendJson = (e) => { seen.push(String((e as { type: string }).type) + ((e as { state?: string }).state ? ":" + (e as { state?: string }).state : "")); sink0(e); };
+  const s = new Session("call-held-2", c.sink, deps);
+  await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" } }));
+  await waitFor(c.ready);
+  await waitFor(() => seen.includes("reply") && seen.lastIndexOf("state:listening") > seen.indexOf("reply"), 8000);
+  const before = requests.length;
+  asr.emit("event", { type: "speechStart", turnId: 0 });
+  asr.emit("event", { type: "speechEnd", turnId: 0 });
+  asr.emit("event", { type: "speechComplete", turnId: 0, text: "So my ex Daniel and" }); // held
+  await new Promise((r) => setTimeout(r, 50));
+  asr.emit("event", { type: "speechStart", turnId: 1 });
+  asr.emit("event", { type: "partial", text: "I like jasmine tea" });
+  await memory.forget("acct-a");
+  asr.emit("event", { type: "speechEnd", turnId: 1 });
+  asr.emit("event", { type: "speechComplete", turnId: 1, text: "I like jasmine tea." });
+  await new Promise((r) => setTimeout(r, 2600));
+  assert.equal(requests.length, before);
+  assert.doesNotMatch(JSON.stringify(requests), /jasmine|Daniel/);
+  s.close(); await memory.drain();
+  assert.doesNotMatch(JSON.stringify(await memory.list("acct-a")), /jasmine|Daniel/);
+});

@@ -4,7 +4,7 @@ import { cleanName, nameKey, sameIngredient, isStaple } from "../src/finds/names
 import { Candidates, tierOf, toWire, recipeSummary } from "../src/finds/tiers.ts";
 import { parseSeenLine, LineSplitter, lastJsonObject, isYes, findUrl } from "../src/finds/parse.ts";
 import { classifyTurn } from "../src/finds/intent.ts";
-import { confirmItem, fridgeLine, fridgePill, runRecipe, runOutfit, runLink, toNormBox, type PipelineCtx } from "../src/finds/pipeline.ts";
+import { confirmItem, fridgeLine, fridgePill, occasionOf, recipePrompt, runRecipe, runOutfit, runLink, toNormBox, type PipelineCtx } from "../src/finds/pipeline.ts";
 import { MemoryFindsStore, FileFindsStore, UNDO_MS } from "../src/finds/store.ts";
 import { checkServerEvent, type FindCard, type ServerEvent } from "../src/protocol.ts";
 import type { FindsVendors } from "../src/finds/vendors.ts";
@@ -587,4 +587,85 @@ test("recipe pipeline: GENITA_SAM_MASKS — every match above the score bar is i
   assert.ok(eggs[0].mask && eggs[0].box.x2 > 0.75, "union spans all 10 eggs");
   assert.ok([...eggs, ...tofu].every((i) => i.mask));
   assert.ok(last.items.filter((i) => i.label !== "Eggs" && i.label !== "Tofu").every((i) => !i.mask), "no mask sent → box only");
+});
+
+// ───────────── finds audit 11/4 ─────────────
+
+test("AU-57 CW-02: the outfit card names the occasion they asked about (taste + seen + situation)", async () => {
+  const v = fakeVendors({
+    outfit: '{"pick":0,"title":"Wear the navy one.","taste":"You like dark, simple colors","situation":"Easy to wear all weekend","options":[{"label":"Navy coat","frame":1},{"label":"Camel blazer","frame":0}],"why":["The navy coat reads relaxed.","The camel blazer looks like office."],"ask":["What shoes?","Warm enough?"],"say":"Navy."}',
+  });
+  const { ctx } = ctxFor("outfit", v, { question: "Which one for this weekend?" });
+  const card = (await runOutfit(ctx)).card!;
+  assert.equal(card.subtitle, "You like dark, simple colors");
+  assert.deepEqual(card.why, ["The navy coat reads relaxed.", "The camel blazer looks like office.", "Easy to wear all weekend"]);
+  assert.deepEqual(card.evidence, { style: "You like dark, simple colors", situation: "Easy to wear all weekend" });
+  // the model left it out: the occasion from the question still makes the line
+  const bare = fakeVendors({ outfit: '{"pick":1,"title":"Wear the blazer.","taste":"","options":[{"label":"Navy coat","frame":1},{"label":"Camel blazer","frame":0}],"why":["Navy reads relaxed.","Camel looks sharp."],"ask":[],"say":"The blazer."}' });
+  const b = (await runOutfit(ctxFor("outfit", bare, { question: "Which one should I wear to dinner this weekend?" }).ctx)).card!;
+  assert.equal(b.why.at(-1), "Camel blazer for dinner.");
+  assert.equal(b.evidence?.situation, "Camel blazer for dinner.");
+  // prod 11/4 (proxy CW-02, 4/5 runs): a model line that never mentions the weekend doesn't count as the situation
+  const off = fakeVendors({ outfit: '{"pick":0,"title":"Wear the trench.","taste":"clean, minimal, camel - so you","situation":"Classic and polished","options":[{"label":"Beige trench","frame":1},{"label":"Denim jacket","frame":0}],"why":["Classic clean camel, no logos","Casual blue, less your minimal vibe"],"ask":[],"say":"Trench."}' });
+  const t = (await runOutfit(ctxFor("outfit", off, { question: "Which one for this weekend?" }).ctx)).card!;
+  assert.equal(t.why.at(-1), "Beige trench for this weekend.");
+  assert.deepEqual(t.evidence, { style: "clean, minimal, camel - so you", situation: "Beige trench for this weekend." });
+  // no occasion named: no made-up situation line
+  const none = (await runOutfit(ctxFor("outfit", bare, { question: "Which one looks better on me?" }).ctx)).card!;
+  assert.deepEqual(none.why, ["Navy reads relaxed.", "Camel looks sharp."]);
+  assert.equal(none.evidence, undefined);
+});
+
+test("AU-57: occasionOf reads the occasion as said", () => {
+  assert.equal(occasionOf("Which one for this weekend?"), "this weekend");
+  assert.equal(occasionOf("what should I wear to the wedding"), "the wedding");
+  assert.equal(occasionOf("tonight, which one?"), "tonight");
+  assert.equal(occasionOf("which one looks better on me"), null);
+});
+
+// ───────────── finds audit 11/4 (P2/P3) ─────────────
+
+test("AU-60/61 CW-02 variants: clothes held up and a choice between them is an outfit pick", () => {
+  assert.deepEqual(classifyTurn("Which one should I wear to dinner this weekend?", true), { kind: "outfit" }, "dinner is the occasion, not the food");
+  assert.deepEqual(classifyTurn("Which of these looks better on me for lunch?", true), { kind: "outfit" });
+  assert.deepEqual(classifyTurn("Which jacket would you recommend for this weekend?", true), { kind: "outfit" }, "recommend is not a web search here");
+  assert.deepEqual(classifyTurn("Can you suggest which top looks better on me?", true), { kind: "outfit" });
+  // unchanged: an explicit shop verb still searches; food still cooks; no camera still shops
+  assert.deepEqual(classifyTurn("can you find me some white sneakers", true), { kind: "product" });
+  assert.deepEqual(classifyTurn("Can we look for a jacket like this one or that one?", true), { kind: "product" });
+  assert.deepEqual(classifyTurn("Which one should I make for dinner?", true), { kind: "recipe" });
+  assert.deepEqual(classifyTurn("What can I make for lunch?", true), { kind: "recipe" });
+  assert.deepEqual(classifyTurn("Which jacket would you recommend for this weekend?", false), { kind: "product" }, "no camera: nothing to choose between");
+  // Codex r1: ordering one is a search; jacket potatoes are food
+  assert.deepEqual(classifyTurn("Which jacket would you recommend that I order online?", true), { kind: "product" });
+  assert.deepEqual(classifyTurn("Which one should I make for dinner with these jacket potatoes?", true), { kind: "recipe" });
+});
+
+test("AU-68 CW-01: no health or nutrition advice on the recipe card", async () => {
+  const json = `{"dish":"kimchi fried rice","minutes":15,"ingredients":[{"name":"kimchi","optional":false}],"steps":["Fry the kimchi.","Use less oil for a healthier dish.","Mix the eggs with low-fat milk.","Top with egg."],"sources":[{"title":"K","url":"https://www.maangchi.com/recipe/kimchi-bokkeumbap"}],"ask":["Is it healthy?","How spicy is it?","Lower calorie swap?","Add cheese?"],"say":"Found one."}`;
+  const v = fakeVendors({ seen: "eggs | 6 | carton\nkimchi | - | red jar\n", recipe: json });
+  const { ctx } = ctxFor("recipe", v, { images: false });
+  const card = (await runRecipe(ctx)).card!;
+  assert.deepEqual(card.steps.map((s) => s.text), ["Fry the kimchi.", "Use less oil.", "Mix the eggs with low-fat milk.", "Top with egg."], "the advice goes, the step stays (Codex r2); an ingredient named low-fat stays (Codex r1)");
+  assert.deepEqual(card.ask, ["How spicy is it?", "Add cheese?"]);
+});
+
+test("AU-68: the recipe prompt rules out health advice", () => {
+  assert.match(recipePrompt("What can I make?"), /No health, nutrition, calorie, diet or weight advice/);
+});
+
+test("AU-76 FD-01: camera cards credit Muse Spark · SAM 3.1 in 'How I found this'", async () => {
+  const r = await runRecipe(ctxFor("recipe", fakeVendors({ seen: "eggs | 6 | carton\n", recipe: RECIPE_JSON }), { images: false }).ctx);
+  assert.equal(r.card!.how.at(-1), "Muse Spark · SAM 3.1");
+  const o = await runOutfit(ctxFor("outfit", fakeVendors({ outfit: '{"pick":0,"title":"Wear the navy one.","taste":"","options":[{"label":"Navy coat","frame":1},{"label":"Camel blazer","frame":0}],"why":["a","b"],"ask":[],"say":"Navy."}' })).ctx);
+  assert.ok(o.card!.how.includes("Muse Spark · SAM 3.1"));
+});
+
+test("AU-68 (Codex #602 r2): a cooking step keeps its action without the health advice", async () => {
+  const { withoutHealthAdvice } = await import("../src/finds/pipeline.ts");
+  assert.equal(withoutHealthAdvice("Cook chicken thoroughly for a healthier dish."), "Cook chicken thoroughly.");
+  assert.equal(withoutHealthAdvice("Use less oil, which makes it healthier."), "Use less oil.");
+  assert.equal(withoutHealthAdvice("Mix the eggs with low-fat milk."), "Mix the eggs with low-fat milk.");
+  assert.equal(withoutHealthAdvice("Healthy and nutritious!"), null);
+  assert.equal(withoutHealthAdvice("Serve with rice."), "Serve with rice.");
 });

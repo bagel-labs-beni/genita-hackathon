@@ -28,6 +28,13 @@ const CACHE_MAX_CHARS = 14;
  * cache (prefetched per speaker with the fillers) instead of the phone's system voice. Kept short and neutral.
  */
 export const RECOVER_LINE = "Sorry, my voice cut out. Say that again?";
+/** 11/4 (handover b9-6): said from the cache when a reply's first clause misses on a cold GPU, while it is retried */
+export const HOLD_LINE = "One sec.";
+/** clips kept on disk per speaker (VoiceClips), so a restarted server has them before the GPU is warm */
+const KEPT = new Set([RECOVER_LINE, HOLD_LINE]);
+
+/** where the recovery and hold clips survive a restart (server.ts: GENITA_DATA_DIR/voice-clips) */
+export type VoiceClips = { load(key: string): Buffer | null; save(key: string, pcm: Buffer): void };
 const CACHE_MAX = 1200; // fillers x (neutral + VOICE_EMOTIONS) x the 4 V04 speakers fits
 
 /** Labels the voice GPU moves (deploy/modal-voice/post.py SHIFT_ST). neutral / curious / unknown send no emotion. */
@@ -113,7 +120,7 @@ export type SeamlessClient = {
 
 type Fetch = typeof fetch;
 
-export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: () => number; log?: (e: string, d: Record<string, unknown>) => void } = {}): SeamlessClient {
+export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: () => number; log?: (e: string, d: Record<string, unknown>) => void; clips?: VoiceClips } = {}): SeamlessClient {
   const doFetch = opts.fetch ?? fetch;
   const now = opts.now ?? Date.now;
   const cache = new Map<string, TtsChunk[]>();
@@ -209,12 +216,14 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
     const e = (raw ?? "").toLowerCase();
     return (VOICE_EMOTIONS as readonly string[]).includes(e) && !NEUTRAL_FILLERS.has(`${text}|${e}`) ? e : "";
   };
+  // a kept clip is only good for the same model and post chain (Codex P2: a GENITA_VOICE_POST or model change re-renders)
+  const diskKey = (k: string) => `v1|${modelName}|${cfg.post === false ? "raw" : "post"}|${k}`;
   const remember = (k: string, chunks: TtsChunk[]) => {
     if (cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value as string);
     cache.set(k, chunks);
   };
 
-  async function* speak(req: SeamlessRequest, quiet = false, firstByteMs = cfg.timeoutMs): AsyncGenerator<TtsChunk> {
+  async function* speak(req: SeamlessRequest, quiet = false, firstByteMs = req.waitMs ?? cfg.timeoutMs): AsyncGenerator<TtsChunk> {
     const lang = seamlessLang(req.lang, req.text);
     const text = spokenText(req.text, lang);
     if (!text || !/[\p{L}\p{N}]/u.test(text)) return; // nothing to say (emoji-only, punctuation)
@@ -228,7 +237,12 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
     const emo = emotionFor(req.emotion, text);
     const extra: Record<string, unknown> = { ...(emo ? { emotion: emo } : {}), ...(cfg.post === false ? { post: false } : {}) };
     const k = key(lang, spk, text, tail, speed, emo);
-    const hit = cache.get(k);
+    let hit = cache.get(k);
+    if (!hit && KEPT.has(req.text) && opts.clips) {
+      // a clip a previous run kept on disk (the cold-GPU lines): no service call needed
+      const pcm = (() => { try { return opts.clips!.load(diskKey(k)); } catch { return null; } })();
+      if (pcm?.length) { hit = [{ audio: pcm, alignment: null, model: modelName }]; remember(k, hit); }
+    }
     if (hit) {
       yield* hit;
       return;
@@ -266,7 +280,10 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
       }
       throw err;
     }
-    if ((text.length <= CACHE_MAX_CHARS || req.text === RECOVER_LINE) && got.length) remember(k, got);
+    if ((text.length <= CACHE_MAX_CHARS || KEPT.has(req.text)) && got.length) remember(k, got);
+    if (KEPT.has(req.text) && got.length && opts.clips) {
+      try { opts.clips.save(diskKey(k), Buffer.concat(got.map((c) => c.audio))); } catch { /* the in-memory copy still serves this run */ }
+    }
   }
 
   function prefetch(speaker: number): void {
@@ -278,7 +295,8 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
       // 11/4 (audit AU-98): a prefetch never parks the voice for every call (quiet), and its first clause is the
       // warmup: it waits up to WARMUP_MS for a cold container and is tried twice. Was: a cold GPU timed out the first
       // filler at 4 s, marked the whole server's voice down for 30 s, and every call fell back to the phone's voice.
-      for (const [k, f] of [...FILLERS, RECOVER_LINE].entries()) {
+      // the cold-GPU lines first (handover b9-6): a reply that misses on a cold GPU has them as soon as the GPU answers
+      for (const [k, f] of [HOLD_LINE, RECOVER_LINE, ...FILLERS].entries()) {
         let ok = false;
         for (let attempt = 0; attempt < (k === 0 ? 2 : 1) && !ok; attempt++) {
           try {

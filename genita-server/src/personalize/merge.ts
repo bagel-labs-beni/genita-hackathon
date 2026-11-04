@@ -17,6 +17,7 @@
 import { isDislike, looksLikeInjection, redactSensitive, toStyleCard, type Finding, type ImportRaw, type StyleCard } from "../prep/importProfile.ts";
 import { isSensitiveDetail } from "./sensitive.ts";
 import { cardsForField, type StoryId } from "./story.ts";
+import { scrubRemoved } from "../insights/report.ts";
 
 export const PROFILE_FIELDS = ["likes", "interests", "communication", "response", "help", "boundaries", "support", "tendencies"] as const;
 export type ProfileField = (typeof PROFILE_FIELDS)[number];
@@ -154,6 +155,9 @@ export function mergeUpdates(card: StyleCard, updates: ProfileUpdate[], at: stri
   // S1 saves not turned into updates yet: a voice correction / call analysis merging meanwhile keeps them (Codex)
   if (card.pendingCorrections?.length) next.pendingCorrections = card.pendingCorrections;
   if (tombs.length) next.removed = tombs.slice(-40);
+  // SUM insight report + N1–N3 picks (and the "not me" list) survive profile updates (Codex P1)
+  if (card.insights) next.insights = next.removed?.length ? scrubRemoved(card.insights, next.removed) : card.insights;
+  if (card.picks) next.picks = card.picks;
   if (card.story) next.story = { ...card.story, stale: [...new Set([...(card.story.stale ?? []), ...stale])] };
   next.updatedAt = at;
   return { card: next, applied, staleCards: [...stale] };
