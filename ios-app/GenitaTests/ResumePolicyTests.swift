@@ -19,4 +19,29 @@ final class ResumePolicyTests: XCTestCase {
         // the server moved it here by itself (proximity)
         XCTAssertTrue(ResumePolicy.opensCall(ResumePolicy.arrival(localClaim: false, serverTrigger: "proximity")))
     }
+
+    // Demo S4: a call that moves here from the iPhone with the camera on keeps showing the outfit on the Mac.
+    func testCameraFollowsAHandoffWhenTheUserLeftItOn() {
+        XCTAssertTrue(HandoffCameraPolicy.startsCamera(fromPhone: true, cameraRemembered: true, cameraAuthorized: true))
+    }
+    func testFreshCallNeverStartsTheCamera() {
+        // privacy: a call opened on the Mac itself (cold launch Continue here, a new call) starts with the camera off
+        XCTAssertFalse(HandoffCameraPolicy.startsCamera(fromPhone: false, cameraRemembered: true, cameraAuthorized: true))
+    }
+    func testHandoffKeepsTheCameraOffWhenTheUserTurnedItOff() {
+        XCTAssertFalse(HandoffCameraPolicy.startsCamera(fromPhone: true, cameraRemembered: false, cameraAuthorized: true))
+    }
+    func testHandoffWithoutCameraPermissionDoesNothingNew() {
+        // not granted (denied, restricted or never asked): no auto start, so no system dialog and no new sheet
+        XCTAssertFalse(HandoffCameraPolicy.startsCamera(fromPhone: true, cameraRemembered: true, cameraAuthorized: false))
+    }
+    func testOnlyAMoveFromAnIPhoneCallCounts() {
+        // the iPhone in a call: the move carries the call (and its camera)
+        XCTAssertTrue(HandoffCameraPolicy.movedFromPhoneCall(previousOwner: .phone, peerInCall: true))
+        // Codex P1: taking the conversation while the iPhone is on its home screen is a new call on the Mac
+        XCTAssertFalse(HandoffCameraPolicy.movedFromPhoneCall(previousOwner: .phone, peerInCall: false))
+        XCTAssertFalse(HandoffCameraPolicy.movedFromPhoneCall(previousOwner: .mac, peerInCall: true))
+        // older server that doesn't report calls: unknown is off (privacy)
+        XCTAssertFalse(HandoffCameraPolicy.movedFromPhoneCall(previousOwner: .phone, peerInCall: nil))
+    }
 }

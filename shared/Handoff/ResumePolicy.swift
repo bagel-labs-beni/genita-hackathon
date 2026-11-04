@@ -25,3 +25,20 @@ enum ResumePolicy {
         return .syncedClaim
     }
 }
+
+/// Demo S4: a call that moves to the Mac from a call on the iPhone (Move to Mac, touch, proximity, Continue on this
+/// Mac) keeps the camera the way the user left it on the Mac, so an outfit shown on the iPhone stays in view without a click.
+/// The iPhone doesn't send its camera state, so the Mac's own last camera choice stands in for it (UserDefaults).
+/// A call opened on the Mac itself always starts with the camera off (privacy), and without camera permission
+/// nothing starts by itself: no system dialog, the usual camera-off flow stays as it is.
+enum HandoffCameraPolicy {
+    static func startsCamera(fromPhone: Bool, cameraRemembered: Bool, cameraAuthorized: Bool) -> Bool {
+        fromPhone && cameraRemembered && cameraAuthorized
+    }
+    /// The conversation came here from a call running on the iPhone, not only its ownership: taking it while the
+    /// iPhone sits on its home screen is a new call on the Mac (camera off, Codex P1). `peerInCall` is the server's
+    /// word; an older server that doesn't report calls (nil) never starts the camera (Codex P1 round 2).
+    static func movedFromPhoneCall(previousOwner: ConversationDevice, peerInCall: Bool?) -> Bool {
+        previousOwner == .phone && peerInCall == true
+    }
+}
