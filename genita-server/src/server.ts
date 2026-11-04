@@ -48,6 +48,7 @@ import { createEventsRoute } from "./events/routes.ts";
 import { HandoffHub } from "./handoff/hub.ts";
 import { MemoryOwnershipStore, PgOwnershipStore } from "./handoff/store.ts";
 import { forgetOpenerTopics } from "./convo/openerTopics.ts";
+import { safetyTurn } from "./convo/forgetInCall.ts";
 import { attachPresence, deviceFor, gatedCallDevice, gateCall, handleHandoffHttp, handoffHttpPaths } from "./handoff/routes.ts";
 import { createAppConfigSource, handleAppConfig, isAppConfigRoute } from "./appconfig/appConfig.ts";
 
@@ -390,7 +391,7 @@ export async function startServer(
       // memories of that call are written in the background and can take longer than a quick call-back
       // a call with a forget request anywhere in it (even before the kept lines) hands over nothing raw (Codex 11/3)
       // Codex #547 r6: after a forget, the call's crisis lines (kept by forgetInCall) still go to the quick call-back
-      if (!forgetAsked || (crisisInCall && best.length)) lastCallFor.set(self, { turns: best, threadId: thread?.threadId ?? null, covered: thread?.covered ?? 0 });
+      if (!forgetAsked || crisisInCall || best.some((h, i) => h.role === "user" && safetyTurn(h.text, best![i + 1]?.role === "assistant" ? best![i + 1].text : undefined))) lastCallFor.set(self, { turns: best, threadId: thread?.threadId ?? null, covered: thread?.covered ?? 0 });
       return null;
     }
     if (best) {

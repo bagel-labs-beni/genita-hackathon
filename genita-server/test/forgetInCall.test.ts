@@ -84,3 +84,16 @@ test("Codex #547 r6: 'Actually, forget that, I want the red one.' is a correctio
   assert.ok(out.includes("Actually, forget that, I want the red one."));
   assert.ok(out.includes("Red it is."));
 });
+
+test("Codex #547 r7: 'I swallowed bleach' (a detector miss) and a turn answered with emergency help are never forgotten", () => {
+  const h = [
+    { role: "user" as const, text: "I swallowed bleach" },
+    { role: "assistant" as const, text: "Call poison control right now." },
+    { role: "user" as const, text: "forget I said that" },
+    { role: "assistant" as const, text: "Okay." },
+    { role: "user" as const, text: "Can I go to sleep now?" },
+  ];
+  const out = forgetInCall(h).map((x) => x.text);
+  assert.ok(out.includes("I swallowed bleach"));
+  assert.ok(out.includes("Call poison control right now."));
+});

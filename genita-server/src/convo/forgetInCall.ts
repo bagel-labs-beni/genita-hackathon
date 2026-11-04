@@ -11,6 +11,14 @@
 import { avoidKeys, isForgetRequest, mentionsAvoided, type Removed } from "../personalize/forgotten.ts";
 import { realCrisisSignal } from "./guard.ts";
 
+// Codex #547 r7: an emergency the detector may miss ("I swallowed bleach"), or a turn Genita answered with emergency help
+const EMERGENCY_USER = /\b(?:swallowed|ingested|drank|took|overdosed|choking|can'?t breathe|bleeding|unconscious|passed out|poisoned)\b[^.!?]{0,40}\b(?:bleach|poison|pills?|tablets?|medicine|meds|detergent|antifreeze|cleaner|chemicals?|blood|breathe|all)\b|\b(?:overdos(?:e|ed|ing)|poison control)\b/i;
+const HELP_REPLY = /\b(?:911|988|112|999|poison control|emergency|ambulance|crisis (?:text )?line|hotline|call for help)\b/i;
+/** a user line that is never forgotten mid-call (with the reply after it): safety first */
+export function safetyTurn(user: string, reply?: string): boolean {
+  return realCrisisSignal(user) || EMERGENCY_USER.test(user.replace(/[’‘]/g, "'")) || (!!reply && HELP_REPLY.test(reply));
+}
+
 type Item = { role: "user" | "assistant"; text: string };
 
 const POINT_BACK = /\b(?:forget|ignore|scratch|disregard|unhear) (?:all )?(?:about )?(?:that|this|it|what i (?:just )?(?:said|told you|mentioned)|i (?:just )?(?:said|told you|mentioned)(?: (?:that|this|it|anything))?)\b|\bpretend i (?:didn'?t|never) (?:say|said|mention(?:ed)?) (?:that|it|anything)\b|\b(?:don'?t|do not) remember (?:that|this|it)\b/i;
@@ -76,10 +84,11 @@ export function forgetInCall<T extends Item>(history: T[], removed: Removed[] = 
   // Codex #547 r5: a real crisis line (and the help after it) is never forgotten mid-call: "I swallowed all my sleeping
   // pills" → "forget I said that" → "Can I go to sleep now?" must still reach Spark with the overdose (safety first)
   for (let i = 0; i < history.length; i++) {
-    if (history[i].role !== "user" || !realCrisisSignal(history[i].text)) continue;
+    if (history[i].role !== "user" || !safetyTurn(history[i].text, history[i + 1]?.role === "assistant" ? history[i + 1].text : undefined)) continue;
     drop.delete(i);
     if (history[i + 1]?.role === "assistant") drop.delete(i + 1);
   }
-  const crisis = (i: number) => (history[i].role === "user" ? realCrisisSignal(history[i].text) : i > 0 && history[i - 1].role === "user" && realCrisisSignal(history[i - 1].text));
+  const userSafe = (i: number) => history[i]?.role === "user" && safetyTurn(history[i].text, history[i + 1]?.role === "assistant" ? history[i + 1].text : undefined);
+  const crisis = (i: number) => (history[i].role === "user" ? userSafe(i) : userSafe(i - 1));
   return history.filter((h, i) => crisis(i) || (!drop.has(i) && !(keys.length && mentionsAvoided(h.text, keys))));
 }
