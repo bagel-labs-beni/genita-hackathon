@@ -230,12 +230,15 @@ struct MacConversationView: View {
     }
     // MARK: #118 / #121 call + sheet layout
     /// Live captions r01 (LiveCaptions.swift): the iPhone's layer, bottom edge 16 above the rail VStack's top (724 − 82 → 626).
-    private var captionLayer: some View {
+    @ViewBuilder private var captionLayer: some View {
+        // kill switch: app config flag `liveCaptions` (default on), as on the iPhone
+        if GenitaAppConfigStore.shared.config.flag("liveCaptions", default: true) {
         CallCaptionLayer(style: CaptionStyle(ink: MacSheetInk.ink, onInk: MacSheetInk.onInk, blue: Color(red: 84 / 255, green: 193 / 255, blue: 1),
                                              font: { size, weight in .custom(weight == .medium ? "PretendardVariable-Medium" : "PretendardVariable-Regular", fixedSize: size) }),
                          size: CGSize(width: 390, height: 844), bottom: 724 - 82 - 16 - railShift,
                          hidden: call.link == .connecting || sheetCovers || menuOpen,
                          micOn: call.micOn || reviewState == "caption", frame: { call.captionFrame() }, level: { call.inputLevel }, still: reviewState == "caption")
+        }
     }
     private var sheetFull: Bool { call.finds.state == .full && linkOpened == nil && waitingCopy == nil }
     /// half / full: the sheet covers the self view and the controls (r03).

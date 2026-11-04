@@ -151,12 +151,16 @@ enum CallStop: Equatable {
 
     /// Live captions r01: the user's words and the reply's, from server events; drawn by CallCaptionLayer every tick.
     @ObservationIgnored private var captions = LiveCaptions()
-    static func captionClock() -> Double { ProcessInfo.processInfo.systemUptime * 1000 }
+    nonisolated static func captionClock() -> Double { ProcessInfo.processInfo.systemUptime * 1000 }
     /// One display tick of the captions: the local mic level (nil while the mic is off) and the reply's playhead.
     func captionFrame(now: Double = CallController.captionClock()) -> LiveCaptions.Frame {
         if tts == .device { captions.markDevice() }
         var playhead: Double?
-        if let id = captions.reply?.utteranceId, !routed.contains(id), !cancelled.contains(id) { playhead = audio.playbackPositionMs(utteranceId: id) }
+        if let id = captions.reply?.utteranceId {
+            // stopped here first (face tap, local barge-in): freeze at the words already heard, never show the rest
+            if cancelled.contains(id) { captions.cut(utteranceId: id, now: now) }
+            else if !routed.contains(id) { playhead = audio.playbackPositionMs(utteranceId: id) }
+        }
         return captions.frame(now: now, level: micOn ? inputLevel : nil, playheadMs: playhead)
     }
     #if DEBUG
