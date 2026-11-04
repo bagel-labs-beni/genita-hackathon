@@ -7,6 +7,8 @@ import { checkServerEvent } from "../src/protocol.ts";
 import type { AsrEvent } from "../src/meta/transcribe.ts";
 import type { SparkRequest, SparkStreamEvent } from "../src/meta/spark.ts";
 import type { TtsChunk } from "../src/tts/types.ts";
+// hold cap B (11/4) made the 1.4 s beat land inside these timing tests (they pin exact say/narration lines): off here
+process.env.GENITA_HOLD_CAP_MS = "0";
 
 // these tests cover server TTS mode (Meta voice service); device mode: session-device.test.ts
 const config: Config = {

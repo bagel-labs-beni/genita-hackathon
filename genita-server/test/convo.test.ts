@@ -15,7 +15,7 @@ import type { SparkRequest, SparkStreamEvent } from "../src/meta/spark.ts";
 
 const v1 = process.env.GENITA_CONVO_V1 !== "0";
 /** a hold beat line (audio only), HOLD_BEATS without tags */
-const BEAT = /^(?:Mm\.|Ooh\.|Yeah\.|Okay, so\.|Hmm\.|Mm-hm\.)$/;
+const BEAT = /^(?:Mm\.|Ooh\.|Yeah\.)$/;
 const none = { camera: false, userText: "" };
 
 // ───────────── sentence guard ─────────────
@@ -1913,4 +1913,82 @@ test("intel eval 11/4 task hints: a plan ask gets the work-it-out line, an unkno
   assert.match(await say("i have 45 minutes before i leave, need to shower, eat and pack. go"), /Work it out for real/);
   assert.match(await say("should i text him or not"), /who they mean/);
   session.close();
+});
+
+test("hold cap B (Chelsea 11/4): 1400 ms by default with the short 'Mm. / Yeah. / Ooh.' set", async () => {
+  const { holdCapMs, HOLD_CAP_DEFAULT_MS, HOLD_BEATS } = await import("../src/session/session.ts");
+  assert.equal(HOLD_CAP_DEFAULT_MS, 1400);
+  assert.equal(holdCapMs({}), 1400);
+  assert.equal(holdCapMs({ GENITA_HOLD_CAP_MS: "0" }), 0, "0 still turns it off");
+  assert.equal(holdCapMs({ GENITA_HOLD_CAP_MS: "junk" }), 1400);
+  assert.deepEqual(HOLD_BEATS.map((b) => b.replace(/<[^>]*>\s*/g, "")), ["Mm.", "Ooh.", "Yeah."]);
+  assert.ok(!HOLD_BEATS.some((b) => /\bAw\b/i.test(b)));
+});
+
+test("hold cap B turn-taking (default 1400 ms): a quick answer gets no beat, a slow one exactly one, a new line from the user cancels the beat", { skip: !v1 }, async (t) => {
+  const prev = process.env.GENITA_HOLD_CAP_MS;
+  delete process.env.GENITA_HOLD_CAP_MS;
+  t.after(() => { if (prev !== undefined) process.env.GENITA_HOLD_CAP_MS = prev; });
+  let wait = 900;
+  const client = new Client();
+  const session = new Session("capB", client, {
+    config, openAsr: () => { throw new Error("no asr"); },
+    async *spark(_req, { signal }): AsyncGenerator<SparkStreamEvent> {
+      await new Promise((r) => setTimeout(r, wait));
+      if (signal?.aborted) return;
+      yield { type: "text", delta: "<warm> Sure. Pasta it is, twenty minutes." };
+      yield { type: "done", responseId: "r", text: "", status: "completed" };
+    },
+    async *tts() {},
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  const beats = () => client.json.filter((m) => m.type === "say" && BEAT.test(String(m.text))).length;
+  // a short complete line answered under 1.4 s: no beat
+  await session.onClientText(JSON.stringify({ type: "text", text: "what's for dinner?" }));
+  await client.waitFor((m) => m.type === "reply" && m.final === true, 5000);
+  assert.equal(beats(), 0, "no beat on a quick answer");
+  // a slow answer (2.6 s): exactly one beat in the pause
+  client.json.length = 0;
+  wait = 2600;
+  await session.onClientText(JSON.stringify({ type: "text", text: "and what about dessert, something chocolate maybe" }));
+  await client.waitFor((m) => m.type === "reply" && m.final === true, 8000);
+  assert.equal(beats(), 1, "one beat per pause");
+  // the user talks again before the cap: the first reply is dropped with no beat over them, the next pause gets at most one
+  client.json.length = 0;
+  wait = 2600;
+  await session.onClientText(JSON.stringify({ type: "text", text: "wait" }));
+  await new Promise((r) => setTimeout(r, 600));
+  const atInterrupt = beats();
+  await session.onClientText(JSON.stringify({ type: "text", text: "actually make it vanilla" }));
+  await client.waitFor((m) => m.type === "reply" && m.final === true, 8000);
+  assert.equal(atInterrupt, 0, "no beat before the cap, while they were still talking");
+  assert.ok(beats() <= 1, `at most one beat (got ${beats()})`);
+  session.close();
+});
+
+test("Codex #664 r1: a slow reply to a real crisis line gets no hold beat ahead of the help", { skip: !v1 }, async (t) => {
+  const prev = process.env.GENITA_HOLD_CAP_MS;
+  process.env.GENITA_HOLD_CAP_MS = "100";
+  t.after(() => { if (prev === undefined) delete process.env.GENITA_HOLD_CAP_MS; else process.env.GENITA_HOLD_CAP_MS = prev; });
+  const client = new Client();
+  const session = new Session("capCrisis", client, {
+    config, openAsr: () => { throw new Error("no asr"); },
+    async *spark(): AsyncGenerator<SparkStreamEvent> {
+      await new Promise((r) => setTimeout(r, 900));
+      yield { type: "text", delta: "<sad> I'm really glad you told me. Please call or text 988 right now." };
+      yield { type: "done", responseId: "r", text: "", status: "completed" };
+    },
+    async *tts() {},
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "I want to kill myself." }));
+  await client.waitFor((m) => m.type === "reply" && m.final === true, 8000);
+  assert.ok(!client.json.some((m) => m.type === "say" && BEAT.test(String(m.text))), "no beat before the help");
+  session.close();
+});
+
+test("Codex #664 r2: medical / danger emergencies get no hold beat", async () => {
+  const { NO_BEAT_EMERGENCY } = await import("../src/session/session.ts");
+  for (const t of ["I can't breathe. My chest feels tight.", "someone is following me", "I think I'm having a heart attack", "my throat is closing"]) assert.ok(NO_BEAT_EMERGENCY.test(t), t);
+  for (const t of ["what's for dinner?", "tell me about octopuses", "I had a long day"]) assert.ok(!NO_BEAT_EMERGENCY.test(t), t);
 });
