@@ -409,6 +409,9 @@ public final class OnboardingClient: @unchecked Sendable {
         public var summary: SetupSummary?
         /// the realtime `start.persona` the server wrote (traits, speaking style, backstory, name)
         public var session: Session?
+        /// the six preference rows from the import + R1 + these answers (server preferenceRows.ts, Chelsea 11/4):
+        /// never empty once the P flow is done. Older servers leave it out.
+        public var rows: [StyleRow]?
     }
 
     /// D01 / P1–P7 → persona card + SUM lines. `answers` uses the server keys (help, relationship, presence,
