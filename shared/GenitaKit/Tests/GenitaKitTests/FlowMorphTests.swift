@@ -452,6 +452,32 @@ struct FramingTests {
     }
 }
 
+struct Flat2DTests {
+    /// CA-06 / CA-07 (2D bear): a drawn key keeps only its mouth, its inside one flat dark tone from the drawing's ink;
+    /// a stroke the key drew away from the mouth stays out (the still shows there).
+    @Test func aDrawnMouthGoesFlatAndOnlyTheMouthReplaces() throws {
+        let w = 60, h = 40
+        var n = [Float](repeating: 235, count: w * h * 3), p = n
+        let mask = [Float](repeating: 1, count: w * h)
+        for x in 20..<40 { let i = (20 * w + x) * 3; n[i] = 40; n[i + 1] = 40; n[i + 2] = 40 }          // the closed mouth line
+        for y in 0..<3 { for x in 0..<w { let i = (y * w + x) * 3; n[i] = 40; n[i + 1] = 40; n[i + 2] = 40 } }   // other ink in the drawing
+        p = n.enumerated().map { $0.offset / 3 / w == 20 && (20..<40).contains($0.offset / 3 % w) ? 235 : $0.element }   // the key: no closed line
+        for y in 15..<27 { for x in 18..<42 {
+            let i = (y * w + x) * 3, edge = y == 15 || y == 26 || x == 18 || x == 41
+            let c: (Float, Float, Float) = edge ? (35, 35, 35) : (y < 18 ? (240, 240, 240) : (120, 50, 40))   // outline, teeth row, brown inside
+            p[i] = c.0; p[i + 1] = c.1; p[i + 2] = c.2
+        } }
+        for y in 5..<35 { let i = (y * w + 5) * 3; p[i] = 60; p[i + 1] = 60; p[i + 2] = 60 }           // a stray arc far left
+        let r = try #require(FlowMorph.flatten2D(key: p, neutral: n, mask: mask, width: w, height: h, mouth: CGRect(x: 20, y: 18, width: 20, height: 4)))
+        let tooth = (16 * w + 30) * 3, inside = (22 * w + 30) * 3
+        #expect(abs(r.pix[tooth] - r.pix[inside]) < 1 && r.pix[inside] < 100)   // teeth and inside: one flat dark tone
+        #expect(r.region[22 * w + 30] > 0.9)                                      // the mouth replaces the still
+        #expect(r.region[20 * w + 5] < 0.1)                                       // the stray arc does not
+        // codex P1: a mouth box outside the ROI returns nil, never crashes
+        #expect(FlowMorph.flatten2D(key: p, neutral: n, mask: mask, width: w, height: h, mouth: CGRect(x: 70, y: 45, width: 20, height: 10)) == nil)
+    }
+}
+
 struct ChinWarpTests {
     /// Prep sends `chinWarp` for animals (px, springMs, from, sideW); a bad block keeps the defaults, values are clamped.
     @Test func chinWarpDecodes() throws {
