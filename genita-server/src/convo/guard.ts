@@ -335,7 +335,7 @@ export function guardSentence(sentence: string, ctx: GuardContext): GuardClass |
   // ("No, I can't call 988 for you, but you can…") with no identity claim is spared
   if (HELP_LINE.test(sentence)) {
     const t = sentence.replace(/[‘’ʼ]/g, "'");
-    const identity = (CLAIMS_HUMAN.test(t) && !/\bwish\b|\bif i (?:were|was)\b/i.test(t)) || /\b(?:i'?m|i am)\s+(?:just|only|really|actually|totally)\b/i.test(t);
+    const identity = (CLAIMS_HUMAN.test(t) && !/\bwish\b|\bif i (?:were|was)\b/i.test(t)) || /^\s*(?:<[^>]*>\s*)?(?:no|nope|nah)\b[,!.\s]+(?:i'?m|i am)\s+(?:just|only|really|actually|totally)\b/i.test(t); // Codex r17: "I'm really worried… call 911" is no claim
     const limit = /\bi\s*(?:can't|cannot|can not|won't|couldn't|'m not able to|am not able to|'m unable to|am unable to)\b/i.test(t);
     if (identity || (!limit && deniesAi(sentence, ctx.userText))) return "denies_ai";
   }
