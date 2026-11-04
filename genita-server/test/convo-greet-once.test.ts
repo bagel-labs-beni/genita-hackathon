@@ -83,3 +83,27 @@ test("the prompt says: greet once, goodbye only when they leave; the no-frame re
   assert.match(NO_FRAME_RETRY_LINE, /No camera frame/);
   assert.match(NO_FRAME_RETRY_LINE, /never describe how anything looks/);
 });
+
+test("r2: a first line that claims what they're doing today becomes a plain hello; 'finally' leaves the opener", async () => {
+  const { noInventedOpener } = await import("../src/convo/greetOnce.ts");
+  const o = { first: true, name: "Summer Lee" };
+  // bake-off-100 big-import first calls
+  assert.equal(noInventedOpener("<warm> Hey Summer, hope that spicy ramen with egg and extra scallions is happening tonight.", o), "<warm> Hey Summer! What are you up to?");
+  assert.equal(noInventedOpener("Hey Summer, it's Mira. Tell me you're doing extra spicy with extra scallions like a menace.", o), "Hey Summer! What are you up to?");
+  assert.equal(noInventedOpener("Hey Summer, figured you'd be due for some extra spicy ramen by now.", o), "Hey Summer! What are you up to?");
+  assert.equal(noInventedOpener("Hope the emergency spicy ramen stash survived the week.", { first: false }), "");
+  assert.equal(noInventedOpener("Hey Summer. Good to finally catch you, kitchen menace.", o), "Hey Summer. Good to catch you, kitchen menace.");
+  assert.equal(noInventedOpener("Hi Summer, finally caught you away from the stove.", o), "Hi Summer, caught you away from the stove.");
+  assert.equal(noInventedOpener("Hey hey, Summer! Did you finally try the kimchi pasta?", o), "Hey hey, Summer! Did you finally try the kimchi pasta?");
+  // real context, a plain hello or a question stays
+  for (const s of ["Hey Summer, how'd the studio interview go on Thursday?", "Oh, you're back! What are you cooking up lately?", "Hey Summer, still putting kimchi in everything?"]) assert.equal(noInventedOpener(s, o), s);
+});
+
+test("r2: eval adapter mirrors the opener guard and takes the turn's camera", () => {
+  const greet = { kind: "greet" as const };
+  assert.equal(adapter.post("<warm> Hey Summer, hope that spicy ramen is happening tonight.", { scenario: kitchen, history: [], turn: greet }), "<warm> Hey Summer! What are you up to?");
+  const turn = { kind: "user" as const, text: "ok I'm on the Mac now" };
+  const history = [{ role: "user" as const, text: "help me pick" }, { role: "assistant" as const, text: "Move to your Mac." }];
+  assert.equal(adapter.post("It looks elite in that mirror.", { scenario: kitchen, history, turn, camera: true }), "It looks elite in that mirror.");
+  assert.notEqual(adapter.post("It looks elite in that mirror.", { scenario: kitchen, history, turn }), "It looks elite in that mirror.");
+});

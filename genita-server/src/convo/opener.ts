@@ -128,7 +128,7 @@ export function openerBlock(o: OpenerInput): string {
   // said naturally (a thread from memory, the last call, or one thing known from the profile) or a simple warm hello.
   // Never a take, fact or tip out of nowhere. GENITA_COHERENT_PROMPT=0 restores the lines above.
   if (coherentPrompt()) {
-    const nod = hook ? ` If it fits naturally, add one light nod to ${onLater}, said the way a friend who knows would${known ? " (profile knowledge, not something you two talked about, so no \"again\")" : ""}, as a question or a tease, never a guess about what they're doing or eating today.` : "";
+    const nod = hook ? ` If it fits naturally, add one light question about ${onLater}, the way a friend who knows would ask it${known ? " (profile knowledge, not something you two talked about, so no \"again\")" : ""}, never a guess about what they're doing or eating today.` : "";
     const greet = "a simple, warm hello in your own words, like \"Oh, you're back! What are you up to?\"";
     const plain: Record<typeof k, string> = {
       first_known: `This is your very first call, but you already know them from their profile. Open with a warm, simple hi.${nod} No "nice to meet you", never say how you know it. ${NO_INTAKE}`,

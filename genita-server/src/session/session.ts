@@ -69,7 +69,7 @@ import type { TasteLine } from "../personalize/reasons.ts";
 import { backchannelOn, convoV1, englishOnly, eotHoldOn, initiativeOn } from "../convo/flags.ts";
 import { Backchannel } from "../convo/backchannel.ts";
 import { EOT, eotTuning, joinSegments, judgeEndOfTurn, type EotKind, type EotVerdict } from "../convo/endOfTurn.ts";
-import { noRepeatGreeting, noUnpromptedGoodbye } from "../convo/greetOnce.ts";
+import { noInventedOpener, noRepeatGreeting, noUnpromptedGoodbye } from "../convo/greetOnce.ts";
 import { addressUser, thirdPersonCouldBeUser, fallbackLine, guardSentence, neverSpoken, NO_FRAME_RETRY_LINE, NO_ANSWER_LINE, LOST_LINE, UPSTREAM_RETRY_MS, realCrisisSignal, mayBeSelfHarm, nameAsYou, type GuardClass } from "../convo/guard.ts";
 import { isInterjectionOnly } from "../text/toolNarration.ts";
 import { daySeed, openerBlock, openerKind, profileHooks } from "../convo/opener.ts";
@@ -2711,6 +2711,15 @@ export class Session {
             this.log("convo.greet_once", { utteranceId, dropped: !once });
             if (!once) { cutBefore = true; continue; }
             tts = once;
+          }
+        }
+        // prompt-100 r2: the greeting's own first line never claims a plan for today ("hope that ramen is happening tonight")
+        if (this.v1 && tts && greeting && !keepOpener && !interpret && !self) {
+          const plain = noInventedOpener(tts, { first: !sentences.some((x) => !x.beat && !x.opener && !x.drop), name: this.user?.name });
+          if (plain !== tts) {
+            this.log("convo.invented_opener", { utteranceId, dropped: !plain });
+            if (!plain) { cutBefore = true; continue; }
+            tts = plain;
           }
         }
         // b10 gate 11/4: nothing seen this turn → "That looks good" is said as "That sounds good" (convo/unseenSight.ts)

@@ -1486,6 +1486,14 @@ test("팔월이 P3 (first greeting): a sentence after '!' or '?' starts upper ca
   }
 });
 
+test("prompt-100 r2 (session): a greeting that claims their plan for tonight is said as a plain hello", { skip: !v1 }, async () => {
+  const { client, session } = setup(["<warm> Hey Summer, hope that spicy ramen with egg is happening tonight."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 0, user: { name: "Summer", profile: "Likes: late-night ramen." } }));
+  const greet = await client.waitFor((m) => m.type === "reply");
+  assert.equal(greet.text, "Hey Summer! What are you up to?");
+  session.close();
+});
+
 // ───────────── #345 what landed, read from their face ─────────────
 test("#345: a smile or laugh the camera saw at the last reply keeps that lane (and never mentions the face)", async () => {
   const { turnHints } = await import("../src/convo/rhythm.ts");

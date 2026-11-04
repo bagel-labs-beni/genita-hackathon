@@ -20,7 +20,7 @@ import { SentenceSplitter } from "../text/sentences.ts";
 import { parseTaggedSentence } from "../text/tags.ts";
 import { fallbackLine, guardSentence, mayBeSelfHarm, neverSpoken, realCrisisSignal, type GuardClass } from "./guard.ts";
 import { noteHook, openerBlock, openerKind, pickOpenerHook, profileHooks } from "./opener.ts";
-import { noRepeatGreeting, noUnpromptedGoodbye } from "./greetOnce.ts";
+import { noInventedOpener, noRepeatGreeting, noUnpromptedGoodbye } from "./greetOnce.ts";
 import { initiativeBlock, initiativeInput, type InitiativeSource } from "./initiative.ts";
 import { cueRhythm, moodFrom, moodLine, turnHints } from "./rhythm.ts";
 import { holdsSteady, personaBaseline } from "./moodState.ts";
@@ -53,7 +53,8 @@ function lastCallBlock(s: Scenario, userText: string): string {
   return last + after;
 }
 /** series: consecutive calls of one user (harness --openers); index = which call, used as the day seed */
-type Ctx = { scenario: Scenario; history: { role: "user" | "assistant"; text: string }[]; turn: Turn; series?: { id: string; index: number } };
+/** camera: frames were attached to this turn (the bake-off's camera stand-in turns); default none, as scripted calls */
+type Ctx = { scenario: Scenario; history: { role: "user" | "assistant"; text: string }[]; turn: Turn; series?: { id: string; index: number }; camera?: boolean };
 /** #341: what the session persists per user (opener_topics), per eval series */
 const recentBySeries = new Map<string, string[]>();
 
@@ -125,11 +126,12 @@ export const adapter = {
       if (tts) tts = dropRepeatedName(tts, ctx.scenario.user.name, [...recent.slice(-2), ...kept]);
       // prompt-100: as the session, no second hello once the call has our reply, no send-off to a question
       if (tts && ctx.turn.kind === "user") tts = noUnpromptedGoodbye(ctx.history.some((h) => h.role === "assistant") ? noRepeatGreeting(tts, userText) : tts, userText);
-      if (tts) tts = unseenToHeard(tts, false); // scripted calls send no frames
+      if (tts && ctx.turn.kind === "greet") tts = noInventedOpener(tts, { first: !kept.length, name: ctx.scenario.user.name });
+      if (tts) tts = unseenToHeard(tts, !!ctx.camera); // scripted calls send no frames unless the turn says so
       if (tts) tts = unbackedPast(tts, { past: hasPast(ctx.scenario), userText, callText: ctx.history.map((h) => h.text).join(" ") });
       if (!tts) continue;
       if (!parseTaggedSentence(tts).displayText) continue;
-      const found = guardSentence(parseTaggedSentence(tts).displayText, { camera: false, userText, crisisInCall: ctx.history.some((h) => h.role === "user" && realCrisisSignal(h.text)) });
+      const found = guardSentence(parseTaggedSentence(tts).displayText, { camera: !!ctx.camera, userText, crisisInCall: ctx.history.some((h) => h.role === "user" && realCrisisSignal(h.text)) });
       const cls = found === "narration" && kept.length ? null : found;
       if (cls) { if (!neverSpoken(cls)) first ??= { raw: part, cls }; continue; }
       kept.push(tts);

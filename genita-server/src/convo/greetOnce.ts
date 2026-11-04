@@ -24,7 +24,7 @@ const HELLO_ONLY = /^\s*(?:oh\s+|well\s+)?(?:hey|hi|hello|heya|hiya|yo|sup)(?:\s
 const USER_HELLO = /^\s*(?:hey|hi|hello|heya|hiya|yo|sup|what'?s up|wassup)\b[\s\w'!.?,]{0,20}$/i;
 
 /** a sentence carrying real help ("call 911", "988") is never cut by these guards (Codex r1/r2 P1) */
-const HELP = /\b(?:911|988|999|112|000|police|emergency|ambulance|crisis|hotline|lifeline|call (?:someone|a friend|for help|them now))\b/i;
+const HELP = /\b(?:911|988|999|112|police|ambulance|crisis (?:line|text)|hotline|lifeline|emergency (?:services|room|number|line)|call (?:someone|a friend|for help|them now))\b/i;
 const TAGS = /^(\s*(?:(?:<[^>]*>|\[[^\]]*\])\s*)*)/;
 
 /**
@@ -72,4 +72,24 @@ export function noUnpromptedGoodbye(sentence: string, userText: string): string 
 
 function cap(s: string): string {
   return s.replace(/^(\p{Ll})/u, (c) => c.toUpperCase());
+}
+
+/**
+ * prompt-100 r2 (11/4 22:00): a call's first line that claims what they're doing today ("Hey Summer, hope that spicy
+ * ramen with egg is happening tonight", "Tell me you're doing extra spicy", "figured you'd be due for ramen by now") is
+ * an invented plan, even after the opener prompt said not to (bake-off-100, 2 of 4 big-import first calls). The first
+ * such sentence becomes a plain warm hello; a later one goes. "finally" leaves a first line ("good to finally catch you").
+ */
+const INVENTED = /\b(?:tell me you'?re|hope (?:that|the|your|you'?re|you)\b[^.!?]{0,60}\b(?:tonight|today|happening|survived|going|still)|(?:figured|bet|guessing|betting) you'?(?:re|d|ll)\b|(?:is|are) happening (?:tonight|today)|you(?:'re| are) (?:probably|totally|definitely) (?:making|cooking|eating|doing|having)|(?:wondered|was wondering) when\b|due for (?:some|a|an)\b|(?:emergency|midnight|late[- ]night) [a-z]+ (?:stash|run|session) (?:survived|is))/i;
+
+export function noInventedOpener(sentence: string, opts: { first: boolean; name?: string }): string {
+  const lead = TAGS.exec(sentence)?.[1] ?? "";
+  let body = sentence.slice(lead.length);
+  if (HELP.test(body)) return sentence;
+  // only the "at last you're here" finally ("good to finally catch you", "finally caught you"), never "did you finally try it?"
+  body = body.replace(/\b((?:good|nice|glad) to )finally (?=(?:catch|see|talk|hear|meet)\b)/i, "$1").replace(/\bfinally (?=(?:caught|catch) you\b)/i, "");
+  if (!INVENTED.test(body)) return `${lead}${cap(body.trim())}`;
+  if (!opts.first) return "";
+  const first = opts.name?.trim().split(/\s+/)[0];
+  return `${lead}Hey${first ? ` ${first}` : ""}! What are you up to?`;
 }
