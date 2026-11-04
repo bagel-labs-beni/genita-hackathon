@@ -17,3 +17,9 @@ paths = ['''^shared/protocol-samples/http/signin\.json$''']
 [[allowlists]]
 description = "Crockford base32 alphabet constant (not a credential)"
 paths = ['''^genita-server/src/handoff/proximity\.ts$''']
+
+# 2026-11-04 false-positive decision (call lane trace, #667 Gitleaks): CompanionFaceSeedTests.swift (fix/sceneframe, 0c6b5b34)
+# uses the made-up face keys "v1-0123456789ab" / "...ac" to test the seed function. Not a credential. Scoped to that file.
+[[allowlists]]
+description = "made-up face-key test strings (not credentials)"
+paths = ['''^ios-app/GenitaTests/CompanionFaceSeedTests\.swift$''']
