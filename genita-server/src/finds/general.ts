@@ -58,7 +58,11 @@ const REC = /\b(?:recommend\w*|suggest\w*|best|top \d+|good|great|reviews?|ratin
 const EXTERNAL =
   /\b(?:restaurants?|places?|spots?|caf[eé]s?|coffee shops?|bars?|pubs?|bakery|bakeries|shops?|stores?|malls?|markets?|hotels?|hostels?|museums?|galleries|parks?|beaches?|hikes?|trails?|movies?|films?|shows?|series|dramas?|books?|novels?|podcasts?|songs?|albums?|artists?|games?|apps?|phones?|laptops?|tablets?|cameras?|headphones?|earbuds|tvs?|cars?|brands?|products?|kbbq|bbq|barbecue|ramen|sushi|pizza|burgers?|tacos?|galbi|noodles?|pho|brunch|steak(?:house)?s?|dim sum)\b/;
 /** a place named after "in / near / around" (checked on the original text: "in Suwon", "near Gangnam") or a known one */
-const LOCATION = /\b(?:in|near|around|at)\s+(?:the\s+)?[A-Z][\w'-]+|\b(?:seoul|suwon|gangnam|hongdae|itaewon|busan|incheon|jeju|tokyo|osaka|new york|nyc|london|paris|la|san francisco|sf)\b/i;
+// known places by name only: "in daylight" / "at home" are not places (Codex r1); "in Suwon" is CAPITAL_PLACE on the original
+const LOCATION = /\b(?:seoul|suwon|gangnam|hongdae|itaewon|busan|incheon|jeju|tokyo|osaka|new york|nyc|london|paris|san francisco)\b/i;
+/** a fact about a role of a thing, any casing ("who is the ceo of nintendo?") */
+const ROLE_Q = /^(?:who|what)(?:'s| is| was| are| were)? (?:the )?(?:ceo|president|founder|owner|capital|population|prime minister|mayor|leader|director|author|singer|members?|head|chairman) of \w+/;
+const ROLE_KO = /CEO|ceo|대표|사장|회장|대통령|수도|인구|창업자|감독|작가|가수/;
 const CAPITAL_PLACE = /\b(?:in|near|around)\s+(?:the\s+)?[A-Z][\w'-]+/;
 /** a named real-world thing: a capitalised word that doesn't start the sentence (Nintendo, Eiffel Tower, World Series) */
 const NAMED = /(?:^|[^.!?]\s)[A-Za-z][\w'-]*\s+(?:\w+\s+)*?[A-Z][a-zA-Z]{1,}/;
@@ -143,7 +147,9 @@ export function isGeneralAsk(text: string, env: NodeJS.ProcessEnv = process.env)
   if (FEELING.test(t) && !searchVerb) return false;
   if (YOU.test(t) && !searchVerb) return false;
   if (SELF_STATE.test(t)) return false;
-  if (SELF.test(t.replace(BENIGN_ME, "")) && !HOWTO.test(t) && !searchVerb) return false;
+  // "recommend … for me" is advice, unless the ask is a plain outside fact ("a dinner place near Gangnam for me", Codex r1)
+  const outside = (REC.test(t) && EXTERNAL.test(t) && (CAPITAL_PLACE.test(country) || LOCATION.test(t))) || (TOPIC.test(t) && !/\b(?:i|my|me)\b(?! ?(?:near|nearby))/.test(t.replace(/\bfor me\b/, "")));
+  if (SELF.test(t.replace(BENIGN_ME, "")) && !HOWTO.test(t) && !searchVerb && !outside) return false;
   if (PERSONAL_KO.test(t) && !searchVerb) return false;
   const n = words(t);
   if (searchVerb) return n >= 2;
@@ -158,13 +164,14 @@ export function isGeneralAsk(text: string, env: NodeJS.ProcessEnv = process.env)
   if (external && (question || n >= 3)) return true;
   // a who/what/where question about a named real-world thing ("who's the CEO of Nintendo", "where is the Eiffel Tower")
   if (WH.test(t) && n >= 4 && (named || place)) return true;
+  if (ROLE_Q.test(t)) return true;
   // a how-to for a concrete task ("how do I get a red wine stain out of a carpet")
   if (HOWTO.test(t) && n >= 6) return true;
   const fact = t.match(SHORT_FACT);
   if (fact && !CONTEXT_WORD.test(fact[1].replace(/[.-]+$/, ""))) return true;
   if (TOPIC_KO.test(t) && n >= 2 && KO_ASK.test(t)) return true;
   if (REC_KO.test(t) && EXTERNAL_KO.test(t) && n >= 2 && KO_ASK.test(t)) return true;
-  if (WH_KO.test(t) && n >= 3 && KO_ASK.test(t) && EXTERNAL_KO.test(t)) return true;
+  if (WH_KO.test(t) && n >= 3 && KO_ASK.test(t) && (EXTERNAL_KO.test(t) || ROLE_KO.test(country))) return true;
   return false;
 }
 

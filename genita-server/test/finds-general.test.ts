@@ -44,6 +44,10 @@ export const OPENS_SHEET = [
   // P0 11/4 (device test): external, look-up-able only
   "Recommend a good dinner place near Gangnam",
   "Best KBBQ in Suwon?",
+  // Codex r1 (narrowing)
+  "who is the ceo of nintendo?",
+  "닌텐도 CEO 누구야?",
+  "Can you recommend a good dinner place near Gangnam for me?",
   // Codex r3
   "Jin, search Nintendo CEO",
   "What's the population of the US?",
@@ -96,6 +100,7 @@ export const STAYS_SPOKEN = [
   "What's the best thing to do when you're bored?",
   "How come the sky is blue?",
   "What makes a good friend?",
+  "Does black or white look good in daylight?",
   // demo runbook (QA 11/4): other paths own these
   "I have no idea what to wear today. It's for the Halloween party tonight. Jin, can you help me pick an outfit?",
   "Find me some.",
@@ -117,6 +122,11 @@ test("general: chit-chat, feelings, things in view and crisis lines stay spoken"
     // with the camera on a card kind may still take it ("what should I eat tonight?" → recipe), never a search
     assert.notEqual(classifyTurn(line, true)?.kind, "answer", `camera on: ${line}`);
   }
+});
+
+test("general (Codex r1): cooking with the camera stays a recipe even with 'near' / 'place' in it", () => {
+  assert.deepEqual(classifyTurn("What can I make with ingredients near their expiration date?", true), { kind: "recipe" });
+  assert.deepEqual(classifyTurn("How should I place ingredients in a bowl for dinner?", true), { kind: "recipe" });
 });
 
 test("general: the demo lines keep their own cards", () => {
